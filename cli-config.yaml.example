@@ -67,6 +67,10 @@ model:
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts and per-model exceptions.
+# Applies to the primary turn client on every api_mode (OpenAI-wire, native
+# Anthropic, and Anthropic-compatible providers), the fallback chain, and
+# client rebuilds during credential rotation.  Leaving these unset keeps the
+# SDK defaults (OpenAI ≈ 600s, native Anthropic 900s).
 #
 # providers:
 #   ollama-local:

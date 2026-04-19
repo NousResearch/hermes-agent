@@ -114,7 +114,6 @@ Skills for working with MCP (Model Context Protocol) servers, tools, and integra
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| `mcporter` | Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation. | `mcp/mcporter` |
 | `native-mcp` | Built-in MCP (Model Context Protocol) client that connects to external MCP servers, discovers their tools, and registers them as native Hermes Agent tools. Supports stdio and HTTP transports with automatic reconnection, security filtering, and zero-config tool injection. | `mcp/native-mcp` |
 
 ## media
@@ -135,14 +134,6 @@ General-purpose ML operations tools — model hub management, dataset operations
 | Skill | Description | Path |
 |-------|-------------|------|
 | `huggingface-hub` | Hugging Face Hub CLI (hf) — search, download, and upload models and datasets, manage repos, query datasets with SQL, deploy inference endpoints, manage Spaces and buckets. | `mlops/huggingface-hub` |
-
-## mlops/cloud
-
-GPU cloud providers and serverless compute platforms for ML workloads.
-
-| Skill | Description | Path |
-|-------|-------------|------|
-| `modal-serverless-gpu` | Serverless GPU cloud platform for running ML workloads. Use when you need on-demand GPU access without infrastructure management, deploying ML models as APIs, or running batch jobs with automatic scaling. | `mlops/cloud/modal` |
 
 ## mlops/evaluation
 
@@ -166,15 +157,12 @@ Model serving, quantization (GGUF/GPTQ), structured output, inference optimizati
 
 ## mlops/models
 
-Specific model architectures — computer vision (CLIP, SAM, Stable Diffusion), speech (Whisper), and audio generation (AudioCraft).
+Specific model architectures — image segmentation (SAM) and audio generation (AudioCraft / MusicGen). Additional model skills (CLIP, Stable Diffusion, Whisper, LLaVA) are available as optional skills.
 
 | Skill | Description | Path |
 |-------|-------------|------|
 | `audiocraft-audio-generation` | PyTorch library for audio generation including text-to-music (MusicGen) and text-to-sound (AudioGen). Use when you need to generate music from text descriptions, create sound effects, or perform melody-conditioned music generation. | `mlops/models/audiocraft` |
-| `clip` | OpenAI's model connecting vision and language. Enables zero-shot image classification, image-text matching, and cross-modal retrieval. Trained on 400M image-text pairs. Use for image search, content moderation, or vision-language tasks without fine-tuning. Best for general-pur… | `mlops/models/clip` |
 | `segment-anything-model` | Foundation model for image segmentation with zero-shot transfer. Use when you need to segment any object in images using points, boxes, or masks as prompts, or automatically generate all object masks in an image. | `mlops/models/segment-anything` |
-| `stable-diffusion-image-generation` | State-of-the-art text-to-image generation with Stable Diffusion models via HuggingFace Diffusers. Use when generating images from text prompts, performing image-to-image translation, inpainting, or building custom diffusion pipelines. | `mlops/models/stable-diffusion` |
-| `whisper` | OpenAI's general-purpose speech recognition model. Supports 99 languages, transcription, translation to English, and language identification. Six model sizes from tiny (39M params) to large (1550M params). Use for speech-to-text, podcast transcription, or multilingual audio pr… | `mlops/models/whisper` |
 
 ## mlops/research
 
@@ -192,8 +180,6 @@ Fine-tuning, RLHF/DPO/GRPO training, distributed training frameworks, and optimi
 |-------|-------------|------|
 | `axolotl` | Expert guidance for fine-tuning LLMs with Axolotl - YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support | `mlops/training/axolotl` |
 | `fine-tuning-with-trl` | Fine-tune LLMs using reinforcement learning with TRL - SFT for instruction tuning, DPO for preference alignment, PPO/GRPO for reward optimization, and reward model training. Use when need RLHF, align model with preferences, or train from human feedback. Works with HuggingFace … | `mlops/training/trl-fine-tuning` |
-| `peft-fine-tuning` | Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods. Use when fine-tuning large models (7B-70B) with limited GPU memory, when you need to train &lt;1% of parameters with minimal accuracy loss, or for multi-adapter serving. HuggingFace's official library… | `mlops/training/peft` |
-| `pytorch-fsdp` | Expert guidance for Fully Sharded Data Parallel training with PyTorch FSDP - parameter sharding, mixed precision, CPU offloading, FSDP2 | `mlops/training/pytorch-fsdp` |
 | `unsloth` | Expert guidance for fast fine-tuning with Unsloth - 2-5x faster training, 50-80% less memory, LoRA/QLoRA optimization | `mlops/training/unsloth` |
 
 ## note-taking

@@ -7997,6 +7997,11 @@ class GatewayRunner:
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
                 return
+            # Email sends each status update as a separate email which is
+            # noisy and confusing. Log lifecycle events instead of emailing.
+            if source.platform == Platform.EMAIL and event_type == "lifecycle":
+                logger.info("[Email] status (%s): %s", event_type, message)
+                return
             try:
                 asyncio.run_coroutine_threadsafe(
                     _status_adapter.send(

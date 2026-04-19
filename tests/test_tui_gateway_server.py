@@ -828,3 +828,124 @@ def test_respond_unpacks_sid_tuple_correctly():
         server._pending.pop("rid-x", None)
         server._answers.pop("rid-x", None)
 
+
+
+# ---------------------------------------------------------------------------
+# /model switch and other agent-mutating commands must reject while the
+# session is running.  agent.switch_model() mutates self.model, self.provider,
+# self.base_url, self.client etc. in place — the worker thread running
+# agent.run_conversation is reading those on every iteration.  Same class of
+# bug as the session.undo / session.compress mid-run silent-drop; same fix
+# pattern: reject with 4009 while running.
+# ---------------------------------------------------------------------------
+
+
+def test_config_set_model_rejects_while_running(monkeypatch):
+    """/model via config.set must reject during an in-flight turn."""
+    seen = {"called": False}
+
+    def _fake_apply(sid, session, raw):
+        seen["called"] = True
+        return {"value": raw, "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {"session_id": "sid", "key": "model", "value": "anthropic/claude-sonnet-4.6"},
+        })
+        assert resp.get("error")
+        assert resp["error"]["code"] == 4009
+        assert "session busy" in resp["error"]["message"]
+        assert not seen["called"], (
+            "_apply_model_switch was called mid-turn — would race with "
+            "the worker thread reading agent.model / agent.client"
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_model_allowed_when_idle(monkeypatch):
+    """Regression guard: idle sessions can still switch models."""
+    seen = {"called": False}
+
+    def _fake_apply(sid, session, raw):
+        seen["called"] = True
+        return {"value": "newmodel", "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+
+    server._sessions["sid"] = _session(running=False)
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {"session_id": "sid", "key": "model", "value": "newmodel"},
+        })
+        assert resp.get("result")
+        assert resp["result"]["value"] == "newmodel"
+        assert seen["called"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monkeypatch):
+    """Slash worker passthrough (e.g. /model, /personality, /prompt,
+    /compress) must reject during an in-flight turn.  Same race as
+    config.set — mutates live agent state while run_conversation is
+    reading it."""
+    import types
+
+    applied = {"model": False, "compress": False}
+
+    def _fake_apply_model(sid, session, arg):
+        applied["model"] = True
+        return {"value": arg, "warning": ""}
+
+    def _fake_compress(session, focus):
+        applied["compress"] = True
+        return (0, {})
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply_model)
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+
+    session = _session(running=True)
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    for cmd, expected_name in [
+        ("/model new/model", "model"),
+        ("/personality default", "personality"),
+        ("/prompt", "prompt"),
+        ("/compress", "compress"),
+    ]:
+        warning = server._mirror_slash_side_effects("sid", session, cmd)
+        assert "session busy" in warning, (
+            f"{cmd} should have returned busy warning, got: {warning!r}"
+        )
+        assert f"/{expected_name}" in warning
+
+    # None of the mutating side-effect helpers should have fired.
+    assert not applied["model"], "model switch fired despite running session"
+    assert not applied["compress"], "compress fired despite running session"
+
+
+def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
+    """Regression guard: idle session still runs the side effects."""
+    import types
+
+    applied = {"model": False}
+
+    def _fake_apply_model(sid, session, arg):
+        applied["model"] = True
+        return {"value": arg, "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply_model)
+
+    session = _session(running=False)
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    warning = server._mirror_slash_side_effects("sid", session, "/model foo")
+    # Should NOT contain "session busy" — the switch went through.
+    assert "session busy" not in warning
+    assert applied["model"]

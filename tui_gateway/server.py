@@ -1743,6 +1743,19 @@ def _(rid, params: dict) -> dict:
             if not value:
                 return _err(rid, 4002, "model value required")
             if session:
+                # Reject during an in-flight turn.  agent.switch_model()
+                # mutates self.model / self.provider / self.base_url /
+                # self.client in place; the worker thread running
+                # agent.run_conversation is reading those on every
+                # iteration.  A mid-turn swap can send an HTTP request
+                # with the new base_url but old model (or vice versa),
+                # producing 400/404s the user never asked for.  Parity
+                # with the gateway's running-agent /model guard.
+                if session.get("running"):
+                    return _err(
+                        rid, 4009,
+                        "session busy — /interrupt the current turn before switching models",
+                    )
                 result = _apply_model_switch(params.get("session_id", ""), session, value)
             else:
                 result = _apply_model_switch("", {"agent": None}, value)
@@ -2445,6 +2458,17 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if not parts:
         return ""
     name, arg, agent = parts[0], (parts[1].strip() if len(parts) > 1 else ""), session.get("agent")
+
+    # Reject agent-mutating commands during an in-flight turn.  These
+    # all do read-then-mutate on live agent/session state that the
+    # worker thread running agent.run_conversation is using.  Parity
+    # with the session.compress / session.undo guards and the gateway
+    # runner's running-agent /model guard.
+    _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
+    if name in _MUTATES_WHILE_RUNNING and session.get("running"):
+        return (
+            f"session busy — /interrupt the current turn before running /{name}"
+        )
 
     try:
         if name == "model" and arg and agent:

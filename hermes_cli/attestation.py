@@ -14,12 +14,20 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+import base64
+import json as _json
+
 import requests
 
 logger = logging.getLogger(__name__)
 
-# Add vendored verifier modules to path
-vendor_path = os.path.join(os.path.dirname(__file__), "..", "examples", "tee-providers", "vendor", "nearai-cloud-verifier", "py")
+_PHALA_TDX_VERIFIER = "https://cloud-api.phala.network/api/v1/attestations/verify"
+_NVIDIA_NRAS = "https://nras.attestation.nvidia.com/v3/attest/gpu"
+
+# Add vendored verifier modules to path.
+# Default: alongside this repo at refs/nearai-cloud-verifier/py; override with NEARAI_VERIFIER_PATH.
+_default_verifier_path = os.path.join(os.path.dirname(__file__), "..", "..", "hermes-agent", "refs", "nearai-cloud-verifier", "py")
+vendor_path = os.environ.get("NEARAI_VERIFIER_PATH", _default_verifier_path)
 if vendor_path not in sys.path:
     sys.path.insert(0, vendor_path)
 
@@ -94,14 +102,17 @@ def verify_attestation(provider_id: str, runtime_creds: Dict[str, Any], config: 
             else:
                 return cached_report  # don't re-check TLS for failures
 
-    if not _VERIFIER_AVAILABLE:
-        return AttestationReport(
-            valid=False, provider=provider_id, attestation_type="none",
-            verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            details={}, error="Attestation verifier dependencies not available"
-        )
-    if provider_id == "near-ai":
-        report = _verify_near_ai_attestation(runtime_creds, config)
+    if provider_id == "redpill":
+        report = _verify_redpill_attestation(runtime_creds, config)
+    elif provider_id == "near-ai":
+        if not _VERIFIER_AVAILABLE:
+            return AttestationReport(
+                valid=False, provider=provider_id, attestation_type="none",
+                verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                details={}, error="Attestation verifier dependencies not available"
+            )
+        else:
+            report = _verify_near_ai_attestation(runtime_creds, config)
     else:
         report = _skip_attestation("not-implemented")
 
@@ -223,6 +234,136 @@ def _verify_near_ai_attestation(runtime_creds: Dict[str, Any], config: Dict[str,
         )
     except Exception:
         raise
+
+
+def _decode_nvidia_verdict(jwt_token: str) -> str:
+    """Extract x-nvidia-overall-att-result from a NRAS JWT response."""
+    payload_b64 = jwt_token.split(".")[1]
+    padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+    payload = _json.loads(base64.urlsafe_b64decode(padded).decode())
+    return payload.get("x-nvidia-overall-att-result", "UNKNOWN")
+
+
+def _phala_check_report_data(report_data_hex: str, signing_address: str, signing_algo: str, nonce: str) -> bool:
+    """Verify TDX report_data = signing_address (padded to 32 bytes) || nonce (32 bytes)."""
+    try:
+        rd = bytes.fromhex(report_data_hex.removeprefix("0x"))
+        addr_hex = signing_address.removeprefix("0x")
+        addr_bytes = bytes.fromhex(addr_hex)
+        embedded_addr = rd[:32]
+        embedded_nonce = rd[32:64]
+        return (embedded_addr == addr_bytes.ljust(32, b"\x00")) and (embedded_nonce.hex() == nonce)
+    except Exception:
+        return False
+
+
+def _verify_redpill_attestation(runtime_creds: Dict[str, Any], config: Dict[str, Any]) -> AttestationReport:
+    """Verify Redpill/Phala TEE attestation: TDX quote + compose hash + NVIDIA GPU."""
+    api_key = runtime_creds.get("api_key", "")
+    base_url = runtime_creds.get("base_url", "https://api.red-pill.ai/v1").rstrip("/")
+    # strip trailing /v1 so we can append it consistently
+    api_base = base_url[:-3] if base_url.endswith("/v1") else base_url
+    model = runtime_creds.get("model", "")
+    if not api_key:
+        return AttestationReport(
+            valid=False, provider="redpill", attestation_type="tdx+gpu",
+            verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            details={}, error="No API key in runtime credentials"
+        )
+    if not model:
+        return AttestationReport(
+            valid=False, provider="redpill", attestation_type="tdx+gpu",
+            verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            details={}, error="No model in runtime credentials"
+        )
+    nonce = secrets.token_hex(32)
+    url = f"{api_base}/v1/attestation/report"
+    response = requests.get(url, params={"model": model, "nonce": nonce},
+                            headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
+    response.raise_for_status()
+    report = response.json()
+
+    gateway_att = report.get("gateway_attestation", {})
+    model_atts = report.get("model_attestations", [])
+    if not gateway_att:
+        return AttestationReport(
+            valid=False, provider="redpill", attestation_type="tdx+gpu",
+            verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            details={"report": report}, error="No gateway_attestation in response"
+        )
+
+    # 1. TDX quote via Phala's verifier
+    tdx_resp = requests.post(_PHALA_TDX_VERIFIER, json={"hex": gateway_att["intel_quote"]}, timeout=30).json()
+    quote_body = (tdx_resp.get("quote") or {}).get("body", {})
+    if not (tdx_resp.get("quote") or {}).get("verified"):
+        msg = (tdx_resp.get("quote") or {}).get("message") or tdx_resp.get("message") or "unspecified"
+        node = tdx_resp.get("node_provider") or {}
+        ppid = node.get("ppid")
+        tcb_svn = quote_body.get("tee_tcb_svn")
+        detail_str = f"ppid={ppid} tcb_svn={tcb_svn}" if ppid else msg
+        return AttestationReport(
+            valid=False, provider="redpill", attestation_type="tdx+gpu",
+            verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            details={"ppid": ppid, "tcb_svn": tcb_svn},
+            error=f"TDX quote verification failed: {detail_str}"
+        )
+
+    # 2. report_data binds signing_address + nonce
+    report_data_hex = quote_body.get("reportdata", "")
+    signing_address = gateway_att.get("signing_address", "")
+    signing_algo = gateway_att.get("signing_algo", "ecdsa")
+    if not _phala_check_report_data(report_data_hex, signing_address, signing_algo, nonce):
+        return AttestationReport(
+            valid=False, provider="redpill", attestation_type="tdx+gpu",
+            verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            details={}, error="TDX report_data does not bind signing address + nonce"
+        )
+
+    # 3. Compose hash committed in mr_config
+    mr_config = quote_body.get("mrconfig", "")
+    info = gateway_att.get("info", {})
+    tcb_info = info.get("tcb_info", {})
+    if isinstance(tcb_info, str):
+        try:
+            tcb_info = _json.loads(tcb_info)
+        except Exception:
+            tcb_info = {}
+    app_compose = tcb_info.get("app_compose")
+    compose_hash_verified = False
+    if app_compose and mr_config:
+        compose_hash = hashlib.sha256(app_compose.encode()).hexdigest()
+        expected = ("0x01" + compose_hash).lower()
+        compose_hash_verified = mr_config.lower().startswith(expected)
+
+    # 4. NVIDIA GPU attestation from model_attestations
+    gpu_verdict = None
+    if model_atts:
+        nvidia_payload = model_atts[0].get("nvidia_payload")
+        if nvidia_payload:
+            if isinstance(nvidia_payload, str):
+                nvidia_payload = _json.loads(nvidia_payload)
+            gpu_resp = requests.post(_NVIDIA_NRAS, json=nvidia_payload, timeout=30).json()
+            gpu_verdict = _decode_nvidia_verdict(gpu_resp[0][1])
+            gpu_passed = gpu_verdict is True or gpu_verdict == "PASS"
+            if not gpu_passed:
+                return AttestationReport(
+                    valid=False, provider="redpill", attestation_type="tdx+gpu",
+                    verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    details={"gpu_verdict": gpu_verdict}, error=f"NVIDIA GPU attestation failed: {gpu_verdict}"
+                )
+
+    return AttestationReport(
+        valid=True, provider="redpill", attestation_type="tdx+gpu",
+        verified_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        details={
+            "signing_address": signing_address,
+            "model": model,
+            "compose_hash_verified": compose_hash_verified,
+            "gpu_verdict": gpu_verdict,
+            "app_id": info.get("app_id"),
+            "instance_id": info.get("instance_id"),
+        },
+    )
 
 
 def _skip_attestation(reason: str) -> AttestationReport:

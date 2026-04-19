@@ -428,6 +428,33 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # unavailable (no boto3, no credentials, or API error).  The agent
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
+    "near-ai": [
+        "openai/gpt-oss-120b",
+        "zai-org/GLM-5.1-FP8",
+        "zai-org/GLM-5-FP8",
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "Qwen/Qwen3.5-122B-A10B",
+        "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "deepseek-ai/DeepSeek-V3-0324",
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+    ],
+    "redpill": [
+        "phala/gpt-oss-120b",
+        "phala/gpt-oss-20b",
+        "phala/glm-5",
+        "phala/glm-4.7",
+        "phala/glm-4.7-flash",
+        "phala/deepseek-v3.2",
+        "phala/deepseek-chat-v3.1",
+        "phala/qwen3-30b-a3b-instruct-2507",
+        "phala/qwen-2.5-7b-instruct",
+        "phala/qwen2.5-vl-72b-instruct",
+        "phala/qwen3-vl-30b-a3b-instruct",
+        "phala/qwen3.5-27b",
+        "phala/gemma-3-27b-it",
+        "phala/kimi-k2.5",
+        "phala/uncensored-24b",
+    ],
     "bedrock": [
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
@@ -804,6 +831,8 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
+    ProviderEntry("near-ai",        "NEAR AI",                  "NEAR AI Cloud (TEE-attested — Intel TDX + NVIDIA GPU verified)"),
+    ProviderEntry("redpill",        "Redpill / Phala",          "Redpill / Phala Cloud (TEE-attested — TDX + GPU + compose hash)"),
 ]
 
 # Derived dicts — used throughout the codebase

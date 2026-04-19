@@ -429,12 +429,24 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
             "verifier": "nearai",
         },
     ),
+    "redpill": ProviderConfig(
+        id="redpill",
+        name="Redpill (Phala TEE-attested)",
+        auth_type="api_key",
+        inference_base_url="https://api.red-pill.ai/v1",
+        api_key_env_vars=("REDPILL_API_KEY",),
+        base_url_env_var="REDPILL_BASE_URL",
+        attestation_config={
+            "type": "tdx+gpu",
+            "endpoint": "/v1/attestation/report",
+            "verifier": "phala",
+        },
+    ),
 }
 
 
-def resolve_near_ai_runtime_credentials() -> Dict[str, Any]:
-    """Resolve NEAR AI API key and base URL from env / registry."""
-    provider_id = "near-ai"
+def _resolve_api_key_provider(provider_id: str) -> Dict[str, Any]:
+    """Generic resolver for API-key providers registered in PROVIDER_REGISTRY."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig:
         raise AuthError(f"Provider '{provider_id}' not found in registry.", provider=provider_id, code="invalid_provider")
@@ -447,6 +459,14 @@ def resolve_near_ai_runtime_credentials() -> Dict[str, Any]:
     if not base_url:
         base_url = pconfig.inference_base_url
     return {"provider": provider_id, "api_key": api_key, "base_url": base_url, "source": "env", "key_id": ""}
+
+
+def resolve_near_ai_runtime_credentials() -> Dict[str, Any]:
+    return _resolve_api_key_provider("near-ai")
+
+
+def resolve_redpill_runtime_credentials() -> Dict[str, Any]:
+    return _resolve_api_key_provider("redpill")
 
 
 # =============================================================================

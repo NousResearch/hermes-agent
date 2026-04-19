@@ -206,6 +206,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="NEAR_BASE_URL",
         extra_env_vars=("NEAR_API_KEY",),
     ),
+    "redpill": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        base_url_override="https://api.red-pill.ai/v1",
+        base_url_env_var="REDPILL_BASE_URL",
+        extra_env_vars=("REDPILL_API_KEY",),
+    ),
 }
 
 

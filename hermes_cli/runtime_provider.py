@@ -26,6 +26,7 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     resolve_near_ai_runtime_credentials,
+    resolve_redpill_runtime_credentials,
     has_usable_secret,
 )
 from hermes_cli.attestation import verify_attestation as _verify_attestation
@@ -231,6 +232,22 @@ def _resolve_runtime_from_pool_entry(
         if att_config.get("enabled"):
             att_creds = {"api_key": api_key, "base_url": base_url}
             report = _verify_attestation("near-ai", att_creds, att_config)
+            if not report.valid and att_config.get("strict"):
+                raise RuntimeError(f"TEE attestation failed: {report.error}")
+            if not report.valid:
+                logger.warning("TEE attestation warning: %s", report.error)
+    elif provider == "redpill":
+        api_mode = "chat_completions"
+        if not base_url:
+            creds = resolve_redpill_runtime_credentials()
+            base_url = creds.get("base_url", "").rstrip("/")
+            if not api_key:
+                api_key = creds.get("api_key", "")
+        att_config = get_attestation_config("redpill")
+        if att_config.get("enabled"):
+            model_name = str(model_cfg.get("default") or "")
+            att_creds = {"api_key": api_key, "base_url": base_url, "model": model_name}
+            report = _verify_attestation("redpill", att_creds, att_config)
             if not report.valid and att_config.get("strict"):
                 raise RuntimeError(f"TEE attestation failed: {report.error}")
             if not report.valid:

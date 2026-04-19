@@ -76,6 +76,9 @@ model:
 # Leaving these unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
 # native Anthropic 900s).
 #
+# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
+# SDK paths) — those use boto3 with its own timeout configuration.
+#
 # providers:
 #   ollama-local:
 #     request_timeout_seconds: 300   # Longer timeout for local cold-starts

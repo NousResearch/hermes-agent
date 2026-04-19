@@ -341,7 +341,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         if not stale:
             try:
                 os.kill(existing_pid, 0)
-            except (ProcessLookupError, PermissionError):
+            except (ProcessLookupError, PermissionError, OSError):
                 stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
@@ -576,7 +576,7 @@ def get_running_pid(
 
     try:
         os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 

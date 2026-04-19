@@ -257,7 +257,7 @@ class ProcessRegistry:
         try:
             os.kill(pid, 0)
             return True
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
             return False
 
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:

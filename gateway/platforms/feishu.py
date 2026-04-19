@@ -447,6 +447,46 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
+_MENTION_MARKUP_RE = re.compile(
+    r"@\[(?P<name>[^\]\n]+)\]\((?P<id>[^)\s]+)\)|<at\s+user_id=\"(?P<xml_id>[^\"]+)\">(?P<xml_name>.*?)</at>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _build_rich_post_payload(content: str) -> str:
+    rows: List[List[Dict[str, Any]]] = []
+
+    for raw_line in content.splitlines() or [content]:
+        line = raw_line.rstrip("\r")
+        row: List[Dict[str, Any]] = []
+        cursor = 0
+        for match in _MENTION_MARKUP_RE.finditer(line):
+            start, end = match.span()
+            if start > cursor:
+                text = line[cursor:start]
+                if text:
+                    row.append({"tag": "text", "text": text})
+
+            mention_id = (match.group("id") or match.group("xml_id") or "").strip()
+            mention_name = (match.group("name") or match.group("xml_name") or mention_id).strip()
+            if mention_id:
+                row.append({"tag": "at", "user_id": mention_id, "user_name": mention_name})
+            elif match.group(0):
+                row.append({"tag": "text", "text": match.group(0)})
+            cursor = end
+
+        if cursor < len(line):
+            tail = line[cursor:]
+            if tail:
+                row.append({"tag": "text", "text": tail})
+
+        if not row:
+            row = [{"tag": "text", "text": ""}]
+        rows.append(row)
+
+    return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
+
+
 def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
     resolved = _resolve_post_payload(payload)
     if not resolved:
@@ -3364,6 +3404,8 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        if _MENTION_MARKUP_RE.search(content):
+            return "post", _build_rich_post_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

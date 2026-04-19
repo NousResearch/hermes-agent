@@ -609,6 +609,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         merchant_mode: bool = False,
         merchant_id: Optional[str] = None,
+        active_skill: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -688,6 +689,37 @@ class APIServerAdapter(BasePlatformAdapter):
             # TTFT roughly in half on local 7-14B models.
             lean_mode=merchant_mode,
         )
+
+        # ─── Per-workflow apm_* tool pruning ────────────────────────────
+        # If the caller supplied X-Hermes-Active-Skill pointing to a workflow
+        # whose SKILL.md frontmatter declares `metadata.apmzoom.skills_used`,
+        # drop every apm_* tool that isn't in that list.  Non-apm_* tools
+        # (memory, skill_view, etc.) are left untouched.  This keeps the
+        # system prompt lean and focuses the local model on the 2-6 tools
+        # the workflow actually needs, instead of all ~16 in the global
+        # allowlist.  Skipping filter when:
+        #   - no active_skill header
+        #   - workflow has no skills_used (treated as "open" / keep all)
+        if active_skill:
+            try:
+                from tools import apmzoom as _apmzoom_bridge
+                allowed = _apmzoom_bridge.resolve_workflow_skills_used(active_skill)
+                if allowed is not None and agent.tools:
+                    keep_apm = {f"apm_{n}" for n in allowed}
+                    before = len(agent.tools)
+                    agent.tools = [
+                        t for t in agent.tools
+                        if not t["function"]["name"].startswith("apm_")
+                        or t["function"]["name"] in keep_apm
+                    ]
+                    agent.valid_tool_names = {t["function"]["name"] for t in agent.tools}
+                    logger.info(
+                        "[apmzoom] workflow %r: pruned tools %d → %d (apm_* kept: %d)",
+                        active_skill, before, len(agent.tools), len(keep_apm),
+                    )
+            except Exception as e:
+                logger.debug("[apmzoom] tool pruning skipped for %r: %s", active_skill, e)
+
         return agent
 
     # ------------------------------------------------------------------
@@ -806,6 +838,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
         merchant_mode = bool(merchant_id)
+        # Thread merchant identity into the apmzoom tool bridge so its
+        # auto-registered tool handlers can look up the right credentials
+        # without each having to take merchant_id as an argument.
+        if merchant_mode:
+            try:
+                from tools import apmzoom as _apmzoom_bridge
+                _apmzoom_bridge.set_merchant_id(merchant_id)
+                # active_skill drives per-request apm_* tool pruning (see
+                # _create_agent).  Set unconditionally so clearing it on a
+                # subsequent request without the header actually clears.
+                _apmzoom_bridge.set_active_skill(active_skill)
+            except Exception as e:
+                logger.debug("[apmzoom] merchant_id propagation skipped: %s", e)
         merchant_prompt = _load_merchant_prompt(merchant_id, active_skill)
         # If merchant_prompt was loaded, prepend it to the user-supplied system
         # message; AIAgent will see it via ephemeral_system_prompt.
@@ -932,6 +977,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 merchant_mode=merchant_mode,
                 merchant_id=merchant_id,
+                active_skill=active_skill,
             ))
 
             return await self._write_sse_chat_completion(
@@ -948,6 +994,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 merchant_mode=merchant_mode,
                 merchant_id=merchant_id,
+                active_skill=active_skill,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2156,6 +2203,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         merchant_mode: bool = False,
         merchant_id: Optional[str] = None,
+        active_skill: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2180,6 +2228,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=tool_complete_callback,
                 merchant_mode=merchant_mode,
                 merchant_id=merchant_id,
+                active_skill=active_skill,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

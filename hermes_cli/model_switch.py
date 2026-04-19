@@ -1046,8 +1046,10 @@ def list_authenticated_providers(
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
-            # Skip if this slug was already emitted (e.g. canonical provider
-            # with the same name) or will be picked up by section 4.
+            # Skip if a built-in/overlay/canonical provider already claimed
+            # this slug (#7524). Without this, providers listed in both the
+            # built-in catalog and config.yaml `providers:` would appear twice
+            # (e.g. "Nous Portal (27)" and "nous (0)").
             if ep_name.lower() in seen_slugs:
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
@@ -1182,6 +1184,61 @@ def list_authenticated_providers(
                 "api_url": grp["api_url"],
             })
             seen_slugs.add(slug.lower())
+
+    # --- 5. Enrich rows with live catalogs where available ---
+    # Single source of truth for counts: prefer live catalogs over the
+    # curated/config-only counts populated above. Mirrors what the TUI
+    # gateway already does in tui_gateway.server.model.options so the CLI
+    # picker matches — OpenAI / OpenAI Direct (and other dynamic catalogs)
+    # no longer show 0 models initially.
+    try:
+        from hermes_cli.models import provider_model_ids as _pmi
+        from hermes_cli.models import fetch_api_models as _fetch_api_models
+    except ImportError:
+        _pmi = None
+        _fetch_api_models = None
+
+    def _live_for_user_provider(row: dict) -> list[str]:
+        """Probe /v1/models for a user-defined OpenAI-compatible provider."""
+        if _fetch_api_models is None or not user_providers:
+            return []
+        ep_cfg = user_providers.get(row.get("slug")) if isinstance(user_providers, dict) else None
+        if not isinstance(ep_cfg, dict):
+            return []
+        base_url = (ep_cfg.get("base_url") or ep_cfg.get("api") or ep_cfg.get("url") or "").strip()
+        if not base_url:
+            return []
+        key_env = ep_cfg.get("key_env") or ""
+        api_key = ""
+        if key_env:
+            api_key = os.environ.get(key_env, "") or ""
+        if not api_key:
+            api_key = (ep_cfg.get("api_key") or ep_cfg.get("key") or "").strip()
+        try:
+            return _fetch_api_models(api_key, base_url) or []
+        except Exception as exc:
+            logger.debug("User-provider live probe failed for %s: %s", row.get("slug"), exc)
+            return []
+
+    if _pmi is not None:
+        for row in results:
+            is_user_config = row.get("source") == "user-config"
+            # For user-config rows, the explicit `models:` from config is
+            # the source of truth — don't overwrite. Only probe live when
+            # config provided no models at all (e.g. openai-direct that
+            # only sets base_url + key_env).
+            if is_user_config and row.get("total_models", 0) > 0:
+                continue
+            live: list[str] = []
+            try:
+                live = list(_pmi(row.get("slug")) or [])
+            except Exception as exc:
+                logger.debug("Live catalog probe failed for %s: %s", row.get("slug"), exc)
+            if not live and is_user_config:
+                live = _live_for_user_provider(row)
+            if live:
+                row["models"] = live[:max_models]
+                row["total_models"] = len(live)
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

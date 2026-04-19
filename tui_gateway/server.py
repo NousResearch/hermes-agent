@@ -218,31 +218,27 @@ def handle_request(req: dict) -> dict | None:
     return fn(req.get("id"), req.get("params", {}))
 
 
-def _run_and_emit(req: dict) -> None:
-    """Run a handler on the RPC pool and write its response directly.
-
-    Catches any unexpected exception so a misbehaving handler can't kill
-    the worker thread silently — the caller still sees a JSON-RPC error.
-    """
-    try:
-        resp = handle_request(req)
-    except Exception as exc:
-        resp = _err(req.get("id"), -32000, f"handler error: {exc}")
-    if resp is not None:
-        write_json(resp)
-
-
 def dispatch(req: dict) -> dict | None:
-    """Route an inbound RPC — long handlers to the pool, everything else inline.
+    """Route inbound RPCs — long handlers to the pool, everything else inline.
 
-    Returns the response for sync-dispatched requests so the caller
-    (entry.py) can write it. Returns None when the request has been
-    scheduled on the pool; the worker writes the response itself.
+    Returns a response dict when handled inline. Returns None when the
+    handler was scheduled on the pool; the worker writes its own
+    response via write_json when done.
     """
-    if req.get("method", "") in _LONG_HANDLERS:
-        _pool.submit(_run_and_emit, req)
-        return None
-    return handle_request(req)
+    if req.get("method") not in _LONG_HANDLERS:
+        return handle_request(req)
+
+    def run():
+        try:
+            resp = handle_request(req)
+        except Exception as exc:
+            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+        if resp is not None:
+            write_json(resp)
+
+    _pool.submit(run)
+
+    return None
 
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:

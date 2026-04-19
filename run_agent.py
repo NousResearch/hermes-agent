@@ -1036,8 +1036,21 @@ class AIAgent:
         self._use_prompt_caching, self._use_native_cache_layout = (
             self._anthropic_prompt_cache_policy()
         )
-        self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
-        
+        # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from
+        # config.yaml under prompt_caching.cache_ttl; unknown values keep "5m".
+        # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
+        # sessions with >5-minute pauses between turns (#14971).
+        self._cache_ttl = "5m"
+        try:
+            from hermes_cli.config import load_config as _load_pc_cfg
+
+            _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
+            _ttl = _pc_cfg.get("cache_ttl", "5m")
+            if _ttl in ("5m", "1h"):
+                self._cache_ttl = _ttl
+        except Exception:
+            pass
+
         # Iteration budget: the LLM is only notified when it actually exhausts
         # the iteration budget (api_call_count >= max_iterations).  At that
         # point we inject ONE message, allow one final API call, and if the

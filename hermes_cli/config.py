@@ -521,6 +521,12 @@ DEFAULT_CONFIG = {
 
     },
 
+    # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
+    # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
+    "prompt_caching": {
+        "cache_ttl": "5m",
+    },
+
     # AWS Bedrock provider configuration.
     # Only used when model.provider is "bedrock".
     "bedrock": {

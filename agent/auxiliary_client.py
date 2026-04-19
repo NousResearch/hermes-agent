@@ -668,63 +668,6 @@ def _flatten_chatgpt_web_message_content(content: Any) -> str:
             flattened.append(text)
     return "\n".join(part for part in flattened if part).strip()
 
-def _normalize_chatgpt_web_message_content(content: Any) -> Any:
-    """Preserve multimodal blocks when ChatGPT Web can consume them directly."""
-    if isinstance(content, list):
-        normalized: list[dict[str, Any]] = []
-        saw_media = False
-        for part in content:
-            if not isinstance(part, dict):
-                if isinstance(part, str) and part:
-                    normalized.append({"type": "text", "text": part})
-                continue
-            ptype = str(part.get("type") or "").strip().lower()
-            if ptype in {"text", "input_text"}:
-                normalized.append({"type": "text", "text": str(part.get("text") or "")})
-                continue
-            if ptype in {"image_url", "input_image"}:
-                image_data = part.get("image_url", {})
-                if isinstance(image_data, dict):
-                    image_url = str(image_data.get("url") or "")
-                else:
-                    image_url = str(image_data or "")
-                if image_url:
-                    saw_media = True
-                    normalized.append({"type": "input_image", "image_url": image_url})
-                continue
-        if saw_media:
-            return normalized
-    return _flatten_chatgpt_web_message_content(content)
-
-
-def _normalize_chatgpt_web_message_content(content: Any) -> Any:
-    """Preserve multimodal blocks when ChatGPT Web can consume them directly."""
-    if isinstance(content, list):
-        normalized: list[dict[str, Any]] = []
-        saw_media = False
-        for part in content:
-            if not isinstance(part, dict):
-                if isinstance(part, str) and part:
-                    normalized.append({"type": "text", "text": part})
-                continue
-            ptype = str(part.get("type") or "").strip().lower()
-            if ptype in {"text", "input_text"}:
-                normalized.append({"type": "text", "text": str(part.get("text") or "")})
-                continue
-            if ptype in {"image_url", "input_image"}:
-                image_data = part.get("image_url", {})
-                if isinstance(image_data, dict):
-                    image_url = str(image_data.get("url") or "")
-                else:
-                    image_url = str(image_data or "")
-                if image_url:
-                    saw_media = True
-                    normalized.append({"type": "input_image", "image_url": image_url})
-                continue
-        if saw_media:
-            return normalized
-    return _flatten_chatgpt_web_message_content(content)
-
 
 def _extract_chatgpt_web_tool_calls(text: str) -> tuple[list[SimpleNamespace], str]:
     """Parse auxiliary ChatGPT Web XML tool-call blocks into OpenAI-like objects."""
@@ -845,19 +788,11 @@ class _ChatGptWebCompletionsAdapter:
         model: str,
         base_url: str,
         session_token: str = "",
-        cookie_header: str = "",
-        browser_cookies=None,
-        user_agent: str = "",
-        device_id: str = "",
     ):
         self._access_token = access_token
         self._model = model
         self._base_url = base_url
         self._session_token = session_token
-        self._cookie_header = cookie_header
-        self._browser_cookies = browser_cookies
-        self._user_agent = user_agent
-        self._device_id = device_id
 
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", []) or []
@@ -872,13 +807,9 @@ class _ChatGptWebCompletionsAdapter:
             if not isinstance(msg, dict):
                 continue
             role = str(msg.get("role") or "user").strip().lower() or "user"
-            content = _normalize_chatgpt_web_message_content(msg.get("content"))
+            content = _flatten_chatgpt_web_message_content(msg.get("content"))
             if role == "system":
-                if isinstance(content, list):
-                    rendered = _flatten_chatgpt_web_message_content(content)
-                    if rendered:
-                        instructions_parts.append(rendered)
-                elif content:
+                if content:
                     instructions_parts.append(content)
                 continue
             payload_messages.append({"role": role, "content": content})
@@ -897,10 +828,6 @@ class _ChatGptWebCompletionsAdapter:
             messages=payload_messages,
             instructions=instructions,
             session_token=self._session_token,
-            cookie_header=self._cookie_header,
-            browser_cookies=self._browser_cookies,
-            user_agent=self._user_agent,
-            device_id=self._device_id,
             timeout=timeout,
             history_and_training_disabled=True,
         )
@@ -935,18 +862,7 @@ class _ChatGptWebChatShim:
 class ChatGptWebAuxiliaryClient:
     """OpenAI-client-compatible wrapper over ChatGPT Web transport."""
 
-    def __init__(
-        self,
-        *,
-        access_token: str,
-        model: str,
-        base_url: str,
-        session_token: str = "",
-        cookie_header: str = "",
-        browser_cookies=None,
-        user_agent: str = "",
-        device_id: str = "",
-    ):
+    def __init__(self, *, access_token: str, model: str, base_url: str, session_token: str = ""):
         self._access_token = access_token
         self._session_token = session_token
         self.api_key = access_token
@@ -957,10 +873,6 @@ class ChatGptWebAuxiliaryClient:
                 model=model,
                 base_url=base_url,
                 session_token=session_token,
-                cookie_header=cookie_header,
-                browser_cookies=browser_cookies,
-                user_agent=user_agent,
-                device_id=device_id,
             )
         )
 
@@ -3638,10 +3550,6 @@ def resolve_provider_client(
             )
             return None, None
         session_token = str(creds.get("session_token") or os.getenv("CHATGPT_WEB_SESSION_TOKEN", "")).strip()
-        cookie_header = str(creds.get("cookie_header") or os.getenv("CHATGPT_WEB_COOKIE_HEADER", "")).strip()
-        browser_cookies = creds.get("browser_cookies")
-        user_agent = str(creds.get("user_agent") or os.getenv("CHATGPT_WEB_USER_AGENT", "")).strip()
-        device_id = str(creds.get("device_id") or os.getenv("CHATGPT_WEB_DEVICE_ID", "")).strip()
         resolved_base = str(
             explicit_base_url or creds.get("base_url") or "https://chatgpt.com/backend-api/f"
         ).strip().rstrip("/")
@@ -3654,10 +3562,6 @@ def resolve_provider_client(
             model=final_model,
             base_url=resolved_base,
             session_token=session_token,
-            cookie_header=cookie_header,
-            browser_cookies=browser_cookies,
-            user_agent=user_agent,
-            device_id=device_id,
         )
         return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 

@@ -418,7 +418,14 @@ def _format_initial_message(
             transcript_lines.append(f"{role.title()}:\n{rendered}")
 
     if has_remote_thread:
-        return latest_user.strip()
+        prompt_parts: list[str] = []
+        if instructions.strip():
+            prompt_parts.append(
+                f"Developer instructions (higher priority than the conversation below):\n{instructions.strip()}"
+            )
+        if latest_user.strip():
+            prompt_parts.append(f"Latest user request:\n{latest_user.strip()}")
+        return "\n\n".join(part for part in prompt_parts if part).strip()
 
     prompt_parts: list[str] = []
     if instructions.strip():

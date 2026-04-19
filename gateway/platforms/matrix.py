@@ -1,1302 +1,2184 @@
-     1|"""Matrix gateway adapter.
-     2|
-     3|Connects to any Matrix homeserver (self-hosted or matrix.org) via the
-     4|mautrix Python SDK.  Supports optional end-to-end encryption (E2EE)
-     5|when installed with ``pip install "mautrix[encryption]"``.
-     6|
-     7|Environment variables:
-     8|    MATRIX_HOMESERVER           Homeserver URL (e.g. https://matrix.example.org)
-     9|    MATRIX_ACCESS_TOKEN         Access token (preferred auth method)
-    10|    MATRIX_USER_ID              Full user ID (@bot:server) — required for password login
-    11|    MATRIX_PASSWORD             Password (alternative to access token)
-    12|    MATRIX_ENCRYPTION           Set "true" to enable E2EE
-    13|    MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
-    14|    MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
-    15|    MATRIX_HOME_ROOM        Room ID for cron/notification delivery
-    16|    MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
-    17|                            (eyes/checkmark/cross). Default: true
-    18|    MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
-    19|    MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
-    20|    MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
-    21|    MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
-    22|    MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
-    23|"""
-    24|
-    25|from __future__ import annotations
-    26|
-    27|import asyncio
-    28|import logging
-    29|import mimetypes
-    30|import os
-    31|import re
-    32|import time
-    33|from html import escape as _html_escape
-    34|from pathlib import Path
-    35|from typing import Any, Dict, Optional, Set
-    36|from dataclasses import dataclass
-    37|
-    38|try:
-    39|    from mautrix.types import (
-    40|        ContentURI,
-    41|        EventID,
-    42|        EventType,
-    43|        PaginationDirection,
-    44|        PresenceState,
-    45|        RoomCreatePreset,
-    46|        RoomID,
-    47|        SyncToken,
-    48|        TrustState,
-    49|        UserID,
-    50|    )
-    51|except ImportError:
-    52|    # Stubs so the module is importable without mautrix installed.
-    53|    # check_matrix_requirements() will return False and the adapter
-    54|    # won't be instantiated in production, but tests may exercise
-    55|    # adapter methods so stubs must have the right attributes.
-    56|    ContentURI = EventID = RoomID = SyncToken = UserID = str  # type: ignore[misc,assignment]
-    57|
-    58|    class _EventTypeStub:  # type: ignore[no-redef]
-    59|        ROOM_MESSAGE = "m.room.message"
-    60|        REACTION = "m.reaction"
-    61|        ROOM_ENCRYPTED = "m.room.encrypted"
-    62|        ROOM_NAME = "m.room.name"
-    63|    EventType = _EventTypeStub  # type: ignore[misc,assignment]
-    64|
-    65|    class _PaginationDirectionStub:  # type: ignore[no-redef]
-    66|        BACKWARD = "b"
-    67|        FORWARD = "f"
-    68|
-    69|    PaginationDirection = _PaginationDirectionStub  # type: ignore[misc,assignment]
-    70|
-    71|    class _PresenceStateStub:  # type: ignore[no-redef]
-    72|        ONLINE = "online"
-    73|        OFFLINE = "offline"
-    74|        UNAVAILABLE = "unavailable"
-    75|
-    76|    PresenceState = _PresenceStateStub  # type: ignore[misc,assignment]
-    77|
-    78|    class _RoomCreatePresetStub:  # type: ignore[no-redef]
-    79|        PRIVATE = "private_chat"
-    80|        PUBLIC = "public_chat"
-    81|        TRUSTED_PRIVATE = "trusted_private_chat"
-    82|
-    83|    RoomCreatePreset = _RoomCreatePresetStub  # type: ignore[misc,assignment]
-    84|
-    85|    class _TrustStateStub:  # type: ignore[no-redef]
-    86|        UNVERIFIED = 0
-    87|        VERIFIED = 1
-    88|
-    89|    TrustState = _TrustStateStub  # type: ignore[misc,assignment]
-    90|
-    91|from gateway.config import Platform, PlatformConfig
-    92|from gateway.platforms.base import (
-    93|    BasePlatformAdapter,
-    94|    MessageEvent,
-    95|    MessageType,
-    96|    ProcessingOutcome,
-    97|    SendResult,
-    98|)
-    99|from gateway.platforms.helpers import ThreadParticipationTracker
-   100|
-   101|logger = logging.getLogger(__name__)
-   102|
-   103|
-   104|@dataclass
-   105|class _MatrixApprovalPrompt:
-   106|    """Tracks a pending Matrix reaction-based exec approval prompt."""
-   107|
-   108|    session_key: str
-   109|    chat_id: str
-   110|    message_id: str
-   111|    resolved: bool = False
-   112|
-   113|# Matrix message size limit (4000 chars practical, spec has no hard limit
-   114|# but clients render poorly above this).
-   115|MAX_MESSAGE_LENGTH = 4000
-   116|
-   117|# Store directory for E2EE keys and sync state.
-   118|# Uses get_hermes_home() so each profile gets its own Matrix store.
-   119|from hermes_constants import get_hermes_dir as _get_hermes_dir
-   120|
-   121|_STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
-   122|_CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
-   123|
-   124|# Grace period: ignore messages older than this many seconds before startup.
-   125|_STARTUP_GRACE_SECONDS = 5
-   126|
-   127|
-   128|_E2EE_INSTALL_HINT = (
-   129|    "Install with: pip install 'mautrix[encryption]'  (requires libolm C library)"
-   130|)
-   131|
-   132|
-   133|def _check_e2ee_deps() -> bool:
-   134|    """Return True if mautrix E2EE dependencies (python-olm) are available."""
-   135|    try:
-   136|        from mautrix.crypto import OlmMachine  # noqa: F401
-   137|
-   138|        return True
-   139|    except (ImportError, AttributeError):
-   140|        return False
-   141|
-   142|
-   143|def check_matrix_requirements() -> bool:
-   144|    """Return True if the Matrix adapter can be used."""
-   145|    token = os.getenv("MATRIX_ACCESS_TOKEN", "")
-   146|    password = os.getenv("MATRIX_PASSWORD", "")
-   147|    homeserver = os.getenv("MATRIX_HOMESERVER", "")
-   148|
-   149|    if not token and not password:
-   150|        logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
-   151|        return False
-   152|    if not homeserver:
-   153|        logger.warning("Matrix: MATRIX_HOMESERVER not set")
-   154|        return False
-   155|    try:
-   156|        import mautrix  # noqa: F401
-   157|    except ImportError:
-   158|        logger.warning(
-   159|            "Matrix: mautrix not installed. Run: pip install 'mautrix[encryption]'"
-   160|        )
-   161|        return False
-   162|
-   163|    # If encryption is requested, verify E2EE deps are available at startup
-   164|    # rather than silently degrading to plaintext-only at connect time.
-   165|    encryption_requested = os.getenv("MATRIX_ENCRYPTION", "").lower() in (
-   166|        "true",
-   167|        "1",
-   168|        "yes",
-   169|    )
-   170|    if encryption_requested and not _check_e2ee_deps():
-   171|        logger.error(
-   172|            "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
-   173|            "Without this, encrypted rooms will not work. "
-   174|            "Set MATRIX_ENCRYPTION=false to disable E2EE.",
-   175|            _E2EE_INSTALL_HINT,
-   176|        )
-   177|        return False
-   178|
-   179|    return True
-   180|
-   181|
-   182|class _CryptoStateStore:
-   183|    """Adapter that satisfies the mautrix crypto StateStore interface.
-   184|
-   185|    OlmMachine requires a StateStore with ``is_encrypted``,
-   186|    ``get_encryption_info``, and ``find_shared_rooms``.  The basic
-   187|    ``MemoryStateStore`` from ``mautrix.client`` doesn't implement these,
-   188|    so we provide simple implementations that consult the client's room
-   189|    state.
-   190|    """
-   191|
-   192|    def __init__(self, client_state_store: Any, joined_rooms: set):
-   193|        self._ss = client_state_store
-   194|        self._joined_rooms = joined_rooms
-   195|
-   196|    async def is_encrypted(self, room_id: str) -> bool:
-   197|        return (await self.get_encryption_info(room_id)) is not None
-   198|
-   199|    async def get_encryption_info(self, room_id: str):
-   200|        if hasattr(self._ss, "get_encryption_info"):
-   201|            return await self._ss.get_encryption_info(room_id)
-   202|        return None
-   203|
-   204|    async def find_shared_rooms(self, user_id: str) -> list:
-   205|        # Return all joined rooms — simple but correct for a single-user bot.
-   206|        return list(self._joined_rooms)
-   207|
-   208|
-   209|class MatrixAdapter(BasePlatformAdapter):
-   210|    """Gateway adapter for Matrix (any homeserver)."""
-   211|
-   212|    # Threshold for detecting Matrix client-side message splits.
-   213|    # When a chunk is near the ~4000-char practical limit, a continuation
-   214|    # is almost certain.
-   215|    _SPLIT_THRESHOLD = 3900
-   216|
-   217|    def __init__(self, config: PlatformConfig):
-   218|        super().__init__(config, Platform.MATRIX)
-   219|
-   220|        self._homeserver: str = (
-   221|            config.extra.get("homeserver", "") or os.getenv("MATRIX_HOMESERVER", "")
-   222|        ).rstrip("/")
-   223|        self._access_token: str = config.token or os.getenv("MATRIX_ACCESS_TOKEN", "")
-   224|        self._user_id: str = config.extra.get("user_id", "") or os.getenv(
-   225|            "MATRIX_USER_ID", ""
-   226|        )
-   227|        self._password: str = config.extra.get("password", "") or os.getenv(
-   228|            "MATRIX_PASSWORD", ""
-   229|        )
-   230|        self._encryption: bool = config.extra.get(
-   231|            "encryption",
-   232|            os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
-   233|        )
-   234|        self._device_id: str = config.extra.get("device_id", "") or os.getenv(
-   235|            "MATRIX_DEVICE_ID", ""
-   236|        )
-   237|
-   238|        self._client: Any = None  # mautrix.client.Client
-   239|        self._crypto_db: Any = None  # mautrix.util.async_db.Database
-   240|        self._sync_task: Optional[asyncio.Task] = None
-   241|        self._closing = False
-   242|        self._startup_ts: float = 0.0
-   243|
-   244|        # Cache: room_id → bool (is DM)
-   245|        self._dm_rooms: Dict[str, bool] = {}
-   246|        # Set of room IDs we've joined
-   247|        self._joined_rooms: Set[str] = set()
-   248|        # Event deduplication (bounded deque keeps newest entries)
-   249|        from collections import deque
-   250|
-   251|        self._processed_events: deque = deque(maxlen=1000)
-   252|        self._processed_events_set: set = set()
-   253|
-   254|        # Buffer for undecrypted events pending key receipt.
-   255|        # Each entry: (room_id, event, timestamp)
-   256|
-   257|        # Thread participation tracking (for require_mention bypass)
-   258|        self._threads = ThreadParticipationTracker("matrix")
-   259|
-   260|        # Mention/thread gating — parsed once from env vars.
-   261|        self._require_mention: bool = os.getenv(
-   262|            "MATRIX_REQUIRE_MENTION", "true"
-   263|        ).lower() not in ("false", "0", "no")
-   264|        free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
-   265|        self._free_rooms: Set[str] = {
-   266|            r.strip() for r in free_rooms_raw.split(",") if r.strip()
-   267|        }
-   268|        self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in (
-   269|            "true",
-   270|            "1",
-   271|            "yes",
-   272|        )
-   273|        self._dm_mention_threads: bool = os.getenv(
-   274|            "MATRIX_DM_MENTION_THREADS", "false"
-   275|        ).lower() in ("true", "1", "yes")
-   276|
-   277|        # Reactions: configurable via MATRIX_REACTIONS (default: true).
-   278|        self._reactions_enabled: bool = os.getenv(
-   279|            "MATRIX_REACTIONS", "true"
-   280|        ).lower() not in ("false", "0", "no")
-   281|        self._pending_reactions: dict[tuple[str, str], str] = {}
-   282|
-   283|        # Text batching: merge rapid successive messages (Telegram-style).
-   284|        # Matrix clients split long messages around 4000 chars.
-   285|        self._text_batch_delay_seconds = float(
-   286|            os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6")
-   287|        )
-   288|        self._text_batch_split_delay_seconds = float(
-   289|            os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0")
-   290|        )
-   291|        self._pending_text_batches: Dict[str, MessageEvent] = {}
-   292|        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
-   293|
-   294|        # Matrix reaction-based dangerous command approvals.
-   295|        self._approval_reaction_map = {
-   296|            "✅": "once",
-   297|            "⭕": "session",
-   298|            "♾️": "always",
-   299|            "♾": "always",
-   300|            "❌": "deny",
-   301|        }
-   302|        self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
-   303|        self._approval_prompt_by_session: Dict[str, str] = {}
-   304|        allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
-   305|        self._allowed_user_ids: Set[str] = {
-   306|            u.strip() for u in allowed_users_raw.split(",") if u.strip()
-   307|        }
-   308|
-   309|    def _is_duplicate_event(self, event_id) -> bool:
-   310|        """Return True if this event was already processed. Tracks the ID otherwise."""
-   311|        if not event_id:
-   312|            return False
-   313|        if event_id in self._processed_events_set:
-   314|            return True
-   315|        if len(self._processed_events) == self._processed_events.maxlen:
-   316|            evicted = self._processed_events[0]
-   317|            self._processed_events_set.discard(evicted)
-   318|        self._processed_events.append(event_id)
-   319|        self._processed_events_set.add(event_id)
-   320|        return False
-   321|
-   322|    # ------------------------------------------------------------------
-   323|    # E2EE helpers
-   324|    # ------------------------------------------------------------------
-   325|
-   326|    @staticmethod
-   327|    def _extract_server_ed25519(device_keys_obj: Any) -> Optional[str]:
-   328|        """Extract the ed25519 identity key from a DeviceKeys object."""
-   329|        for kid, kval in (getattr(device_keys_obj, "keys", {}) or {}).items():
-   330|            if str(kid).startswith("ed25519:"):
-   331|                return str(kval)
-   332|        return None
-   333|
-   334|    async def _reverify_keys_after_upload(
-   335|        self, client: Any, local_ed25519: str
-   336|    ) -> bool:
-   337|        """Re-query the server after share_keys() and verify our ed25519 key matches."""
-   338|        try:
-   339|            resp = await client.query_keys({client.mxid: [client.device_id]})
-   340|            dk = getattr(resp, "device_keys", {}) or {}
-   341|            ud = dk.get(str(client.mxid)) or {}
-   342|            dev = ud.get(str(client.device_id))
-   343|            if dev:
-   344|                server_ed = self._extract_server_ed25519(dev)
-   345|                if server_ed != local_ed25519:
-   346|                    logger.error(
-   347|                        "Matrix: device %s has immutable identity keys that "
-   348|                        "don't match this installation. Generate a new access "
-   349|                        "token with a fresh device.",
-   350|                        client.device_id,
-   351|                    )
-   352|                    return False
-   353|        except Exception as exc:
-   354|            logger.error("Matrix: post-upload key verification failed: %s", exc)
-   355|            return False
-   356|        return True
-   357|
-   358|    async def _verify_device_keys_on_server(self, client: Any, olm: Any) -> bool:
-   359|        """Verify our device keys are on the homeserver after loading crypto state.
-   360|
-   361|        Returns True if keys are valid or were successfully re-uploaded.
-   362|        Returns False if verification fails (caller should refuse E2EE).
-   363|        """
-   364|        try:
-   365|            resp = await client.query_keys({client.mxid: [client.device_id]})
-   366|        except Exception as exc:
-   367|            logger.error(
-   368|                "Matrix: cannot verify device keys on server: %s — refusing E2EE",
-   369|                exc,
-   370|            )
-   371|            return False
-   372|
-   373|        device_keys_map = getattr(resp, "device_keys", {}) or {}
-   374|        our_user_devices = device_keys_map.get(str(client.mxid)) or {}
-   375|        our_keys = our_user_devices.get(str(client.device_id))
-   376|        local_ed25519 = olm.account.identity_keys.get("ed25519")
-   377|
-   378|        if not our_keys:
-   379|            logger.warning("Matrix: device keys missing from server — re-uploading")
-   380|            olm.account.shared = False
-   381|            try:
-   382|                await olm.share_keys()
-   383|            except Exception as exc:
-   384|                logger.error("Matrix: failed to re-upload device keys: %s", exc)
-   385|                return False
-   386|            return await self._reverify_keys_after_upload(client, local_ed25519)
-   387|
-   388|        server_ed25519 = self._extract_server_ed25519(our_keys)
-   389|
-   390|        if server_ed25519 != local_ed25519:
-   391|            if olm.account.shared:
-   392|                logger.error(
-   393|                    "Matrix: server has different identity keys for device %s — "
-   394|                    "local crypto state is stale. Delete %s and restart.",
-   395|                    client.device_id,
-   396|                    _CRYPTO_DB_PATH,
-   397|                )
-   398|                return False
-   399|
-   400|            logger.warning(
-   401|                "Matrix: server has stale keys for device %s — attempting re-upload",
-   402|                client.device_id,
-   403|            )
-   404|            try:
-   405|                await client.api.request(
-   406|                    client.api.Method.DELETE
-   407|                    if hasattr(client.api, "Method")
-   408|                    else "DELETE",
-   409|                    f"/_matrix/client/v3/devices/{client.device_id}",
-   410|                )
-   411|                logger.info(
-   412|                    "Matrix: deleted stale device %s from server", client.device_id
-   413|                )
-   414|            except Exception:
-   415|                pass
-   416|            try:
-   417|                await olm.share_keys()
-   418|            except Exception as exc:
-   419|                logger.error(
-   420|                    "Matrix: cannot upload device keys for %s: %s. "
-   421|                    "Try generating a new access token to get a fresh device.",
-   422|                    client.device_id,
-   423|                    exc,
-   424|                )
-   425|                return False
-   426|            return await self._reverify_keys_after_upload(client, local_ed25519)
-   427|
-   428|        return True
-   429|
-   430|    # ------------------------------------------------------------------
-   431|    # Required overrides
-   432|    # ------------------------------------------------------------------
-   433|
-   434|    async def connect(self) -> bool:
-   435|        """Connect to the Matrix homeserver and start syncing."""
-   436|        from mautrix.api import HTTPAPI
-   437|        from mautrix.client import Client
-   438|        from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
-   439|
-   440|        if not self._homeserver:
-   441|            logger.error("Matrix: homeserver URL not configured")
-   442|            return False
-   443|
-   444|        # Ensure store dir exists for E2EE key persistence.
-   445|        _STORE_DIR.mkdir(parents=True, exist_ok=True)
-   446|
-   447|        # Create the HTTP API layer.
-   448|        api = HTTPAPI(
-   449|            base_url=self._homeserver,
-   450|            token=self._access_token or "",
-   451|        )
-   452|
-   453|        # Create the client.
-   454|        state_store = MemoryStateStore()
-   455|        sync_store = MemorySyncStore()
-   456|        client = Client(
-   457|            mxid=UserID(self._user_id) if self._user_id else UserID(""),
-   458|            device_id=self._device_id or None,
-   459|            api=api,
-   460|            state_store=state_store,
-   461|            sync_store=sync_store,
-   462|        )
-   463|
-   464|        self._client = client
-   465|
-   466|        # Authenticate.
-   467|        if self._access_token:
-   468|            api.token = self._access_token
-   469|
-   470|            # Validate the token and learn user_id / device_id.
-   471|            try:
-   472|                resp = await client.whoami()
-   473|                resolved_user_id = getattr(resp, "user_id", "") or self._user_id
-   474|                resolved_device_id = getattr(resp, "device_id", "")
-   475|                if resolved_user_id:
-   476|                    self._user_id = str(resolved_user_id)
-   477|                    client.mxid = UserID(self._user_id)
-   478|
-   479|                # Prefer user-configured device_id for stable E2EE identity.
-   480|                effective_device_id = self._device_id or resolved_device_id
-   481|                if effective_device_id:
-   482|                    client.device_id = effective_device_id
-   483|
-   484|                logger.info(
-   485|                    "Matrix: using access token for %s%s",
-   486|                    self._user_id or "(unknown user)",
-   487|                    f" (device {effective_device_id})" if effective_device_id else "",
-   488|                )
-   489|            except Exception as exc:
-   490|                logger.error(
-   491|                    "Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s",
-   492|                    exc,
-   493|                )
-   494|                await api.session.close()
-   495|                return False
-   496|        elif self._password and self._user_id:
-   497|            try:
-   498|                resp = await client.login(
-   499|                    identifier=self._user_id,
-   500|                    password=self._password,
-   501|                    device_name="Hermes Agent",
-   502|                    device_id=self._device_id or None,
-   503|                )
-   504|                if resp and hasattr(resp, "device_id"):
-   505|                    client.device_id = resp.device_id
-   506|                logger.info("Matrix: logged in as %s", self._user_id)
-   507|            except Exception as exc:
-   508|                logger.error("Matrix: login failed — %s", exc)
-   509|                await api.session.close()
-   510|                return False
-   511|        else:
-   512|            logger.error(
-   513|                "Matrix: need MATRIX_ACCESS_TOKEN or MATRIX_USER_ID + MATRIX_PASSWORD"
-   514|            )
-   515|            await api.session.close()
-   516|            return False
-   517|
-   518|        # Set up E2EE if requested.
-   519|        if self._encryption:
-   520|            if not _check_e2ee_deps():
-   521|                logger.error(
-   522|                    "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
-   523|                    "Refusing to connect — encrypted rooms would silently fail.",
-   524|                    _E2EE_INSTALL_HINT,
-   525|                )
-   526|                await api.session.close()
-   527|                return False
-   528|            try:
-   529|                from mautrix.crypto import OlmMachine
-   530|                from mautrix.crypto.store.asyncpg import PgCryptoStore
-   531|                from mautrix.util.async_db import Database
-   532|
-   533|                _STORE_DIR.mkdir(parents=True, exist_ok=True)
-   534|
-   535|                # Remove legacy pickle file from pre-SQLite era.
-   536|                legacy_pickle = _STORE_DIR / "crypto_store.pickle"
-   537|                if legacy_pickle.exists():
-   538|                    logger.info(
-   539|                        "Matrix: removing legacy crypto_store.pickle (migrated to SQLite)"
-   540|                    )
-   541|                    legacy_pickle.unlink()
-   542|
-   543|                # Open SQLite-backed crypto store.
-   544|                crypto_db = Database.create(
-   545|                    f"sqlite:///{_CRYPTO_DB_PATH}",
-   546|                    upgrade_table=PgCryptoStore.upgrade_table,
-   547|                )
-   548|                await crypto_db.start()
-   549|                self._crypto_db = crypto_db
-   550|
-   551|                _acct_id = self._user_id or "hermes"
-   552|                _pickle_key = f"{_acct_id}:{self._device_id or 'default'}"
-   553|                crypto_store = PgCryptoStore(
-   554|                    account_id=_acct_id,
-   555|                    pickle_key=_pickle_key,
-   556|                    db=crypto_db,
-   557|                )
-   558|                await crypto_store.open()
-   559|
-   560|                crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
-   561|                olm = OlmMachine(client, crypto_store, crypto_state)
-   562|
-   563|                # Accept unverified devices so senders share Megolm
-   564|                # session keys with us automatically.
-   565|                olm.share_keys_min_trust = TrustState.UNVERIFIED
-   566|                olm.send_keys_min_trust = TrustState.UNVERIFIED
-   567|
-   568|                await olm.load()
-   569|
-   570|                # Verify our device keys are still on the homeserver.
-   571|                if not await self._verify_device_keys_on_server(client, olm):
-   572|                    await crypto_db.stop()
-   573|                    await api.session.close()
-   574|                    return False
-   575|
-   576|                # Proactively flush one-time keys to detect stale OTK
-   577|                # conflicts early.  When crypto state is wiped but the
-   578|                # same device ID is reused, the server may still hold OTKs
-   579|                # signed with the old ed25519 key.  Identity key re-upload
-   580|                # succeeds but OTK uploads fail ("already exists" with
-   581|                # mismatched signature).  Peers then cannot establish Olm
-   582|                # sessions and all new messages are undecryptable.
-   583|                try:
-   584|                    await olm.share_keys()
-   585|                except Exception as exc:
-   586|                    exc_str = str(exc)
-   587|                    if "already exists" in exc_str:
-   588|                        logger.error(
-   589|                            "Matrix: device %s has stale one-time keys on the "
-   590|                            "server signed with a previous identity key. "
-   591|                            "Peers cannot establish new Olm sessions with "
-   592|                            "this device. Delete the device from the "
-   593|                            "homeserver and restart, or generate a new "
-   594|                            "access token to get a fresh device ID.",
-   595|                            client.device_id,
-   596|                        )
-   597|                        await crypto_db.stop()
-   598|                        await api.session.close()
-   599|                        return False
-   600|                    # Non-OTK errors are transient (network, etc.) — log
-   601|                    # but allow startup to continue.
-   602|                    logger.warning(
-   603|                        "Matrix: share_keys() warning during startup: %s",
-   604|                        exc,
-   605|                    )
-   606|
-   607|                # Import cross-signing private keys from SSSS and self-sign
-   608|                # the current device. Required after any device-key rotation
-   609|                # (fresh crypto.db, share_keys re-upload) — otherwise the
-   610|                # device's self-signing signature is stale and peers refuse
-   611|                # to share Megolm sessions with the rotated device.
-   612|                recovery_key = os.getenv("MATRIX_RECOVERY_KEY", "").strip()
-   613|                if recovery_key:
-   614|                    try:
-   615|                        await olm.verify_with_recovery_key(recovery_key)
-   616|                        logger.info("Matrix: cross-signing verified via recovery key")
-   617|                    except Exception as exc:
-   618|                        logger.warning(
-   619|                            "Matrix: recovery key verification failed: %s", exc
-   620|                        )
-   621|
-   622|                client.crypto = olm
-   623|                logger.info(
-   624|                    "Matrix: E2EE enabled (store: %s%s)",
-   625|                    str(_CRYPTO_DB_PATH),
-   626|                    f", device_id={client.device_id}" if client.device_id else "",
-   627|                )
-   628|            except Exception as exc:
-   629|                logger.error(
-   630|                    "Matrix: failed to create E2EE client: %s. %s",
-   631|                    exc,
-   632|                    _E2EE_INSTALL_HINT,
-   633|                )
-   634|                await api.session.close()
-   635|                return False
-   636|
-   637|        # Register event handlers.
-   638|        from mautrix.client import InternalEventType as IntEvt
-   639|        from mautrix.client.dispatcher import MembershipEventDispatcher
-   640|
-   641|        # Without this the INVITE handler below never fires.
-   642|        client.add_dispatcher(MembershipEventDispatcher)
-   643|
-   644|        client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
-   645|        client.add_event_handler(EventType.REACTION, self._on_reaction)
-   646|        client.add_event_handler(IntEvt.INVITE, self._on_invite)
-   647|
-   648|        # Initial sync to catch up, then start background sync.
-   649|        self._startup_ts = time.time()
-   650|        self._closing = False
-   651|
-   652|        try:
-   653|            sync_data = await client.sync(timeout=10000, full_state=True)
-   654|            if isinstance(sync_data, dict):
-   655|                rooms_join = sync_data.get("rooms", {}).get("join", {})
-   656|                self._joined_rooms.clear()
-   657|                self._joined_rooms.update(rooms_join.keys())
-   658|                # Store the next_batch token so incremental syncs start
-   659|                # from where the initial sync left off.
-   660|                nb = sync_data.get("next_batch")
-   661|                if nb:
-   662|                    await client.sync_store.put_next_batch(nb)
-   663|                logger.info(
-   664|                    "Matrix: initial sync complete, joined %d rooms",
-   665|                    len(self._joined_rooms),
-   666|                )
-   667|                # Build DM room cache from m.direct account data.
-   668|                await self._refresh_dm_cache()
-   669|
-   670|                # Dispatch events from the initial sync so the OlmMachine
-   671|                # receives to-device key shares queued while we were offline.
-   672|                try:
-   673|                    tasks = client.handle_sync(sync_data)
-   674|                    if tasks:
-   675|                        await asyncio.gather(*tasks)
-   676|                except Exception as exc:
-   677|                    logger.warning("Matrix: initial sync event dispatch error: %s", exc)
-   678|            else:
-   679|                logger.warning(
-   680|                    "Matrix: initial sync returned unexpected type %s",
-   681|                    type(sync_data).__name__,
-   682|                )
-   683|        except Exception as exc:
-   684|            logger.warning("Matrix: initial sync error: %s", exc)
-   685|
-   686|        # Share keys after initial sync if E2EE is enabled.
-   687|        if self._encryption and getattr(client, "crypto", None):
-   688|            try:
-   689|                await client.crypto.share_keys()
-   690|            except Exception as exc:
-   691|                logger.warning("Matrix: initial key share failed: %s", exc)
-   692|
-   693|        # Start the sync loop.
-   694|        # NOTE: mautrix event handlers are dispatched by client.start(), not by calling client.sync() manually.
-   695|        # We keep our own sync loop for periodic maintenance in _sync_loop, but the actual event stream
-   696|        # must be driven by the mautrix client.
-   697|        self._client.start(None)
-   698|        self._sync_task = asyncio.create_task(self._sync_loop())
-   699|        self._mark_connected()
-   700|        return True
-   701|
-   702|    async def disconnect(self) -> None:
-   703|        """Disconnect from Matrix."""
-   704|        self._closing = True
-   705|
-   706|        if self._sync_task and not self._sync_task.done():
-   707|            self._sync_task.cancel()
-   708|            try:
-   709|                await self._sync_task
-   710|            except (asyncio.CancelledError, Exception):
-   711|                pass
-   712|
-   713|        # Close the SQLite crypto store database.
-   714|        if hasattr(self, "_crypto_db") and self._crypto_db:
-   715|            try:
-   716|                await self._crypto_db.stop()
-   717|            except Exception as exc:
-   718|                logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
-   719|
-   720|        if self._client:
-   721|            try:
-   722|                # Stop mautrix syncing task if it was started.
-   723|                try:
-   724|                    self._client.stop()
-   725|                except Exception:
-   726|                    pass
-   727|                await self._client.api.session.close()
-   728|            except Exception:
-   729|                pass
-   730|            self._client = None
-   731|
-   732|        logger.info("Matrix: disconnected")
-   733|
-   734|    async def send(
-   735|        self,
-   736|        chat_id: str,
-   737|        content: str,
-   738|        reply_to: Optional[str] = None,
-   739|        metadata: Optional[Dict[str, Any]] = None,
-   740|    ) -> SendResult:
-   741|        """Send a message to a Matrix room."""
-   742|
-   743|        if not content:
-   744|            return SendResult(success=True)
-   745|
-   746|        is_silent = (metadata or {}).get("silent")
-   747|        mention_user_id = (metadata or {}).get("mention_user_id")
-   748|
-   749|        formatted = self.format_message(content)
-   750|        chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
-   751|
-   752|        last_event_id = None
-   753|        for i, chunk in enumerate(chunks):
-   754|            msg_content: Dict[str, Any] = {
-   755|                "msgtype": "m.text",
-   756|                "body": chunk,
-   757|            }
-   758|
-   759|            # Suppress push notifications when silent=True in metadata.
-   760|            if is_silent:
-   761|                msg_content["m.silent"] = {}
-   762|
-   763|            # Append @mention pill to the last chunk of non-silent responses.
-   764|            # This triggers push notifications in muted rooms (mention-only mode).
-   765|            if (mention_user_id
-   766|                    and not is_silent
-   767|                    and i == len(chunks) - 1):
-   768|                mention_html = (
-   769|                    f'<a href="https://matrix.to/#/{mention_user_id}">'
-   770|                    f"{mention_user_id}</a>"
-   771|                )
-   772|                # Plain-text mention
-   773|                msg_content["body"] = chunk + f" @{mention_user_id}"
-   774|                # HTML mention pill
-   775|                html = self._markdown_to_html(chunk)
-   776|                if html and html != chunk:
-   777|                    base_html = html
-   778|                else:
-   779|                    base_html = chunk
-   780|                msg_content["format"] = "org.matrix.custom.html"
-   781|                msg_content["formatted_body"] = base_html + " " + mention_html
-   782|            else:
-   783|                # Convert markdown to HTML for rich rendering.
-   784|                html = self._markdown_to_html(chunk)
-   785|                if html and html != chunk:
-   786|                    msg_content["format"] = "org.matrix.custom.html"
-   787|                    msg_content["formatted_body"] = html
-   788|
-   789|            # Reply-to support.
-   790|            if reply_to:
-   791|                msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
-   792|
-   793|            # Thread support: if metadata has thread_id, send as threaded reply.
-   794|            thread_id = (metadata or {}).get("thread_id")
-   795|            if thread_id:
-   796|                relates_to = msg_content.get("m.relates_to", {})
-   797|                relates_to["rel_type"] = "m.thread"
-   798|                relates_to["event_id"] = thread_id
-   799|                relates_to["is_falling_back"] = True
-   800|                if reply_to and "m.in_reply_to" not in relates_to:
-   801|                    relates_to["m.in_reply_to"] = {"event_id": reply_to}
-   802|                msg_content["m.relates_to"] = relates_to
-   803|
-   804|            try:
-   805|                event_id = await asyncio.wait_for(
-   806|                    self._client.send_message_event(
-   807|                        RoomID(chat_id),
-   808|                        EventType.ROOM_MESSAGE,
-   809|                        msg_content,
-   810|                    ),
-   811|                    timeout=45,
-   812|                )
-   813|                last_event_id = str(event_id)
-   814|                logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
-   815|            except Exception as exc:
-   816|                # On E2EE errors, retry after sharing keys.
-   817|                if self._encryption and getattr(self._client, "crypto", None):
-   818|                    try:
-   819|                        await self._client.crypto.share_keys()
-   820|                        event_id = await asyncio.wait_for(
-   821|                            self._client.send_message_event(
-   822|                                RoomID(chat_id),
-   823|                                EventType.ROOM_MESSAGE,
-   824|                                msg_content,
-   825|                            ),
-   826|                            timeout=45,
-   827|                        )
-   828|                        last_event_id = str(event_id)
-   829|                        logger.info(
-   830|                            "Matrix: sent event %s to %s (after key share)",
-   831|                            last_event_id,
-   832|                            chat_id,
-   833|                        )
-   834|                        continue
-   835|                    except Exception as retry_exc:
-   836|                        logger.error(
-   837|                            "Matrix: failed to send to %s after retry: %s",
-   838|                            chat_id,
-   839|                            retry_exc,
-   840|                        )
-   841|                        return SendResult(success=False, error=str(retry_exc))
-   842|                logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
-   843|                return SendResult(success=False, error=str(exc))
-   844|
-   845|        return SendResult(success=True, message_id=last_event_id)
-   846|
-   847|    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-   848|        """Return room name and type (dm/group)."""
-   849|        name = chat_id
-   850|        chat_type = "dm" if await self._is_dm_room(chat_id) else "group"
-   851|
-   852|        if self._client:
-   853|            try:
-   854|                name_evt = await self._client.get_state_event(
-   855|                    RoomID(chat_id),
-   856|                    EventType.ROOM_NAME,
-   857|                )
-   858|                if name_evt and hasattr(name_evt, "name") and name_evt.name:
-   859|                    name = name_evt.name
-   860|            except Exception:
-   861|                pass
-   862|
-   863|        return {"name": name, "type": chat_type}
-   864|
-   865|    # ------------------------------------------------------------------
-   866|    # Optional overrides
-   867|    # ------------------------------------------------------------------
-   868|
-   869|    async def send_typing(
-   870|        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
-   871|    ) -> None:
-   872|        """Send a typing indicator."""
-   873|        if self._client:
-   874|            try:
-   875|                await self._client.set_typing(RoomID(chat_id), timeout=30000)
-   876|            except Exception:
-   877|                pass
-   878|
-   879|    async def stop_typing(self, chat_id: str) -> None:
-   880|        """Clear the typing indicator."""
-   881|        if self._client:
-   882|            try:
-   883|                await self._client.set_typing(RoomID(chat_id), timeout=0)
-   884|            except Exception:
-   885|                pass
-   886|
-   887|
-   888|    async def edit_message(
-   889|        self, chat_id: str, message_id: str, content: str
-   890|    ) -> SendResult:
-   891|        """Edit an existing message (via m.replace)."""
-   892|
-   893|        formatted = self.format_message(content)
-   894|        msg_content: Dict[str, Any] = {
-   895|            "msgtype": "m.text",
-   896|            "body": f"* {formatted}",
-   897|            "m.new_content": {
-   898|                "msgtype": "m.text",
-   899|                "body": formatted,
-   900|            },
-   901|            "m.relates_to": {
-   902|                "rel_type": "m.replace",
-   903|                "event_id": message_id,
-   904|            },
-   905|        }
-   906|
-   907|        html = self._markdown_to_html(formatted)
-   908|        if html and html != formatted:
-   909|            msg_content["m.new_content"]["format"] = "org.matrix.custom.html"
-   910|            msg_content["m.new_content"]["formatted_body"] = html
-   911|            msg_content["format"] = "org.matrix.custom.html"
-   912|            msg_content["formatted_body"] = f"* {html}"
-   913|
-   914|        try:
-   915|            event_id = await self._client.send_message_event(
-   916|                RoomID(chat_id),
-   917|                EventType.ROOM_MESSAGE,
-   918|                msg_content,
-   919|            )
-   920|            return SendResult(success=True, message_id=str(event_id))
-   921|        except Exception as exc:
-   922|            return SendResult(success=False, error=str(exc))
-   923|
-   924|    async def send_image(
-   925|        self,
-   926|        chat_id: str,
-   927|        image_url: str,
-   928|        caption: Optional[str] = None,
-   929|        reply_to: Optional[str] = None,
-   930|        metadata: Optional[Dict[str, Any]] = None,
-   931|    ) -> SendResult:
-   932|        """Download an image URL and upload it to Matrix."""
-   933|        from tools.url_safety import is_safe_url
-   934|
-   935|        if not is_safe_url(image_url):
-   936|            logger.warning("Matrix: blocked unsafe image URL (SSRF protection)")
-   937|            return await super().send_image(
-   938|                chat_id, image_url, caption, reply_to, metadata=metadata
-   939|            )
-   940|
-   941|        try:
-   942|            # Try aiohttp first (always available), fall back to httpx
-   943|            try:
-   944|                import aiohttp as _aiohttp
-   945|
-   946|                async with _aiohttp.ClientSession(trust_env=True) as http:
-   947|                    async with http.get(
-   948|                        image_url, timeout=_aiohttp.ClientTimeout(total=30)
-   949|                    ) as resp:
-   950|                        resp.raise_for_status()
-   951|                        data = await resp.read()
-   952|                        ct = resp.content_type or "image/png"
-   953|                        fname = (
-   954|                            image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
-   955|                        )
-   956|            except ImportError:
-   957|                import httpx
-   958|
-   959|                async with httpx.AsyncClient() as http:
-   960|                    resp = await http.get(image_url, follow_redirects=True, timeout=30)
-   961|                    resp.raise_for_status()
-   962|                    data = resp.content
-   963|                    ct = resp.headers.get("content-type", "image/png")
-   964|                    fname = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
-   965|        except Exception as exc:
-   966|            logger.warning("Matrix: failed to download image %s: %s", image_url, exc)
-   967|            return await self.send(
-   968|                chat_id, f"{caption or ''}\n{image_url}".strip(), reply_to
-   969|            )
-   970|
-   971|        return await self._upload_and_send(
-   972|            chat_id, data, fname, ct, "m.image", caption, reply_to, metadata
-   973|        )
-   974|
-   975|    async def send_image_file(
-   976|        self,
-   977|        chat_id: str,
-   978|        image_path: str,
-   979|        caption: Optional[str] = None,
-   980|        reply_to: Optional[str] = None,
-   981|        metadata: Optional[Dict[str, Any]] = None,
-   982|    ) -> SendResult:
-   983|        """Upload a local image file to Matrix."""
-   984|        return await self._send_local_file(
-   985|            chat_id, image_path, "m.image", caption, reply_to, metadata=metadata
-   986|        )
-   987|
-   988|    async def send_document(
-   989|        self,
-   990|        chat_id: str,
-   991|        file_path: str,
-   992|        caption: Optional[str] = None,
-   993|        file_name: Optional[str] = None,
-   994|        reply_to: Optional[str] = None,
-   995|        metadata: Optional[Dict[str, Any]] = None,
-   996|    ) -> SendResult:
-   997|        """Upload a local file as a document."""
-   998|        return await self._send_local_file(
-   999|            chat_id, file_path, "m.file", caption, reply_to, file_name, metadata
-  1000|        )
-  1001|
-  1002|    async def send_voice(
-  1003|        self,
-  1004|        chat_id: str,
-  1005|        audio_path: str,
-  1006|        caption: Optional[str] = None,
-  1007|        reply_to: Optional[str] = None,
-  1008|        metadata: Optional[Dict[str, Any]] = None,
-  1009|    ) -> SendResult:
-  1010|        """Upload an audio file as a voice message (MSC3245 native voice)."""
-  1011|        return await self._send_local_file(
-  1012|            chat_id,
-  1013|            audio_path,
-  1014|            "m.audio",
-  1015|            caption,
-  1016|            reply_to,
-  1017|            metadata=metadata,
-  1018|            is_voice=True,
-  1019|        )
-  1020|
-  1021|    async def send_video(
-  1022|        self,
-  1023|        chat_id: str,
-  1024|        video_path: str,
-  1025|        caption: Optional[str] = None,
-  1026|        reply_to: Optional[str] = None,
-  1027|        metadata: Optional[Dict[str, Any]] = None,
-  1028|    ) -> SendResult:
-  1029|        """Upload a video file."""
-  1030|        return await self._send_local_file(
-  1031|            chat_id, video_path, "m.video", caption, reply_to, metadata=metadata
-  1032|        )
-  1033|
-  1034|    def format_message(self, content: str) -> str:
-  1035|        """Pass-through — Matrix supports standard Markdown natively."""
-  1036|        # Strip image markdown; media is uploaded separately.
-  1037|        content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
-  1038|        return content
-  1039|
-  1040|    # ------------------------------------------------------------------
-  1041|    # File helpers
-  1042|    # ------------------------------------------------------------------
-  1043|
-  1044|    async def _upload_and_send(
-  1045|        self,
-  1046|        room_id: str,
-  1047|        data: bytes,
-  1048|        filename: str,
-  1049|        content_type: str,
-  1050|        msgtype: str,
-  1051|        caption: Optional[str] = None,
-  1052|        reply_to: Optional[str] = None,
-  1053|        metadata: Optional[Dict[str, Any]] = None,
-  1054|        is_voice: bool = False,
-  1055|    ) -> SendResult:
-  1056|        """Upload bytes to Matrix and send as a media message."""
-  1057|
-  1058|        upload_data = data
-  1059|        encrypted_file = None
-  1060|        if self._encryption and getattr(self._client, "crypto", None):
-  1061|            state_store = getattr(self._client, "state_store", None)
-  1062|            if state_store:
-  1063|                try:
-  1064|                    room_encrypted = bool(await state_store.is_encrypted(RoomID(room_id)))
-  1065|                except Exception:
-  1066|                    room_encrypted = False
-  1067|                if room_encrypted:
-  1068|                    try:
-  1069|                        from mautrix.crypto.attachments import encrypt_attachment
-  1070|                        upload_data, encrypted_file = encrypt_attachment(data)
-  1071|                    except Exception as exc:
-  1072|                        logger.error("Matrix: attachment encryption failed: %s", exc)
-  1073|                        return SendResult(success=False, error=str(exc))
-  1074|
-  1075|        # Upload to homeserver.
-  1076|        try:
-  1077|            mxc_url = await self._client.upload_media(
-  1078|                upload_data,
-  1079|                mime_type=content_type,
-  1080|                filename=filename,
-  1081|                size=len(upload_data),
-  1082|            )
-  1083|        except Exception as exc:
-  1084|            logger.error("Matrix: upload failed: %s", exc)
-  1085|            return SendResult(success=False, error=str(exc))
-  1086|
-  1087|        # Build media message content.
-  1088|        msg_content: Dict[str, Any] = {
-  1089|            "msgtype": msgtype,
-  1090|            "body": caption or filename,
-  1091|            "info": {
-  1092|                "mimetype": content_type,
-  1093|                "size": len(data),
-  1094|            },
-  1095|        }
-  1096|        if encrypted_file is not None:
-  1097|            file_payload = encrypted_file.serialize()
-  1098|            file_payload["url"] = str(mxc_url)
-  1099|            msg_content["file"] = file_payload
-  1100|        else:
-  1101|            msg_content["url"] = str(mxc_url)
-  1102|
-  1103|        # Add MSC3245 voice flag for native voice messages.
-  1104|        if is_voice:
-  1105|            msg_content["org.matrix.msc3245.voice"] = {}
-  1106|
-  1107|        if reply_to:
-  1108|            msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
-  1109|
-  1110|        thread_id = (metadata or {}).get("thread_id")
-  1111|        if thread_id:
-  1112|            relates_to = msg_content.get("m.relates_to", {})
-  1113|            relates_to["rel_type"] = "m.thread"
-  1114|            relates_to["event_id"] = thread_id
-  1115|            relates_to["is_falling_back"] = True
-  1116|            msg_content["m.relates_to"] = relates_to
-  1117|
-  1118|        try:
-  1119|            event_id = await self._client.send_message_event(
-  1120|                RoomID(room_id),
-  1121|                EventType.ROOM_MESSAGE,
-  1122|                msg_content,
-  1123|            )
-  1124|            return SendResult(success=True, message_id=str(event_id))
-  1125|        except Exception as exc:
-  1126|            return SendResult(success=False, error=str(exc))
-  1127|
-  1128|    async def _send_local_file(
-  1129|        self,
-  1130|        room_id: str,
-  1131|        file_path: str,
-  1132|        msgtype: str,
-  1133|        caption: Optional[str] = None,
-  1134|        reply_to: Optional[str] = None,
-  1135|        file_name: Optional[str] = None,
-  1136|        metadata: Optional[Dict[str, Any]] = None,
-  1137|        is_voice: bool = False,
-  1138|    ) -> SendResult:
-  1139|        """Read a local file and upload it."""
-  1140|        p = Path(file_path).expanduser()
-  1141|        if not p.exists():
-  1142|            return await self.send(
-  1143|                room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
-  1144|            )
-  1145|
-  1146|        fname = file_name or p.name
-  1147|        ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
-  1148|        data = p.read_bytes()
-  1149|
-  1150|        return await self._upload_and_send(
-  1151|            room_id, data, fname, ct, msgtype, caption, reply_to, metadata, is_voice
-  1152|        )
-  1153|
-  1154|    # ------------------------------------------------------------------
-  1155|    # Sync loop
-  1156|    # ------------------------------------------------------------------
-  1157|
-  1158|    async def _sync_loop(self) -> None:
-  1159|        """Continuously sync with the homeserver."""
-  1160|        client = self._client
-  1161|        # Resume from the token stored during the initial sync.
-  1162|        next_batch = await client.sync_store.get_next_batch()
-  1163|        while not self._closing:
-  1164|            try:
-  1165|                sync_data = await client.sync(
-  1166|                    since=next_batch,
-  1167|                    timeout=30000,
-  1168|                )
-  1169|
-  1170|                # nio returns SyncError objects (not exceptions) for auth
-  1171|                # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
-  1172|                _sync_msg = getattr(sync_data, "message", None)
-  1173|                if _sync_msg and isinstance(_sync_msg, str):
-  1174|                    _lower = _sync_msg.lower()
-  1175|                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
-  1176|                        logger.error(
-  1177|                            "Matrix: permanent auth error from sync: %s — stopping",
-  1178|                            _sync_msg,
-  1179|                        )
-  1180|                        return
-  1181|
-  1182|                if isinstance(sync_data, dict):
-  1183|                    rooms_join = sync_data.get("rooms", {}).get("join", {})
-  1184|                    if rooms_join:
-  1185|                        self._joined_rooms.update(rooms_join.keys())
-  1186|
-  1187|                    # Advance the sync token so the next request is
-  1188|                    # incremental instead of a full initial sync.
-  1189|                    nb = sync_data.get("next_batch")
-  1190|                    if nb:
-  1190|                    if nb:
-  1191|                        next_batch = nb
-  1192|                        await client.sync_store.put_next_batch(nb)
-  1193|
-  1194|                    # Dispatch events to registered handlers so that
-  1195|                    # _on_room_message / _on_reaction / _on_invite fire.
-  1196|                    try:
-  1197|                        tasks = client.handle_sync(sync_data)
-  1198|                        if tasks:
-  1199|                            await asyncio.gather(*tasks)
-  1200|                    except Exception as exc:
-  1201|                        logger.warning("Matrix: sync event dispatch error: %s", exc)
-  1202|
-  1203|<<<<<<< HEAD
-  1204|=======
-  1205|                # Retry any buffered undecrypted events.
-  1206|                if self._pending_megolm:
-  1207|                    await self._retry_pending_decryptions()
-  1208|                return
-  1209|            except Exception as exc:
-  1210|                if self._closing:
-  1211|                    return
-  1212|                # Detect permanent auth/permission failures.
-  1213|                err_str = str(exc).lower()
-  1214|                if (
-  1215|                    "401" in err_str
-  1216|                    or "403" in err_str
-  1217|                    or "unauthorized" in err_str
-  1218|                    or "forbidden" in err_str
-  1219|                ):
-  1220|                    logger.error(
-  1221|                        "Matrix: permanent auth error: %s — stopping sync", exc
-  1222|                    )
-  1223|                    return
-  1224|                logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
-  1225|                await asyncio.sleep(5)
-  1226|
-  1227|    # ------------------------------------------------------------------
-  1228|    # Event callbacks
-  1229|    # ------------------------------------------------------------------
-  1230|
-  1231|    async def _on_room_message(self, event: Any) -> None:
-  1232|        """Handle incoming room message events (text, media)."""
-  1233|        room_id = str(getattr(event, "room_id", ""))
-  1234|        sender = str(getattr(event, "sender", ""))
-  1235|
-  1236|        # Ignore own messages.
-  1237|        if sender == self._user_id:
-  1238|            return
-  1239|
-  1240|
-  1241|        event_id = str(getattr(event, "event_id", ""))
-  1242|        if self._is_duplicate_event(event_id):
-  1243|            return
-  1244|
-  1245|        # Startup grace: ignore old messages from initial sync.
-  1246|        raw_ts = (
-  1247|            getattr(event, "timestamp", None)
-  1248|            or getattr(event, "server_timestamp", None)
-  1249|            or 0
-  1250|        )
-  1251|        event_ts = raw_ts / 1000.0 if raw_ts else 0.0
-  1252|        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
-  1253|            return
-  1254|
-  1255|        # Extract content from the event.
-  1256|        content = getattr(event, "content", None)
-  1257|        if content is None:
-  1258|            return
-  1259|
-  1260|        # Get msgtype — either from content object or raw dict.
-  1261|        if hasattr(content, "msgtype"):
-  1262|            msgtype = str(content.msgtype)
-  1263|        elif isinstance(content, dict):
-  1264|            msgtype = content.get("msgtype", "")
-  1265|        else:
-  1266|            msgtype = ""
-  1267|
-  1268|        # Determine source content dict for relation/thread extraction.
-  1269|        if isinstance(content, dict):
-  1270|            source_content = content
-  1271|        elif hasattr(content, "serialize"):
-  1272|            source_content = content.serialize()
-  1273|        else:
-  1274|            source_content = {}
-  1275|
-  1276|        relates_to = source_content.get("m.relates_to", {})
-  1277|
-  1278|        # Skip edits (m.replace relation).
-  1279|        if relates_to.get("rel_type") == "m.replace":
-  1280|            return
-  1281|
-  1282|        # Ignore m.notice to prevent bot-to-bot loops (m.notice is the
-  1283|        # conventional msgtype for bot responses in the Matrix ecosystem).
-  1284|        if msgtype == "m.notice":
-  1285|            return
-  1286|
-  1287|        # Dispatch by msgtype.
-  1288|        media_msgtypes = ("m.image", "m.audio", "m.video", "m.file")
-  1289|        if msgtype in media_msgtypes:
-  1290|            await self._handle_media_message(
-  1291|                room_id, sender, event_id, event_ts, source_content, relates_to, msgtype
-  1292|            )
-  1293|        elif msgtype == "m.text":
-  1294|            await self._handle_text_message(
-  1295|                room_id, sender, event_id, event_ts, source_content, relates_to
-  1296|            )
-  1297|
-  1298|    async def _resolve_message_context(
-  1299|        self,
-  1300|        room_id: str,
-  1301|
+"""Matrix gateway adapter.
+
+Connects to any Matrix homeserver (self-hosted or matrix.org) via the
+mautrix Python SDK.  Supports optional end-to-end encryption (E2EE)
+when installed with ``pip install "mautrix[encryption]"``.
+
+Environment variables:
+    MATRIX_HOMESERVER           Homeserver URL (e.g. https://matrix.example.org)
+    MATRIX_ACCESS_TOKEN         Access token (preferred auth method)
+    MATRIX_USER_ID              Full user ID (@bot:server) — required for password login
+    MATRIX_PASSWORD             Password (alternative to access token)
+    MATRIX_ENCRYPTION           Set "true" to enable E2EE
+    MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
+    MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
+    MATRIX_HOME_ROOM        Room ID for cron/notification delivery
+    MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
+                            (eyes/checkmark/cross). Default: true
+    MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
+    MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
+    MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
+    MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
+    MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import mimetypes
+import os
+import re
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional, Set
+from dataclasses import dataclass
+
+from html import escape as _html_escape
+
+try:
+    from mautrix.types import (
+        ContentURI,
+        EventID,
+        EventType,
+        PaginationDirection,
+        PresenceState,
+        RoomCreatePreset,
+        RoomID,
+        SyncToken,
+        TrustState,
+        UserID,
+    )
+except ImportError:
+    # Stubs so the module is importable without mautrix installed.
+    # check_matrix_requirements() will return False and the adapter
+    # won't be instantiated in production, but tests may exercise
+    # adapter methods so stubs must have the right attributes.
+    ContentURI = EventID = RoomID = SyncToken = UserID = str  # type: ignore[misc,assignment]
+
+    class _EventTypeStub:  # type: ignore[no-redef]
+        ROOM_MESSAGE = "m.room.message"
+        REACTION = "m.reaction"
+        ROOM_ENCRYPTED = "m.room.encrypted"
+        ROOM_NAME = "m.room.name"
+        ROOM_TOPIC = "m.room.topic"
+    EventType = _EventTypeStub  # type: ignore[misc,assignment]
+
+    class _PaginationDirectionStub:  # type: ignore[no-redef]
+        BACKWARD = "b"
+        FORWARD = "f"
+    PaginationDirection = _PaginationDirectionStub  # type: ignore[misc,assignment]
+
+    class _PresenceStateStub:  # type: ignore[no-redef]
+        ONLINE = "online"
+        OFFLINE = "offline"
+        UNAVAILABLE = "unavailable"
+    PresenceState = _PresenceStateStub  # type: ignore[misc,assignment]
+
+    class _RoomCreatePresetStub:  # type: ignore[no-redef]
+        PRIVATE = "private_chat"
+        PUBLIC = "public_chat"
+        TRUSTED_PRIVATE = "trusted_private_chat"
+    RoomCreatePreset = _RoomCreatePresetStub  # type: ignore[misc,assignment]
+
+    class _TrustStateStub:  # type: ignore[no-redef]
+        UNVERIFIED = 0
+        VERIFIED = 1
+    TrustState = _TrustStateStub  # type: ignore[misc,assignment]
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+)
+from gateway.platforms.helpers import ThreadParticipationTracker
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _MatrixApprovalPrompt:
+    """Tracks a pending Matrix reaction-based exec approval prompt."""
+
+    session_key: str
+    chat_id: str
+    message_id: str
+    resolved: bool = False
+
+# Matrix message size limit (4000 chars practical, spec has no hard limit
+# but clients render poorly above this).
+MAX_MESSAGE_LENGTH = 4000
+
+# Store directory for E2EE keys and sync state.
+# Uses get_hermes_home() so each profile gets its own Matrix store.
+from hermes_constants import get_hermes_dir as _get_hermes_dir
+_STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
+_CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
+
+# Grace period: ignore messages older than this many seconds before startup.
+_STARTUP_GRACE_SECONDS = 5
+
+# Pending undecrypted events: cap and TTL for retry buffer.
+_MAX_PENDING_EVENTS = 100
+_PENDING_EVENT_TTL = 300  # seconds — stop retrying after 5 min
+
+
+_E2EE_INSTALL_HINT = (
+    "Install with: pip install 'mautrix[encryption]'  "
+    "(requires libolm C library)"
+)
+
+
+def _check_e2ee_deps() -> bool:
+    """Return True if mautrix E2EE dependencies (python-olm) are available."""
+    try:
+        from mautrix.crypto import OlmMachine  # noqa: F401
+        return True
+    except (ImportError, AttributeError):
+        return False
+
+
+def check_matrix_requirements() -> bool:
+    """Return True if the Matrix adapter can be used."""
+    token = os.getenv("MATRIX_ACCESS_TOKEN", "")
+    password = os.getenv("MATRIX_PASSWORD", "")
+    homeserver = os.getenv("MATRIX_HOMESERVER", "")
+
+    if not token and not password:
+        logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
+        return False
+    if not homeserver:
+        logger.warning("Matrix: MATRIX_HOMESERVER not set")
+        return False
+    try:
+        import mautrix  # noqa: F401
+    except ImportError:
+        logger.warning(
+            "Matrix: mautrix not installed. "
+            "Run: pip install 'mautrix[encryption]'"
+        )
+        return False
+
+    # If encryption is requested, verify E2EE deps are available at startup
+    # rather than silently degrading to plaintext-only at connect time.
+    encryption_requested = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+    if encryption_requested and not _check_e2ee_deps():
+        logger.error(
+            "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
+            "Without this, encrypted rooms will not work. "
+            "Set MATRIX_ENCRYPTION=false to disable E2EE.",
+            _E2EE_INSTALL_HINT,
+        )
+        return False
+
+    return True
+
+
+class _CryptoStateStore:
+    """Adapter that satisfies the mautrix crypto StateStore interface.
+
+    OlmMachine requires a StateStore with ``is_encrypted``,
+    ``get_encryption_info``, and ``find_shared_rooms``.  The basic
+    ``MemoryStateStore`` from ``mautrix.client`` doesn't implement these,
+    so we provide simple implementations that consult the client's room
+    state.
+    """
+
+    def __init__(self, client_state_store: Any, joined_rooms: set):
+        self._ss = client_state_store
+        self._joined_rooms = joined_rooms
+
+    async def is_encrypted(self, room_id: str) -> bool:
+        return (await self.get_encryption_info(room_id)) is not None
+
+    async def get_encryption_info(self, room_id: str):
+        if hasattr(self._ss, "get_encryption_info"):
+            return await self._ss.get_encryption_info(room_id)
+        return None
+
+    async def find_shared_rooms(self, user_id: str) -> list:
+        # Return all joined rooms — simple but correct for a single-user bot.
+        return list(self._joined_rooms)
+
+
+class MatrixAdapter(BasePlatformAdapter):
+    """Gateway adapter for Matrix (any homeserver)."""
+
+    # Threshold for detecting Matrix client-side message splits.
+    # When a chunk is near the ~4000-char practical limit, a continuation
+    # is almost certain.
+    _SPLIT_THRESHOLD = 3900
+
+    def __init__(self, config: PlatformConfig):
+        super().__init__(config, Platform.MATRIX)
+
+        self._homeserver: str = (
+            config.extra.get("homeserver", "")
+            or os.getenv("MATRIX_HOMESERVER", "")
+        ).rstrip("/")
+        self._access_token: str = config.token or os.getenv("MATRIX_ACCESS_TOKEN", "")
+        self._user_id: str = (
+            config.extra.get("user_id", "")
+            or os.getenv("MATRIX_USER_ID", "")
+        )
+        self._password: str = (
+            config.extra.get("password", "")
+            or os.getenv("MATRIX_PASSWORD", "")
+        )
+        self._encryption: bool = config.extra.get(
+            "encryption",
+            os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
+        )
+        self._device_id: str = (
+            config.extra.get("device_id", "")
+            or os.getenv("MATRIX_DEVICE_ID", "")
+        )
+
+        self._client: Any = None  # mautrix.client.Client
+        self._crypto_db: Any = None  # mautrix.util.async_db.Database
+        self._sync_task: Optional[asyncio.Task] = None
+        self._closing = False
+        self._startup_ts: float = 0.0
+
+        # Cache: room_id → bool (is DM)
+        self._dm_rooms: Dict[str, bool] = {}
+        # Set of room IDs we've joined
+        self._joined_rooms: Set[str] = set()
+        # Event deduplication (bounded deque keeps newest entries)
+        from collections import deque
+        self._processed_events: deque = deque(maxlen=1000)
+        self._processed_events_set: set = set()
+
+        # Buffer for undecrypted events pending key receipt.
+        # Each entry: (room_id, event, timestamp)
+        self._pending_megolm: list = []
+
+        # Thread participation tracking (for require_mention bypass)
+        self._threads = ThreadParticipationTracker("matrix")
+
+        # Mention/thread gating — parsed once from env vars.
+        self._require_mention: bool = os.getenv("MATRIX_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+        free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
+        self._free_rooms: Set[str] = {r.strip() for r in free_rooms_raw.split(",") if r.strip()}
+        self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+        self._dm_mention_threads: bool = os.getenv("MATRIX_DM_MENTION_THREADS", "false").lower() in ("true", "1", "yes")
+
+        # Reactions: configurable via MATRIX_REACTIONS (default: true).
+        self._reactions_enabled: bool = os.getenv(
+            "MATRIX_REACTIONS", "true"
+        ).lower() not in ("false", "0", "no")
+        self._pending_reactions: dict[tuple[str, str], str] = {}
+
+        # Text batching: merge rapid successive messages (Telegram-style).
+        # Matrix clients split long messages around 4000 chars.
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+
+        # Matrix reaction-based dangerous command approvals.
+        self._approval_reaction_map = {
+            "✅": "once",
+            "❎": "deny",
+        }
+        self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
+        self._approval_prompt_by_session: Dict[str, str] = {}
+        allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
+        self._allowed_user_ids: Set[str] = {
+            u.strip() for u in allowed_users_raw.split(",") if u.strip()
+        }
+
+    def _is_duplicate_event(self, event_id) -> bool:
+        """Return True if this event was already processed. Tracks the ID otherwise."""
+        if not event_id:
+            return False
+        if event_id in self._processed_events_set:
+            return True
+        if len(self._processed_events) == self._processed_events.maxlen:
+            evicted = self._processed_events[0]
+            self._processed_events_set.discard(evicted)
+        self._processed_events.append(event_id)
+        self._processed_events_set.add(event_id)
+        return False
+
+    # ------------------------------------------------------------------
+    # E2EE helpers
+    # ------------------------------------------------------------------
+
+    async def _verify_device_keys_on_server(self, client: Any, olm: Any) -> bool:
+        """Verify our device keys are on the homeserver after loading crypto state.
+
+        Returns True if keys are valid or were successfully re-uploaded.
+        Returns False if verification fails (caller should refuse E2EE).
+        """
+        try:
+            resp = await client.query_keys({client.mxid: [client.device_id]})
+        except Exception as exc:
+            logger.error(
+                "Matrix: cannot verify device keys on server: %s — refusing E2EE", exc,
+            )
+            return False
+
+        # query_keys returns typed objects (QueryKeysResponse, DeviceKeys
+        # with KeyID keys).  Normalise to plain strings for comparison.
+        device_keys_map = getattr(resp, "device_keys", {}) or {}
+        our_user_devices = device_keys_map.get(str(client.mxid)) or {}
+        our_keys = our_user_devices.get(str(client.device_id))
+
+        if not our_keys:
+            logger.warning("Matrix: device keys missing from server — re-uploading")
+            olm.account.shared = False
+            try:
+                await olm.share_keys()
+            except Exception as exc:
+                logger.error("Matrix: failed to re-upload device keys: %s", exc)
+                return False
+            return True
+
+        # DeviceKeys.keys is a dict[KeyID, str].  Iterate to find the
+        # ed25519 key rather than constructing a KeyID for lookup.
+        server_ed25519 = None
+        keys_dict = getattr(our_keys, "keys", {}) or {}
+        for key_id, key_value in keys_dict.items():
+            if str(key_id).startswith("ed25519:"):
+                server_ed25519 = str(key_value)
+                break
+        local_ed25519 = olm.account.identity_keys.get("ed25519")
+
+        if server_ed25519 != local_ed25519:
+            if olm.account.shared:
+                # Restored account from DB but server has different keys — corrupted state.
+                logger.error(
+                    "Matrix: server has different identity keys for device %s — "
+                    "local crypto state is stale. Delete %s and restart.",
+                    client.device_id,
+                    _CRYPTO_DB_PATH,
+                )
+                return False
+
+            # Fresh account (never uploaded). Server has stale keys from a
+            # previous installation. Try to delete the old device and re-upload.
+            logger.warning(
+                "Matrix: server has stale keys for device %s — attempting re-upload",
+                client.device_id,
+            )
+            try:
+                await client.api.request(
+                    client.api.Method.DELETE
+                    if hasattr(client.api, "Method")
+                    else "DELETE",
+                    f"/_matrix/client/v3/devices/{client.device_id}",
+                )
+                logger.info("Matrix: deleted stale device %s from server", client.device_id)
+            except Exception:
+                # Device deletion often requires UIA or may simply not be
+                # permitted — that's fine, share_keys will try to overwrite.
+                pass
+            try:
+                await olm.share_keys()
+            except Exception as exc:
+                logger.error(
+                    "Matrix: cannot upload device keys for %s: %s. "
+                    "Try generating a new access token to get a fresh device.",
+                    client.device_id,
+                    exc,
+                )
+                return False
+
+        return True
+
+    # ------------------------------------------------------------------
+    # Required overrides
+    # ------------------------------------------------------------------
+
+    async def connect(self) -> bool:
+        """Connect to the Matrix homeserver and start syncing."""
+        from mautrix.api import HTTPAPI
+        from mautrix.client import Client
+        from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
+
+        if not self._homeserver:
+            logger.error("Matrix: homeserver URL not configured")
+            return False
+
+        # Ensure store dir exists for E2EE key persistence.
+        _STORE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Create the HTTP API layer.
+        api = HTTPAPI(
+            base_url=self._homeserver,
+            token=self._access_token or "",
+        )
+
+        # Create the client.
+        state_store = MemoryStateStore()
+        sync_store = MemorySyncStore()
+        client = Client(
+            mxid=UserID(self._user_id) if self._user_id else UserID(""),
+            device_id=self._device_id or None,
+            api=api,
+            state_store=state_store,
+            sync_store=sync_store,
+        )
+
+        self._client = client
+
+        # Authenticate.
+        if self._access_token:
+            api.token = self._access_token
+
+            # Validate the token and learn user_id / device_id.
+            try:
+                resp = await client.whoami()
+                resolved_user_id = getattr(resp, "user_id", "") or self._user_id
+                resolved_device_id = getattr(resp, "device_id", "")
+                if resolved_user_id:
+                    self._user_id = str(resolved_user_id)
+                    client.mxid = UserID(self._user_id)
+
+                # Prefer user-configured device_id for stable E2EE identity.
+                effective_device_id = self._device_id or resolved_device_id
+                if effective_device_id:
+                    client.device_id = effective_device_id
+
+                logger.info(
+                    "Matrix: using access token for %s%s",
+                    self._user_id or "(unknown user)",
+                    f" (device {effective_device_id})" if effective_device_id else "",
+                )
+            except Exception as exc:
+                logger.error(
+                    "Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s",
+                    exc,
+                )
+                await api.session.close()
+                return False
+        elif self._password and self._user_id:
+            try:
+                resp = await client.login(
+                    identifier=self._user_id,
+                    password=self._password,
+                    device_name="Hermes Agent",
+                    device_id=self._device_id or None,
+                )
+                if resp and hasattr(resp, "device_id"):
+                    client.device_id = resp.device_id
+                logger.info("Matrix: logged in as %s", self._user_id)
+            except Exception as exc:
+                logger.error("Matrix: login failed — %s", exc)
+                await api.session.close()
+                return False
+        else:
+            logger.error("Matrix: need MATRIX_ACCESS_TOKEN or MATRIX_USER_ID + MATRIX_PASSWORD")
+            await api.session.close()
+            return False
+
+        # Set up E2EE if requested.
+        if self._encryption:
+            if not _check_e2ee_deps():
+                logger.error(
+                    "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
+                    "Refusing to connect — encrypted rooms would silently fail.",
+                    _E2EE_INSTALL_HINT,
+                )
+                await api.session.close()
+                return False
+            try:
+                from mautrix.crypto import OlmMachine
+                from mautrix.crypto.store.asyncpg import PgCryptoStore
+                from mautrix.util.async_db import Database
+
+                _STORE_DIR.mkdir(parents=True, exist_ok=True)
+
+                # Remove legacy pickle file from pre-SQLite era.
+                legacy_pickle = _STORE_DIR / "crypto_store.pickle"
+                if legacy_pickle.exists():
+                    logger.info("Matrix: removing legacy crypto_store.pickle (migrated to SQLite)")
+                    legacy_pickle.unlink()
+
+                # Open SQLite-backed crypto store.
+                crypto_db = Database.create(
+                    f"sqlite:///{_CRYPTO_DB_PATH}",
+                    upgrade_table=PgCryptoStore.upgrade_table,
+                )
+                await crypto_db.start()
+                self._crypto_db = crypto_db
+
+                _acct_id = self._user_id or "hermes"
+                _pickle_key = f"{_acct_id}:{self._device_id or 'default'}"
+                crypto_store = PgCryptoStore(
+                    account_id=_acct_id,
+                    pickle_key=_pickle_key,
+                    db=crypto_db,
+                )
+                await crypto_store.open()
+
+                crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
+                olm = OlmMachine(client, crypto_store, crypto_state)
+
+                # Accept unverified devices so senders share Megolm
+                # session keys with us automatically.
+                olm.share_keys_min_trust = TrustState.UNVERIFIED
+                olm.send_keys_min_trust = TrustState.UNVERIFIED
+
+                await olm.load()
+
+                # Verify our device keys are still on the homeserver.
+                if not await self._verify_device_keys_on_server(client, olm):
+                    await crypto_db.stop()
+                    await api.session.close()
+                    return False
+
+                # Import cross-signing private keys from SSSS and self-sign
+                # the current device. Required after any device-key rotation
+                # (fresh crypto.db, share_keys re-upload) — otherwise the
+                # device's self-signing signature is stale and peers refuse
+                # to share Megolm sessions with the rotated device.
+                recovery_key = os.getenv("MATRIX_RECOVERY_KEY", "").strip()
+                if recovery_key:
+                    try:
+                        await olm.verify_with_recovery_key(recovery_key)
+                        logger.info("Matrix: cross-signing verified via recovery key")
+                    except Exception as exc:
+                        logger.warning("Matrix: recovery key verification failed: %s", exc)
+
+                client.crypto = olm
+                logger.info(
+                    "Matrix: E2EE enabled (store: %s%s)",
+                    str(_CRYPTO_DB_PATH),
+                    f", device_id={client.device_id}" if client.device_id else "",
+                )
+            except Exception as exc:
+                logger.error(
+                    "Matrix: failed to create E2EE client: %s. %s",
+                    exc, _E2EE_INSTALL_HINT,
+                )
+                await api.session.close()
+                return False
+
+        # Register event handlers.
+        from mautrix.client import InternalEventType as IntEvt
+
+        client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
+        client.add_event_handler(EventType.REACTION, self._on_reaction)
+        client.add_event_handler(IntEvt.INVITE, self._on_invite)
+
+        if self._encryption and getattr(client, "crypto", None):
+            client.add_event_handler(EventType.ROOM_ENCRYPTED, self._on_encrypted_event)
+
+        # Initial sync to catch up, then start background sync.
+        self._startup_ts = time.time()
+        self._closing = False
+
+        try:
+            sync_data = await client.sync(timeout=10000, full_state=True)
+            if isinstance(sync_data, dict):
+                rooms_join = sync_data.get("rooms", {}).get("join", {})
+                self._joined_rooms = set(rooms_join.keys())
+                # Store the next_batch token so incremental syncs start
+                # from where the initial sync left off.
+                nb = sync_data.get("next_batch")
+                if nb:
+                    await client.sync_store.put_next_batch(nb)
+                logger.info(
+                    "Matrix: initial sync complete, joined %d rooms",
+                    len(self._joined_rooms),
+                )
+                # Build DM room cache from m.direct account data.
+                await self._refresh_dm_cache()
+
+                # Dispatch events from the initial sync so the OlmMachine
+                # receives to-device key shares queued while we were offline.
+                try:
+                    tasks = client.handle_sync(sync_data)
+                    if tasks:
+                        await asyncio.gather(*tasks)
+                except Exception as exc:
+                    logger.warning("Matrix: initial sync event dispatch error: %s", exc)
+            else:
+                logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
+        except Exception as exc:
+            logger.warning("Matrix: initial sync error: %s", exc)
+
+        # Share keys after initial sync if E2EE is enabled.
+        if self._encryption and getattr(client, "crypto", None):
+            try:
+                await client.crypto.share_keys()
+            except Exception as exc:
+                logger.warning("Matrix: initial key share failed: %s", exc)
+
+        # Start the sync loop.
+        # NOTE: mautrix event handlers are dispatched by client.start(), not by calling client.sync() manually.
+        # We keep our own sync loop for periodic maintenance in _sync_loop, but the actual event stream
+        # must be driven by the mautrix client.
+        self._client.start(None)
+        self._sync_task = asyncio.create_task(self._sync_loop())
+        self._mark_connected()
+        return True
+
+    async def disconnect(self) -> None:
+        """Disconnect from Matrix."""
+        self._closing = True
+
+        if self._sync_task and not self._sync_task.done():
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        # Close the SQLite crypto store database.
+        if hasattr(self, "_crypto_db") and self._crypto_db:
+            try:
+                await self._crypto_db.stop()
+            except Exception as exc:
+                logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
+
+        if self._client:
+            try:
+                # Stop mautrix syncing task if it was started.
+                try:
+                    self._client.stop()
+                except Exception:
+                    pass
+                await self._client.api.session.close()
+            except Exception:
+                pass
+            self._client = None
+
+        logger.info("Matrix: disconnected")
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a message to a Matrix room."""
+
+        if not content:
+            return SendResult(success=True)
+
+        is_silent = (metadata or {}).get("silent")
+        mention_user_id = (metadata or {}).get("mention_user_id")
+
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
+
+        last_event_id = None
+        for i, chunk in enumerate(chunks):
+            msg_content: Dict[str, Any] = {
+                "msgtype": "m.text",
+                "body": chunk,
+            }
+
+            # Suppress push notifications when silent=True in metadata.
+            if is_silent:
+                msg_content["m.silent"] = {}
+
+            # Append @mention pill to the last chunk of non-silent responses.
+            # This triggers push notifications in muted rooms (mention-only mode).
+            if (mention_user_id
+                    and not is_silent
+                    and i == len(chunks) - 1):
+                mention_html = (
+                    f'<a href="https://matrix.to/#/{mention_user_id}">'
+                    f"{mention_user_id}</a>"
+                )
+                # Plain-text mention
+                msg_content["body"] = chunk + f" @{mention_user_id}"
+                # HTML mention pill
+                html = self._markdown_to_html(chunk)
+                if html and html != chunk:
+                    base_html = html
+                else:
+                    base_html = chunk
+                msg_content["format"] = "org.matrix.custom.html"
+                msg_content["formatted_body"] = base_html + " " + mention_html
+            else:
+                # Convert markdown to HTML for rich rendering.
+                html = self._markdown_to_html(chunk)
+                if html and html != chunk:
+                    msg_content["format"] = "org.matrix.custom.html"
+                    msg_content["formatted_body"] = html
+
+            # Reply-to support.
+            if reply_to:
+                msg_content["m.relates_to"] = {
+                    "m.in_reply_to": {"event_id": reply_to}
+                }
+
+            # Thread support: if metadata has thread_id, send as threaded reply.
+            thread_id = (metadata or {}).get("thread_id")
+            if thread_id:
+                relates_to = msg_content.get("m.relates_to", {})
+                relates_to["rel_type"] = "m.thread"
+                relates_to["event_id"] = thread_id
+                relates_to["is_falling_back"] = True
+                if reply_to and "m.in_reply_to" not in relates_to:
+                    relates_to["m.in_reply_to"] = {"event_id": reply_to}
+                msg_content["m.relates_to"] = relates_to
+
+            try:
+                event_id = await asyncio.wait_for(
+                    self._client.send_message_event(
+                        RoomID(chat_id),
+                        EventType.ROOM_MESSAGE,
+                        msg_content,
+                    ),
+                    timeout=45,
+                )
+                last_event_id = str(event_id)
+                logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
+            except Exception as exc:
+                # On E2EE errors, retry after sharing keys.
+                if self._encryption and getattr(self._client, "crypto", None):
+                    try:
+                        await self._client.crypto.share_keys()
+                        event_id = await asyncio.wait_for(
+                            self._client.send_message_event(
+                                RoomID(chat_id),
+                                EventType.ROOM_MESSAGE,
+                                msg_content,
+                            ),
+                            timeout=45,
+                        )
+                        last_event_id = str(event_id)
+                        logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
+                        continue
+                    except Exception as retry_exc:
+                        logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
+                        return SendResult(success=False, error=str(retry_exc))
+                logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
+                return SendResult(success=False, error=str(exc))
+
+        return SendResult(success=True, message_id=last_event_id)
+
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        """Return room name and type (dm/group)."""
+        name = chat_id
+        chat_type = "dm" if await self._is_dm_room(chat_id) else "group"
+
+        if self._client:
+            try:
+                name_evt = await self._client.get_state_event(
+                    RoomID(chat_id), EventType.ROOM_NAME,
+                )
+                if name_evt and hasattr(name_evt, "name") and name_evt.name:
+                    name = name_evt.name
+            except Exception:
+                pass
+
+        return {"name": name, "type": chat_type}
+
+    # ------------------------------------------------------------------
+    # Optional overrides
+    # ------------------------------------------------------------------
+
+    async def send_typing(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Send a typing indicator."""
+        if self._client:
+            try:
+                await self._client.set_typing(RoomID(chat_id), timeout=30000)
+            except Exception:
+                pass
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the Matrix typing indicator."""
+        if self._client:
+            try:
+                await self._client.set_typing(RoomID(chat_id), timeout=0)
+            except Exception:
+                pass
+
+    async def edit_message(
+        self, chat_id: str, message_id: str, content: str
+    ) -> SendResult:
+        """Edit an existing message (via m.replace)."""
+
+        formatted = self.format_message(content)
+        msg_content: Dict[str, Any] = {
+            "msgtype": "m.text",
+            "body": f"* {formatted}",
+            "m.new_content": {
+                "msgtype": "m.text",
+                "body": formatted,
+            },
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": message_id,
+            },
+        }
+
+        html = self._markdown_to_html(formatted)
+        if html and html != formatted:
+            msg_content["m.new_content"]["format"] = "org.matrix.custom.html"
+            msg_content["m.new_content"]["formatted_body"] = html
+            msg_content["format"] = "org.matrix.custom.html"
+            msg_content["formatted_body"] = f"* {html}"
+
+        try:
+            event_id = await self._client.send_message_event(
+                RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content,
+            )
+            return SendResult(success=True, message_id=str(event_id))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Download an image URL and upload it to Matrix."""
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(image_url):
+            logger.warning("Matrix: blocked unsafe image URL (SSRF protection)")
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
+        try:
+            # Try aiohttp first (always available), fall back to httpx
+            try:
+                import aiohttp as _aiohttp
+                async with _aiohttp.ClientSession(trust_env=True) as http:
+                    async with http.get(image_url, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
+                        resp.raise_for_status()
+                        data = await resp.read()
+                        ct = resp.content_type or "image/png"
+                        fname = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
+            except ImportError:
+                import httpx
+                async with httpx.AsyncClient() as http:
+                    resp = await http.get(image_url, follow_redirects=True, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.content
+                    ct = resp.headers.get("content-type", "image/png")
+                    fname = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
+        except Exception as exc:
+            logger.warning("Matrix: failed to download image %s: %s", image_url, exc)
+            return await self.send(chat_id, f"{caption or ''}\n{image_url}".strip(), reply_to)
+
+        return await self._upload_and_send(chat_id, data, fname, ct, "m.image", caption, reply_to, metadata)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload a local image file to Matrix."""
+        return await self._send_local_file(chat_id, image_path, "m.image", caption, reply_to, metadata=metadata)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload a local file as a document."""
+        return await self._send_local_file(chat_id, file_path, "m.file", caption, reply_to, file_name, metadata)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload an audio file as a voice message (MSC3245 native voice)."""
+        return await self._send_local_file(
+            chat_id, audio_path, "m.audio", caption, reply_to,
+            metadata=metadata, is_voice=True
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload a video file."""
+        return await self._send_local_file(chat_id, video_path, "m.video", caption, reply_to, metadata=metadata)
+
+    def format_message(self, content: str) -> str:
+        """Pass-through — Matrix supports standard Markdown natively."""
+        # Strip image markdown; media is uploaded separately.
+        content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
+        return content
+
+    # ------------------------------------------------------------------
+    # File helpers
+    # ------------------------------------------------------------------
+
+    async def _upload_and_send(
+        self,
+        room_id: str,
+        data: bytes,
+        filename: str,
+        content_type: str,
+        msgtype: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
+    ) -> SendResult:
+        """Upload bytes to Matrix and send as a media message."""
+
+        # Upload to homeserver.
+        try:
+            mxc_url = await self._client.upload_media(
+                data,
+                mime_type=content_type,
+                filename=filename,
+            )
+        except Exception as exc:
+            logger.error("Matrix: upload failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+        # Build media message content.
+        msg_content: Dict[str, Any] = {
+            "msgtype": msgtype,
+            "body": caption or filename,
+            "url": str(mxc_url),
+            "info": {
+                "mimetype": content_type,
+                "size": len(data),
+            },
+        }
+
+        # Add MSC3245 voice flag for native voice messages.
+        if is_voice:
+            msg_content["org.matrix.msc3245.voice"] = {}
+
+        if reply_to:
+            msg_content["m.relates_to"] = {
+                "m.in_reply_to": {"event_id": reply_to}
+            }
+
+        thread_id = (metadata or {}).get("thread_id")
+        if thread_id:
+            relates_to = msg_content.get("m.relates_to", {})
+            relates_to["rel_type"] = "m.thread"
+            relates_to["event_id"] = thread_id
+            relates_to["is_falling_back"] = True
+            msg_content["m.relates_to"] = relates_to
+
+        try:
+            event_id = await self._client.send_message_event(
+                RoomID(room_id), EventType.ROOM_MESSAGE, msg_content,
+            )
+            return SendResult(success=True, message_id=str(event_id))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
+    async def _send_local_file(
+        self,
+        room_id: str,
+        file_path: str,
+        msgtype: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
+    ) -> SendResult:
+        """Read a local file and upload it."""
+        p = Path(file_path)
+        if not p.exists():
+            return await self.send(
+                room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+            )
+
+        fname = file_name or p.name
+        ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+        data = p.read_bytes()
+
+        return await self._upload_and_send(room_id, data, fname, ct, msgtype, caption, reply_to, metadata, is_voice)
+
+    # ------------------------------------------------------------------
+    # Sync loop
+    # ------------------------------------------------------------------
+
+    async def _sync_loop(self) -> None:
+        """Continuously sync with the homeserver."""
+        client = self._client
+        # Resume from the token stored during the initial sync.
+        next_batch = await client.sync_store.get_next_batch()
+        while not self._closing:
+            try:
+                sync_data = await client.sync(
+                    since=next_batch, timeout=30000,
+                )
+
+                # nio returns SyncError objects (not exceptions) for auth
+                # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
+                _sync_msg = getattr(sync_data, "message", None)
+                if _sync_msg and isinstance(_sync_msg, str):
+                    _lower = _sync_msg.lower()
+                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
+                        logger.error("Matrix: permanent auth error from sync: %s — stopping", _sync_msg)
+                        return
+
+                if isinstance(sync_data, dict):
+                    rooms_join = sync_data.get("rooms", {}).get("join", {})
+                    if rooms_join:
+                        self._joined_rooms.update(rooms_join.keys())
+
+                    # Advance the sync token so the next request is
+                    # incremental instead of a full initial sync.
+                    nb = sync_data.get("next_batch")
+                    if nb:
+                        next_batch = nb
+                        await client.sync_store.put_next_batch(nb)
+
+                    # Dispatch events to registered handlers so that
+                    # _on_room_message / _on_reaction / _on_invite fire.
+                    try:
+                        tasks = client.handle_sync(sync_data)
+                        if tasks:
+                            await asyncio.gather(*tasks)
+                    except Exception as exc:
+                        logger.warning("Matrix: sync event dispatch error: %s", exc)
+
+                # Retry any buffered undecrypted events.
+                if self._pending_megolm:
+                    await self._retry_pending_decryptions()
+
+                await asyncio.sleep(1)
+
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                if self._closing:
+                    return
+                # Detect permanent auth/permission failures.
+                err_str = str(exc).lower()
+                if "401" in err_str or "403" in err_str or "unauthorized" in err_str or "forbidden" in err_str:
+                    logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
+                    return
+                logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
+                await asyncio.sleep(5)
+
+    async def _retry_pending_decryptions(self) -> None:
+        """Retry decrypting buffered encrypted events after new keys arrive."""
+        client = self._client
+        if not client or not self._pending_megolm:
+            return
+        crypto = getattr(client, "crypto", None)
+        if not crypto:
+            return
+
+        now = time.time()
+        still_pending: list = []
+
+        for room_id, event, ts in self._pending_megolm:
+            # Drop events that have aged past the TTL.
+            if now - ts > _PENDING_EVENT_TTL:
+                logger.debug(
+                    "Matrix: dropping expired pending event %s (age %.0fs)",
+                    getattr(event, "event_id", "?"), now - ts,
+                )
+                continue
+
+            try:
+                decrypted = await crypto.decrypt_megolm_event(event)
+            except Exception:
+                still_pending.append((room_id, event, ts))
+                continue
+
+            if decrypted is None or decrypted is event:
+                still_pending.append((room_id, event, ts))
+                continue
+
+            logger.info(
+                "Matrix: decrypted buffered event %s",
+                getattr(event, "event_id", "?"),
+            )
+
+            # Route to the appropriate handler.
+            # Remove from dedup set so _on_room_message doesn't drop it
+            # (the encrypted event ID was already registered by _on_encrypted_event).
+            decrypted_id = str(getattr(decrypted, "event_id", getattr(event, "event_id", "")))
+            if decrypted_id:
+                self._processed_events_set.discard(decrypted_id)
+            try:
+                await self._on_room_message(decrypted)
+            except Exception as exc:
+                logger.warning(
+                    "Matrix: error processing decrypted event %s: %s",
+                    getattr(event, "event_id", "?"), exc,
+                )
+
+        self._pending_megolm = still_pending
+
+    # ------------------------------------------------------------------
+    # Event callbacks
+    # ------------------------------------------------------------------
+
+    async def _on_room_message(self, event: Any) -> None:
+        """Handle incoming room message events (text, media)."""
+        room_id = str(getattr(event, "room_id", ""))
+        sender = str(getattr(event, "sender", ""))
+
+        # Ignore own messages.
+        if sender == self._user_id:
+            return
+
+        # Deduplicate by event ID.
+        event_id = str(getattr(event, "event_id", ""))
+        if self._is_duplicate_event(event_id):
+            return
+
+        # Startup grace: ignore old messages from initial sync.
+        raw_ts = getattr(event, "timestamp", None) or getattr(event, "server_timestamp", None) or 0
+        event_ts = raw_ts / 1000.0 if raw_ts else 0.0
+        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+            return
+
+        # Extract content from the event.
+        content = getattr(event, "content", None)
+        if content is None:
+            return
+
+        # Get msgtype — either from content object or raw dict.
+        if hasattr(content, "msgtype"):
+            msgtype = str(content.msgtype)
+        elif isinstance(content, dict):
+            msgtype = content.get("msgtype", "")
+        else:
+            msgtype = ""
+
+        # Determine source content dict for relation/thread extraction.
+        if isinstance(content, dict):
+            source_content = content
+        elif hasattr(content, "serialize"):
+            source_content = content.serialize()
+        else:
+            source_content = {}
+
+        relates_to = source_content.get("m.relates_to", {})
+
+        # Skip edits (m.replace relation).
+        if relates_to.get("rel_type") == "m.replace":
+            return
+
+        # Ignore m.notice to prevent bot-to-bot loops (m.notice is the
+        # conventional msgtype for bot responses in the Matrix ecosystem).
+        if msgtype == "m.notice":
+            return
+
+        # Dispatch by msgtype.
+        media_msgtypes = ("m.image", "m.audio", "m.video", "m.file")
+        if msgtype in media_msgtypes:
+            await self._handle_media_message(room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
+        elif msgtype == "m.text":
+            await self._handle_text_message(room_id, sender, event_id, event_ts, source_content, relates_to)
+
+    async def _resolve_message_context(
+        self,
+        room_id: str,
+        sender: str,
+        event_id: str,
+        body: str,
+        source_content: dict,
+        relates_to: dict,
+    ) -> Optional[tuple]:
+        """Shared mention/thread/DM gating for text and media handlers.
+
+        Returns (body, is_dm, chat_type, thread_id, display_name, source)
+        or None if the message should be dropped (mention gating).
+        """
+        is_dm = await self._is_dm_room(room_id)
+        chat_type = "dm" if is_dm else "group"
+
+        thread_id = None
+        if relates_to.get("rel_type") == "m.thread":
+            thread_id = relates_to.get("event_id")
+
+        formatted_body = source_content.get("formatted_body")
+        # m.mentions.user_ids (MSC3952 / Matrix v1.7) — authoritative mention signal.
+        mentions_block = source_content.get("m.mentions") or {}
+        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
+        is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+
+        # Require-mention gating.
+        if not is_dm:
+            is_free_room = room_id in self._free_rooms
+            in_bot_thread = bool(thread_id and thread_id in self._threads)
+            if self._require_mention and not is_free_room and not in_bot_thread:
+                if not is_mentioned:
+                    return None
+
+        # DM mention-thread.
+        if is_dm and not thread_id and self._dm_mention_threads and is_mentioned:
+            thread_id = event_id
+            self._threads.mark(thread_id)
+
+        # Strip mention from body.
+        if is_mentioned:
+            body = self._strip_mention(body)
+
+        # Auto-thread.
+        if not is_dm and not thread_id and self._auto_thread:
+            thread_id = event_id
+            self._threads.mark(thread_id)
+
+        display_name = await self._get_display_name(room_id, sender)
+
+        # Read room topic for per-room personality injection.
+        chat_topic: Optional[str] = None
+        if self._client:
+            try:
+                topic_evt = await self._client.get_state_event(
+                    RoomID(room_id), EventType.ROOM_TOPIC,
+                )
+                if topic_evt and hasattr(topic_evt, "topic") and topic_evt.topic:
+                    chat_topic = topic_evt.topic
+            except Exception:
+                pass
+
+        source = self.build_source(
+            chat_id=room_id,
+            chat_type=chat_type,
+            user_id=sender,
+            user_name=display_name,
+            thread_id=thread_id,
+            chat_topic=chat_topic,
+        )
+
+        if thread_id:
+            self._threads.mark(thread_id)
+
+        self._background_read_receipt(room_id, event_id)
+
+        return body, is_dm, chat_type, thread_id, display_name, source
+
+    async def _handle_text_message(
+        self,
+        room_id: str,
+        sender: str,
+        event_id: str,
+        event_ts: float,
+        source_content: dict,
+        relates_to: dict,
+    ) -> None:
+        """Process a text message event."""
+        body = source_content.get("body", "") or ""
+        if not body:
+            return
+
+        ctx = await self._resolve_message_context(
+            room_id, sender, event_id, body, source_content, relates_to,
+        )
+        if ctx is None:
+            return
+        body, is_dm, chat_type, thread_id, display_name, source = ctx
+
+        # Reply-to detection.
+        reply_to = None
+        in_reply_to = relates_to.get("m.in_reply_to", {})
+        if in_reply_to:
+            reply_to = in_reply_to.get("event_id")
+
+        # Strip reply fallback from body.
+        if reply_to and body.startswith("> "):
+            lines = body.split("\n")
+            stripped = []
+            past_fallback = False
+            for line in lines:
+                if not past_fallback:
+                    if line.startswith("> ") or line == ">":
+                        continue
+                    if line == "":
+                        past_fallback = True
+                        continue
+                    past_fallback = True
+                stripped.append(line)
+            body = "\n".join(stripped) if stripped else body
+
+        msg_type = MessageType.TEXT
+        if body.startswith(("!", "/")):
+            msg_type = MessageType.COMMAND
+
+        msg_event = MessageEvent(
+            text=body,
+            message_type=msg_type,
+            source=source,
+            raw_message=source_content,
+            message_id=event_id,
+            reply_to_message_id=reply_to,
+        )
+
+        if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+            self._enqueue_text_event(msg_event)
+        else:
+            await self.handle_message(msg_event)
+
+    async def _handle_media_message(
+        self,
+        room_id: str,
+        sender: str,
+        event_id: str,
+        event_ts: float,
+        source_content: dict,
+        relates_to: dict,
+        msgtype: str,
+    ) -> None:
+        """Process a media message event (image, audio, video, file)."""
+        body = source_content.get("body", "") or ""
+        url = source_content.get("url", "")
+
+        # Convert mxc:// to HTTP URL for downstream processing.
+        http_url = ""
+        if url and url.startswith("mxc://"):
+            http_url = self._mxc_to_http(url)
+
+        # Extract MIME type from content info.
+        content_info = source_content.get("info", {})
+        if not isinstance(content_info, dict):
+            content_info = {}
+        event_mimetype = content_info.get("mimetype", "")
+
+        # For encrypted media, the URL may be in file.url.
+        file_content = source_content.get("file", {})
+        if not url and isinstance(file_content, dict):
+            url = file_content.get("url", "") or ""
+            if url and url.startswith("mxc://"):
+                http_url = self._mxc_to_http(url)
+
+        is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
+
+        media_type = "application/octet-stream"
+        msg_type = MessageType.DOCUMENT
+        is_voice_message = False
+
+        if msgtype == "m.image":
+            msg_type = MessageType.PHOTO
+            media_type = event_mimetype or "image/png"
+        elif msgtype == "m.audio":
+            if source_content.get("org.matrix.msc3245.voice") is not None:
+                is_voice_message = True
+                msg_type = MessageType.VOICE
+            else:
+                msg_type = MessageType.AUDIO
+            media_type = event_mimetype or "audio/ogg"
+        elif msgtype == "m.video":
+            msg_type = MessageType.VIDEO
+            media_type = event_mimetype or "video/mp4"
+        elif event_mimetype:
+            media_type = event_mimetype
+
+        # Cache media locally when downstream tools need a real file path.
+        cached_path = None
+        should_cache_locally = (
+            msg_type == MessageType.PHOTO or is_voice_message or is_encrypted_media
+        )
+        if should_cache_locally and url:
+            try:
+                file_bytes = await self._client.download_media(ContentURI(url))
+                if file_bytes is not None:
+                    if is_encrypted_media:
+                        from mautrix.crypto.attachments import decrypt_attachment
+
+                        hashes_value = file_content.get("hashes") if isinstance(file_content, dict) else None
+                        hash_value = hashes_value.get("sha256") if isinstance(hashes_value, dict) else None
+
+                        key_value = file_content.get("key") if isinstance(file_content, dict) else None
+                        if isinstance(key_value, dict):
+                            key_value = key_value.get("k")
+
+                        iv_value = file_content.get("iv") if isinstance(file_content, dict) else None
+
+                        if key_value and hash_value and iv_value:
+                            file_bytes = decrypt_attachment(file_bytes, key_value, hash_value, iv_value)
+                        else:
+                            logger.warning(
+                                "[Matrix] Encrypted media event missing decryption metadata for %s",
+                                event_id,
+                            )
+                            file_bytes = None
+
+                    if file_bytes is not None:
+                        from gateway.platforms.base import (
+                            cache_audio_from_bytes,
+                            cache_document_from_bytes,
+                            cache_image_from_bytes,
+                        )
+
+                        if msg_type == MessageType.PHOTO:
+                            ext_map = {
+                                "image/jpeg": ".jpg",
+                                "image/png": ".png",
+                                "image/gif": ".gif",
+                                "image/webp": ".webp",
+                            }
+                            ext = ext_map.get(media_type, ".jpg")
+                            cached_path = cache_image_from_bytes(file_bytes, ext=ext)
+                            logger.info("[Matrix] Cached user image at %s", cached_path)
+                        elif msg_type in (MessageType.AUDIO, MessageType.VOICE):
+                            ext = Path(body or ("voice.ogg" if is_voice_message else "audio.ogg")).suffix or ".ogg"
+                            cached_path = cache_audio_from_bytes(file_bytes, ext=ext)
+                        else:
+                            filename = body or (
+                                "video.mp4" if msg_type == MessageType.VIDEO else "document"
+                            )
+                            cached_path = cache_document_from_bytes(file_bytes, filename)
+            except Exception as e:
+                logger.warning("[Matrix] Failed to cache media: %s", e)
+
+        ctx = await self._resolve_message_context(
+            room_id, sender, event_id, body, source_content, relates_to,
+        )
+        if ctx is None:
+            return
+        body, is_dm, chat_type, thread_id, display_name, source = ctx
+
+        allow_http_fallback = bool(http_url) and not is_encrypted_media
+        media_urls = [cached_path] if cached_path else ([http_url] if allow_http_fallback else None)
+        media_types = [media_type] if media_urls else None
+
+        msg_event = MessageEvent(
+            text=body,
+            message_type=msg_type,
+            source=source,
+            raw_message=source_content,
+            message_id=event_id,
+            media_urls=media_urls,
+            media_types=media_types,
+        )
+
+        await self.handle_message(msg_event)
+
+    async def _on_encrypted_event(self, event: Any) -> None:
+        """Handle encrypted events that could not be auto-decrypted."""
+        room_id = str(getattr(event, "room_id", ""))
+        event_id = str(getattr(event, "event_id", ""))
+
+        if self._is_duplicate_event(event_id):
+            return
+
+        logger.warning(
+            "Matrix: could not decrypt event %s in %s — buffering for retry",
+            event_id, room_id,
+        )
+
+        self._pending_megolm.append((room_id, event, time.time()))
+        if len(self._pending_megolm) > _MAX_PENDING_EVENTS:
+            self._pending_megolm = self._pending_megolm[-_MAX_PENDING_EVENTS:]
+
+    async def _on_invite(self, event: Any) -> None:
+        """Auto-join rooms when invited."""
+
+        room_id = str(getattr(event, "room_id", ""))
+
+        logger.info(
+            "Matrix: invited to %s — joining",
+            room_id,
+        )
+        try:
+            await self._client.join_room(RoomID(room_id))
+            self._joined_rooms.add(room_id)
+            logger.info("Matrix: joined %s", room_id)
+            await self._refresh_dm_cache()
+        except Exception as exc:
+            logger.warning("Matrix: error joining %s: %s", room_id, exc)
+
+    # ------------------------------------------------------------------
+    # Reactions (send, receive, processing lifecycle)
+    # ------------------------------------------------------------------
+
+    async def _send_reaction(
+        self, room_id: str, event_id: str, emoji: str,
+    ) -> Optional[str]:
+        """Send an emoji reaction to a message in a room.
+        Returns the reaction event_id on success, None on failure.
+        """
+
+        if not self._client:
+            return None
+        content = {
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": event_id,
+                "key": emoji,
+            }
+        }
+        try:
+            resp_event_id = await self._client.send_message_event(
+                RoomID(room_id), EventType.REACTION, content,
+            )
+            logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
+            return str(resp_event_id)
+        except Exception as exc:
+            logger.debug("Matrix: reaction send error: %s", exc)
+            return None
+
+    async def _redact_reaction(
+        self, room_id: str, reaction_event_id: str, reason: str = "",
+    ) -> bool:
+        """Remove a reaction by redacting its event."""
+        return await self.redact_message(room_id, reaction_event_id, reason)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add eyes reaction when the agent starts processing a message."""
+        if not self._reactions_enabled:
+            return
+        msg_id = event.message_id
+        room_id = event.source.chat_id
+        if msg_id and room_id:
+            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
+            if reaction_event_id:
+                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome,
+    ) -> None:
+        """Replace eyes with checkmark (success) or cross (failure)."""
+        if not self._reactions_enabled:
+            return
+        msg_id = event.message_id
+        room_id = event.source.chat_id
+        if not msg_id or not room_id:
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            return
+        reaction_key = (room_id, msg_id)
+        if reaction_key in self._pending_reactions:
+            eyes_event_id = self._pending_reactions.pop(reaction_key)
+            if not await self._redact_reaction(room_id, eyes_event_id):
+                logger.debug("Matrix: failed to redact eyes reaction %s", eyes_event_id)
+        await self._send_reaction(
+            room_id,
+            msg_id,
+            "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
+        )
+
+    async def _on_reaction(self, event: Any) -> None:
+        """Handle incoming reaction events."""
+        sender = str(getattr(event, "sender", ""))
+        if sender == self._user_id:
+            return
+        event_id = str(getattr(event, "event_id", ""))
+        if self._is_duplicate_event(event_id):
+            return
+
+        room_id = str(getattr(event, "room_id", ""))
+        content = getattr(event, "content", None)
+        if content:
+            relates_to = content.get("m.relates_to", {}) if isinstance(content, dict) else getattr(content, "relates_to", {})
+            reacts_to = ""
+            key = ""
+            if isinstance(relates_to, dict):
+                reacts_to = relates_to.get("event_id", "")
+                key = relates_to.get("key", "")
+            elif hasattr(relates_to, "event_id"):
+                reacts_to = str(getattr(relates_to, "event_id", ""))
+                key = str(getattr(relates_to, "key", ""))
+            logger.info(
+                "Matrix: reaction %s from %s on %s in %s",
+                key, sender, reacts_to, room_id,
+            )
+
+            prompt = self._approval_prompts_by_event.get(reacts_to)
+            if prompt and not prompt.resolved:
+                if room_id != prompt.chat_id:
+                    return
+                if self._allowed_user_ids and sender not in self._allowed_user_ids:
+                    logger.info(
+                        "Matrix: ignoring approval reaction from unauthorized user %s on %s",
+                        sender, reacts_to,
+                    )
+                    return
+                choice = self._approval_reaction_map.get(key)
+                if not choice:
+                    return
+                try:
+                    from tools.approval import resolve_gateway_approval
+
+                    count = resolve_gateway_approval(prompt.session_key, choice)
+                    if count:
+                        prompt.resolved = True
+                        self._approval_prompts_by_event.pop(reacts_to, None)
+                        self._approval_prompt_by_session.pop(prompt.session_key, None)
+                        logger.info(
+                            "Matrix reaction resolved %d approval(s) for session %s "
+                            "(choice=%s, user=%s)",
+                            count, prompt.session_key, choice, sender,
+                        )
+                except Exception as exc:
+                    logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles Matrix client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer."""
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[Matrix] Flushing text batch %s (%d chars)",
+                key, len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
+
+    # ------------------------------------------------------------------
+    # Read receipts
+    # ------------------------------------------------------------------
+
+    def _background_read_receipt(self, room_id: str, event_id: str) -> None:
+        """Fire-and-forget read receipt with error logging."""
+        async def _send() -> None:
+            try:
+                await self.send_read_receipt(room_id, event_id)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("Matrix: background read receipt failed: %s", exc)
+        asyncio.ensure_future(_send())
+
+    async def send_read_receipt(self, room_id: str, event_id: str) -> bool:
+        """Send a read receipt (m.read) for an event."""
+        if not self._client:
+            return False
+        try:
+            await self._client.set_read_markers(
+                RoomID(room_id),
+                fully_read_event=EventID(event_id),
+                read_receipt=EventID(event_id),
+            )
+            logger.debug("Matrix: sent read receipt for %s in %s", event_id, room_id)
+            return True
+        except Exception as exc:
+            logger.debug("Matrix: read receipt failed: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Message redaction
+    # ------------------------------------------------------------------
+
+    async def redact_message(
+        self, room_id: str, event_id: str, reason: str = "",
+    ) -> bool:
+        """Redact (delete) a message or event from a room."""
+        if not self._client:
+            return False
+        try:
+            await self._client.redact(
+                RoomID(room_id), EventID(event_id), reason=reason or None,
+            )
+            logger.info("Matrix: redacted %s in %s", event_id, room_id)
+            return True
+        except Exception as exc:
+            logger.warning("Matrix: redact error: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Room creation & management
+    # ------------------------------------------------------------------
+
+    async def create_room(
+        self,
+        name: str = "",
+        topic: str = "",
+        invite: Optional[list] = None,
+        is_direct: bool = False,
+        preset: str = "private_chat",
+    ) -> Optional[str]:
+        """Create a new Matrix room."""
+        if not self._client:
+            return None
+        try:
+            preset_enum = {
+                "private_chat": RoomCreatePreset.PRIVATE,
+                "public_chat": RoomCreatePreset.PUBLIC,
+                "trusted_private_chat": RoomCreatePreset.TRUSTED_PRIVATE,
+            }.get(preset, RoomCreatePreset.PRIVATE)
+            invitees = [UserID(u) for u in (invite or [])]
+            room_id = await self._client.create_room(
+                name=name or None,
+                topic=topic or None,
+                invitees=invitees,
+                is_direct=is_direct,
+                preset=preset_enum,
+            )
+            room_id_str = str(room_id)
+            self._joined_rooms.add(room_id_str)
+            logger.info("Matrix: created room %s (%s)", room_id_str, name or "unnamed")
+            return room_id_str
+        except Exception as exc:
+            logger.warning("Matrix: create_room error: %s", exc)
+            return None
+
+    async def invite_user(self, room_id: str, user_id: str) -> bool:
+        """Invite a user to a room."""
+        if not self._client:
+            return False
+        try:
+            await self._client.invite_user(RoomID(room_id), UserID(user_id))
+            logger.info("Matrix: invited %s to %s", user_id, room_id)
+            return True
+        except Exception as exc:
+            logger.warning("Matrix: invite error: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Presence
+    # ------------------------------------------------------------------
+
+    _VALID_PRESENCE_STATES = frozenset(("online", "offline", "unavailable"))
+
+    async def set_presence(self, state: str = "online", status_msg: str = "") -> bool:
+        """Set the bot's presence status."""
+        if not self._client:
+            return False
+        if state not in self._VALID_PRESENCE_STATES:
+            logger.warning("Matrix: invalid presence state %r", state)
+            return False
+        try:
+            presence_map = {
+                "online": PresenceState.ONLINE,
+                "offline": PresenceState.OFFLINE,
+                "unavailable": PresenceState.UNAVAILABLE,
+            }
+            await self._client.set_presence(
+                presence=presence_map[state],
+                status=status_msg or None,
+            )
+            logger.debug("Matrix: presence set to %s", state)
+            return True
+        except Exception as exc:
+            logger.debug("Matrix: set_presence failed: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Emote & notice message types
+    # ------------------------------------------------------------------
+
+    async def _send_simple_message(
+        self, chat_id: str, text: str, msgtype: str,
+    ) -> SendResult:
+        """Send a simple message (emote, notice) with optional HTML formatting."""
+        if not self._client or not text:
+            return SendResult(success=False, error="No client or empty text")
+
+        msg_content: Dict[str, Any] = {"msgtype": msgtype, "body": text}
+        html = self._markdown_to_html(text)
+        if html and html != text:
+            msg_content["format"] = "org.matrix.custom.html"
+            msg_content["formatted_body"] = html
+
+        try:
+            event_id = await self._client.send_message_event(
+                RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content,
+            )
+            return SendResult(success=True, message_id=str(event_id))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
+    async def send_emote(
+        self, chat_id: str, text: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an emote message (/me style action)."""
+        return await self._send_simple_message(chat_id, text, "m.emote")
+
+    async def send_notice(
+        self, chat_id: str, text: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a notice message (bot-appropriate, non-alerting)."""
+        return await self._send_simple_message(chat_id, text, "m.notice")
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a reaction-based exec approval prompt for Matrix."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        text = (
+            "⚠️ **Dangerous command requires approval**\n"
+            f"```\n{cmd_preview}\n```\n"
+            f"Reason: {description}\n\n"
+            "请对这条消息添加 reaction：\n"
+            "✅ = 批准\n"
+            "❎ = 拒绝"
+        )
+
+        result = await self.send(chat_id, text, metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        prompt = _MatrixApprovalPrompt(
+            session_key=session_key,
+            chat_id=chat_id,
+            message_id=result.message_id,
+        )
+        old_event = self._approval_prompt_by_session.get(session_key)
+        if old_event:
+            self._approval_prompts_by_event.pop(old_event, None)
+        self._approval_prompts_by_event[result.message_id] = prompt
+        self._approval_prompt_by_session[session_key] = result.message_id
+
+        for emoji in ("✅", "❎"):
+            try:
+                await self._send_reaction(chat_id, result.message_id, emoji)
+            except Exception as exc:
+                logger.debug("Matrix: failed to add approval reaction %s: %s", emoji, exc)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    async def _is_dm_room(self, room_id: str) -> bool:
+        """Check if a room is a DM."""
+        if self._dm_rooms.get(room_id, False):
+            return True
+        # Fallback: check member count via state store.
+        state_store = getattr(self._client, "state_store", None) if self._client else None
+        if state_store:
+            try:
+                members = await state_store.get_members(room_id)
+                if members and len(members) == 2:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    async def _refresh_dm_cache(self) -> None:
+        """Refresh the DM room cache from m.direct account data."""
+        if not self._client:
+            return
+
+        dm_data: Optional[Dict] = None
+
+        try:
+            resp = await self._client.get_account_data("m.direct")
+            if hasattr(resp, "content"):
+                dm_data = resp.content
+            elif isinstance(resp, dict):
+                dm_data = resp
+        except Exception as exc:
+            logger.debug("Matrix: get_account_data('m.direct') failed: %s", exc)
+
+        if dm_data is None:
+            return
+
+        dm_room_ids: Set[str] = set()
+        for user_id, rooms in dm_data.items():
+            if isinstance(rooms, list):
+                dm_room_ids.update(str(r) for r in rooms)
+
+        self._dm_rooms = {
+            rid: (rid in dm_room_ids)
+            for rid in self._joined_rooms
+        }
+
+    # ------------------------------------------------------------------
+    # Mention detection helpers
+    # ------------------------------------------------------------------
+
+    def _is_bot_mentioned(
+        self,
+        body: str,
+        formatted_body: Optional[str] = None,
+        mention_user_ids: Optional[list] = None,
+    ) -> bool:
+        """Return True if the bot is mentioned in the message.
+
+        Per MSC3952, ``m.mentions.user_ids`` is the authoritative mention
+        signal in the Matrix spec.  When the sender's client populates that
+        field with the bot's user-id, we trust it — even when the visible
+        body text does not contain an explicit ``@bot`` string (some clients
+        only render mention "pills" in ``formatted_body`` or use display
+        names).
+        """
+        # m.mentions.user_ids — authoritative per MSC3952 / Matrix v1.7.
+        if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
+            return True
+        if not body and not formatted_body:
+            return False
+        if self._user_id and self._user_id in body:
+            return True
+        if self._user_id and ":" in self._user_id:
+            localpart = self._user_id.split(":")[0].lstrip("@")
+            if localpart and re.search(r'\b' + re.escape(localpart) + r'\b', body, re.IGNORECASE):
+                return True
+        if formatted_body and self._user_id:
+            if f"matrix.to/#/{self._user_id}" in formatted_body:
+                return True
+        return False
+
+    def _strip_mention(self, body: str) -> str:
+        """Remove bot mention from message body."""
+        if self._user_id:
+            body = body.replace(self._user_id, "")
+        if self._user_id and ":" in self._user_id:
+            localpart = self._user_id.split(":")[0].lstrip("@")
+            if localpart:
+                body = re.sub(r'\b' + re.escape(localpart) + r'\b', '', body, flags=re.IGNORECASE)
+        return body.strip()
+
+    async def _get_display_name(self, room_id: str, user_id: str) -> str:
+        """Get a user's display name in a room, falling back to user_id."""
+        state_store = getattr(self._client, "state_store", None) if self._client else None
+        if state_store:
+            try:
+                member = await state_store.get_member(room_id, user_id)
+                if member and getattr(member, "displayname", None):
+                    return member.displayname
+            except Exception:
+                pass
+        # Strip the @...:server format to just the localpart.
+        if user_id.startswith("@") and ":" in user_id:
+            return user_id[1:].split(":")[0]
+        return user_id
+
+    def _mxc_to_http(self, mxc_url: str) -> str:
+        """Convert mxc://server/media_id to an HTTP download URL."""
+        if not mxc_url.startswith("mxc://"):
+            return mxc_url
+        parts = mxc_url[6:]  # strip mxc://
+        return f"{self._homeserver}/_matrix/client/v1/media/download/{parts}"
+
+    def _markdown_to_html(self, text: str) -> str:
+        """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
+
+        Uses the ``markdown`` library when available (installed with the
+        ``matrix`` extra).  Falls back to a comprehensive regex converter
+        that handles fenced code blocks, inline code, headers, bold,
+        italic, strikethrough, links, blockquotes, lists, and horizontal
+        rules — everything the Matrix HTML spec allows.
+        """
+        try:
+            import markdown as _md
+
+            md = _md.Markdown(
+                extensions=["fenced_code", "tables", "nl2br", "sane_lists"],
+            )
+            if "html_block" in md.preprocessors:
+                md.preprocessors.deregister("html_block")
+
+            html = md.convert(text)
+            md.reset()
+
+            if html.count("<p>") == 1:
+                html = html.replace("<p>", "").replace("</p>", "")
+            return html
+        except ImportError:
+            pass
+
+        return self._markdown_to_html_fallback(text)
+
+    # ------------------------------------------------------------------
+    # Regex-based Markdown -> HTML (no extra dependencies)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sanitize_link_url(url: str) -> str:
+        """Sanitize a URL for use in an href attribute."""
+        stripped = url.strip()
+        scheme = stripped.split(":", 1)[0].lower().strip() if ":" in stripped else ""
+        if scheme in ("javascript", "data", "vbscript"):
+            return ""
+        return stripped.replace('"', "&quot;")
+
+    @staticmethod
+    def _markdown_to_html_fallback(text: str) -> str:
+        """Comprehensive regex Markdown-to-HTML for Matrix."""
+        placeholders: list = []
+
+        def _protect_html(html_fragment: str) -> str:
+            idx = len(placeholders)
+            placeholders.append(html_fragment)
+            return f"\x00PROTECTED{idx}\x00"
+
+        # Fenced code blocks: ```lang\n...\n```
+        result = re.sub(
+            r"```(\w*)\n(.*?)```",
+            lambda m: _protect_html(
+                f'<pre><code class="language-{_html_escape(m.group(1))}">'
+                f"{_html_escape(m.group(2))}</code></pre>"
+                if m.group(1)
+                else f"<pre><code>{_html_escape(m.group(2))}</code></pre>"
+            ),
+            text,
+            flags=re.DOTALL,
+        )
+
+        # Inline code: `code`
+        result = re.sub(
+            r"`([^`\n]+)`",
+            lambda m: _protect_html(
+                f"<code>{_html_escape(m.group(1))}</code>"
+            ),
+            result,
+        )
+
+        # Extract and protect markdown links before escaping.
+        result = re.sub(
+            r"\[([^\]]+)\]\(([^)]+)\)",
+            lambda m: _protect_html(
+                '<a href="{}">{}</a>'.format(
+                    MatrixAdapter._sanitize_link_url(m.group(2)),
+                    _html_escape(m.group(1)),
+                )
+            ),
+            result,
+        )
+
+        # HTML-escape remaining text.
+        parts = re.split(r"(\x00PROTECTED\d+\x00)", result)
+        for idx, part in enumerate(parts):
+            if not part.startswith("\x00PROTECTED"):
+                parts[idx] = _html_escape(part)
+        result = "".join(parts)
+
+        # Block-level transforms (line-oriented).
+        lines = result.split("\n")
+        out_lines: list = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+
+            # Horizontal rule
+            if re.match(r"^[\s]*([-*_])\s*\1\s*\1[\s\-*_]*$", line):
+                out_lines.append("<hr>")
+                i += 1
+                continue
+
+            # Headers
+            hdr = re.match(r"^(#{1,6})\s+(.+)$", line)
+            if hdr:
+                level = len(hdr.group(1))
+                out_lines.append(f"<h{level}>{hdr.group(2).strip()}</h{level}>")
+                i += 1
+                continue
+
+            # Blockquote
+            if line.startswith("&gt; ") or line == "&gt;" or line.startswith("> ") or line == ">":
+                bq_lines = []
+                while i < len(lines) and (
+                    lines[i].startswith("&gt; ") or lines[i] == "&gt;"
+                    or lines[i].startswith("> ") or lines[i] == ">"
+                ):
+                    ln = lines[i]
+                    if ln.startswith("&gt; "):
+                        bq_lines.append(ln[5:])
+                    elif ln.startswith("> "):
+                        bq_lines.append(ln[2:])
+                    else:
+                        bq_lines.append("")
+                    i += 1
+                out_lines.append(f"<blockquote>{'<br>'.join(bq_lines)}</blockquote>")
+                continue
+
+            # Unordered list
+            ul_match = re.match(r"^[\s]*[-*+]\s+(.+)$", line)
+            if ul_match:
+                items = []
+                while i < len(lines) and re.match(r"^[\s]*[-*+]\s+(.+)$", lines[i]):
+                    items.append(re.match(r"^[\s]*[-*+]\s+(.+)$", lines[i]).group(1))
+                    i += 1
+                li = "".join(f"<li>{item}</li>" for item in items)
+                out_lines.append(f"<ul>{li}</ul>")
+                continue
+
+            # Ordered list
+            ol_match = re.match(r"^[\s]*\d+[.)]\s+(.+)$", line)
+            if ol_match:
+                items = []
+                while i < len(lines) and re.match(r"^[\s]*\d+[.)]\s+(.+)$", lines[i]):
+                    items.append(re.match(r"^[\s]*\d+[.)]\s+(.+)$", lines[i]).group(1))
+                    i += 1
+                li = "".join(f"<li>{item}</li>" for item in items)
+                out_lines.append(f"<ol>{li}</ol>")
+                continue
+
+            out_lines.append(line)
+            i += 1
+
+        result = "\n".join(out_lines)
+
+        # Inline transforms.
+        result = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", result, flags=re.DOTALL)
+        result = re.sub(r"__(.+?)__", r"<strong>\1</strong>", result, flags=re.DOTALL)
+        result = re.sub(r"\*(.+?)\*", r"<em>\1</em>", result, flags=re.DOTALL)
+        result = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"<em>\1</em>", result, flags=re.DOTALL)
+        result = re.sub(r"~~(.+?)~~", r"<del>\1</del>", result, flags=re.DOTALL)
+        result = re.sub(r"\n", "<br>\n", result)
+        result = re.sub(r"<br>\n(</?(?:pre|blockquote|h[1-6]|ul|ol|li|hr))", r"\n\1", result)
+        result = re.sub(r"(</(?:pre|blockquote|h[1-6]|ul|ol|li)>)<br>", r"\1", result)
+
+        # Restore protected regions.
+        for idx, original in enumerate(placeholders):
+            result = result.replace(f"\x00PROTECTED{idx}\x00", original)
+
+        return result

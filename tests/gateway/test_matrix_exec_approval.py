@@ -1,6 +1,9 @@
-
 import types
+
+import pytest
 from unittest.mock import AsyncMock, patch
+
+from gateway.config import PlatformConfig
 
 
 class TestMatrixExecApprovalReactions:
@@ -24,9 +27,9 @@ class TestMatrixExecApprovalReactions:
         assert result.success is True
         assert adapter._approval_prompt_by_session["sess-1"] == "$evt1"
         assert adapter._approval_prompts_by_event["$evt1"].session_key == "sess-1"
-        assert adapter._send_reaction.await_count == 4
+        assert adapter._send_reaction.await_count == 2
         emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
-        assert emojis == ["✅", "⭕", "♾️", "❌"]
+        assert emojis == ["✅", "❎"]
 
     @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):
@@ -39,7 +42,7 @@ class TestMatrixExecApprovalReactions:
         )
         adapter._approval_prompt_by_session["sess-1"] = "$target"
 
-        content = {"m.relates_to": {"event_id": "$target", "key": "⭕"}}
+        content = {"m.relates_to": {"event_id": "$target", "key": "✅"}}
         event = types.SimpleNamespace(
             sender="@liizfq:liizfq.top",
             event_id="$react1",
@@ -50,6 +53,6 @@ class TestMatrixExecApprovalReactions:
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._on_reaction(event)
 
-        mock_resolve.assert_called_once_with("sess-1", "session")
+        mock_resolve.assert_called_once_with("sess-1", "once")
         assert "$target" not in adapter._approval_prompts_by_event
         assert "sess-1" not in adapter._approval_prompt_by_session

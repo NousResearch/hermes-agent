@@ -438,6 +438,97 @@ class TestSignalSendImageFile:
         assert "failed" in result.error.lower()
 
 
+class TestSignalRecipientResolution:
+    @pytest.mark.asyncio
+    async def test_send_prefers_cached_uuid_for_direct_messages(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._remember_recipient_identifiers("+15551230000", "68680952-6d86-45bc-85e0-1a4d186d53ee")
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {"timestamp": 1234567890}
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+15551230000", content="hello")
+
+        assert result.success is True
+        assert captured[0]["method"] == "send"
+        assert captured[0]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
+
+    @pytest.mark.asyncio
+    async def test_send_looks_up_uuid_via_list_contacts(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            if method == "listContacts":
+                return [{
+                    "recipient": "351935789098",
+                    "number": "+15551230000",
+                    "uuid": "68680952-6d86-45bc-85e0-1a4d186d53ee",
+                    "isRegistered": True,
+                }]
+            if method == "send":
+                return {"timestamp": 1234567890}
+            return None
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+15551230000", content="hello")
+
+        assert result.success is True
+        assert captured[0]["method"] == "listContacts"
+        assert captured[1]["method"] == "send"
+        assert captured[1]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_phone_when_no_uuid_found(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            if method == "listContacts":
+                return []
+            if method == "send":
+                return {"timestamp": 1234567890}
+            return None
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+15551230000", content="hello")
+
+        assert result.success is True
+        assert captured[1]["params"]["recipient"] == ["+15551230000"]
+
+    @pytest.mark.asyncio
+    async def test_send_typing_uses_cached_uuid(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._remember_recipient_identifiers("+15551230000", "68680952-6d86-45bc-85e0-1a4d186d53ee")
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        await adapter.send_typing("+15551230000")
+
+        assert captured[0]["method"] == "sendTyping"
+        assert captured[0]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
+
+
 # ---------------------------------------------------------------------------
 # send_voice method (#5105)
 # ---------------------------------------------------------------------------

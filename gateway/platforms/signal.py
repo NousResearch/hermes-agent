@@ -18,6 +18,7 @@ import logging
 import os
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -127,6 +128,27 @@ def _render_mentions(text: str, mentions: list) -> str:
     return text
 
 
+def _is_signal_service_id(value: str) -> bool:
+    """Return True if *value* already looks like a Signal service identifier."""
+    if not value:
+        return False
+    if value.startswith("PNI:") or value.startswith("u:"):
+        return True
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _looks_like_e164_number(value: str) -> bool:
+    """Return True for a plausible E.164 phone number."""
+    if not value or not value.startswith("+"):
+        return False
+    digits = value[1:]
+    return digits.isdigit() and 7 <= len(digits) <= 15
+
+
 def check_signal_requirements() -> bool:
     """Check if Signal is configured (has URL and account)."""
     return bool(os.getenv("SIGNAL_HTTP_URL") and os.getenv("SIGNAL_ACCOUNT"))
@@ -179,6 +201,12 @@ class SignalAdapter(BasePlatformAdapter):
         # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
         self._recent_sent_timestamps: set = set()
         self._max_recent_timestamps = 50
+        # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
+        # Keep a best-effort mapping so outbound sends can upgrade from a
+        # phone number to the corresponding UUID when signal-cli prefers it.
+        self._recipient_uuid_by_number: Dict[str, str] = {}
+        self._recipient_number_by_uuid: Dict[str, str] = {}
+        self._recipient_cache_lock = asyncio.Lock()
 
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, redact_phone(self.account),
@@ -400,6 +428,7 @@ class SignalAdapter(BasePlatformAdapter):
         )
         sender_name = envelope_data.get("sourceName", "")
         sender_uuid = envelope_data.get("sourceUuid", "")
+        self._remember_recipient_identifiers(sender, sender_uuid)
 
         if not sender:
             logger.debug("Signal: ignoring envelope with no sender")
@@ -518,6 +547,64 @@ class SignalAdapter(BasePlatformAdapter):
 
         await self.handle_message(event)
 
+    def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
+        """Cache any number↔UUID mapping observed from Signal envelopes."""
+        if not number or not service_id or not _is_signal_service_id(service_id):
+            return
+        self._recipient_uuid_by_number[number] = service_id
+        self._recipient_number_by_uuid[service_id] = number
+
+    def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
+        """Best-effort extraction of a Signal service ID from listContacts output."""
+        if not isinstance(contact, dict):
+            return None
+
+        number = contact.get("number")
+        recipient = contact.get("recipient")
+        service_id = contact.get("uuid") or contact.get("serviceId")
+        if not service_id:
+            profile = contact.get("profile")
+            if isinstance(profile, dict):
+                service_id = profile.get("serviceId") or profile.get("uuid")
+
+        if service_id and _is_signal_service_id(service_id):
+            matches_number = number == phone_number or recipient == phone_number
+            if matches_number:
+                return service_id
+        return None
+
+    async def _resolve_recipient(self, chat_id: str) -> str:
+        """Return the preferred Signal recipient identifier for a direct chat."""
+        if (
+            not chat_id
+            or chat_id.startswith("group:")
+            or _is_signal_service_id(chat_id)
+            or not _looks_like_e164_number(chat_id)
+        ):
+            return chat_id
+
+        cached = self._recipient_uuid_by_number.get(chat_id)
+        if cached:
+            return cached
+
+        async with self._recipient_cache_lock:
+            cached = self._recipient_uuid_by_number.get(chat_id)
+            if cached:
+                return cached
+
+            contacts = await self._rpc("listContacts", {
+                "account": self.account,
+                "allRecipients": True,
+            })
+            if isinstance(contacts, list):
+                for contact in contacts:
+                    number = contact.get("number") if isinstance(contact, dict) else None
+                    service_id = self._extract_contact_uuid(contact, chat_id)
+                    if number and service_id:
+                        self._remember_recipient_identifiers(number, service_id)
+
+            return self._recipient_uuid_by_number.get(chat_id, chat_id)
+
     # ------------------------------------------------------------------
     # Attachment Handling
     # ------------------------------------------------------------------
@@ -633,7 +720,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
 
@@ -684,7 +771,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         fails = self._typing_failures.get(chat_id, 0)
         result = await self._rpc(
@@ -745,7 +832,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
         if result is not None:
@@ -784,7 +871,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
         if result is not None:

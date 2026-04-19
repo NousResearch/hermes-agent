@@ -107,13 +107,13 @@ _FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
 # the standard chat API and third parties) are NOT clamped.
 # Source: https://platform.kimi.ai/docs/guide/kimi-k2-5-quickstart
 _KIMI_INSTANT_MODELS: frozenset = frozenset({
-    "kimi-k2.5",
     "kimi-k2-turbo-preview",
     "kimi-k2-0905-preview",
 })
 _KIMI_THINKING_MODELS: frozenset = frozenset({
     "kimi-k2-thinking",
     "kimi-k2-thinking-turbo",
+    "kimi-k2.5",
 })
 
 
@@ -121,8 +121,8 @@ def _fixed_temperature_for_model(model: Optional[str]) -> Optional[float]:
     """Return a required temperature override for models with strict contracts.
 
     Moonshot's kimi-for-coding endpoint rejects any non-approved temperature on
-    the k2.5 family.  Non-thinking variants require exactly 0.6; thinking
-    variants require 1.0.  An optional ``vendor/`` prefix (e.g.
+    the k2.5 family.  k2.5 and thinking variants require exactly 1.0; instant/
+    preview variants require 0.6.  An optional ``vendor/`` prefix (e.g.
     ``moonshotai/kimi-k2.5``) is tolerated for aggregator routings.
 
     Returns ``None`` for every other model, including ``kimi-k2-instruct*``

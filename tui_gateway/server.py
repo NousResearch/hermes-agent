@@ -1,4 +1,5 @@
 import atexit
+import concurrent.futures
 import copy
 import json
 import os
@@ -35,6 +36,29 @@ _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45))
+
+# ── Async RPC dispatch (#12546) ──────────────────────────────────────
+# A handful of handlers block the dispatcher loop in entry.py for seconds
+# to minutes (slash.exec, cli.exec, shell.exec, session.resume,
+# session.branch). While they're running, inbound RPCs — notably
+# approval.respond and session.interrupt — sit unread in the stdin pipe.
+# We route only those slow handlers onto a small thread pool; everything
+# else stays on the main thread so ordering stays sane for the fast path.
+# write_json is already _stdout_lock-guarded, so concurrent response
+# writes are safe.
+_LONG_HANDLERS = frozenset({
+    "cli.exec",
+    "session.branch",
+    "session.resume",
+    "shell.exec",
+    "slash.exec",
+})
+_RPC_POOL_WORKERS = max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4))
+_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_RPC_POOL_WORKERS,
+    thread_name_prefix="tui-rpc",
+)
+atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -198,6 +222,33 @@ def handle_request(req: dict) -> dict | None:
     if not fn:
         return _err(req.get("id"), -32601, f"unknown method: {req.get('method')}")
     return fn(req.get("id"), req.get("params", {}))
+
+
+def _run_and_emit(req: dict) -> None:
+    """Run a handler on the RPC pool and write its response directly.
+
+    Catches any unexpected exception so a misbehaving handler can't kill
+    the worker thread silently — the caller still sees a JSON-RPC error.
+    """
+    try:
+        resp = handle_request(req)
+    except Exception as exc:
+        resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+    if resp is not None:
+        write_json(resp)
+
+
+def dispatch(req: dict) -> dict | None:
+    """Route an inbound RPC — long handlers to the pool, everything else inline.
+
+    Returns the response for sync-dispatched requests so the caller
+    (entry.py) can write it. Returns None when the request has been
+    scheduled on the pool; the worker writes the response itself.
+    """
+    if req.get("method", "") in _LONG_HANDLERS:
+        _pool.submit(_run_and_emit, req)
+        return None
+    return handle_request(req)
 
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:

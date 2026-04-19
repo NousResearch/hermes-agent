@@ -23,12 +23,17 @@ Usage::
         print(result["transcript"])
 """
 
+import json
 import logging
+import mimetypes
 import os
 import shlex
 import shutil
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -64,6 +69,7 @@ _HAS_MISTRAL = _safe_find_spec("mistralai")
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
+DEFAULT_VOICEBOX_STT_BASE_URL = "http://localhost:17493"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
@@ -223,6 +229,13 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "voicebox":
+            voicebox_cfg = stt_config.get("voicebox", {})
+            if (voicebox_cfg.get("base_url") or DEFAULT_VOICEBOX_STT_BASE_URL).strip():
+                return "voicebox"
+            logger.warning("STT provider 'voicebox' configured but no base_url set")
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
@@ -273,6 +286,41 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
         return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
 
     return None
+
+
+def _build_multipart_form_data(
+    file_path: str,
+    *,
+    file_field_name: str = "file",
+    fields: Optional[Dict[str, Any]] = None,
+) -> tuple[bytes, str]:
+    """Build a multipart/form-data payload for simple file uploads."""
+    boundary = f"----HermesBoundary{uuid.uuid4().hex}"
+    body = bytearray()
+
+    for key, value in (fields or {}).items():
+        if value is None or value == "":
+            continue
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            f'Content-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode("utf-8")
+        )
+
+    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    filename = Path(file_path).name
+    file_bytes = Path(file_path).read_bytes()
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="{file_field_name}"; '
+            f'filename="{filename}"\r\n'
+            f"Content-Type: {mime_type}\r\n\r\n"
+        ).encode("utf-8")
+    )
+    body.extend(file_bytes)
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+    return bytes(body), f"multipart/form-data; boundary={boundary}"
 
 # ---------------------------------------------------------------------------
 # Provider: local (faster-whisper)
@@ -405,6 +453,62 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
     except Exception as e:
         logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+
+
+def _transcribe_voicebox(file_path: str, model_name: str, stt_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Transcribe via a local Voicebox server."""
+    voicebox_cfg = stt_config.get("voicebox", {}) if isinstance(stt_config, dict) else {}
+    base_url = (voicebox_cfg.get("base_url") or "").strip()
+    if not base_url:
+        raise ValueError("voicebox.base_url is required")
+
+    language = (
+        voicebox_cfg.get("language")
+        or stt_config.get("local", {}).get("language")
+        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+        or ""
+    )
+
+    body, content_type = _build_multipart_form_data(
+        file_path,
+        fields={"model": model_name, "language": language},
+    )
+    request = urllib.request.Request(
+        urljoin(f"{base_url.rstrip('/')}/", "transcribe"),
+        data=body,
+        headers={"Content-Type": content_type, "Accept": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        transcript = str(payload.get("text") or "").strip()
+        if not transcript:
+            return {"success": False, "transcript": "", "error": "Voicebox returned empty transcript"}
+        return {"success": True, "transcript": transcript, "provider": "voicebox"}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        detail = raw
+        try:
+            parsed = json.loads(raw)
+            detail = parsed.get("detail", parsed)
+        except Exception:
+            pass
+        if exc.code == 202:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Voicebox model download in progress: {detail}",
+            }
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Voicebox transcription failed: HTTP {exc.code}: {detail}",
+        }
+    except Exception as e:
+        logger.error("Voicebox transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Voicebox transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
 # Provider: groq (Whisper API — free tier)
@@ -614,6 +718,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         openai_cfg = stt_config.get("openai", {})
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(file_path, model_name)
+
+    if provider == "voicebox":
+        voicebox_cfg = stt_config.get("voicebox", {})
+        model_name = model or voicebox_cfg.get("model", "turbo")
+        return _transcribe_voicebox(file_path, model_name, stt_config)
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral", {})

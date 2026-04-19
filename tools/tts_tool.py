@@ -35,6 +35,9 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
@@ -88,6 +91,7 @@ DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_VOICEBOX_TTS_BASE_URL = "http://localhost:17493"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
@@ -127,6 +131,13 @@ def _load_tts_config() -> Dict[str, Any]:
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Get the configured TTS provider name."""
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+
+
+def _voicebox_tts_configured(tts_config: Optional[Dict[str, Any]] = None) -> bool:
+    if tts_config is None:
+        tts_config = _load_tts_config()
+    voicebox_cfg = tts_config.get("voicebox", {}) if isinstance(tts_config, dict) else {}
+    return bool((voicebox_cfg.get("base_url") or "").strip() and (voicebox_cfg.get("profile_id") or "").strip())
 
 
 # ===========================================================================
@@ -435,6 +446,65 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
     return output_path
 
 
+def _generate_voicebox_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using a local Voicebox server."""
+    voicebox_cfg = tts_config.get("voicebox", {})
+    base_url = (voicebox_cfg.get("base_url") or "").strip()
+    if not base_url:
+        raise ValueError("voicebox.base_url is required")
+
+    profile_id = (voicebox_cfg.get("profile_id") or "").strip()
+    if not profile_id:
+        raise ValueError("voicebox.profile_id is required")
+
+    payload = {
+        "profile_id": profile_id,
+        "text": text,
+        "language": voicebox_cfg.get("language", "en"),
+    }
+    for key in ("engine", "seed", "model_size", "instruct"):
+        value = voicebox_cfg.get(key)
+        if value not in (None, ""):
+            payload[key] = value
+
+    create_request = urllib.request.Request(
+        urljoin(f"{base_url.rstrip('/')}/", "generate"),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(create_request, timeout=120) as response:
+        created = json.loads(response.read().decode("utf-8"))
+
+    generation_id = created.get("id")
+    if not generation_id:
+        raise RuntimeError("Voicebox generate response missing generation id")
+
+    timeout_seconds = int(voicebox_cfg.get("timeout_seconds", 180) or 180)
+    poll_interval = float(voicebox_cfg.get("poll_interval_seconds", 1.0) or 1.0)
+    history_url = urljoin(f"{base_url.rstrip('/')}/", f"history/{generation_id}")
+    export_url = urljoin(f"{base_url.rstrip('/')}/", f"history/{generation_id}/export-audio")
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        history_request = urllib.request.Request(history_url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(history_request, timeout=60) as response:
+            history = json.loads(response.read().decode("utf-8"))
+        status = str(history.get("status") or "").lower()
+        if status == "completed":
+            audio_request = urllib.request.Request(export_url)
+            with urllib.request.urlopen(audio_request, timeout=120) as response:
+                audio_bytes = response.read()
+            with open(output_path, "wb") as f:
+                f.write(audio_bytes)
+            return output_path
+        if status == "failed":
+            raise RuntimeError(f"Voicebox generation failed: {history.get('error') or 'unknown error'}")
+        time.sleep(poll_interval)
+
+    raise RuntimeError("Voicebox generation timed out")
+
+
 # ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
@@ -612,6 +682,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
 
+        elif provider == "voicebox":
+            logger.info("Generating speech with Voicebox...")
+            _generate_voicebox_tts(text, file_str, tts_config)
+
         elif provider == "neutts":
             if not _check_neutts_available():
                 return json.dumps({
@@ -661,7 +735,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "voicebox") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -740,6 +814,8 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
+    if _voicebox_tts_configured():
+        return True
     if _check_neutts_available():
         return True
     return False

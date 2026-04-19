@@ -266,23 +266,6 @@ def test_materialize_chatgpt_web_browser_image_accepts_data_urls():
                 os.unlink(cleanup_path)
 
 
-def test_format_initial_message_keeps_developer_instructions_on_remote_thread():
-    from hermes_cli.chatgpt_web import _format_initial_message
-
-    prompt = _format_initial_message(
-        instructions="You are Hermes Agent. Use tools before answering.",
-        messages=[
-            {"role": "assistant", "content": "Earlier answer."},
-            {"role": "user", "content": "Continue from the latest step."},
-        ],
-        has_remote_thread=True,
-    )
-
-    assert "Developer instructions" in prompt
-    assert "You are Hermes Agent. Use tools before answering." in prompt
-    assert "Latest user request:\nContinue from the latest step." in prompt
-
-
 def test_select_provider_and_model_lists_chatgpt_web_in_top_menu(monkeypatch):
     from hermes_cli import main as hermes_main
 

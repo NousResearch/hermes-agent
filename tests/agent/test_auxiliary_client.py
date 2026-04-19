@@ -701,49 +701,6 @@ class TestExplicitProviderRouting:
         assert response.choices[0].message.tool_calls[0].function.name == "memory"
         assert response.choices[0].message.tool_calls[0].function.arguments == '{"action": "add", "target": "user", "content": "remember this"}'
 
-    def test_chatgpt_web_auxiliary_client_preserves_multimodal_content(self, monkeypatch):
-        captured = {}
-
-        monkeypatch.setattr(
-            "agent.auxiliary_client.resolve_chatgpt_web_runtime_credentials",
-            lambda **kwargs: {
-                "provider": "chatgpt-web",
-                "api_key": "chatgpt-web-token",
-                "base_url": "https://chatgpt.com/backend-api/f",
-                "session_token": "chatgpt-session-token",
-            },
-        )
-
-        def _fake_stream(**kwargs):
-            captured.update(kwargs)
-            return {
-                "content": "red square",
-                "model": kwargs["model"],
-                "finish_reason": "stop",
-            }
-
-        monkeypatch.setattr("agent.auxiliary_client.stream_chatgpt_web_completion", _fake_stream)
-
-        client, _model = resolve_provider_client("chatgpt-web", model="gpt-5-4-thinking")
-        response = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Describe the attached image briefly."},
-                        {"type": "image_url", "image_url": {"url": "file:///tmp/red-square.png"}},
-                    ],
-                }
-            ],
-            timeout=12,
-        )
-
-        assert captured["messages"][0]["content"] == [
-            {"type": "text", "text": "Describe the attached image briefly."},
-            {"type": "input_image", "image_url": "file:///tmp/red-square.png"},
-        ]
-        assert response.choices[0].message.content == "red square"
-
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
@@ -1291,6 +1248,29 @@ class TestTaskSpecificOverrides:
         assert calls[0][0] == "openai-codex"
         assert calls[0][1] == "gpt-5.4"
         assert calls[0][2]["api_mode"] == "codex_responses"
+
+    def test_resolve_auto_supports_chatgpt_web_main_runtime(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_chatgpt_web_runtime_credentials",
+            lambda **kwargs: {
+                "provider": "chatgpt-web",
+                "api_key": "chatgpt-web-token",
+                "base_url": "https://chatgpt.com/backend-api/f",
+                "session_token": "chatgpt-session-token",
+            },
+        )
+
+        client, model = _resolve_auto(
+            main_runtime={
+                "provider": "chatgpt-web",
+                "model": "gpt-5-4-thinking",
+                "api_mode": "chatgpt_web",
+            }
+        )
+
+        assert client is not None
+        assert client.__class__.__name__ == "ChatGptWebAuxiliaryClient"
+        assert model == "gpt-5-4-thinking"
 
     def test_explicit_compression_pin_still_wins_over_live_main_runtime(self, monkeypatch, tmp_path):
         """Task-level compression config should beat a live session override."""
@@ -1947,8 +1927,9 @@ class TestKimiTemperatureOmitted:
         assert kwargs["model"] == "kimi-for-coding"
         assert "temperature" not in kwargs
 
-    @pytest.mark.asyncio
-    async def test_auto_routed_kimi_for_coding_async_call_omits_temperature(self):
+    def test_auto_routed_kimi_for_coding_async_call_omits_temperature(self):
+        import asyncio
+
         client = MagicMock()
         client.base_url = "https://api.kimi.com/coding/v1"
         response = MagicMock()

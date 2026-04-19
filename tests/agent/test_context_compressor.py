@@ -274,6 +274,7 @@ class TestNonStringContent:
         assert "```md" in prompt
         assert "Choose the summary length that best fits the size and complexity of this session." in prompt
         assert "main goal, major achievements, key events, blockers, and what still needs to be done in future turns" in prompt
+        assert "roughly 500 dense words" in prompt
 
 
 class TestSummaryFailureCooldown:

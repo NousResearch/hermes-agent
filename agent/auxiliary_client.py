@@ -668,7 +668,6 @@ def _flatten_chatgpt_web_message_content(content: Any) -> str:
             flattened.append(text)
     return "\n".join(part for part in flattened if part).strip()
 
-
 def _normalize_chatgpt_web_message_content(content: Any) -> Any:
     """Preserve multimodal blocks when ChatGPT Web can consume them directly."""
     if isinstance(content, list):

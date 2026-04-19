@@ -83,8 +83,8 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, PLANNING_AND_SELF_REVIEW_GUIDANCE, SKILLS_GUIDANCE,
     AUTONOMOUS_EXECUTION_GUIDANCE,
     MULTIMODAL_VERIFICATION_GUIDANCE,
-    EDITING_VERIFICATION_GUIDANCE,
     MEMORY_RETRIEVAL_GUIDANCE,
+    EDITING_VERIFICATION_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -1058,6 +1058,16 @@ class AIAgent:
                     }
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
+                elif "generativelanguage.googleapis.com" in effective_base.lower():
+                    # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
+                    # The OpenAI SDK auto-injects Authorization: Bearer when api_key= is
+                    # set to a real value, causing HTTP 400 "Multiple authentication
+                    # credentials received".  Pass a placeholder so the SDK does not
+                    # emit Bearer, and carry the real key via x-goog-api-key instead.
+                    # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
+                    real_key = client_kwargs["api_key"]
+                    client_kwargs["api_key"] = "not-used"
+                    client_kwargs["default_headers"] = {"x-goog-api-key": real_key}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -3674,17 +3684,17 @@ class AIAgent:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        # Memory retrieval: consolidate and recall across sessions
+        if "memory" in self.valid_tool_names and "session_search" in self.valid_tool_names:
+            tool_guidance.append(MEMORY_RETRIEVAL_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
         # Multimodal verification: gate on vision/visual tools being available
         if any(t in self.valid_tool_names for t in ("browser_vision", "vision_analyze", "image_gen")):
             tool_guidance.append(MULTIMODAL_VERIFICATION_GUIDANCE)
-        # Editing verification: gate on file-editing tools
+        # Editing verification: gate on file-editing tools being available
         if any(t in self.valid_tool_names for t in ("patch", "write_file")):
             tool_guidance.append(EDITING_VERIFICATION_GUIDANCE)
-        # Memory retrieval: gate on both memory and session_search tools
-        if all(t in self.valid_tool_names for t in ("memory", "session_search")):
-            tool_guidance.append(MEMORY_RETRIEVAL_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -5261,6 +5271,17 @@ class AIAgent:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "portal.qwen.ai" in normalized:
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
+        elif "generativelanguage.googleapis.com" in normalized:
+            # Google's endpoint rejects Bearer tokens; use x-goog-api-key instead.
+            # Swap the real key out of api_key and into the header so the OpenAI
+            # SDK does not emit Authorization: Bearer.
+            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
+            real_key = self._client_kwargs.get("api_key", "")
+            if real_key and real_key != "not-used":
+                self._client_kwargs["api_key"] = "not-used"
+            self._client_kwargs["default_headers"] = {
+                "x-goog-api-key": real_key or self._client_kwargs.get("api_key", ""),
+            }
         else:
             self._client_kwargs.pop("default_headers", None)
 
@@ -5873,14 +5894,6 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                # Use assignment, not +=.  Function names are
-                                # atomic identifiers delivered complete in the
-                                # first chunk (OpenAI spec).  Some providers
-                                # (MiniMax M2.7 via NVIDIA NIM) resend the full
-                                # name in every chunk; concatenation would
-                                # produce "read_fileread_file".  Assignment
-                                # (matching the OpenAI Node SDK / LiteLLM /
-                                # Vercel AI patterns) is immune to this.
                                 entry["function"]["name"] = tc_delta.function.name
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
@@ -7066,20 +7079,8 @@ class AIAgent:
         if self.tools:
             api_kwargs["tools"] = self.tools
 
-        # ── max_tokens for chat_completions ──────────────────────────────
-        # Priority: ephemeral override (error recovery / length-continuation
-        # boost) > user-configured max_tokens > provider-specific defaults.
-        _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
-        if _ephemeral_out is not None:
-            self._ephemeral_max_output_tokens = None  # consume immediately
-            api_kwargs.update(self._max_tokens_param(_ephemeral_out))
-        elif self.max_tokens is not None:
+        if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
-        elif "integrate.api.nvidia.com" in self._base_url_lower:
-            # NVIDIA NIM defaults to a very low max_tokens when omitted,
-            # causing models like GLM-4.7 to truncate immediately (thinking
-            # tokens alone exhaust the budget).  16384 provides adequate room.
-            api_kwargs.update(self._max_tokens_param(16384))
         elif self._is_qwen_portal():
             # Qwen Portal defaults to a very low max_tokens when omitted.
             # Reasoning models (qwen3-coder-plus) exhaust that budget on
@@ -10835,12 +10836,6 @@ class AIAgent:
                 continue
 
             if restart_with_length_continuation:
-                # Progressively boost the output token budget on each retry.
-                # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
-                # Applies to all providers via _ephemeral_max_output_tokens.
-                _boost_base = self.max_tokens if self.max_tokens else 4096
-                _boost = _boost_base * (length_continue_retries + 1)
-                self._ephemeral_max_output_tokens = min(_boost, 32768)
                 continue
 
             # Guard: if all retries exhausted without a successful response

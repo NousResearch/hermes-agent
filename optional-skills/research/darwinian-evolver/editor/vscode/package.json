@@ -1,0 +1,82 @@
+{
+  "name": "darwinian-evolver",
+  "displayName": "Darwinian Evolver",
+  "description": "Run, watch, and accept evolutionary-optimizer experiments without leaving your editor.",
+  "version": "0.1.0",
+  "publisher": "nousresearch",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NousResearch/hermes-agent"
+  },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Machine Learning", "Other"],
+  "keywords": ["evolutionary", "prompt-engineering", "map-elites", "nsga2", "hermes-agent"],
+  "activationEvents": [
+    "onCommand:darwinianEvolver.run",
+    "onCommand:darwinianEvolver.dashboard",
+    "onCommand:darwinianEvolver.synthesiseFitness",
+    "onCommand:darwinianEvolver.showLineage",
+    "onCommand:darwinianEvolver.acceptHumanEdit"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Darwinian Evolver",
+      "properties": {
+        "darwinianEvolver.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the `evolver.py` script. Leaves blank → resolves via $HERMES_HOME."
+        },
+        "darwinianEvolver.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python interpreter used to invoke the CLI."
+        },
+        "darwinianEvolver.dashboardPort": {
+          "type": "number",
+          "default": 8787,
+          "description": "Port on which the FastAPI dashboard is served."
+        },
+        "darwinianEvolver.dashboardHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Bind host for the dashboard. Non-loopback hosts expose data to the network."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "darwinianEvolver.run",
+        "title": "Darwinian Evolver: Run Experiment"
+      },
+      {
+        "command": "darwinianEvolver.dashboard",
+        "title": "Darwinian Evolver: Open Dashboard"
+      },
+      {
+        "command": "darwinianEvolver.synthesiseFitness",
+        "title": "Darwinian Evolver: Synthesise fitness.py from examples"
+      },
+      {
+        "command": "darwinianEvolver.showLineage",
+        "title": "Darwinian Evolver: Show Candidate Lineage"
+      },
+      {
+        "command": "darwinianEvolver.acceptHumanEdit",
+        "title": "Darwinian Evolver: Submit Human Edit to Dashboard"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch":   "tsc -watch -p .",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node":   "^20.12.7",
+    "@types/vscode": "^1.90.0",
+    "typescript":    "^5.4.5"
+  }
+}

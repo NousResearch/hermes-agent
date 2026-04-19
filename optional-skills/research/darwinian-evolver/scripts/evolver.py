@@ -375,10 +375,21 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
                 trigger_every_r=getattr(args, "bandit_every_r", 4),
             )
 
-        # v0.5 B1 — worker backend (accepted but not yet woven into
-        # evaluate_batch's internals; the flag surfaces in status for
-        # future migration without requiring a Namespace change).
+        # v0.5 B1 — worker backend. "local" uses evaluate_batch's
+        # Semaphore path (backward-compatible); "raysim" / "ray" route
+        # candidate evaluation through the WorkerBackend protocol so
+        # cluster-scale experiments don't bottleneck on a single
+        # event loop.
         workers_mode = getattr(args, "workers", "local")
+        worker_backend = None
+        if workers_mode != "local":
+            try:
+                worker_backend = distributed.select_backend(
+                    workers_mode, workers=args.concurrency,
+                )
+            except ImportError as exc:
+                _err(str(exc))
+                return
 
         async def _evaluate(pop: list[Individual], gen: int, step_seed: int) -> None:
             """Dispatch to the right evaluator given the fitness spec."""
@@ -393,6 +404,7 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
                 await evaluate_batch(
                     pop, fitness_fn,
                     seed=step_seed, concurrency=args.concurrency,
+                    backend=worker_backend,
                 )
 
         async def _apply_critic(pop: list[Individual], gen: int) -> None:

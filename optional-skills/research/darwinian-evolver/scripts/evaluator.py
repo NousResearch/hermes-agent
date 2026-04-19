@@ -224,28 +224,53 @@ async def evaluate_batch(
     held_out: bool = False,
     fidelity: float = 1.0,
     concurrency: int = 4,
+    backend: Any = None,       # distributed.WorkerBackend — optional
 ) -> None:
     """Fill in ``fitness`` on every member of *population* in place.
 
-    Uses a bounded Semaphore so heavyweight fitness functions (which
-    might themselves call LLMs) don't all fire at once. If the user
-    supplied a spec with ``objectives=None`` we expect a scalar; if
-    ``objectives`` is a list we expect a dict — but we don't police
-    either side beyond this assumption, to keep the contract ergonomic.
+    Two dispatch paths:
+
+    * ``backend`` is ``None`` (default / v0.2 behaviour) — uses a bounded
+      ``asyncio.Semaphore`` so heavyweight fitness functions (which might
+      themselves call LLMs) don't all fire at once.
+    * ``backend`` is a :class:`distributed.WorkerBackend` (v0.5 B1) —
+      every candidate is dispatched through ``backend.map``; the chosen
+      backend (local / RaySim / Ray) decides how to parallelise.
+
+    The scalar-vs-dict contract on the returned fitness value is
+    identical across paths — we don't police either side beyond the
+    ``read_spec`` defaults, to keep the evaluator ergonomic.
     """
     spec = read_spec(fitness_fn)
-    sem = asyncio.Semaphore(max(1, concurrency))
 
-    async def worker(ind: Individual) -> None:
-        async with sem:
-            ctx = EvalContext(
-                seed=seed + hash(ind.cid) % 1_000_003,
-                fidelity=fidelity,
-                held_out=held_out,
-            )
-            ind.fitness = await _call_fitness(fitness_fn, ind.genome, ctx, spec["timeout_s"])
+    def _ctx_for(ind: Individual) -> EvalContext:
+        return EvalContext(
+            seed=seed + hash(ind.cid) % 1_000_003,
+            fidelity=fidelity,
+            held_out=held_out,
+        )
 
-    await asyncio.gather(*(worker(ind) for ind in population))
+    if backend is None:
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def worker(ind: Individual) -> None:
+            async with sem:
+                ind.fitness = await _call_fitness(
+                    fitness_fn, ind.genome, _ctx_for(ind), spec["timeout_s"],
+                )
+
+        await asyncio.gather(*(worker(ind) for ind in population))
+        return
+
+    # Backend dispatch: the backend owns concurrency.
+    async def run_one(ind: Individual):
+        return await _call_fitness(
+            fitness_fn, ind.genome, _ctx_for(ind), spec["timeout_s"],
+        )
+
+    results = await backend.map(run_one, list(population))
+    for ind, score in zip(population, results):
+        ind.fitness = score
 
 
 # ---------------------------------------------------------------------------

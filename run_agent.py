@@ -2906,12 +2906,29 @@ class AIAgent:
                 with open(os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
+                    # Forward the full provider bundle — not just model/provider.
+                    # ``AIAgent.__init__`` re-resolves ``base_url``/``api_key``
+                    # from ``resolve_provider_client`` when they're missing,
+                    # which reads ``model.default`` / ``model.base_url`` from
+                    # config and ignores any ``model.routes`` entry that the
+                    # parent agent's turn resolved against. If the parent is
+                    # on a routed model (e.g. owner → slate-3 at a dedicated
+                    # integration), re-resolving pairs the routed ``model``
+                    # with the config-default ``base_url`` — that's the exact
+                    # mismatch that lands ``slate-3`` requests on ``litellm-1``
+                    # and gets rejected with ``key_model_access_denied``.
                     review_agent = AIAgent(
                         model=self.model,
+                        base_url=self.base_url,
+                        api_key=getattr(self, "api_key", ""),
+                        api_mode=getattr(self, "api_mode", ""),
+                        provider=self.provider,
+                        acp_command=getattr(self, "acp_command", None),
+                        acp_args=getattr(self, "acp_args", None),
+                        credential_pool=getattr(self, "_credential_pool", None),
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled

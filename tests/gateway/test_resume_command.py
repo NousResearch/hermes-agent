@@ -219,8 +219,11 @@ class TestHandleResumeCommand:
 
         await runner._handle_resume_command(event)
 
-        runner._async_flush_memories.assert_called_once_with(
-            "current_session_001",
-            "agent:main:telegram:dm:67890",
-        )
+        runner._async_flush_memories.assert_called_once()
+        _args, _ = runner._async_flush_memories.call_args
+        assert _args[0] == "current_session_001"
+        assert _args[1] == "agent:main:telegram:dm:67890"
+        # Third arg is the SessionSource (``entry.origin``) so the flush
+        # agent can route via ``model.routes``.
+        assert len(_args) == 3
         db.close()

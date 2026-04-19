@@ -898,6 +898,7 @@ class GatewayRunner:
         self,
         old_session_id: str,
         session_key: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ):
         """Prompt the agent to save memories/skills before context is lost.
 
@@ -915,8 +916,24 @@ class GatewayRunner:
             if not history or len(history) < 4:
                 return
 
+            # Recover source from the session entry if the caller didn't
+            # thread it through. ``_resolve_session_agent_runtime`` needs it
+            # to fire ``model.routes`` — otherwise the flush agent inherits
+            # ``model.default`` + ``model.base_url`` (slate-1 / litellm-1)
+            # even when the owner session should route to a different
+            # endpoint, and the mismatched model/base_url pair 401s at the
+            # integration proxy.
+            if source is None and session_key:
+                try:
+                    entry = self.session_store._entries.get(session_key)
+                    if entry is not None:
+                        source = entry.origin
+                except Exception:
+                    source = None
+
             from run_agent import AIAgent
             model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
                 session_key=session_key,
             )
             if not runtime_kwargs.get("api_key"):
@@ -1005,6 +1022,7 @@ class GatewayRunner:
         self,
         old_session_id: str,
         session_key: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_running_loop()
@@ -1013,6 +1031,7 @@ class GatewayRunner:
             self._flush_memories_for_session,
             old_session_id,
             session_key,
+            source,
         )
 
     @property
@@ -2308,7 +2327,7 @@ class GatewayRunner:
 
                 for key, entry in _expired_entries:
                     try:
-                        await self._async_flush_memories(entry.session_id, key)
+                        await self._async_flush_memories(entry.session_id, key, entry.origin)
                         # Shut down memory provider and close tool resources
                         # on the cached agent.  Idle agents live in
                         # _agent_cache (not _running_agents), so look there.
@@ -4971,7 +4990,7 @@ class GatewayRunner:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 _flush_task = asyncio.create_task(
-                    self._async_flush_memories(old_entry.session_id, session_key)
+                    self._async_flush_memories(old_entry.session_id, session_key, old_entry.origin)
                 )
                 self._background_tasks.add(_flush_task)
                 _flush_task.add_done_callback(self._background_tasks.discard)
@@ -7247,7 +7266,7 @@ class GatewayRunner:
         # Flush memories for current session before switching
         try:
             _flush_task = asyncio.create_task(
-                self._async_flush_memories(current_entry.session_id, session_key)
+                self._async_flush_memories(current_entry.session_id, session_key, current_entry.origin)
             )
             self._background_tasks.add(_flush_task)
             _flush_task.add_done_callback(self._background_tasks.discard)

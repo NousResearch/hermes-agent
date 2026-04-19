@@ -2081,18 +2081,17 @@ class GatewayRunner:
         self._running = True
         self._update_runtime_status("running")
         
-        # Emit gateway:startup hook
+        # Log loaded hooks (emit happens after channel directory is ready)
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
             logger.info("%s hook(s) loaded", hook_count)
-        await self.hooks.emit("gateway:startup", {
-            "platforms": [p.value for p in self.adapters.keys()],
-        })
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
         
-        # Build initial channel directory for send_message name resolution
+        # Build initial channel directory for send_message name resolution.
+        # Must happen BEFORE gateway:startup emit so that hooks (e.g. boot-md)
+        # can use send_message with name resolution.
         try:
             from gateway.channel_directory import build_channel_directory
             directory = build_channel_directory(self.adapters)
@@ -2100,6 +2099,24 @@ class GatewayRunner:
             logger.info("Channel directory built: %d target(s)", ch_count)
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
+
+        # Emit gateway:startup hook — include resolved model + runtime
+        # so builtin hooks (e.g. boot-md) can create AIAgent instances
+        # with correct credentials instead of relying on bare AIAgent().
+        # Refs: https://github.com/NousResearch/hermes-agent/issues/5239
+        try:
+            _boot_model = _resolve_gateway_model()
+            _boot_runtime = _resolve_runtime_agent_kwargs()
+        except Exception as e:
+            logger.warning("Could not resolve boot hook runtime: %s", e)
+            _boot_model = ""
+            _boot_runtime = {}
+
+        await self.hooks.emit("gateway:startup", {
+            "platforms": [p.value for p in self.adapters.keys()],
+            "model": _boot_model,
+            "runtime_kwargs": _boot_runtime,
+        })
         
         # Check if we're restarting after a /update command. If the update is
         # still running, keep watching so we notify once it actually finishes.

@@ -42,13 +42,24 @@ def _build_boot_prompt(content: str) -> str:
     )
 
 
-def _run_boot_agent(content: str) -> None:
-    """Spawn a one-shot agent session to execute the boot instructions."""
+def _run_boot_agent(content: str, model: str = "", runtime_kwargs: dict | None = None) -> None:
+    """Spawn a one-shot agent session to execute the boot instructions.
+
+    Args:
+        content: BOOT.md file content.
+        model: Resolved model name from gateway config (e.g. "glm-5.1").
+        runtime_kwargs: Resolved provider credentials dict from the gateway
+            runtime. Contains api_key, base_url, provider, api_mode, command,
+            args, credential_pool.
+    """
     try:
         from run_agent import AIAgent
 
         prompt = _build_boot_prompt(content)
+        runtime_kwargs = runtime_kwargs or {}
         agent = AIAgent(
+            model=model,
+            **runtime_kwargs,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -75,10 +86,16 @@ async def handle(event_type: str, context: dict) -> None:
 
     logger.info("Running BOOT.md (%d chars)", len(content))
 
+    # Extract model + runtime from gateway startup context.
+    # Falls back to empty values for backward compat (e.g. if an older
+    # gateway version emits gateway:startup without these fields).
+    model = context.get("model", "") if isinstance(context, dict) else ""
+    runtime_kwargs = context.get("runtime_kwargs") if isinstance(context, dict) else None
+
     # Run in a background thread so we don't block gateway startup.
     thread = threading.Thread(
         target=_run_boot_agent,
-        args=(content,),
+        args=(content, model, runtime_kwargs),
         name="boot-md",
         daemon=True,
     )

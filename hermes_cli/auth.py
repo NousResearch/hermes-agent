@@ -2870,7 +2870,10 @@ def _prompt_model_selection(
         print()
         if idx < len(ordered):
             return ordered[idx]
-        custom = input("Enter model name: ").strip()
+        try:
+            custom = input("Enter model name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
         return custom if custom else None
     except Exception:
         pass

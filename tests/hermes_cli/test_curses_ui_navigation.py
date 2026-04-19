@@ -204,6 +204,69 @@ def test_curses_single_select_non_tty_returns_none_on_eof():
     assert result is None
 
 
+def test_prompt_model_selection_cancels_on_eof_from_custom_entry():
+    """Picking 'Enter custom model name' and then hitting Ctrl-D (or pipe
+    close) must return None immediately instead of falling through the broad
+    except-Exception and redrawing the numbered fallback menu."""
+    from hermes_cli import auth
+
+    call_count = {"n": 0}
+
+    def _fake_select(title, items, default_index=0, *, cancel_label="Cancel", footer_lines=None):
+        call_count["n"] += 1
+        # Index for "Enter custom model name" (last item before cancel).
+        return len(items) - 1
+
+    with patch("hermes_cli.curses_ui.curses_single_select", _fake_select), \
+         patch("builtins.input", side_effect=EOFError), \
+         patch("builtins.print"):
+        result = auth._prompt_model_selection(
+            ["m1"],
+            current_model="",
+            pricing=None,
+            portal_url=None,
+            unavailable_models=None,
+        )
+
+    assert result is None
+    assert call_count["n"] == 1, "EOF from custom-entry must not re-enter the picker"
+
+
+def test_curses_single_select_skips_footer_on_very_short_terminal():
+    """On a 6-row terminal the footer + separator cannot fit — the helper
+    must drop the footer entirely rather than reserve a row that never
+    renders, which would otherwise shrink the selectable list for no gain."""
+    from hermes_cli.curses_ui import curses_single_select
+
+    mock_stdscr = MagicMock()
+    mock_stdscr.getmaxyx.return_value = (6, 80)
+    mock_stdscr.getch.side_effect = [10]
+
+    with patch("sys.stdin") as mock_stdin, \
+         patch("curses.wrapper") as mock_wrapper, \
+         patch("curses.curs_set"), \
+         patch("curses.has_colors", return_value=False):
+        mock_stdin.isatty.return_value = True
+        mock_wrapper.side_effect = lambda func: func(mock_stdscr)
+        curses_single_select(
+            "Title",
+            ["a", "b", "c"],
+            default_index=0,
+            footer_lines=["footer-1", "footer-2"],
+        )
+
+    rendered = [call.args for call in mock_stdscr.addnstr.call_args_list]
+    item_texts = [args[2] for args in rendered if args[2].startswith(" → ") or args[2].startswith("   ")]
+    # With a 6-row terminal the 3 items should all be visible; footer is
+    # dropped, no row wasted on a phantom footer slot.
+    assert len(item_texts) >= 2, (
+        f"small terminal must not sacrifice item rows for a hidden footer: {rendered}"
+    )
+    assert not any("footer-" in args[2] for args in rendered), (
+        "footer should be skipped entirely when the terminal is too short"
+    )
+
+
 def test_prompt_model_selection_header_aligns_with_curses_rows():
     """With the curses renderer each row starts at column 3 (' arrow label'),
     so the header's 'In' column must align with the priced values in the item

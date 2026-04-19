@@ -492,10 +492,15 @@ def curses_single_select(
                 # unavailable-model block can't crush the selectable list on a
                 # standard 24-row terminal. The remaining footer lines are
                 # dropped (users can still see them in the numbered fallback).
+                # The footer is rendered after a blank separator row, so budget
+                # for that separator too — otherwise a 6–8 row tmux split would
+                # reserve space for a footer that never actually fits, hiding
+                # selectable rows for no visible gain.
                 available = max(1, max_y - items_start - 1)
-                footer_cap = max(0, available // 3)
+                footer_cap = max(0, (available - 1) // 3) if footer else 0
                 footer_shown = min(len(footer), footer_cap)
-                visible_rows = max(1, available - footer_shown)
+                separator_row = 1 if footer_shown else 0
+                visible_rows = max(1, available - footer_shown - separator_row)
                 if cursor < scroll_offset:
                     scroll_offset = cursor
                 elif cursor >= scroll_offset + visible_rows:

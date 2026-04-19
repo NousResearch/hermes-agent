@@ -412,23 +412,45 @@ class ToolRegistry:
         return result
 
     def check_tool_availability(self, quiet: bool = False):
-        """Return (available_toolsets, unavailable_info) like the old function."""
+        """Return (available_toolsets, unavailable_info) like the old function.
+
+        Toolsets can contain tools with different requirement checks.  Treat a
+        toolset as available when *any* tool in that toolset passes its own
+        availability check, instead of relying on whichever check function was
+        registered first.  This avoids false negatives for mixed-capability
+        toolsets like ``browser`` where ``browser_cdp`` is optional but the main
+        browser tools work in local mode.
+        """
         available = []
         unavailable = []
-        seen = set()
-        entries, toolset_checks = self._snapshot_state()
-        for entry in entries:
-            ts = entry.toolset
-            if ts in seen:
-                continue
-            seen.add(ts)
-            if self._evaluate_toolset_check(ts, toolset_checks.get(ts)):
+        entries, _toolset_checks = self._snapshot_state()
+        toolsets = sorted({entry.toolset for entry in entries})
+        for ts in toolsets:
+            ts_entries = [e for e in entries if e.toolset == ts]
+            tool_available = False
+            for entry in ts_entries:
+                if not entry.check_fn:
+                    tool_available = True
+                    break
+                try:
+                    if bool(entry.check_fn()):
+                        tool_available = True
+                        break
+                except Exception:
+                    if not quiet:
+                        logger.debug("Tool %s availability check raised; treating as unavailable", entry.name)
+            if tool_available:
                 available.append(ts)
             else:
+                env_vars = []
+                for entry in ts_entries:
+                    for env in entry.requires_env:
+                        if env not in env_vars:
+                            env_vars.append(env)
                 unavailable.append({
                     "name": ts,
-                    "env_vars": entry.requires_env,
-                    "tools": [e.name for e in entries if e.toolset == ts],
+                    "env_vars": env_vars,
+                    "tools": [e.name for e in ts_entries],
                 })
         return available, unavailable
 

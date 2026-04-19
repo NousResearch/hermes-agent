@@ -870,10 +870,10 @@ class TestUnsupportedActions:
         assert payload["pending_pointer_action"]["start_y"] == 20
         assert payload["pending_pointer_action"]["end_x"] == 30
         assert payload["pending_pointer_action"]["end_y"] == 40
-
     def test_report_pointer_action_result_clears_pending_action_and_records_completion(self, monkeypatch, tmp_path):
         state_root = tmp_path / "session-state"
         monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
             "notes": {
                 "app_name": "Notes",
@@ -891,12 +891,17 @@ class TestUnsupportedActions:
                 },
             },
         })
-        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
 
+        claim = adapter.claim_pending_pointer_action_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            worker_id="helper-a",
+        )
         result = adapter.report_pointer_action_result_impl(
             app_session_id="app-2",
             action_id="ptr-123",
             status="completed",
+            claim_token=claim["claim_token"],
             x=55,
             y=65,
         )
@@ -907,6 +912,7 @@ class TestUnsupportedActions:
         assert result["last_pointer_action_result"]["action_id"] == "ptr-123"
         assert result["last_pointer_action_result"]["action_type"] == "click"
         assert result["last_pointer_action_result"]["status"] == "completed"
+        assert result["last_pointer_action_result"]["reported_by"] == "helper-a"
         assert result["last_pointer_action_result"]["x"] == 55
         assert result["last_pointer_action_result"]["y"] == 65
         state_path = Path(result["session_state_path"])
@@ -914,6 +920,103 @@ class TestUnsupportedActions:
         assert payload["pending_pointer_action"] is None
         assert payload["last_pointer_action_result"]["action_id"] == "ptr-123"
         assert payload["last_pointer_action_result"]["status"] == "completed"
+        assert payload["last_pointer_action_result"]["reported_by"] == "helper-a"
+
+    def test_report_pointer_action_result_rejects_wrong_claim_token_for_claimed_action(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                    "claimed_by": "helper-a",
+                    "claimed_at": "2026-04-19T16:55:02+00:00",
+                },
+                "pending_pointer_claim_token": "claim-secret",
+            },
+        })
+
+        result = adapter.report_pointer_action_result_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            status="completed",
+            claim_token="claim-wrong",
+        )
+
+        assert result["success"] is False
+        assert result["action_claimed"] is True
+        assert result["claimed_by"] == "helper-a"
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_action"]["action_id"] == "ptr-123"
+
+    def test_report_pointer_action_result_rejects_claimed_action_when_server_token_is_missing(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                    "claimed_by": "helper-a",
+                    "claimed_at": "2026-04-19T16:55:02+00:00",
+                },
+                "pending_pointer_claim_token": "",
+            },
+        })
+
+        result = adapter.report_pointer_action_result_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            status="completed",
+        )
+
+        assert result["success"] is False
+        assert result["action_claimed"] is True
+        assert "valid claim_token is required" in result["error"]
+
+    def test_report_pointer_action_result_rejects_expired_claim_token(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_utc_now", lambda: adapter.datetime(2026, 4, 19, 17, 0, 0, tzinfo=adapter.timezone.utc), raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                    "claimed_by": "helper-a",
+                    "claimed_at": "2026-04-19T16:55:02+00:00",
+                    "claim_expires_at": "2026-04-19T16:56:02+00:00",
+                },
+                "pending_pointer_claim_token": "claim-secret",
+            },
+        })
+
+        result = adapter.report_pointer_action_result_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            status="completed",
+            claim_token="claim-secret",
+        )
+
+        assert result["success"] is False
+        assert result["claim_expired"] is True
+        assert "claim has expired" in result["error"]
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_action"]["action_id"] == "ptr-123"
 
     def test_report_pointer_action_result_rejects_mismatched_action_id(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
@@ -969,6 +1072,238 @@ class TestUnsupportedActions:
         assert result["app_session_required"] is True
         assert "app_session_id is required" in result["error"]
         assert adapter._APP_SESSIONS["notes"]["pending_pointer_action"]["action_id"] == "ptr-123"
+
+    def test_list_pending_pointer_actions_returns_only_active_pending_sessions(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                },
+            },
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            },
+            "finder": {
+                "app_name": "Finder",
+                "app_session_id": "app-3",
+                "active": False,
+                "approved": True,
+                "virtual_cursor": {"x": 1, "y": 2, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-inactive",
+                    "action_type": "scroll",
+                    "x": 1,
+                    "y": 2,
+                },
+            },
+        })
+
+        result = adapter.list_pending_pointer_actions_impl()
+
+        assert result["success"] is True
+        assert len(result["pending_actions"]) == 1
+        assert result["pending_actions"][0]["app_session_id"] == "app-2"
+        assert result["pending_actions"][0]["pending_pointer_action"]["action_id"] == "ptr-123"
+
+    def test_claim_pending_pointer_action_marks_pending_action_and_persists_state(self, monkeypatch, tmp_path):
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                },
+            },
+        })
+
+        result = adapter.claim_pending_pointer_action_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            worker_id="helper-a",
+        )
+
+        assert result["success"] is True
+        assert result["claimed"] is True
+        assert result["claim_token"].startswith("claim-")
+        assert result["pending_pointer_action"]["claimed_by"] == "helper-a"
+        assert result["pending_pointer_action"]["claimed_at"]
+        assert result["pending_pointer_action"]["claim_expires_at"]
+        state_path = Path(result["session_state_path"])
+        payload = json.loads(state_path.read_text())
+        assert payload["pending_pointer_action"]["action_id"] == "ptr-123"
+        assert payload["pending_pointer_action"]["claimed_by"] == "helper-a"
+        assert payload["pending_pointer_action"]["claimed_at"]
+        assert payload["pending_pointer_action"]["claim_expires_at"]
+
+    def test_claim_pending_pointer_action_rejects_reclaim_while_claim_is_unexpired(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                    "claimed_by": "helper-a",
+                    "claimed_at": "2026-04-19T16:55:02+00:00",
+                    "claim_expires_at": "2099-04-19T16:56:02+00:00",
+                },
+                "pending_pointer_claim_token": "claim-old",
+            },
+        })
+
+        result = adapter.claim_pending_pointer_action_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            worker_id="helper-a",
+        )
+
+        assert result["success"] is False
+        assert result["action_claimed"] is True
+        assert result["claimed_by"] == "helper-a"
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_claim_token"] == "claim-old"
+
+    def test_claim_pending_pointer_action_allows_reclaim_after_expiry(self, monkeypatch, tmp_path):
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        monkeypatch.setattr(adapter, "_utc_now", lambda: adapter.datetime(2026, 4, 19, 17, 0, 0, tzinfo=adapter.timezone.utc), raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                    "claimed_by": "helper-a",
+                    "claimed_at": "2026-04-19T16:50:00+00:00",
+                    "claim_expires_at": "2026-04-19T16:51:00+00:00",
+                },
+                "pending_pointer_claim_token": "claim-old",
+            },
+        })
+
+        result = adapter.claim_pending_pointer_action_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            worker_id="helper-b",
+        )
+
+        assert result["success"] is True
+        assert result["claim_token"].startswith("claim-")
+        assert result["claim_token"] != "claim-old"
+        assert result["pending_pointer_action"]["claimed_by"] == "helper-b"
+        assert result["pending_pointer_action"]["claim_expires_at"] == "2026-04-19T17:01:00+00:00"
+
+    def test_claim_pending_pointer_action_rejects_mismatched_action_id(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                },
+            },
+        })
+
+        result = adapter.claim_pending_pointer_action_impl(
+            app_session_id="app-2",
+            action_id="ptr-wrong",
+            worker_id="helper-a",
+        )
+
+        assert result["success"] is False
+        assert result["action_mismatch"] is True
+        assert adapter._APP_SESSIONS["notes"]["pending_pointer_action"]["action_id"] == "ptr-123"
+
+    def test_claim_pending_pointer_action_rejects_blank_app_session_id(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                },
+            },
+        })
+
+        result = adapter.claim_pending_pointer_action_impl(
+            app_session_id="   ",
+            action_id="ptr-123",
+        )
+
+        assert result["success"] is False
+        assert result["app_session_required"] is True
+        assert "app_session_id is required" in result["error"]
+
+    def test_claim_pending_pointer_action_requires_worker_id(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 50, "y": 60, "detached": True, "visible": True},
+                "pending_pointer_action": {
+                    "action_id": "ptr-123",
+                    "action_type": "click",
+                    "x": 50,
+                    "y": 60,
+                },
+            },
+        })
+
+        result = adapter.claim_pending_pointer_action_impl(
+            app_session_id="app-2",
+            action_id="ptr-123",
+            worker_id="   ",
+        )
+
+        assert result["success"] is False
+        assert result["worker_required"] is True
+        assert "worker_id is required" in result["error"]
 
     def test_click_stub_is_explicit(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {

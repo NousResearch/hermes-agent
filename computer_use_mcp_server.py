@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,26 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
 
 def _fresh_virtual_cursor() -> dict[str, Any]:
     return {"x": None, "y": None, "detached": True, "visible": True}
+
+
+_PENDING_POINTER_CLAIM_TTL_SECONDS = 60
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 _PIXEL_CURSOR_SCALE = 4
@@ -211,6 +232,7 @@ def _record_pending_pointer_action(session: dict[str, Any], action_type: str, **
         if value is not None:
             payload[key] = value
     session["pending_pointer_action"] = payload
+    session["pending_pointer_claim_token"] = ""
     session["last_pointer_action_result"] = None
     return payload
 
@@ -328,6 +350,20 @@ def list_active_sessions_impl() -> dict[str, Any]:
         "success": True,
         "session_id": _SESSION_ID,
         "active_sessions": _active_sessions(),
+    }
+
+
+def list_pending_pointer_actions_impl() -> dict[str, Any]:
+    pending_actions = [
+        _session_payload(record)
+        for record in _APP_SESSIONS.values()
+        if record.get("active") and _optional_dict(record, "pending_pointer_action")
+    ]
+    pending_actions.sort(key=lambda item: item["app_name"].casefold())
+    return {
+        "success": True,
+        "session_id": _SESSION_ID,
+        "pending_actions": pending_actions,
     }
 
 
@@ -638,7 +674,96 @@ def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id
     return response
 
 
+def claim_pending_pointer_action_impl(*, app_session_id: str, action_id: str, worker_id: str | None = None) -> dict[str, Any]:
+    wanted_session_id = str(app_session_id or "").strip()
+    if not wanted_session_id:
+        current = _current_active_session()
+        payload = _session_payload(current) if current else {}
+        return {
+            "success": False,
+            "app_session_required": True,
+            "session_id": _SESSION_ID,
+            **payload,
+            "error": "app_session_id is required",
+        }
+
+    session = _resolve_session(app_session_id=wanted_session_id)
+    if not session:
+        return _session_required_error("claiming pointer actions")
+
+    pending = session.get("pending_pointer_action")
+    if not isinstance(pending, dict):
+        return {
+            "success": False,
+            "action_required": True,
+            "session_id": _SESSION_ID,
+            **_session_payload(session),
+            "error": "No pending pointer action is available to claim.",
+        }
+
+    wanted_action_id = str(action_id or "").strip()
+    if not wanted_action_id:
+        return {
+            "success": False,
+            "session_id": _SESSION_ID,
+            **_session_payload(session),
+            "error": "action_id is required",
+        }
+
+    if str(pending.get("action_id") or "").strip() != wanted_action_id:
+        return {
+            "success": False,
+            "action_mismatch": True,
+            "session_id": _SESSION_ID,
+            "expected_action_id": pending.get("action_id"),
+            "received_action_id": wanted_action_id,
+            **_session_payload(session),
+            "error": "Pending pointer action does not match the claimed action_id.",
+        }
+
+    claimer = str(worker_id or "").strip()
+    if not claimer:
+        return {
+            "success": False,
+            "worker_required": True,
+            "session_id": _SESSION_ID,
+            **_session_payload(session),
+            "error": "worker_id is required",
+        }
+    existing_claimer = str(pending.get("claimed_by") or "").strip()
+    claim_token = str(session.get("pending_pointer_claim_token") or "").strip()
+    claim_expires_at = _parse_iso_datetime(pending.get("claim_expires_at"))
+    now = _utc_now()
+    if existing_claimer:
+        claim_is_active = claim_expires_at is None or claim_expires_at > now
+        if claim_is_active:
+            return {
+                "success": False,
+                "action_claimed": True,
+                "session_id": _SESSION_ID,
+                "claimed_by": existing_claimer,
+                **_session_payload(session),
+                "error": f"Pending pointer action is already claimed by {existing_claimer}.",
+            }
+
+    pending["claimed_by"] = claimer
+    pending["claimed_at"] = now.isoformat()
+    pending["claim_expires_at"] = (now + timedelta(seconds=_PENDING_POINTER_CLAIM_TTL_SECONDS)).isoformat()
+    claim_token = f"claim-{uuid.uuid4().hex}"
+    session["pending_pointer_claim_token"] = claim_token
+    _sync_session_artifacts(session)
+
+    return {
+        "success": True,
+        "claimed": True,
+        "claim_token": claim_token,
+        "session_id": _SESSION_ID,
+        **_session_payload(session),
+    }
+
+
 def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, status: str,
+                                      claim_token: str | None = None,
                                       x: int | None = None, y: int | None = None,
                                       error: str | None = None) -> dict[str, Any]:
     wanted_session_id = str(app_session_id or "").strip()
@@ -687,6 +812,39 @@ def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, st
             "error": "Pending pointer action does not match the reported action_id.",
         }
 
+    provided_claim_token = str(claim_token or "").strip()
+    existing_claimer = str(pending.get("claimed_by") or "").strip()
+    required_claim_token = str(session.get("pending_pointer_claim_token") or "").strip()
+    claim_expires_at = _parse_iso_datetime(pending.get("claim_expires_at"))
+    now = _utc_now()
+    if existing_claimer and claim_expires_at is not None and claim_expires_at <= now:
+        return {
+            "success": False,
+            "claim_expired": True,
+            "session_id": _SESSION_ID,
+            "claimed_by": existing_claimer,
+            **_session_payload(session),
+            "error": f"Pending pointer action claim has expired for {existing_claimer}; reclaim it before reporting the result.",
+        }
+    if existing_claimer and not required_claim_token:
+        return {
+            "success": False,
+            "action_claimed": True,
+            "session_id": _SESSION_ID,
+            "claimed_by": existing_claimer,
+            **_session_payload(session),
+            "error": f"Pending pointer action is claimed by {existing_claimer}; a valid claim_token is required to report the result.",
+        }
+    if existing_claimer and provided_claim_token != required_claim_token:
+        return {
+            "success": False,
+            "action_claimed": True,
+            "session_id": _SESSION_ID,
+            "claimed_by": existing_claimer,
+            **_session_payload(session),
+            "error": f"Pending pointer action is claimed by {existing_claimer}; a valid claim_token is required to report the result.",
+        }
+
     normalized_status = str(status or "").strip().lower()
     if normalized_status not in {"completed", "failed"}:
         return {
@@ -706,6 +864,8 @@ def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, st
         **pending,
         "status": normalized_status,
     }
+    if existing_claimer:
+        result_payload["reported_by"] = existing_claimer
     if x is not None:
         result_payload["x"] = x
     if y is not None:
@@ -714,6 +874,7 @@ def report_pointer_action_result_impl(*, app_session_id: str, action_id: str, st
         result_payload["error"] = error
 
     session["pending_pointer_action"] = None
+    session["pending_pointer_claim_token"] = ""
     session["last_pointer_action_result"] = result_payload
     _sync_session_artifacts(session)
     return {
@@ -741,6 +902,11 @@ if mcp:
     def list_active_sessions() -> dict[str, Any]:
         """List currently active Hermes computer-use app sessions."""
         return list_active_sessions_impl()
+
+    @mcp.tool()
+    def list_pending_pointer_actions() -> dict[str, Any]:
+        """List active app sessions that currently have unresolved pending pointer actions for a helper."""
+        return list_pending_pointer_actions_impl()
 
     @mcp.tool()
     def stop_app_session(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
@@ -800,7 +966,13 @@ if mcp:
         return drag_impl(start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y, app_session_id=app_session_id)
 
     @mcp.tool()
+    def claim_pending_pointer_action(app_session_id: str, action_id: str, worker_id: str) -> dict[str, Any]:
+        """Helper-facing bridge: claim an unresolved pending pointer action for a specific app session."""
+        return claim_pending_pointer_action_impl(app_session_id=app_session_id, action_id=action_id, worker_id=worker_id)
+
+    @mcp.tool()
     def report_pointer_action_result(app_session_id: str, action_id: str, status: str,
+                                     claim_token: str | None = None,
                                      x: int | None = None, y: int | None = None,
                                      error: str | None = None) -> dict[str, Any]:
         """Helper-facing bridge: report the execution result of a pending pointer action for an app session."""
@@ -808,6 +980,7 @@ if mcp:
             app_session_id=app_session_id,
             action_id=action_id,
             status=status,
+            claim_token=claim_token,
             x=x,
             y=y,
             error=error,

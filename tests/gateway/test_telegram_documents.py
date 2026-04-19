@@ -82,8 +82,8 @@ def _make_document(
     return doc
 
 
-def _make_message(document=None, caption=None, media_group_id=None, photo=None):
-    """Build a mock Telegram Message with the given document/photo."""
+def _make_message(document=None, caption=None, media_group_id=None, photo=None, video=None):
+    """Build a mock Telegram Message with the given document/photo/video."""
     msg = MagicMock()
     msg.message_id = 42
     msg.text = caption or ""
@@ -91,7 +91,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     msg.date = None
     # Media flags — all None except explicit payload
     msg.photo = photo
-    msg.video = None
+    msg.video = video
     msg.audio = None
     msg.voice = None
     msg.sticker = None
@@ -173,6 +173,26 @@ def _make_photo(file_obj=None):
     return photo
 
 
+def _make_video(
+    file_name="clip.mp4",
+    mime_type="video/mp4",
+    file_size=2048,
+    duration=7,
+    width=1280,
+    height=720,
+    file_obj=None,
+):
+    video = MagicMock()
+    video.file_name = file_name
+    video.mime_type = mime_type
+    video.file_size = file_size
+    video.duration = duration
+    video.width = width
+    video.height = height
+    video.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"video-bytes"))
+    return video
+
+
 class TestDocumentDownloadBlock:
     @pytest.mark.asyncio
     async def test_supported_pdf_is_cached(self, adapter):
@@ -246,6 +266,50 @@ class TestDocumentDownloadBlock:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls and event.media_urls[0].endswith("archive.zip")
         assert event.media_types == ["application/zip"]
+
+    @pytest.mark.asyncio
+    async def test_native_video_is_cached_with_metadata(self, adapter):
+        file_obj = _make_file_obj(b"\x00\x00\x00 ftypisomvideo")
+        file_obj.file_path = "videos/from-telegram.mp4"
+        video = _make_video(file_obj=file_obj)
+        msg = _make_message(video=video, caption="Разбери это видео")
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["video/mp4"]
+        assert "Video attachment metadata" in event.text
+        assert "clip.mp4" in event.text
+        assert "duration=7s" in event.text
+        assert "size=2048 bytes" in event.text
+        assert "Разбери это видео" in event.text
+
+    @pytest.mark.asyncio
+    async def test_video_document_is_cached_as_video_with_metadata(self, adapter):
+        file_obj = _make_file_obj(b"\x00\x00\x00 ftypisomdocumentvideo")
+        file_obj.file_path = "documents/from-telegram.mp4"
+        doc = _make_document(
+            file_name="sent-as-file.mp4",
+            mime_type="video/mp4",
+            file_size=4096,
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc, caption="Это прислано как файл")
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["video/mp4"]
+        assert "Video attachment metadata" in event.text
+        assert "sent-as-file.mp4" in event.text
+        assert "size=4096 bytes" in event.text
+        assert "Это прислано как файл" in event.text
 
     @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):

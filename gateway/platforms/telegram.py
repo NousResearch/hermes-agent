@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import html as _html
 import re
@@ -2568,6 +2569,57 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
 
+        # Download native Telegram videos to cache so the agent can inspect the
+        # exact file that was uploaded instead of guessing from local Downloads.
+        if msg.video:
+            try:
+                video = msg.video
+                file_obj = await video.get_file()
+                video_bytes = await file_obj.download_as_bytearray()
+
+                original_filename = getattr(video, "file_name", None) or ""
+                ext = ""
+                if original_filename:
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+                if not ext and getattr(video, "mime_type", None):
+                    guessed_ext = mimetypes.guess_extension(video.mime_type, strict=False) or ""
+                    if guessed_ext == ".mpe":
+                        guessed_ext = ".mpeg"
+                    ext = guessed_ext.lower()
+                if not ext and getattr(file_obj, "file_path", None):
+                    _, ext = os.path.splitext(file_obj.file_path)
+                    ext = ext.lower()
+                if not ext:
+                    ext = ".mp4"
+
+                mime_type = getattr(video, "mime_type", None) or mimetypes.guess_type(f"video{ext}")[0] or "video/mp4"
+                filename = original_filename or f"telegram_video{ext}"
+                cached_path = cache_document_from_bytes(bytes(video_bytes), filename)
+                event.media_urls = [cached_path]
+                event.media_types = [mime_type]
+
+                metadata_parts = []
+                if filename:
+                    metadata_parts.append(f"filename={filename}")
+                duration = getattr(video, "duration", None)
+                if duration is not None:
+                    metadata_parts.append(f"duration={duration}s")
+                width = getattr(video, "width", None)
+                height = getattr(video, "height", None)
+                if width and height:
+                    metadata_parts.append(f"resolution={width}x{height}")
+                file_size = getattr(video, "file_size", None)
+                if file_size is not None:
+                    metadata_parts.append(f"size={file_size} bytes")
+                if mime_type:
+                    metadata_parts.append(f"mime={mime_type}")
+                metadata_note = "[Video attachment metadata: " + ", ".join(metadata_parts) + "]"
+                event.text = f"{metadata_note}\n\n{event.text}" if event.text else metadata_note
+                logger.info("[Telegram] Cached user video at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
+
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
             try:
@@ -2606,16 +2658,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(doc.mime_type, "")
 
-                # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
-                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                    event.text = (
-                        f"Unsupported document type '{ext or 'unknown'}'. "
-                        f"Supported types: {supported_list}"
-                    )
-                    logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
-                    return
+                doc_mime_type = getattr(doc, "mime_type", None) or mimetypes.guess_type(original_filename or "")[0] or ""
+                video_exts = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".mpeg", ".mpg", ".m4v"}
+                is_video_document = bool(doc_mime_type.startswith("video/")) or ext in video_exts
 
                 # Check file size (Telegram Bot API limit: 20 MB)
                 MAX_DOC_BYTES = 20 * 1024 * 1024
@@ -2628,33 +2673,67 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
-                # Download and cache
-                file_obj = await doc.get_file()
-                doc_bytes = await file_obj.download_as_bytearray()
-                raw_bytes = bytes(doc_bytes)
-                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
-                event.media_urls = [cached_path]
-                event.media_types = [mime_type]
-                logger.info("[Telegram] Cached user document at %s", cached_path)
+                # Video files sent as Telegram documents should still be treated as videos.
+                if is_video_document:
+                    file_obj = await doc.get_file()
+                    video_bytes = await file_obj.download_as_bytearray()
+                    video_mime_type = doc_mime_type or mimetypes.guess_type(f"video{ext or '.mp4'}")[0] or "video/mp4"
+                    filename = original_filename or f"telegram_video{ext or '.mp4'}"
+                    cached_path = cache_document_from_bytes(bytes(video_bytes), filename)
+                    event.message_type = MessageType.VIDEO
+                    event.media_urls = [cached_path]
+                    event.media_types = [video_mime_type]
 
-                # For text files, inject content into event.text (capped at 100 KB)
-                MAX_TEXT_INJECT_BYTES = 100 * 1024
-                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                    try:
-                        text_content = raw_bytes.decode("utf-8")
-                        display_name = original_filename or f"document{ext}"
-                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                        injection = f"[Content of {display_name}]:\n{text_content}"
-                        if event.text:
-                            event.text = f"{injection}\n\n{event.text}"
-                        else:
-                            event.text = injection
-                    except UnicodeDecodeError:
-                        logger.warning(
-                            "[Telegram] Could not decode text file as UTF-8, skipping content injection",
-                            exc_info=True,
+                    metadata_parts = []
+                    if filename:
+                        metadata_parts.append(f"filename={filename}")
+                    file_size = getattr(doc, "file_size", None)
+                    if file_size is not None:
+                        metadata_parts.append(f"size={file_size} bytes")
+                    if video_mime_type:
+                        metadata_parts.append(f"mime={video_mime_type}")
+                    metadata_note = "[Video attachment metadata: " + ", ".join(metadata_parts) + "]"
+                    event.text = f"{metadata_note}\n\n{event.text}" if event.text else metadata_note
+                    logger.info("[Telegram] Cached user video document at %s", cached_path)
+                else:
+                    # Check if supported
+                    if ext not in SUPPORTED_DOCUMENT_TYPES:
+                        supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
+                        event.text = (
+                            f"Unsupported document type '{ext or 'unknown'}'. "
+                            f"Supported types: {supported_list}"
                         )
+                        logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
+                        await self.handle_message(event)
+                        return
+
+                    # Download and cache
+                    file_obj = await doc.get_file()
+                    doc_bytes = await file_obj.download_as_bytearray()
+                    raw_bytes = bytes(doc_bytes)
+                    cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
+                    mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+                    event.media_urls = [cached_path]
+                    event.media_types = [mime_type]
+                    logger.info("[Telegram] Cached user document at %s", cached_path)
+
+                    # For text files, inject content into event.text (capped at 100 KB)
+                    MAX_TEXT_INJECT_BYTES = 100 * 1024
+                    if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                        try:
+                            text_content = raw_bytes.decode("utf-8")
+                            display_name = original_filename or f"document{ext}"
+                            display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                            injection = f"[Content of {display_name}]:\n{text_content}"
+                            if event.text:
+                                event.text = f"{injection}\n\n{event.text}"
+                            else:
+                                event.text = injection
+                        except UnicodeDecodeError:
+                            logger.warning(
+                                "[Telegram] Could not decode text file as UTF-8, skipping content injection",
+                                exc_info=True,
+                            )
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)

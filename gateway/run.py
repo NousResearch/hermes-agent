@@ -3591,6 +3591,23 @@ class GatewayRunner:
                         except Exception:
                             pass
 
+        if event.media_urls and event.message_type == MessageType.VIDEO:
+            import os as _os
+            import re as _re
+
+            for path in event.media_urls:
+                basename = _os.path.basename(path)
+                parts = basename.split("_", 2)
+                display_name = parts[2] if len(parts) >= 3 else basename
+                display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
+                context_note = (
+                    f"[The user sent a video file: '{display_name}'. "
+                    f"The exact cached file is saved at: {path}. "
+                    f"Use this exact file for any video/audio/frame analysis instead of guessing another local file.]"
+                )
+                if context_note not in message_text:
+                    message_text = f"{context_note}\n\n{message_text}" if message_text else context_note
+
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
 

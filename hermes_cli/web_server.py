@@ -1665,6 +1665,54 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Conversations API (cleaned conversation browser)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/conversations")
+async def get_conversations(q: str = "", source: str = "all", limit: int = 500, offset: int = 0):
+    try:
+        from hermes_cli.dashboard_conversations import list_conversations
+
+        return list_conversations(q=q, source=source, limit=limit, offset=offset)
+    except Exception:
+        _log.exception("GET /api/conversations failed")
+        raise HTTPException(status_code=500, detail="Failed to load conversations")
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+async def get_conversation_messages_endpoint(conversation_id: str):
+    try:
+        from hermes_cli.dashboard_conversations import (
+            ConversationNotFoundError,
+            get_conversation_messages,
+        )
+
+        return get_conversation_messages(conversation_id)
+    except ConversationNotFoundError:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except Exception:
+        _log.exception("GET /api/conversations/%s/messages failed", conversation_id)
+        raise HTTPException(status_code=500, detail="Failed to load conversation messages")
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation_endpoint(conversation_id: str):
+    try:
+        from hermes_cli.dashboard_conversations import (
+            ConversationNotFoundError,
+            delete_conversation,
+        )
+
+        return delete_conversation(conversation_id)
+    except ConversationNotFoundError:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except Exception:
+        _log.exception("DELETE /api/conversations/%s failed", conversation_id)
+        raise HTTPException(status_code=500, detail="Failed to delete conversation")
+
+
+# ---------------------------------------------------------------------------
 # Session detail endpoints
 # ---------------------------------------------------------------------------
 

@@ -38,6 +38,20 @@ export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
+  getConversations: (params: { q?: string; source?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.source) qs.set("source", params.source);
+    qs.set("limit", String(params.limit ?? 500));
+    qs.set("offset", String(params.offset ?? 0));
+    return fetchJSON<PaginatedConversations>(`/api/conversations?${qs.toString()}`);
+  },
+  getConversationMessages: (id: string) =>
+    fetchJSON<ConversationMessagesResponse>(`/api/conversations/${encodeURIComponent(id)}/messages`),
+  deleteConversation: (id: string) =>
+    fetchJSON<{ ok: boolean; deleted_sessions: number; deleted_messages: number }>(`/api/conversations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   deleteSession: (id: string) =>
@@ -241,11 +255,39 @@ export interface SessionInfo {
   preview: string | null;
 }
 
+export interface ConversationInfo {
+  id: string;
+  source: string | null;
+  model: string | null;
+  title: string | null;
+  preview: string | null;
+  started_at: number;
+  ended_at: number | null;
+  last_active: number;
+  is_active: boolean;
+  message_count: number;
+  snippet: string;
+  thread_session_count: number;
+  thread_message_count: number;
+  thread_root_id: string;
+}
+
 export interface PaginatedSessions {
   sessions: SessionInfo[];
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface PaginatedConversations {
+  sessions: ConversationInfo[];
+  total: number;
+  all_total: number;
+  limit: number;
+  offset: number;
+  sources: string[];
+  source: string;
+  mode: string;
 }
 
 export interface EnvVarInfo {
@@ -260,6 +302,7 @@ export interface EnvVarInfo {
 }
 
 export interface SessionMessage {
+  id?: number | string;
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
   tool_calls?: Array<{
@@ -274,6 +317,13 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+}
+
+export interface ConversationMessagesResponse {
+  session_id: string;
+  messages: SessionMessage[];
+  visible_count: number;
+  thread_session_count: number;
 }
 
 export interface LogsResponse {

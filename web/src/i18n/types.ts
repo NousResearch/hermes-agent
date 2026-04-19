@@ -56,6 +56,7 @@ export interface Translations {
     };
     nav: {
       status: string;
+      conversations: string;
       sessions: string;
       analytics: string;
       logs: string;
@@ -108,6 +109,59 @@ export interface Translations {
       assistant: string;
       system: string;
       tool: string;
+    };
+  };
+
+  // ── Conversations page ──
+  conversations: {
+    title: string;
+    subtitle: string;
+    searchPlaceholder: string;
+    searching: string;
+    active: string;
+    recent: string;
+    noConversations: string;
+    noMatch: string;
+    selectConversation: string;
+    noVisibleMessages: string;
+    loadingConversations: string;
+    loadingTranscript: string;
+    listError: string;
+    transcriptError: string;
+    transcript: string;
+    backToList: string;
+    deleteConversation: string;
+    loadMore: string;
+    visibleMessages: string;
+    linkedSessions: string;
+    updated: string;
+    sourceLabels: {
+      all: string;
+      cli: string;
+      telegram: string;
+      cron: string;
+      discord: string;
+      slack: string;
+      whatsapp: string;
+      signal: string;
+      matrix: string;
+      api_server: string;
+      email: string;
+      sms: string;
+      local: string;
+      dingtalk: string;
+      wecom_callback: string;
+      weixin: string;
+      bluebubbles: string;
+      homeassistant: string;
+      qqbot: string;
+      webhook: string;
+      mattermost: string;
+      feishu: string;
+      wecom: string;
+      acp: string;
+      tool: string;
+      unknown: string;
     };
   };
 

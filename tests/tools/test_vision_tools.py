@@ -676,6 +676,19 @@ class TestVisionRegistration:
         assert "image_url" in props
         assert "question" in props
 
+    def test_schema_describes_local_and_rendered_image_support(self):
+        from tools.registry import registry
+
+        entry = registry._tools.get("vision_analyze")
+        schema = entry.schema
+        props = schema["parameters"]["properties"]
+
+        assert "HTTP/HTTPS URL or local image file path" in schema["description"]
+        assert "screenshots, diagrams, charts, photos, and page captures" in schema["description"]
+        assert "Not for raw PDF parsing" in schema["description"]
+        assert "file:// image URI" in props["image_url"]["description"]
+        assert "first understand the image itself" in props["question"]["description"]
+
     def test_handler_is_callable(self):
         from tools.registry import registry
 

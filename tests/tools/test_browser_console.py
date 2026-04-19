@@ -16,6 +16,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 class TestBrowserConsole:
     """browser_console() returns console messages + JS errors in one call."""
 
+    def test_expression_mode_delegates_to_browser_eval(self):
+        from tools.browser_tool import browser_console
+
+        with (
+            patch("tools.browser_tool._browser_eval", return_value='{"success": true, "result": "Doc title"}') as mock_eval,
+            patch("tools.browser_tool._run_browser_command") as mock_cmd,
+        ):
+            result = browser_console(expression="document.title", task_id="test")
+
+        assert json.loads(result)["result"] == "Doc title"
+        mock_eval.assert_called_once_with("document.title", "test")
+        mock_cmd.assert_not_called()
+
     def test_returns_console_messages_and_errors(self):
         from tools.browser_tool import browser_console
 
@@ -116,6 +129,18 @@ class TestBrowserConsoleSchema:
         assert "clear" in props
         assert props["clear"]["type"] == "boolean"
 
+    def test_schema_describes_rendered_page_state_inspection(self):
+        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+
+        console_schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_console")
+        get_images_schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_get_images")
+        vision_schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_vision")
+
+        assert "browser-rendered document viewers" in console_schema["description"]
+        assert "live page context" in console_schema["description"]
+        assert "rendered documents, slide decks, diagrams" in get_images_schema["description"]
+        assert "rendered PDF pages, slide decks, diagrams, charts" in vision_schema["description"]
+
 
 class TestBrowserConsoleToolsetWiring:
     """browser_console must be reachable via toolset resolution."""
@@ -192,6 +217,38 @@ class TestBrowserVisionAnnotate:
                 args = mock_cmd.call_args[0]
                 cmd_args = args[2] if len(args) > 2 else []
                 assert "--annotate" in cmd_args
+
+    def test_success_returns_screenshot_path_and_annotations(self, tmp_path):
+        from tools.browser_tool import browser_vision
+
+        screenshot = tmp_path / "page.png"
+        screenshot.write_bytes(b"fake-image-bytes")
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Rendered PDF page with a chart"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("tools.browser_tool._run_browser_command") as mock_cmd,
+            patch("tools.browser_tool.call_llm", return_value=mock_response),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("agent.redact.redact_sensitive_text", side_effect=lambda text: text),
+        ):
+            mock_cmd.return_value = {
+                "success": True,
+                "data": {
+                    "path": str(screenshot),
+                    "annotations": [{"label": 1, "ref": "@e1"}],
+                },
+            }
+
+            result = json.loads(browser_vision("Inspect this document page", annotate=True, task_id="test"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Rendered PDF page with a chart"
+        assert result["screenshot_path"] == str(screenshot)
+        assert result["annotations"] == [{"label": 1, "ref": "@e1"}]
 
 
 # ── auto-recording config ────────────────────────────────────────────

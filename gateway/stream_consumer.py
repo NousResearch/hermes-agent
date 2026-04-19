@@ -571,6 +571,30 @@ class GatewayStreamConsumer:
             if final_text.strip() and final_text != self._visible_prefix():
                 continuation = final_text
             else:
+                # Defence-in-depth for #7183: the last edit may still show the
+                # cursor character because fallback mode was entered after an
+                # edit failure left it stuck.  Try one final edit to strip it
+                # so the message doesn't freeze with a visible ▉.  Best-effort
+                # — if this edit also fails (flood control still active),
+                # _try_strip_cursor has already been called on fallback entry
+                # and the adaptive-backoff retries will have had their shot.
+                if (
+                    self._message_id
+                    and self._last_sent_text
+                    and self.cfg.cursor
+                    and self._last_sent_text.endswith(self.cfg.cursor)
+                ):
+                    clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
+                    try:
+                        result = await self.adapter.edit_message(
+                            chat_id=self.chat_id,
+                            message_id=self._message_id,
+                            content=clean_text,
+                        )
+                        if result.success:
+                            self._last_sent_text = clean_text
+                    except Exception:
+                        pass
                 self._already_sent = True
                 self._final_response_sent = True
                 return

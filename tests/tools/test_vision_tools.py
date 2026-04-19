@@ -258,6 +258,35 @@ class TestHandleVisionAnalyze:
             result.close()
 
 
+class TestVisionAnalyzeTokenBudget:
+    @pytest.mark.asyncio
+    async def test_max_tokens_override_reaches_async_call(self, tmp_path):
+        img = tmp_path / "small.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Small image"
+        mock_response.choices = [mock_choice]
+
+        with patch(
+            "tools.vision_tools.async_call_llm",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_llm:
+            result = json.loads(
+                await vision_analyze_tool(
+                    str(img),
+                    "describe this",
+                    "test/model",
+                    max_tokens=321,
+                )
+            )
+
+        assert result["success"] is True
+        assert mock_llm.await_args.kwargs["max_tokens"] == 321
+
+
 # ---------------------------------------------------------------------------
 # Error logging with exc_info — verify tracebacks are logged
 # ---------------------------------------------------------------------------

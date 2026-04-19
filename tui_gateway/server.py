@@ -27,7 +27,7 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
-_pending: dict[str, threading.Event] = {}
+_pending: dict[str, tuple[str, threading.Event]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _stdout_lock = threading.Lock()
@@ -296,7 +296,7 @@ def _enable_gateway_prompts() -> None:
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
-    _pending[rid] = ev
+    _pending[rid] = (sid, ev)
     payload["request_id"] = rid
     _emit(event, sid, payload)
     ev.wait(timeout=timeout)
@@ -304,10 +304,19 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     return _answers.pop(rid, "")
 
 
-def _clear_pending():
-    for rid, ev in list(_pending.items()):
-        _answers[rid] = ""
-        ev.set()
+def _clear_pending(sid: str | None = None) -> None:
+    """Release pending prompts with an empty answer.
+
+    When *sid* is provided, only prompts owned by that session are
+    released — critical for session.interrupt, which must not
+    collaterally cancel clarify/sudo/secret prompts on unrelated
+    sessions sharing the same tui_gateway process.  When *sid* is
+    None, every pending prompt is released (used during shutdown).
+    """
+    for rid, (owner_sid, ev) in list(_pending.items()):
+        if sid is None or owner_sid == sid:
+            _answers[rid] = ""
+            ev.set()
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -1345,7 +1354,11 @@ def _(rid, params: dict) -> dict:
         return err
     if hasattr(session["agent"], "interrupt"):
         session["agent"].interrupt()
-    _clear_pending()
+    # Scope the pending-prompt release to THIS session.  A global
+    # _clear_pending() would collaterally cancel clarify/sudo/secret
+    # prompts on unrelated sessions sharing the same tui_gateway
+    # process, silently resolving them to empty strings.
+    _clear_pending(params.get("session_id", ""))
     try:
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
@@ -1684,9 +1697,10 @@ def _(rid, params: dict) -> dict:
 
 def _respond(rid, params, key):
     r = params.get("request_id", "")
-    ev = _pending.get(r)
-    if not ev:
+    entry = _pending.get(r)
+    if not entry:
         return _err(rid, 4009, f"no pending {key} request")
+    _, ev = entry
     _answers[r] = params.get(key, "")
     ev.set()
     return _ok(rid, {"status": "ok"})

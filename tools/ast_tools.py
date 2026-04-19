@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Hermes-native structural code inspection for Python, JSON, JavaScript, and TypeScript."""
+"""Hermes-native structural code inspection for local repo/code grounding.
+
+These AST tools remain lightweight built-in structure inspectors, but their primary
+product framing is the canonical `repo-code-knowledge` surface: helping the model
+inspect local source definitions and structural nodes without reaching for external
+indexers or networked code search.
+"""
 
 from __future__ import annotations
 
@@ -42,7 +48,7 @@ LANGUAGE_BY_SUFFIX = {
 
 AST_LIST_DEFS_SCHEMA = {
     "name": "ast_list_defs",
-    "description": "List structural definitions from local Python, JSON, JavaScript, or TypeScript files using Hermes-native parsers.",
+    "description": "List structural definitions from local Python, JSON, JavaScript, or TypeScript files using Hermes-native parsers. This is a built-in repo/code knowledge primitive for local source grounding and structural inventory.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -59,7 +65,7 @@ AST_LIST_DEFS_SCHEMA = {
 
 AST_FIND_NODES_SCHEMA = {
     "name": "ast_find_nodes",
-    "description": "Find structural nodes from local Python, JSON, JavaScript, or TypeScript files by node type and/or display name.",
+    "description": "Find structural nodes from local Python, JSON, JavaScript, or TypeScript files by node type and/or display name. This is a built-in repo/code knowledge primitive for local source grounding and targeted structural lookup.",
     "parameters": {
         "type": "object",
         "properties": {

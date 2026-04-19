@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""File Tools Module - LLM agent file manipulation tools."""
+"""File tools for local file retrieval, search, and editing.
+
+These tools remain general-purpose filesystem primitives, but they are also
+part of Hermes's built-in ``repo-code-knowledge`` surface. Their wording and
+result metadata should therefore make local repo/code grounding obvious without
+breaking existing file-tool callers.
+"""
 
 import errno
+import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from tools.binary_extensions import has_binary_extension
@@ -13,6 +21,8 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+_REPLACE_HASHLINE_RE = re.compile(r"^\s*#\s*HASHLINE\s+sha256:([0-9a-fA-F]{64})\s*$")
+_PATCH_HASHLINE_RE = re.compile(r"^\*\*\*\s+Hashline:\s+(.+?)\s+sha256:([0-9a-fA-F]{64})\s*$")
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
@@ -115,6 +125,60 @@ def _check_sensitive_path(filepath: str) -> str | None:
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
+    return None
+
+
+def _compute_file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(os.path.expanduser(path), "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _extract_replace_hashline(payload: str) -> tuple[str | None, str]:
+    if not isinstance(payload, str):
+        return None, payload
+    if "\n" in payload:
+        first_line, remainder = payload.split("\n", 1)
+    else:
+        first_line, remainder = payload, ""
+    match = _REPLACE_HASHLINE_RE.match(first_line)
+    if not match:
+        return None, payload
+    return match.group(1).lower(), remainder
+
+
+def _extract_patch_hashlines(payload: str) -> tuple[dict[str, str], str]:
+    if not isinstance(payload, str):
+        return {}, payload
+    expected_hashes: dict[str, str] = {}
+    kept_lines: list[str] = []
+    for line in payload.splitlines():
+        match = _PATCH_HASHLINE_RE.match(line)
+        if match:
+            expected_hashes[match.group(1).strip()] = match.group(2).lower()
+            continue
+        kept_lines.append(line)
+    rebuilt = "\n".join(kept_lines)
+    if payload.endswith("\n"):
+        rebuilt += "\n"
+    return expected_hashes, rebuilt
+
+
+def _validate_hashline_expectation(path: str, expected_sha256: str) -> str | None:
+    expanded = os.path.expanduser(path)
+    if not os.path.exists(expanded):
+        return f"HASHLINE validation failed: file not found: {path}"
+    try:
+        current_hash = _compute_file_sha256(expanded)
+    except Exception as exc:
+        return f"HASHLINE validation failed for {path}: {exc}"
+    if current_hash.lower() != str(expected_sha256 or "").lower():
+        return (
+            f"HASHLINE validation failed for {path}: expected sha256:{expected_sha256}, "
+            f"got sha256:{current_hash}. Re-read the file before editing."
+        )
     return None
 
 
@@ -500,6 +564,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
+        result_dict = _annotate_repo_code_knowledge_result(
+            result_dict,
+            operation="read_file",
+        )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -595,6 +663,20 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
+def _annotate_repo_code_knowledge_result(result_dict: dict, *, operation: str) -> dict:
+    """Add additive repo/code knowledge metadata to file-tool results."""
+    result_dict.setdefault(
+        "knowledge_surface",
+        {
+            "surface": "repo-code-knowledge",
+            "surface_role": "local-file-grounding",
+            "operation": operation,
+            "source": "builtin",
+        },
+    )
+    return result_dict
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
     sensitive_err = _check_sensitive_path(path)
@@ -623,6 +705,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
+    old_string_hash = None
+    patch_hashes: dict[str, str] = {}
+    if mode == "replace" and isinstance(old_string, str):
+        old_string_hash, old_string = _extract_replace_hashline(old_string)
+    elif mode == "patch" and isinstance(patch, str):
+        patch_hashes, patch = _extract_patch_hashlines(patch)
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
@@ -635,6 +723,19 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p)
         if sensitive_err:
             return tool_error(sensitive_err)
+    if mode == "replace" and old_string_hash:
+        hashline_err = _validate_hashline_expectation(path or "", old_string_hash)
+        if hashline_err:
+            return tool_error(hashline_err)
+    if mode == "patch" and patch_hashes:
+        for _p in _paths_to_check:
+            if _p not in patch_hashes:
+                return tool_error(
+                    f"HASHLINE validation failed: missing '*** Hashline: {_p} sha256:...' for patched file {_p}"
+                )
+            hashline_err = _validate_hashline_expectation(_p, patch_hashes[_p])
+            if hashline_err:
+                return tool_error(hashline_err)
     try:
         # Check staleness for all files this patch will touch.
         stale_warnings = []
@@ -725,7 +826,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content)
-        result_dict = result.to_dict()
+        result_dict = _annotate_repo_code_knowledge_result(
+            result.to_dict(),
+            operation="search_files",
+        )
 
         if count >= 3:
             result_dict["_warning"] = (
@@ -759,7 +863,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. This is also a built-in repo/code knowledge primitive for local source grounding. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -803,7 +907,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. This is also a built-in repo/code knowledge primitive for local source retrieval and codebase grounding. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {

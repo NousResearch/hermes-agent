@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Local-first LSP tools for document symbols, definitions, and diagnostics."""
+"""Local-first LSP tools for repo/code grounding via document symbols, definitions, and diagnostics.
+
+These LSP helpers stay local-first and host-dependent, but their primary product
+framing is the canonical `repo-code-knowledge` surface: deeper semantic grounding
+inside a local codebase when AST-only structure is not enough.
+"""
 
 from __future__ import annotations
 
@@ -180,7 +185,7 @@ class _LspSession:
 
 LSP_DOCUMENT_SYMBOLS_SCHEMA = {
     "name": "lsp_document_symbols",
-    "description": "Get document symbols for a source file using a local Language Server Protocol server. Supports explicit server_command or local auto-detection by language.",
+    "description": "Get document symbols for a source file using a local Language Server Protocol server. Supports explicit server_command or local auto-detection by language. This is a built-in repo/code knowledge primitive for semantic local source grounding.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -195,7 +200,7 @@ LSP_DOCUMENT_SYMBOLS_SCHEMA = {
 
 LSP_DEFINITION_SCHEMA = {
     "name": "lsp_definition",
-    "description": "Resolve definitions at a zero-based line/character position using a local LSP server.",
+    "description": "Resolve definitions at a zero-based line/character position using a local LSP server. This is a built-in repo/code knowledge primitive for semantic local source grounding.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -212,7 +217,7 @@ LSP_DEFINITION_SCHEMA = {
 
 LSP_DIAGNOSTICS_SCHEMA = {
     "name": "lsp_diagnostics",
-    "description": "Request file diagnostics from a local LSP server using textDocument/diagnostic.",
+    "description": "Request file diagnostics from a local LSP server using textDocument/diagnostic. This is a built-in repo/code knowledge primitive for semantic local source grounding.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -250,7 +255,7 @@ def get_lsp_host_capability_description() -> str:
     if languages:
         return (
             f"Auto-detect currently supports: {', '.join(languages)}. "
-            "Use server_command to target any other installed local LSP server."
+            "Use server_command to target any other installed local LSP server for repo/code grounding."
         )
     return "Auto-detect is unavailable on this host. Use server_command to target an installed local LSP server."
 

@@ -232,6 +232,16 @@ def _ensure_ssl_certs() -> None:
             os.environ["SSL_CERT_FILE"] = candidate
             return
 
+def _home_target_env_var(platform_name: str) -> str:
+    """Return the configured home-target env var for a platform."""
+    from cron.scheduler import _HOME_TARGET_ENV_VARS
+
+    return _HOME_TARGET_ENV_VARS.get(
+        platform_name.lower(),
+        f"{platform_name.upper()}_HOME_CHANNEL",
+    )
+
+
 _ensure_ssl_certs()
 
 # Add parent directory to path
@@ -5801,7 +5811,7 @@ class GatewayRunner:
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
-            env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+            env_key = _home_target_env_var(platform_name)
             if not os.getenv(env_key):
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -7691,16 +7701,16 @@ class GatewayRunner:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
-        
-        env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-        
+
+        env_key = _home_target_env_var(platform_name)
+
         # Save to .env so it persists across restarts
         try:
             from hermes_cli.config import save_env_value
             save_env_value(env_key, str(chat_id))
         except Exception as e:
             return f"Failed to save home channel: {e}"
-        
+
         return (
             f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
             f"Cron jobs and cross-platform messages will be delivered here."

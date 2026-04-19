@@ -815,9 +815,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             if provider_id == "gemini":
-                from agent.gemini_native_adapter import GeminiNativeClient
+                from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+                if is_native_gemini_base_url(base_url):
+                    return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
             if "api.kimi.com" in base_url.lower():
                 extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
@@ -840,9 +841,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient
+            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
-            return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+            if is_native_gemini_base_url(base_url):
+                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         extra = {}
         if "api.kimi.com" in base_url.lower():
             extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
@@ -1703,12 +1705,13 @@ def resolve_provider_client(
         final_model = _normalize_resolved_model(model or default_model, provider)
 
         if provider == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient
+            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
-            client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return (_to_async_client(client, final_model) if async_mode
-                    else (client, final_model))
+            if is_native_gemini_base_url(base_url):
+                client = GeminiNativeClient(api_key=api_key, base_url=base_url)
+                logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+                return (_to_async_client(client, final_model) if async_mode
+                        else (client, final_model))
 
         # Provider-specific headers
         headers = {}

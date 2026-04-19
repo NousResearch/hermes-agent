@@ -3,8 +3,13 @@ name: Docker Build and Publish
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - 'docker/**'
+      - '.github/workflows/docker-publish.yml'
   release:
     types: [published]
 

@@ -34,7 +34,14 @@ DATA_SOURCE = "OpenStreetMap/Nominatim"
 
 NOMINATIM_SEARCH  = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
-OVERPASS_API      = "https://overpass-api.de/api/interpreter"
+# Public Overpass endpoints. We try them in order so a single server
+# outage doesn't break the skill — kumi.systems is a well-known mirror.
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+# Backward-compat alias for any caller that imports OVERPASS_API directly.
+OVERPASS_API      = OVERPASS_URLS[0]
 OSRM_BASE         = "https://router.project-osrm.org/route/v1"
 TIMEAPI_BASE      = "https://timeapi.io/api/timezone/coordinate"
 
@@ -246,6 +253,30 @@ def http_post(url, data_str, retries=MAX_RETRIES):
     error_exit(f"POST failed after {retries} attempts. Last error: {last_error}")
 
 
+def overpass_query(query):
+    """POST an Overpass QL query, trying each URL in OVERPASS_URLS in turn.
+
+    A single public Overpass mirror can be rate-limited or down; trying the
+    next mirror before giving up turns a flaky outage into a retry. Returns
+    parsed JSON. Falls through to error_exit if every mirror fails.
+    """
+    post_data = "data=" + urllib.parse.quote(query)
+    last_error = None
+    for url in OVERPASS_URLS:
+        try:
+            return http_post(url, post_data, retries=1)
+        except SystemExit:
+            # error_exit inside http_post — keep trying the next mirror.
+            last_error = f"mirror {url} exhausted retries"
+            continue
+        except Exception as exc:
+            last_error = f"{url}: {exc}"
+            continue
+    error_exit(
+        f"All Overpass mirrors failed. Last error: {last_error or 'unknown'}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Geo math
 # ---------------------------------------------------------------------------
@@ -379,6 +410,9 @@ def parse_overpass_elements(elements, ref_lat=None, ref_lon=None):
             "lon":      el_lon,
             "osm_type": el.get("type", ""),
             "osm_id":   el.get("id", ""),
+            # Clickable Google Maps link so the agent can render a tap-to-open
+            # URL in chat without composing one downstream.
+            "maps_url": f"https://www.google.com/maps/search/?api=1&query={el_lat},{el_lon}",
             "tags": {
                 k: v for k, v in tags.items()
                 if k not in ("name", "name:en",
@@ -386,9 +420,27 @@ def parse_overpass_elements(elements, ref_lat=None, ref_lon=None):
             },
         }
 
+        # Promote commonly-useful tags to top-level fields so agents can
+        # reference them without digging into the raw ``tags`` dict.
+        for src_key, dst_key in (
+            ("cuisine",        "cuisine"),
+            ("opening_hours",  "hours"),
+            ("phone",          "phone"),
+            ("website",        "website"),
+        ):
+            val = tags.get(src_key)
+            if val:
+                place[dst_key] = val
+
         if ref_lat is not None and ref_lon is not None:
             dist_m = haversine_m(ref_lat, ref_lon, el_lat, el_lon)
             place["distance_m"] = round(dist_m, 1)
+            # With a reference point we can also hand back a directions URL.
+            place["directions_url"] = (
+                f"https://www.google.com/maps/dir/?api=1"
+                f"&origin={ref_lat},{ref_lon}"
+                f"&destination={el_lat},{el_lon}"
+            )
 
         places.append(place)
 
@@ -499,47 +551,84 @@ def cmd_reverse(args):
 # ---------------------------------------------------------------------------
 
 def cmd_nearby(args):
-    """Find nearby POIs using the Overpass API."""
-    try:
-        lat = float(args.lat)
-        lon = float(args.lon)
-    except ValueError:
-        error_exit("LAT and LON must be numeric values.")
+    """Find nearby POIs using the Overpass API.
 
-    category = args.category.lower()
-    if category not in CATEGORY_TAGS:
+    Accepts either explicit coordinates (``lat``/``lon``) or a free-form
+    address via ``--near`` (auto-geocoded through Nominatim). Supports
+    multiple categories in one call — results are merged, deduplicated
+    by ``osm_type+osm_id``, sorted by distance.
+    """
+    # Resolve the center point. --near takes precedence if provided so the
+    # agent can ask "cafes near Times Square" in one command without having
+    # to geocode first.
+    if getattr(args, "near", None):
+        near_query = " ".join(args.near).strip() if isinstance(args.near, list) else str(args.near).strip()
+        if not near_query:
+            error_exit("--near must be a non-empty address or place name.")
+        lat, lon, _ = geocode_single(near_query)
+    else:
+        try:
+            lat = float(args.lat)
+            lon = float(args.lon)
+        except (TypeError, ValueError):
+            error_exit("Provide numeric LAT and LON, or use --near \"<address>\".")
+
+    # Categories: support both legacy single positional ``category`` and the
+    # new repeatable ``--category`` flag. Users can ask for multiple place
+    # types in one query.
+    categories = []
+    if getattr(args, "category_list", None):
+        categories.extend(args.category_list)
+    if getattr(args, "category", None):
+        categories.append(args.category)
+    # Deduplicate, preserve order, lower-case.
+    categories = list(dict.fromkeys(c.lower() for c in categories if c))
+    if not categories:
+        error_exit("Provide at least one category (positional or --category).")
+    unknown = [c for c in categories if c not in CATEGORY_TAGS]
+    if unknown:
         error_exit(
-            f"Unknown category '{category}'. "
+            f"Unknown categor{'ies' if len(unknown) > 1 else 'y'} "
+            f"{', '.join(repr(c) for c in unknown)}. "
             f"Valid categories: {', '.join(VALID_CATEGORIES)}"
         )
 
     radius = int(args.radius)
     limit  = int(args.limit)
-
     if radius <= 0:
         error_exit("Radius must be a positive integer (metres).")
     if limit <= 0:
         error_exit("Limit must be a positive integer.")
 
-    tag_key, tag_val = CATEGORY_TAGS[category]
-    religion = RELIGION_FILTER.get(category)
-    query = build_overpass_nearby(tag_key, tag_val, lat, lon, radius, limit,
-                                  religion=religion)
+    # Query each category against the Overpass fallback chain, merge results,
+    # dedupe by OSM identity so POIs tagged under multiple categories don't
+    # appear twice.
+    merged = {}
+    for category in categories:
+        tag_key, tag_val = CATEGORY_TAGS[category]
+        religion = RELIGION_FILTER.get(category)
+        query = build_overpass_nearby(tag_key, tag_val, lat, lon, radius, limit,
+                                      religion=religion)
+        raw = overpass_query(query)
+        elements = raw.get("elements", [])
+        for place in parse_overpass_elements(elements, ref_lat=lat, ref_lon=lon):
+            place["category"] = category
+            key = (place.get("osm_type", ""), place.get("osm_id", ""))
+            # Prefer the entry that actually has a distance_m attached (first
+            # pass through the ref_lat/ref_lon branch), then first-seen wins.
+            if key not in merged:
+                merged[key] = place
 
-    post_data = "data=" + urllib.parse.quote(query)
-    raw = http_post(OVERPASS_API, post_data)
-
-    elements = raw.get("elements", [])
-    places = parse_overpass_elements(elements, ref_lat=lat, ref_lon=lon)
-
-    # Add category to each result
-    for p in places:
-        p["category"] = category
+    # Sort merged by distance when we have ref lat/lon, then cap at ``limit``.
+    places = sorted(
+        merged.values(),
+        key=lambda p: p.get("distance_m", float("inf")),
+    )[:limit]
 
     print_json({
         "center_lat":  lat,
         "center_lon":  lon,
-        "category":    category,
+        "categories":  categories,
         "radius_m":    radius,
         "count":       len(places),
         "results":     places,
@@ -861,8 +950,7 @@ def cmd_bbox(args):
     query = build_overpass_bbox(tag_key, tag_val, south, west, north, east,
                                 limit, religion=religion)
 
-    post_data = "data=" + urllib.parse.quote(query)
-    raw = http_post(OVERPASS_API, post_data)
+    raw = overpass_query(query)
 
     elements = raw.get("elements", [])
 
@@ -998,15 +1086,33 @@ def build_parser():
         help="Find nearby places of a given category.",
         description=(
             "Find points of interest near a location using the Overpass API.\n"
+            "Provide either LAT/LON, or use --near \"<address>\" to auto-geocode.\n"
+            "Categories can be specified positionally OR repeated via --category\n"
+            "to merge multiple types in one query (e.g. --category bar --category cafe).\n"
             f"Categories: {', '.join(VALID_CATEGORIES)}"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p_nearby.add_argument("lat", help="Center latitude (decimal degrees).")
-    p_nearby.add_argument("lon", help="Center longitude (decimal degrees).")
     p_nearby.add_argument(
-        "category",
-        help="POI category (use --help to see full list).",
+        "lat", nargs="?", default=None,
+        help="Center latitude (decimal degrees). Omit if using --near.",
+    )
+    p_nearby.add_argument(
+        "lon", nargs="?", default=None,
+        help="Center longitude (decimal degrees). Omit if using --near.",
+    )
+    p_nearby.add_argument(
+        "category", nargs="?", default=None,
+        help="POI category (use --help for full list). Omit if using --category flags.",
+    )
+    p_nearby.add_argument(
+        "--near", nargs="+", metavar="PLACE",
+        help="Address, city, or landmark to search around (geocoded via Nominatim).",
+    )
+    p_nearby.add_argument(
+        "--category", action="append", dest="category_list", default=[],
+        metavar="CAT",
+        help="POI category (repeatable — adds a type to the search).",
     )
     p_nearby.add_argument(
         "--radius", "-r",

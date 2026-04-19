@@ -1,9 +1,7 @@
-import { spawnSync, type SpawnSyncOptions } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
-const DEFAULT_SPAWN_OPTS: SpawnSyncOptions = {
-  stdio: ['ignore', 'pipe', 'ignore'],
-  encoding: 'utf8'
-}
+const execFileAsync = promisify(execFile)
 
 /**
  * Read plain text from the system clipboard.
@@ -12,19 +10,19 @@ const DEFAULT_SPAWN_OPTS: SpawnSyncOptions = {
  * null for now; the TUI's text-paste hotkeys are primarily targeted at the
  * macOS clarify/input flow.
  */
-export function readClipboardText(
+export async function readClipboardText(
   platform: NodeJS.Platform = process.platform,
-  run = spawnSync
-): string | null {
+  run: typeof execFileAsync = execFileAsync
+): Promise<string | null> {
   if (platform !== 'darwin') {
     return null
   }
 
-  const result = run('pbpaste', [], DEFAULT_SPAWN_OPTS)
+  try {
+    const result = await run('pbpaste', [], { encoding: 'utf8', windowsHide: true })
 
-  if (result.status !== 0 || typeof result.stdout !== 'string') {
+    return typeof result.stdout === 'string' ? result.stdout : null
+  } catch {
     return null
   }
-
-  return result.stdout
 }

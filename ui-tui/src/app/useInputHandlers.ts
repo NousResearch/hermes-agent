@@ -241,7 +241,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isAction(key, ch, 'c') || (key.ctrl && key.shift && ch.toLowerCase() === 'c')) {
+    if (isAction(key, ch, 'c')) {
       if (terminal.hasSelection) {
         return copySelection()
       }
@@ -286,11 +286,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.die()
     }
 
-    if (isAction(key, ch, 'd') || isCtrl(key, ch, 'd')) {
+    if (isAction(key, ch, 'd')) {
       return actions.die()
     }
 
-    if (isAction(key, ch, 'l') || isCtrl(key, ch, 'l')) {
+    if (isAction(key, ch, 'l')) {
       if (actions.guardBusySessionSwitch()) {
         return
       }
@@ -300,11 +300,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.newSession()
     }
 
-    if (isAction(key, ch, 'b') || isCtrl(key, ch, 'b')) {
+    if (isAction(key, ch, 'b')) {
       return voice.recording ? voiceStop() : voiceStart()
     }
 
-    if (isAction(key, ch, 'g') || isCtrl(key, ch, 'g')) {
+    if (isAction(key, ch, 'g')) {
       return cActions.openEditor()
     }
 
@@ -323,7 +323,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if ((isAction(key, ch, 'k') || isCtrl(key, ch, 'k')) && cRefs.queueRef.current.length && live.sid) {
+    if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
       const next = cActions.dequeue()
 
       if (next) {

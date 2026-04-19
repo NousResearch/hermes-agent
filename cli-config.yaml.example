@@ -66,15 +66,18 @@ model:
 # max_tokens: 8192
 
 # Named provider overrides (optional)
-# Use this for per-provider request timeouts and per-model exceptions.
+# Use this for per-provider request timeouts, non-stream stale timeouts,
+# and per-model exceptions.
 # Applies to the primary turn client on every api_mode (OpenAI-wire, native
 # Anthropic, and Anthropic-compatible providers), the fallback chain, and
 # client rebuilds during credential rotation.  For OpenAI-wire chat
 # completions (streaming and non-streaming) the configured value is also
 # used as the per-request ``timeout=`` kwarg so it wins over the legacy
 # HERMES_API_TIMEOUT env var (which still applies when no config is set).
-# Leaving these unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
-# native Anthropic 900s).
+# ``stale_timeout_seconds`` controls the non-streaming stale-call detector and
+# wins over the legacy HERMES_API_CALL_STALE_TIMEOUT env var. Leaving these
+# unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
+# HERMES_API_CALL_STALE_TIMEOUT=300s, native Anthropic 900s).
 #
 # Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
 # SDK paths) — those use boto3 with its own timeout configuration.
@@ -82,11 +85,16 @@ model:
 # providers:
 #   ollama-local:
 #     request_timeout_seconds: 300   # Longer timeout for local cold-starts
+#     stale_timeout_seconds: 900     # Explicitly re-enable stale detection on local endpoints
 #   anthropic:
 #     request_timeout_seconds: 30    # Fast-fail cloud requests
 #     models:
 #       claude-opus-4.6:
 #         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
+#   openai-codex:
+#     models:
+#       gpt-5.4:
+#         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

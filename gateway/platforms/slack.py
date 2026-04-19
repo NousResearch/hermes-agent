@@ -150,9 +150,11 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Slack] Failed to read %s: %s", tokens_file, e)
 
+        lock_acquired = False
         try:
             if not self._acquire_platform_lock('slack-app-token', app_token, 'Slack app token'):
                 return False
+            lock_acquired = True
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
@@ -228,6 +230,9 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Connection failed: %s", e, exc_info=True)
             return False
+        finally:
+            if lock_acquired and not self._running:
+                self._release_platform_lock()
 
     async def disconnect(self) -> None:
         """Disconnect from Slack."""

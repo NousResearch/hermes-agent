@@ -150,6 +150,31 @@ class TestAppMentionHandler:
         assert "/hermes" in registered_commands
 
 
+class TestSlackConnectCleanup:
+    """Regression coverage for failed connect() cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_releases_platform_lock_when_auth_fails(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        mock_app = MagicMock()
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock") as mock_release:
+            result = await adapter.connect()
+
+        assert result is False
+        mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
+        assert adapter._platform_lock_identity is None
+
+
 # ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------

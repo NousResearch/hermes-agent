@@ -1,0 +1,638 @@
+#!/usr/bin/env python3
+"""Darwinian Evolver — CLI entry point.
+
+Usage
+-----
+    evolver init   <name>  --task {prompt|regex|sql|code}
+    evolver run    <dir>   [--generations N --pop M --budget USD
+                            --algorithm {es|map-elites|nsga2}
+                            --concurrency N --seed N]
+    evolver status <dir>
+    evolver best   <dir>   [--k K --objective NAME]
+    evolver lineage <dir>  --id CID [--format {json|mermaid}]
+    evolver budget <dir>
+    evolver export <dir>   --format {dspy-jsonl|gepa-trace}
+    evolver replay <dir>   --seed N
+
+Every subcommand prints a single JSON object to stdout on success, or a
+single JSON object with an ``error`` key and a non-zero exit code on
+failure. ``run`` also streams per-generation progress lines (one JSON
+object per line) to stdout so a parent agent can follow the loop live.
+
+The CLI deliberately keeps no persistent process state. All state lives
+in ``<experiment-dir>/lineage.db`` so a crashed run can be resumed simply
+by re-invoking ``evolver run`` on the same directory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import random
+import sys
+import textwrap
+import time
+from pathlib import Path
+from typing import Any
+
+# Make sibling scripts importable whether we're invoked directly or as
+# a module — Hermes invokes skills with the scripts dir on $PATH but not
+# on sys.path by default.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import algorithms  # noqa: E402
+import operators   # noqa: E402
+import storage     # noqa: E402
+import evaluator   # noqa: E402
+from algorithms import (  # noqa: E402
+    Exp3Bandit,
+    Individual,
+    MapElitesArchive,
+    default_prompt_descriptor,
+    mu_plus_lambda,
+    nsga2_select,
+    tournament_select,
+)
+from evaluator import evaluate_batch, load_fitness, read_spec  # noqa: E402
+from llm import BudgetExceeded, BudgetLedger, LLMClient, discover_endpoint  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Output helpers — every command prints valid JSON
+# ---------------------------------------------------------------------------
+
+
+def _out(obj: Any) -> None:
+    json.dump(obj, sys.stdout, indent=2, ensure_ascii=False, default=str)
+    sys.stdout.write("\n")
+
+
+def _stream(obj: Any) -> None:
+    """One-line NDJSON progress record."""
+    json.dump(obj, sys.stdout, ensure_ascii=False, default=str)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def _err(msg: str, code: int = 1) -> None:
+    _out({"error": msg})
+    sys.exit(code)
+
+
+def _hermes_home() -> Path:
+    val = os.environ.get("HERMES_HOME", "").strip()
+    return Path(val) if val else Path.home() / ".hermes"
+
+
+def _data_root() -> Path:
+    return _hermes_home() / "skills" / "research" / "darwinian-evolver" / "data"
+
+
+def _resolve_experiment(name_or_path: str) -> Path:
+    """Accept either an experiment name (looked up under data_root) or
+    an absolute / relative path to an experiment directory."""
+    p = Path(name_or_path)
+    if p.is_absolute() or p.exists():
+        return p.resolve()
+    return (_data_root() / name_or_path).resolve()
+
+
+# ---------------------------------------------------------------------------
+# Fitness templates shipped with the skill
+# ---------------------------------------------------------------------------
+
+
+_FITNESS_TEMPLATES: dict[str, str] = {
+    "prompt": textwrap.dedent('''
+        """Fitness template for prompt evolution.
+
+        Replace the scoring loop with your own — this stub gives full marks
+        to short prompts that contain the word "concise" so the pipeline
+        runs end-to-end without an LLM eval while you wire up your real
+        judge.
+        """
+
+        from evolver_sdk import fitness_spec
+
+
+        @fitness_spec(held_out_frac=0.2, timeout_s=30)
+        def fitness(candidate: str, context: dict) -> float:
+            n = len(candidate)
+            penalty = max(0, n - 120) / 120          # favour brevity
+            bonus   = 0.3 if "concise" in candidate.lower() else 0.0
+            return max(0.0, 1.0 - penalty) + bonus
+        ''').strip() + "\n",
+
+    "regex": textwrap.dedent('''
+        """Fitness template for regex evolution.
+
+        Scores against two lists: strings that should match, and strings
+        that should not. Default returns F1 over precision + recall on
+        the positive corpus.
+        """
+
+        import re
+        from evolver_sdk import fitness_spec
+
+        POSITIVES = ["user@example.com", "first.last+tag@sub.domain.org"]
+        NEGATIVES = ["not an email", "a@b",                        "@nope.com"]
+
+
+        @fitness_spec(held_out_frac=0.2, timeout_s=5)
+        def fitness(candidate: str, context: dict) -> float:
+            try:
+                pat = re.compile(candidate)
+            except re.error:
+                return 0.0
+            tp = sum(bool(pat.fullmatch(s)) for s in POSITIVES)
+            fp = sum(bool(pat.fullmatch(s)) for s in NEGATIVES)
+            precision = tp / (tp + fp) if (tp + fp) else 0.0
+            recall    = tp / len(POSITIVES)  if POSITIVES else 0.0
+            if precision + recall == 0:
+                return 0.0
+            return 2 * precision * recall / (precision + recall)
+        ''').strip() + "\n",
+
+    "sql": textwrap.dedent('''
+        """Fitness template for SQL query evolution.
+
+        Stub: rewards queries that return the expected number of rows
+        against a local SQLite fixture. Replace with your own schema and
+        expected outputs.
+        """
+
+        import sqlite3
+        from evolver_sdk import fitness_spec
+
+        EXPECTED_ROWS = 5
+
+
+        @fitness_spec(held_out_frac=0.2, timeout_s=10)
+        def fitness(candidate: str, context: dict) -> float:
+            conn = sqlite3.connect(":memory:")
+            conn.executescript(
+                "CREATE TABLE users(id INT, name TEXT);"
+                "INSERT INTO users VALUES "
+                "(1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e');"
+            )
+            try:
+                rows = conn.execute(candidate).fetchall()
+            except sqlite3.Error:
+                return 0.0
+            finally:
+                conn.close()
+            return 1.0 - min(1.0, abs(len(rows) - EXPECTED_ROWS) / EXPECTED_ROWS)
+        ''').strip() + "\n",
+
+    "code": textwrap.dedent('''
+        """Fitness template for code evolution (hidden pytest suite).
+
+        Point ``TESTS`` at a pytest file the evaluator should run against
+        the candidate. The candidate is written to ``solution.py`` inside
+        a subprocess sandbox; fitness = fraction of tests passed.
+        """
+
+        from evolver_sdk import fitness_spec
+
+        TESTS = "tests/test_hidden.py"
+
+
+        @fitness_spec(held_out_frac=0.2, timeout_s=60)
+        def fitness(candidate: str, context: dict) -> float:
+            # Stub — wire this to sandbox.run_pytest once sandbox.py is
+            # enabled in your environment.
+            return 0.0
+        ''').strip() + "\n",
+}
+
+
+_EVOLVER_SDK_STUB = textwrap.dedent('''
+    """Thin shim so fitness.py can ``from evolver_sdk import fitness_spec``.
+
+    This file is auto-generated by ``evolver init``. Re-import the real
+    decorator from the skill scripts directory.
+    """
+
+    import sys
+    from pathlib import Path
+
+    _SCRIPTS = Path(__file__).resolve().parent.parent.parent / "scripts"
+    if str(_SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS))
+
+    from evaluator import fitness_spec  # noqa: F401
+''').strip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    task = args.task
+    if task not in _FITNESS_TEMPLATES:
+        _err(f"unknown task {task!r}; choose from {sorted(_FITNESS_TEMPLATES)}")
+    exp = _resolve_experiment(args.name)
+    if exp.exists():
+        _err(f"experiment directory already exists: {exp}")
+    (exp / "seed").mkdir(parents=True)
+    (exp / "logs").mkdir()
+    (exp / "fitness.py").write_text(_FITNESS_TEMPLATES[task], encoding="utf-8")
+    (exp / "evolver_sdk.py").write_text(_EVOLVER_SDK_STUB, encoding="utf-8")
+    (exp / "experiment.yaml").write_text(
+        f"name: {exp.name}\ntask: {task}\ncreated_at: {int(time.time())}\n",
+        encoding="utf-8",
+    )
+    (exp / "seed" / "initial.txt").write_text(
+        {"prompt": "Summarize this concisely.\n",
+         "regex":  r".+@.+\..+" + "\n",
+         "sql":    "SELECT * FROM users;\n",
+         "code":   "def solve(x):\n    return x\n"}[task],
+        encoding="utf-8",
+    )
+    storage.open_db(exp / "lineage.db").close()
+    _out({"ok": True, "dir": str(exp), "task": task})
+
+
+def _load_seeds(exp: Path) -> list[str]:
+    seeds_dir = exp / "seed"
+    if not seeds_dir.exists():
+        return []
+    return [p.read_text(encoding="utf-8").strip() for p in sorted(seeds_dir.iterdir()) if p.is_file()]
+
+
+async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
+    """The evolutionary main loop.
+
+    Supports three top-level algorithms:
+
+      * ``es``         — classic (μ+λ)-ES, single-objective.
+      * ``map-elites`` — quality-diversity with the default 2-D prompt
+                         descriptor (length × CoT-presence).
+      * ``nsga2``      — multi-objective, requires dict fitness whose
+                         keys are listed in the fitness-spec objectives.
+    """
+    fitness_fn = load_fitness(exp)
+    spec = read_spec(fitness_fn)
+    objectives = spec["objectives"]
+    primary_obj = objectives[0] if objectives else None
+
+    if args.algorithm == "nsga2" and not objectives:
+        _err("nsga2 requires fitness_spec(objectives=[...]) to be set")
+    if args.algorithm != "nsga2" and objectives:
+        # User returned dict fitness but picked single-objective algo;
+        # fall back to primary objective for selection.
+        pass
+
+    rng = random.Random(args.seed)
+    conn = storage.open_db(exp / "lineage.db")
+
+    ledger = BudgetLedger(
+        cap_usd=args.budget,
+        input_rate_per_million=args.input_rate,
+        output_rate_per_million=args.output_rate,
+        on_record=lambda i, o, u, op: storage.record_budget(conn, i, o, u, op),
+    )
+
+    async with LLMClient.from_hermes(concurrency=args.concurrency, budget=ledger) as llm:
+        # ------------ seed population ------------
+        seeds = _load_seeds(exp)
+        if not seeds:
+            _err("no seeds found — put at least one file under seed/")
+        population: list[Individual] = []
+        for s in seeds:
+            ind = Individual(
+                cid=storage.hash_genome(s),
+                genome=s,
+                generation=0,
+                descriptor=default_prompt_descriptor(s),
+                operator="seed",
+            )
+            population.append(ind)
+            storage.insert_candidate(conn, s, generation=0,
+                                     descriptor={"d": list(ind.descriptor)},
+                                     parents=())
+        await evaluate_batch(
+            population, fitness_fn,
+            seed=args.seed, concurrency=args.concurrency,
+        )
+        for ind in population:
+            if isinstance(ind.fitness, dict):
+                for k, v in ind.fitness.items():
+                    storage.record_fitness(conn, ind.cid, k, float(v), eval_seed=args.seed)
+            else:
+                storage.record_fitness(conn, ind.cid, "fitness", float(ind.fitness), eval_seed=args.seed)
+
+        archive: MapElitesArchive | None = None
+        if args.algorithm == "map-elites":
+            archive = MapElitesArchive(
+                bin_counts=(8, 2),
+                lows=(0, 0),
+                highs=(8, 2),
+                objective=primary_obj,
+            )
+            for ind in population:
+                archive.place(ind)
+
+        bandit = Exp3Bandit(arms=list(operators.MUTATION_OPERATORS.keys()))
+
+        _stream({"gen": 0, "pop": len(population), "budget_used": ledger.spent_usd,
+                 "best": _best_summary(population, primary_obj)})
+
+        # ------------ evolution ------------
+        try:
+            for gen in range(1, args.generations + 1):
+                parents = _select_parents(population, archive, args.pop, rng, primary_obj)
+                offspring = await _produce_offspring(
+                    llm, parents, bandit, rng, gen, primary_obj,
+                )
+                for child in offspring:
+                    parents_edges = [(p, child.operator, "") for p in child.parents]
+                    storage.insert_candidate(
+                        conn, child.genome, generation=gen,
+                        descriptor={"d": list(child.descriptor)},
+                        parents=parents_edges,
+                    )
+                await evaluate_batch(
+                    offspring, fitness_fn,
+                    seed=args.seed + gen, concurrency=args.concurrency,
+                )
+                for ind in offspring:
+                    if isinstance(ind.fitness, dict):
+                        for k, v in ind.fitness.items():
+                            storage.record_fitness(conn, ind.cid, k, float(v), eval_seed=args.seed + gen)
+                    else:
+                        storage.record_fitness(conn, ind.cid, "fitness", float(ind.fitness), eval_seed=args.seed + gen)
+
+                if args.algorithm == "es":
+                    population = mu_plus_lambda(population, offspring,
+                                                mu=args.pop, objective=primary_obj)
+                elif args.algorithm == "map-elites":
+                    assert archive is not None
+                    for ind in offspring:
+                        archive.place(ind)
+                    population = list(archive.cells.values())
+                elif args.algorithm == "nsga2":
+                    assert objectives is not None
+                    population = nsga2_select(population + offspring, objectives, args.pop)
+                else:  # pragma: no cover — argparse guards this
+                    _err(f"unknown algorithm {args.algorithm!r}")
+
+                _stream({
+                    "gen": gen,
+                    "pop": len(population),
+                    "archive": archive.coverage() if archive else None,
+                    "budget_used": ledger.spent_usd,
+                    "calls": ledger.calls,
+                    "best": _best_summary(population, primary_obj),
+                })
+        except BudgetExceeded as exc:
+            _stream({"halt": "budget_exceeded", "detail": str(exc)})
+
+    conn.close()
+    return {
+        "ok": True,
+        "generations_run": gen if 'gen' in locals() else 0,
+        "final_pop": len(population),
+        "budget": {"usd": ledger.spent_usd, "calls": ledger.calls},
+    }
+
+
+def _best_summary(population: list[Individual], objective: str | None) -> dict:
+    if not population:
+        return {}
+    def key(ind: Individual) -> float:
+        f = ind.fitness
+        if isinstance(f, dict):
+            return float(f.get(objective or next(iter(f)), float("nan")))
+        return float(f)
+    best = max(population, key=key)
+    return {"id": best.cid, "fitness": best.fitness, "preview": best.genome[:120]}
+
+
+def _select_parents(
+    population: list[Individual],
+    archive: MapElitesArchive | None,
+    n: int,
+    rng: random.Random,
+    objective: str | None,
+) -> list[Individual]:
+    if archive is not None and archive.cells:
+        return archive.sample(rng, k=n)
+    return tournament_select(population, k=3, n=n, rng=rng, objective=objective)
+
+
+async def _produce_offspring(
+    llm: LLMClient,
+    parents: list[Individual],
+    bandit: Exp3Bandit,
+    rng: random.Random,
+    generation: int,
+    objective: str | None,
+) -> list[Individual]:
+    """Apply one operator per parent and return the resulting offspring."""
+    tasks = []
+    chosen_ops: list[str] = []
+    chosen_idx: list[int] = []
+    for parent in parents:
+        idx, op = bandit.pick(rng)
+        chosen_ops.append(op)
+        chosen_idx.append(idx)
+        fn = operators.MUTATION_OPERATORS[op]
+        tasks.append(fn(llm, parent.genome, seed=rng.randint(0, 2**31 - 1)))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    offspring: list[Individual] = []
+    for parent, op, idx, res in zip(parents, chosen_ops, chosen_idx, results):
+        if isinstance(res, Exception):
+            # Treat operator failure as a null reward; skip child.
+            bandit.reward(idx, 0.0)
+            continue
+        child_genome = res.child.strip()
+        if not child_genome or child_genome == parent.genome:
+            bandit.reward(idx, 0.0)
+            continue
+        ind = Individual(
+            cid=storage.hash_genome(child_genome),
+            genome=child_genome,
+            generation=generation,
+            descriptor=default_prompt_descriptor(child_genome),
+            parents=[parent.cid],
+            operator=op,
+        )
+        offspring.append(ind)
+        # Reward signal is populated later by the runner after fitness
+        # is measured; at this stage we give a small exploration reward
+        # so the bandit keeps trying operators that produce novel text.
+        bandit.reward(idx, 0.1)
+    return offspring
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    exp = _resolve_experiment(args.dir)
+    if not exp.exists():
+        _err(f"experiment not found: {exp}")
+    try:
+        result = asyncio.run(_run_loop(args, exp))
+    except KeyboardInterrupt:
+        _err("interrupted", code=130)
+    _out(result)
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    exp = _resolve_experiment(args.dir)
+    conn = storage.open_db(exp / "lineage.db")
+    budget = storage.get_budget_used(conn)
+    gen = storage.count_generations(conn)
+    best_rows = []
+    for objective in _discover_objectives(conn):
+        best_rows.append({"objective": objective,
+                          "top": storage.get_best(conn, objective, k=1)})
+    _out({
+        "experiment": exp.name,
+        "generations": gen,
+        "budget": budget,
+        "objectives": [row["objective"] for row in best_rows],
+        "best": best_rows,
+    })
+    conn.close()
+
+
+def cmd_best(args: argparse.Namespace) -> None:
+    exp = _resolve_experiment(args.dir)
+    conn = storage.open_db(exp / "lineage.db")
+    objective = args.objective or _discover_objectives(conn)[0]
+    rows = storage.get_best(conn, objective, k=args.k)
+    _out({"objective": objective, "k": args.k, "candidates": rows})
+    conn.close()
+
+
+def cmd_lineage(args: argparse.Namespace) -> None:
+    exp = _resolve_experiment(args.dir)
+    conn = storage.open_db(exp / "lineage.db")
+    edges = storage.get_ancestry(conn, args.id)
+    if args.format == "mermaid":
+        lines = ["graph TD"]
+        for e in edges:
+            lines.append(f'    {e["parent_id"]} -- {e["operator"]} --> {e["child_id"]}')
+        _out({"mermaid": "\n".join(lines), "edges": len(edges)})
+    else:
+        _out({"edges": edges, "count": len(edges)})
+    conn.close()
+
+
+def cmd_budget(args: argparse.Namespace) -> None:
+    exp = _resolve_experiment(args.dir)
+    conn = storage.open_db(exp / "lineage.db")
+    _out({"budget": storage.get_budget_used(conn)})
+    conn.close()
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    exp = _resolve_experiment(args.dir)
+    conn = storage.open_db(exp / "lineage.db")
+    if args.format not in {"dspy-jsonl", "gepa-trace"}:
+        _err(f"unknown export format {args.format!r}")
+    out_path = exp / f"export-{args.format}.jsonl"
+    with out_path.open("w", encoding="utf-8") as fh:
+        for objective in _discover_objectives(conn):
+            for row in storage.get_best(conn, objective, k=1_000):
+                fh.write(json.dumps({
+                    "candidate_id": row["id"],
+                    "genome":       row["genome"],
+                    "generation":   row["generation"],
+                    "fitness":      {objective: row["value"]},
+                    "held_out":     bool(row.get("held_out")),
+                    "source":       "darwinian-evolver",
+                }, ensure_ascii=False) + "\n")
+    _out({"ok": True, "path": str(out_path), "format": args.format})
+    conn.close()
+
+
+def cmd_replay(args: argparse.Namespace) -> None:
+    exp = _resolve_experiment(args.dir)
+    conn = storage.open_db(exp / "lineage.db")
+    h = storage.lineage_hash(conn)
+    _out({"lineage_hash": h, "seed": args.seed,
+          "hint": "compare this value across runs with the same --seed to check determinism"})
+    conn.close()
+
+
+def _discover_objectives(conn) -> list[str]:
+    rows = conn.execute("SELECT DISTINCT objective FROM fitness").fetchall()
+    return [r["objective"] for r in rows] or ["fitness"]
+
+
+# ---------------------------------------------------------------------------
+# Arg parsing
+# ---------------------------------------------------------------------------
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="evolver",
+        description="LLM-driven evolutionary optimizer for prompts, regex, SQL, and small code.",
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+
+    pi = sub.add_parser("init", help="scaffold a new experiment directory")
+    pi.add_argument("name")
+    pi.add_argument("--task", required=True, choices=list(_FITNESS_TEMPLATES))
+    pi.set_defaults(fn=cmd_init)
+
+    pr = sub.add_parser("run", help="run the evolutionary loop")
+    pr.add_argument("dir")
+    pr.add_argument("--generations", type=int, default=20)
+    pr.add_argument("--pop",         type=int, default=8)
+    pr.add_argument("--budget",      type=float, default=1.0,
+                    help="USD cap (0 to disable)")
+    pr.add_argument("--algorithm",   choices=["es", "map-elites", "nsga2"], default="es")
+    pr.add_argument("--concurrency", type=int, default=4)
+    pr.add_argument("--seed",        type=int, default=42)
+    pr.add_argument("--input-rate",  dest="input_rate",  type=float, default=0.0,
+                    help="USD per million input tokens (for budget accounting)")
+    pr.add_argument("--output-rate", dest="output_rate", type=float, default=0.0,
+                    help="USD per million output tokens (for budget accounting)")
+    pr.set_defaults(fn=cmd_run)
+
+    ps = sub.add_parser("status", help="show generations, budget, and best-so-far")
+    ps.add_argument("dir"); ps.set_defaults(fn=cmd_status)
+
+    pb = sub.add_parser("best", help="top-K candidates by objective")
+    pb.add_argument("dir")
+    pb.add_argument("--k", type=int, default=5)
+    pb.add_argument("--objective", default=None)
+    pb.set_defaults(fn=cmd_best)
+
+    pl = sub.add_parser("lineage", help="ancestry DAG for one candidate")
+    pl.add_argument("dir")
+    pl.add_argument("--id", required=True)
+    pl.add_argument("--format", choices=["json", "mermaid"], default="mermaid")
+    pl.set_defaults(fn=cmd_lineage)
+
+    pdb = sub.add_parser("budget", help="cumulative LLM spend for this experiment")
+    pdb.add_argument("dir"); pdb.set_defaults(fn=cmd_budget)
+
+    pe = sub.add_parser("export", help="export experiment for downstream pipelines")
+    pe.add_argument("dir")
+    pe.add_argument("--format", choices=["dspy-jsonl", "gepa-trace"], required=True)
+    pe.set_defaults(fn=cmd_export)
+
+    prp = sub.add_parser("replay", help="print the lineage hash for determinism checks")
+    prp.add_argument("dir")
+    prp.add_argument("--seed", type=int, default=42)
+    prp.set_defaults(fn=cmd_replay)
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _build_parser().parse_args(argv)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -930,11 +930,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            agent_error = None
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
-            except Exception:
-                pass
+            except Exception as exc:
+                agent_error = exc
+                logger.error("Agent task failed during SSE streaming: %s", exc)
+
+            if agent_error is not None:
+                error_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+                    "error": {"message": str(agent_error), "type": type(agent_error).__name__},
+                }
+                await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
+                await response.write(b"data: [DONE]\n\n")
+                return
 
             # Finish chunk
             finish_chunk = {

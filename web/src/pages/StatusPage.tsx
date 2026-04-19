@@ -145,7 +145,7 @@ export default function StatusPage() {
             </CardHeader>
 
             <CardContent>
-              <div className="text-2xl font-bold font-display truncate" title={value}>{value}</div>
+              <div className="text-2xl font-bold font-mondwest truncate" title={value}>{value}</div>
 
               {badgeText && (
                 <Badge variant={badgeVariant} className="mt-2">

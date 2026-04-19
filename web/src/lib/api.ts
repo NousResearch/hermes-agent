@@ -183,21 +183,21 @@ export const api = {
     );
   },
 
+  // Dashboard plugins
+  getPlugins: () =>
+    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  rescanPlugins: () =>
+    fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
+
   // Dashboard themes
   getThemes: () =>
-    fetchJSON<ThemeListResponse>("/api/dashboard/themes"),
+    fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
   setTheme: (name: string) =>
     fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
-
-  // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
-  rescanPlugins: () =>
-    fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 };
 
 export interface PlatformStatus {
@@ -435,9 +435,15 @@ export interface OAuthPollResponse {
 
 // ── Dashboard theme types ──────────────────────────────────────────────
 
-export interface ThemeListResponse {
-  themes: Array<{ name: string; label: string; description: string }>;
+export interface DashboardThemeSummary {
+  description: string;
+  label: string;
+  name: string;
+}
+
+export interface DashboardThemesResponse {
   active: string;
+  themes: DashboardThemeSummary[];
 }
 
 // ── Dashboard plugin types ─────────────────────────────────────────────

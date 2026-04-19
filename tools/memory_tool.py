@@ -146,7 +146,6 @@ class MemoryStore:
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
-        self._last_review_explanations: List[Dict[str, Any]] = []
 
     def load_from_disk(self):
         """Load record-backed memory, project legacy exports, and capture the prompt snapshot."""
@@ -312,21 +311,20 @@ class MemoryStore:
             changed = True
         return deduped, changed, explanations
 
-    def _reload_records(self, *, render_exports: bool = False) -> None:
+    def _reload_records(self, *, render_exports: bool = False) -> List[Dict[str, Any]]:
         loaded_records = self._deduplicate_records(self._load_records())
         self.records, freshness_changed, review_explanations = self._review_freshness(loaded_records)
-        if review_explanations:
-            self._last_review_explanations = review_explanations
         if freshness_changed:
             self._save_records(self.records)
         self._sync_live_entries()
         if render_exports or freshness_changed:
             self._render_legacy_exports()
+        return review_explanations
 
     def read(self, target: str) -> Dict[str, Any]:
         with self._file_lock(self._records_path()):
-            self._reload_records()
-        return self._success_response(target, "Current entries.")
+            review_explanations = self._reload_records()
+        return self._success_response(target, "Current entries.", review_explanations=review_explanations)
 
     def save_to_disk(self, target: str | None = None):
         """Persist the record sidecar and projected legacy exports."""
@@ -472,10 +470,14 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._records_path()):
-            self._reload_records()
+            review_explanations = self._reload_records()
 
             if any(record.content == content for record in self._active_records_for_target(target)):
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(
+                    target,
+                    "Entry already exists (no duplicate added).",
+                    review_explanations=review_explanations,
+                )
 
             decision = classify_write_candidate(
                 target=target,
@@ -515,7 +517,12 @@ class MemoryStore:
             self.records = self._deduplicate_records(self.records)
             self._persist_state()
 
-        return self._success_response(target, "Entry added.", explanations=[explain_write(record, decision.reason)])
+        return self._success_response(
+            target,
+            "Entry added.",
+            explanations=[explain_write(record, decision.reason)],
+            review_explanations=review_explanations,
+        )
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Supersede the record containing old_text with a new record-backed replacement."""
@@ -531,7 +538,7 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._records_path()):
-            self._reload_records()
+            review_explanations = self._reload_records()
 
             match = self._resolve_single_match(target, old_text)
             if isinstance(match, dict):
@@ -593,7 +600,12 @@ class MemoryStore:
             self.records = self._deduplicate_records(projected_records)
             self._persist_state()
 
-        return self._success_response(target, "Entry replaced.", explanations=[explain_conflict(conflict)])
+        return self._success_response(
+            target,
+            "Entry replaced.",
+            explanations=[explain_conflict(conflict)],
+            review_explanations=review_explanations,
+        )
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Archive the record containing old_text."""
@@ -602,7 +614,7 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         with self._file_lock(self._records_path()):
-            self._reload_records()
+            review_explanations = self._reload_records()
 
             match = self._resolve_single_match(target, old_text)
             if isinstance(match, dict):
@@ -627,6 +639,7 @@ class MemoryStore:
             target,
             "Entry removed.",
             explanations=[explain_archive(archived_record or record, "operator_requested_archive")],
+            review_explanations=review_explanations,
         )
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
@@ -638,6 +651,7 @@ class MemoryStore:
         target: str,
         message: str = None,
         explanations: Optional[List[Dict[str, Any]]] = None,
+        review_explanations: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         entries = self._active_contents_for_target(target)
         current = len(ENTRY_DELIMITER.join(entries)) if entries else 0
@@ -655,13 +669,13 @@ class MemoryStore:
             "record_count": len(records),
         }
         target_record_ids = {record.record_id for record in records}
-        review_explanations = [
+        scoped_review_explanations = [
             explanation
-            for explanation in self._last_review_explanations
+            for explanation in (review_explanations or [])
             if explanation.get("record_id") in target_record_ids
         ]
-        if review_explanations:
-            resp["review_explanations"] = review_explanations
+        if scoped_review_explanations:
+            resp["review_explanations"] = scoped_review_explanations
         if explanations:
             resp["explanations"] = explanations
         if message:

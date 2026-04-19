@@ -6,7 +6,7 @@ import tools.memory_tool as memory_tool_module
 from pathlib import Path
 
 from agent import memory_inspection
-from agent.memory_inspection import explain_archive, explain_expired
+from agent.memory_inspection import explain_archive, explain_expired, explain_write
 from agent.memory_records import (
     MemoryRecord,
     MemoryScope,
@@ -511,7 +511,6 @@ class TestMemoryStorePersistence:
         )
 
         store = MemoryStore()
-        store.load_from_disk()
 
         payload = json.loads(memory_tool(action="read", target="memory", store=store))
 
@@ -524,6 +523,48 @@ class TestMemoryStorePersistence:
         assert payload["review_explanations"] == [
             explain_expired(store.records[0], "review_window_elapsed"),
             explain_archive(store.records[1], "archive_on_review"),
+        ]
+
+    def test_review_explanations_do_not_leak_after_the_reload_that_generated_them(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        monkeypatch.setattr(memory_tool_module, "_utc_now_iso", lambda: "2026-03-05T00:00:00Z")
+
+        expiring_record = make_record(
+            "Old deploy note.",
+            target="memory",
+            record_id="rec-expired",
+            topic_key="workspace:deploy-command",
+            status=RecordStatus.STALE,
+            review_after="2026-02-01T00:00:00Z",
+            expires_at="2026-03-01T00:00:00Z",
+        )
+        (tmp_path / "records.json").write_text(
+            json.dumps(records_to_sidecar_payload([expiring_record]), ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        store = MemoryStore()
+        first_payload = json.loads(memory_tool(action="read", target="memory", store=store))
+        assert first_payload["review_explanations"] == [
+            explain_expired(store.records[0], "review_window_elapsed"),
+        ]
+
+        second_payload = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content="Fresh deploy note.",
+                store=store,
+            )
+        )
+
+        assert second_payload["success"] is True
+        assert "review_explanations" not in second_payload
+        assert second_payload["explanations"] == [
+            explain_write(
+                next(record for record in store.records if record.content == "Fresh deploy note."),
+                "durable_scoped_fact",
+            )
         ]
 
 

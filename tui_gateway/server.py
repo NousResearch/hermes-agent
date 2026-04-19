@@ -46,16 +46,10 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOU
 # else stays on the main thread so ordering stays sane for the fast path.
 # write_json is already _stdout_lock-guarded, so concurrent response
 # writes are safe.
-_LONG_HANDLERS = frozenset({
-    "cli.exec",
-    "session.branch",
-    "session.resume",
-    "shell.exec",
-    "slash.exec",
-})
-_RPC_POOL_WORKERS = max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4))
+_LONG_HANDLERS = frozenset({"cli.exec", "session.branch", "session.resume", "shell.exec", "slash.exec"})
+
 _pool = concurrent.futures.ThreadPoolExecutor(
-    max_workers=_RPC_POOL_WORKERS,
+    max_workers=max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4)),
     thread_name_prefix="tui-rpc",
 )
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))

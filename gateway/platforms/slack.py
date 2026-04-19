@@ -1526,7 +1526,7 @@ class SlackAdapter(BasePlatformAdapter):
         Returns a formatted string with prior thread history, or empty string
         on failure or if the thread has no prior messages.
         """
-        cache_key = f"{channel_id}:{thread_ts}"
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
@@ -1656,7 +1656,7 @@ class SlackAdapter(BasePlatformAdapter):
         Returns empty string on any failure — callers should treat an empty
         return as "no parent context to inject".
         """
-        cache_key = f"{channel_id}:{thread_ts}"
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:

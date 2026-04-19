@@ -5287,7 +5287,7 @@ class HermesCLI:
             print("    /cron list")
             print('    /cron add "every 2h" "Check server status" [--skill blogwatcher]')
             print('    /cron edit <job_id> --schedule "every 4h" --prompt "New task"')
-            print("    /cron edit <job_id> --skill blogwatcher --skill find-nearby")
+            print("    /cron edit <job_id> --skill blogwatcher --skill maps")
             print("    /cron edit <job_id> --remove-skill blogwatcher")
             print("    /cron edit <job_id> --clear-skills")
             print("    /cron pause <job_id>")

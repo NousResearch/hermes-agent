@@ -1,4 +1,5 @@
 import atexit
+import concurrent.futures
 import copy
 import json
 import os
@@ -35,6 +36,23 @@ _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45))
+
+# ── Async RPC dispatch (#12546) ──────────────────────────────────────
+# A handful of handlers block the dispatcher loop in entry.py for seconds
+# to minutes (slash.exec, cli.exec, shell.exec, session.resume,
+# session.branch). While they're running, inbound RPCs — notably
+# approval.respond and session.interrupt — sit unread in the stdin pipe.
+# We route only those slow handlers onto a small thread pool; everything
+# else stays on the main thread so ordering stays sane for the fast path.
+# write_json is already _stdout_lock-guarded, so concurrent response
+# writes are safe.
+_LONG_HANDLERS = frozenset({"cli.exec", "session.branch", "session.resume", "shell.exec", "slash.exec"})
+
+_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4)),
+    thread_name_prefix="tui-rpc",
+)
+atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -198,6 +216,29 @@ def handle_request(req: dict) -> dict | None:
     if not fn:
         return _err(req.get("id"), -32601, f"unknown method: {req.get('method')}")
     return fn(req.get("id"), req.get("params", {}))
+
+
+def dispatch(req: dict) -> dict | None:
+    """Route inbound RPCs — long handlers to the pool, everything else inline.
+
+    Returns a response dict when handled inline. Returns None when the
+    handler was scheduled on the pool; the worker writes its own
+    response via write_json when done.
+    """
+    if req.get("method") not in _LONG_HANDLERS:
+        return handle_request(req)
+
+    def run():
+        try:
+            resp = handle_request(req)
+        except Exception as exc:
+            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+        if resp is not None:
+            write_json(resp)
+
+    _pool.submit(run)
+
+    return None
 
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
@@ -1088,7 +1129,23 @@ def _(rid, params: dict) -> dict:
     }
 
     def _build() -> None:
-        session = _sessions[sid]
+        session = _sessions.get(sid)
+        if session is None:
+            # session.close ran before the build thread got scheduled.
+            ready.set()
+            return
+
+        # Track what we allocate so we can clean up if session.close
+        # races us to the finish line.  session.close pops _sessions[sid]
+        # unconditionally and tries to close the slash_worker it finds;
+        # if _build is still mid-construction when close runs, close
+        # finds slash_worker=None / notify unregistered and returns
+        # cleanly — leaving us, the build thread, to later install the
+        # worker + notify on an orphaned session dict.  The finally
+        # block below detects the orphan and cleans up instead of
+        # leaking a subprocess and a global notify registration.
+        worker = None
+        notify_registered = False
         try:
             tokens = _set_session_context(key)
             try:
@@ -1100,13 +1157,15 @@ def _(rid, params: dict) -> dict:
             session["agent"] = agent
 
             try:
-                session["slash_worker"] = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                session["slash_worker"] = worker
             except Exception:
                 pass
 
             try:
                 from tools.approval import register_gateway_notify, load_permanent_allowlist
                 register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+                notify_registered = True
                 load_permanent_allowlist()
             except Exception:
                 pass
@@ -1122,6 +1181,23 @@ def _(rid, params: dict) -> dict:
             session["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
+            # Orphan check: if session.close raced us and popped
+            # _sessions[sid] while we were building, the dict we just
+            # populated is unreachable.  Clean up the subprocess and
+            # the global notify registration ourselves — session.close
+            # couldn't see them at the time it ran.
+            if _sessions.get(sid) is not session:
+                if worker is not None:
+                    try:
+                        worker.close()
+                    except Exception:
+                        pass
+                if notify_registered:
+                    try:
+                        from tools.approval import unregister_gateway_notify
+                        unregister_gateway_notify(key)
+                    except Exception:
+                        pass
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
@@ -1743,6 +1819,19 @@ def _(rid, params: dict) -> dict:
             if not value:
                 return _err(rid, 4002, "model value required")
             if session:
+                # Reject during an in-flight turn.  agent.switch_model()
+                # mutates self.model / self.provider / self.base_url /
+                # self.client in place; the worker thread running
+                # agent.run_conversation is reading those on every
+                # iteration.  A mid-turn swap can send an HTTP request
+                # with the new base_url but old model (or vice versa),
+                # producing 400/404s the user never asked for.  Parity
+                # with the gateway's running-agent /model guard.
+                if session.get("running"):
+                    return _err(
+                        rid, 4009,
+                        "session busy — /interrupt the current turn before switching models",
+                    )
                 result = _apply_model_switch(params.get("session_id", ""), session, value)
             else:
                 result = _apply_model_switch("", {"agent": None}, value)
@@ -2410,27 +2499,24 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.model_switch import list_authenticated_providers
-        from hermes_cli.models import provider_model_ids
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
         cfg = _load_cfg()
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
+        # list_authenticated_providers already populates each provider's
+        # "models" with the curated list (same source as `hermes model` and
+        # classic CLI's /model picker). Do NOT overwrite with live
+        # provider_model_ids() — that bypasses curation and pulls in
+        # non-agentic models (e.g. Nous /models returns ~400 IDs including
+        # TTS, embeddings, rerankers, image/video generators).
         providers = list_authenticated_providers(
             current_provider=current_provider,
             user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
             custom_providers=cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), list) else [],
             max_models=50,
         )
-        for provider in providers:
-            try:
-                models = provider_model_ids(provider.get("slug"))
-                if models:
-                    provider["models"] = models
-                    provider["total_models"] = len(models)
-            except Exception as e:
-                provider["warning"] = f"model catalog unavailable: {e}"
         return _ok(rid, {"providers": providers, "model": current_model, "provider": current_provider})
     except Exception as e:
         return _err(rid, 5033, str(e))
@@ -2445,6 +2531,17 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if not parts:
         return ""
     name, arg, agent = parts[0], (parts[1].strip() if len(parts) > 1 else ""), session.get("agent")
+
+    # Reject agent-mutating commands during an in-flight turn.  These
+    # all do read-then-mutate on live agent/session state that the
+    # worker thread running agent.run_conversation is using.  Parity
+    # with the session.compress / session.undo guards and the gateway
+    # runner's running-agent /model guard.
+    _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
+    if name in _MUTATES_WHILE_RUNNING and session.get("running"):
+        return (
+            f"session busy — /interrupt the current turn before running /{name}"
+        )
 
     try:
         if name == "model" and arg and agent:

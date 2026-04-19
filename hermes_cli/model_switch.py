@@ -1039,17 +1039,38 @@ def list_authenticated_providers(
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
+            # Skip if this slug was already emitted (e.g. canonical provider
+            # with the same name) or will be picked up by section 4.
+            if ep_name.lower() in seen_slugs:
+                continue
             display_name = ep_cfg.get("name", "") or ep_name
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
-            default_model = ep_cfg.get("default_model", "")
+            # ``base_url`` is Hermes's canonical write key (matches
+            # custom_providers and _save_custom_provider); ``api`` / ``url``
+            # remain as fallbacks for hand-edited / legacy configs.
+            api_url = (
+                ep_cfg.get("base_url", "")
+                or ep_cfg.get("api", "")
+                or ep_cfg.get("url", "")
+                or ""
+            )
+            # ``default_model`` is the legacy key; ``model`` matches what
+            # custom_providers entries use, so accept either.
+            default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
             # Build models list from both default_model and full models array
             models_list = []
             if default_model:
                 models_list.append(default_model)
-            # Also include the full models list from config
+            # Also include the full models list from config.
+            # Hermes writes ``models:`` as a dict keyed by model id
+            # (see hermes_cli/main.py::_save_custom_provider); older
+            # configs or hand-edited files may still use a list.
             cfg_models = ep_cfg.get("models", [])
-            if isinstance(cfg_models, list):
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
+            elif isinstance(cfg_models, list):
                 for m in cfg_models:
                     if m and m not in models_list:
                         models_list.append(m)
@@ -1066,6 +1087,7 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(ep_name.lower())
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1100,9 +1122,26 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "models": [],
                 }
+            # The singular ``model:`` field only holds the currently
+            # active model. Hermes's own writer (main.py::_save_custom_provider)
+            # stores every configured model as a dict under ``models:``;
+            # downstream readers (agent/models_dev.py, gateway/run.py,
+            # run_agent.py, hermes_cli/config.py) already consume that dict.
+            # The /model picker previously ignored it, so multi-model
+            # custom providers appeared to have only the active model.
             default_model = (entry.get("model") or "").strip()
             if default_model and default_model not in groups[slug]["models"]:
                 groups[slug]["models"].append(default_model)
+
+            cfg_models = entry.get("models", {})
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m)
+            elif isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if m and m not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m)
 
         for slug, grp in groups.items():
             if slug.lower() in seen_slugs:

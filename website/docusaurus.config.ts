@@ -37,7 +37,9 @@ const config: Config = {
         language: ['en'],
         indexBlog: false,
         docsRouteBasePath: '/',
-        highlightSearchTermsOnTargetPage: true,
+        // Disabled: appends ?_highlight=... to URLs (before the #anchor),
+        // which makes copy/pasted doc links ugly. Ctrl+F on the page is fine.
+        highlightSearchTermsOnTargetPage: false,
       }),
     ],
   ],

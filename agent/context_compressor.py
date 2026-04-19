@@ -633,7 +633,9 @@ class ContextCompressor(ContextEngine):
             "assistant that continues the conversation. "
             "Do NOT respond to any questions or requests in the conversation — "
             "only output the structured summary. "
-            "Do NOT include any preamble, greeting, or prefix."
+            "Do NOT include any preamble, greeting, or prefix. "
+            "Write the summary in the same language the user was using in the "
+            "conversation — do not translate or switch to English."
         )
 
         # Shared structured template (used by both paths).

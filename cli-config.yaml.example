@@ -63,7 +63,30 @@ model:
   #   Leave unset to use the model's native output ceiling (recommended).
   #   Set only if you want to deliberately limit individual response length.
   #
-  # max_tokens: 8192
+# max_tokens: 8192
+
+# Named provider overrides (optional)
+# Use this for per-provider request timeouts and per-model exceptions.
+# Applies to the primary turn client on every api_mode (OpenAI-wire, native
+# Anthropic, and Anthropic-compatible providers), the fallback chain, and
+# client rebuilds during credential rotation.  For OpenAI-wire chat
+# completions (streaming and non-streaming) the configured value is also
+# used as the per-request ``timeout=`` kwarg so it wins over the legacy
+# HERMES_API_TIMEOUT env var (which still applies when no config is set).
+# Leaving these unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
+# native Anthropic 900s).
+#
+# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
+# SDK paths) — those use boto3 with its own timeout configuration.
+#
+# providers:
+#   ollama-local:
+#     request_timeout_seconds: 300   # Longer timeout for local cold-starts
+#   anthropic:
+#     request_timeout_seconds: 30    # Fast-fail cloud requests
+#     models:
+#       claude-opus-4.6:
+#         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

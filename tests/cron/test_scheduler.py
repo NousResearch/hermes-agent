@@ -1024,7 +1024,7 @@ class TestRunJobSkillBacked:
             "id": "multi-skill-job",
             "name": "multi skill test",
             "prompt": "Combine the results.",
-            "skills": ["blogwatcher", "find-nearby"],
+            "skills": ["blogwatcher", "maps"],
         }
 
         fake_db = MagicMock()
@@ -1057,12 +1057,12 @@ class TestRunJobSkillBacked:
         assert error is None
         assert final_response == "ok"
         assert skill_view_mock.call_count == 2
-        assert [call.args[0] for call in skill_view_mock.call_args_list] == ["blogwatcher", "find-nearby"]
+        assert [call.args[0] for call in skill_view_mock.call_args_list] == ["blogwatcher", "maps"]
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
-        assert prompt_arg.index("blogwatcher") < prompt_arg.index("find-nearby")
+        assert prompt_arg.index("blogwatcher") < prompt_arg.index("maps")
         assert "Instructions for blogwatcher." in prompt_arg
-        assert "Instructions for find-nearby." in prompt_arg
+        assert "Instructions for maps." in prompt_arg
         assert "Combine the results." in prompt_arg
 
 

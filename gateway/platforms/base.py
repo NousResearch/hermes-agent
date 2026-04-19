@@ -705,16 +705,22 @@ class MessageEvent:
     timestamp: datetime = field(default_factory=datetime.now)
     
     def is_command(self) -> bool:
-        """Check if this is a command message (e.g., /new, /reset)."""
-        return self.text.startswith("/")
-    
+        """Check if this is a command message (e.g., /new, ./reset)."""
+        return self.text.startswith("/") or self.text.startswith("./")
+
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
-        # Split on space and get first word, strip the /
+        # Split on space and get first word, strip the / or ./
         parts = self.text.split(maxsplit=1)
-        raw = parts[0][1:].lower() if parts else None
+        first = parts[0] if parts else ""
+        if first.startswith("./"):
+            raw = first[2:].lower()
+        elif first.startswith("/"):
+            raw = first[1:].lower()
+        else:
+            return None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
         # Reject file paths: valid command names never contain /

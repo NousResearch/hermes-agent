@@ -10300,13 +10300,15 @@ class GatewayRunner:
                     logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
-            # "/new"), discard it — commands should never be passed to the agent
+            # "./stop", "/new"), discard it — commands should never be passed to the agent
             # as user input.  The primary fix is in base.py (commands bypass the
             # active-session guard), but this catches edge cases where command
             # text leaks through the interrupt_message fallback.
-            if pending and pending.strip().startswith("/"):
-                _pending_parts = pending.strip().split(None, 1)
-                _pending_cmd_word = _pending_parts[0][1:].lower() if _pending_parts else ""
+            _pending_stripped = pending.strip() if pending else ""
+            if _pending_stripped.startswith("/") or _pending_stripped.startswith("./"):
+                _pending_parts = _pending_stripped.split(None, 1)
+                _first = _pending_parts[0]
+                _pending_cmd_word = _first[2:].lower() if _first.startswith("./") else _first[1:].lower() if _first.startswith("/") else ""
                 if _pending_cmd_word:
                     try:
                         from hermes_cli.commands import resolve_command as _rc_pending

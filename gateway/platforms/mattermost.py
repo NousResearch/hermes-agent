@@ -9,6 +9,7 @@ Environment variables:
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
     MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_COMMAND_PORT     Local HTTP port for slash command callbacks (default: 8477)
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ _CHANNEL_TYPE_MAP = {
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+
+# Default local port for Mattermost slash command HTTP callbacks.
+_DEFAULT_COMMAND_PORT = 8477
 
 
 def check_mattermost_requirements() -> bool:
@@ -98,6 +102,38 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Slash command registration: enabled by default. Set
+        # MATTERMOST_SLASH_COMMANDS=false to disable (e.g. on profiles
+        # that share the same bot token as the main profile — only one
+        # gateway should register commands to avoid port conflicts).
+        self._slash_commands_enabled = os.getenv(
+            "MATTERMOST_SLASH_COMMANDS", "true"
+        ).lower() in ("true", "1", "yes")
+
+        # Local HTTP server for slash command callbacks.
+        self._command_port: int = int(
+            config.extra.get("command_port", "")
+            or os.getenv("MATTERMOST_COMMAND_PORT", _DEFAULT_COMMAND_PORT)
+        )
+        self._http_runner: Any = None  # aiohttp.web.AppRunner
+        self._http_site: Any = None
+
+        # Registered Mattermost command IDs (for cleanup on disconnect).
+        self._registered_command_ids: List[str] = []
+
+        # Per-command verification tokens issued by Mattermost at registration
+        # time; used to authenticate incoming slash command callbacks.
+        self._command_tokens: set = set()
+
+        # Team id the bot registers slash commands under (resolved in connect()).
+        self._team_id: str = ""
+
+        # Callback URL base — inferred from config or defaulted to localhost.
+        self._callback_url: str = (
+            config.extra.get("command_callback_url", "")
+            or os.getenv("MATTERMOST_COMMAND_CALLBACK_URL", "")
+        )
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -221,14 +257,43 @@ class MattermostAdapter(BasePlatformAdapter):
             self._base_url,
         )
 
+        # Resolve the bot's team for slash command registration.
+        teams = await self._api_get("users/me/teams")
+        if isinstance(teams, list) and teams:
+            self._team_id = teams[0]["id"]
+            logger.info(
+                "Mattermost: slash commands will register under team %s (%s)",
+                teams[0].get("name", "?"),
+                self._team_id,
+            )
+        else:
+            logger.warning(
+                "Mattermost: bot belongs to no team — slash command registration will be skipped"
+            )
+
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
+
+        # Post-connect initialization: start HTTP server and register slash commands.
+        asyncio.create_task(self._run_post_connect_initialization())
+
         return True
 
     async def disconnect(self) -> None:
         """Disconnect from Mattermost."""
         self._closing = True
+
+        # Clean up registered slash commands.
+        await self._unregister_commands()
+
+        # Stop the HTTP server.
+        if self._http_site:
+            await self._http_site.stop()
+        if self._http_runner:
+            await self._http_runner.cleanup()
+        self._http_runner = None
+        self._http_site = None
 
         if self._ws_task and not self._ws_task.done():
             self._ws_task.cancel()
@@ -391,6 +456,243 @@ class MattermostAdapter(BasePlatformAdapter):
         # image URLs as inline previews automatically.
         content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
         return content
+
+    # ------------------------------------------------------------------
+    # Slash command HTTP server
+    # ------------------------------------------------------------------
+
+    async def _run_post_connect_initialization(self) -> None:
+        """Called after WebSocket connect — starts HTTP server and registers slash commands."""
+        if not self._slash_commands_enabled:
+            return
+
+        # Start the local HTTP server for slash command callbacks.
+        await self._start_command_server()
+
+        # Register Mattermost slash commands for each gateway-available command.
+        await self._register_commands()
+
+    async def _start_command_server(self) -> None:
+        """Start the aiohttp HTTP server that receives Mattermost slash command callbacks."""
+        from aiohttp import web
+
+        app = web.Application()
+        app.router.add_post("/mattermost-command", self._handle_mattermost_command)
+        app.router.add_get("/health", self._handle_health)
+
+        self._http_runner = web.AppRunner(app)
+        await self._http_runner.setup()
+        self._http_site = web.TCPSite(self._http_runner, "0.0.0.0", self._command_port)
+        await self._http_site.start()
+        logger.info(
+            "Mattermost: slash command HTTP server listening on 0.0.0.0:%d",
+            self._command_port,
+        )
+
+    async def _handle_mattermost_command(self, request: Any) -> Any:
+        """Receive and validate a Mattermost slash command callback.
+
+        Mattermost sends ``application/x-www-form-urlencoded`` with:
+          command, text, user_name, channel_id, team_id, token, ...
+        """
+        from aiohttp import web
+
+        # Token validation.
+        try:
+            data = await request.post()
+        except Exception:
+            return web.Response(status=400, text="Invalid request body")
+
+        token = data.get("token", "")
+        if token not in self._command_tokens:
+            logger.warning("Mattermost: rejected slash command with invalid token")
+            return web.Response(status=403, text="Forbidden")
+
+        command: str = data.get("command", "").lstrip("/")
+        text: str = data.get("text", "")
+        user_id: str = data.get("user_id", "")
+        user_name: str = data.get("user_name", "")
+        channel_id: str = data.get("channel_id", "")
+        team_id: str = data.get("team_id", "")
+
+        # Build the full command string the gateway expects.
+        full_text = f"/{command} {text}".strip() if text else f"/{command}"
+
+        # Determine whether the invoking channel is a DM, private group, or open channel.
+        chat_type = "channel"
+        if channel_id:
+            ch = await self._api_get(f"channels/{channel_id}")
+            ch_type = (ch or {}).get("type")
+            if ch_type == "D":
+                chat_type = "dm"
+            elif ch_type == "G":
+                chat_type = "group"
+
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_type=chat_type,
+            user_id=user_id or user_name,
+            user_name=user_name,
+        )
+
+        event = MessageEvent(
+            text=full_text,
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=dict(data),
+        )
+
+        # Respond to Mattermost immediately — process asynchronously.
+        asyncio.create_task(self.handle_message(event))
+
+        return web.Response(status=200, text="")
+
+    async def _handle_health(self, request: Any) -> Any:
+        from aiohttp import web
+        return web.Response(status=200, text="ok")
+
+    # ------------------------------------------------------------------
+    # Slash command registration
+    # ------------------------------------------------------------------
+
+    async def _register_commands(self) -> None:
+        """Register each gateway-available command as a native Mattermost slash command.
+
+        Idempotent: checks for existing commands before creating, and handles
+        409 Conflict gracefully.
+        """
+        if not self._team_id:
+            logger.warning(
+                "Mattermost: no team_id resolved, skipping slash command registration"
+            )
+            return
+
+        # Build the callback URL.  Use the explicitly configured URL, otherwise
+        # default to localhost on the configured command port.
+        if self._callback_url:
+            callback_url = f"{self._callback_url.rstrip('/')}/mattermost-command"
+        else:
+            callback_url = f"http://localhost:{self._command_port}/mattermost-command"
+
+        # Get the list of commands already registered by this bot.
+        existing_commands = await self._list_registered_commands()
+        existing_triggers = {cmd.get("trigger") for cmd in existing_commands if cmd.get("trigger")}
+
+        # Seed the per-command token set so callbacks for already-registered
+        # commands authenticate on gateway restart.
+        for cmd in existing_commands:
+            tok = cmd.get("token")
+            if tok:
+                self._command_tokens.add(tok)
+
+        # Filter COMMAND_REGISTRY to gateway-available commands.
+        from hermes_cli.commands import COMMAND_REGISTRY
+
+        for cmd in COMMAND_REGISTRY:
+            # Include if: not cli_only, OR has gateway_config_gate.
+            if cmd.cli_only and not cmd.gateway_config_gate:
+                continue
+
+            trigger = cmd.name
+
+            # Skip if already registered.
+            if trigger in existing_triggers:
+                logger.debug(
+                    "Mattermost: command '/%s' already registered, skipping",
+                    trigger,
+                )
+                continue
+
+            hint = cmd.args_hint or ""
+            description = cmd.description
+
+            payload: Dict[str, Any] = {
+                "team_id": self._team_id,
+                "trigger": trigger,
+                "url": callback_url,
+                "method": "P",
+                "title": f"/{trigger}",
+                "description": description,
+                "auto_complete": True,
+                "auto_complete_hint": hint,
+                "auto_complete_desc": description,
+            }
+
+            result = await self._api_post("commands", payload)
+            if result and result.get("id"):
+                self._registered_command_ids.append(result["id"])
+                tok = result.get("token")
+                if tok:
+                    self._command_tokens.add(tok)
+                logger.info(
+                    "Mattermost: registered slash command '/%s' (ID: %s)",
+                    trigger,
+                    result["id"],
+                )
+            elif result and result.get("status_code") == 409:
+                logger.debug(
+                    "Mattermost: command '/%s' already exists (409), skipping",
+                    trigger,
+                )
+            else:
+                logger.warning(
+                    "Mattermost: failed to register command '/%s': %s",
+                    trigger,
+                    result,
+                )
+
+    async def _list_registered_commands(self) -> List[Dict[str, Any]]:
+        """List custom commands already registered for this team."""
+        if not self._team_id:
+            return []
+        result = await self._api_get(
+            f"commands?team_id={self._team_id}&custom_only=true"
+        )
+        if isinstance(result, dict):
+            # Some Mattermost versions return {"items": [...]}
+            return result.get("items", [])
+        if isinstance(result, list):
+            return result
+        return []
+
+    async def _unregister_commands(self) -> None:
+        """Delete previously registered Mattermost slash commands (cleanup)."""
+        for cmd_id in self._registered_command_ids:
+            result = await self._api_delete(f"commands/{cmd_id}")
+            if result and result.get("id"):
+                logger.info(
+                    "Mattermost: deleted slash command ID %s",
+                    cmd_id,
+                )
+            else:
+                logger.warning(
+                    "Mattermost: failed to delete slash command ID %s: %s",
+                    cmd_id,
+                    result,
+                )
+
+    async def _api_delete(self, path: str) -> Dict[str, Any]:
+        """DELETE /api/v4/{path}."""
+        import aiohttp
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.delete(
+                url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM API DELETE %s → %s: %s", path, resp.status, body[:200])
+                    return {}
+                text = await resp.text()
+                if text:
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        return {"status": resp.status}
+                return {"status": resp.status}
+        except aiohttp.ClientError as exc:
+            logger.error("MM API DELETE %s network error: %s", path, exc)
+            return {}
 
     # ------------------------------------------------------------------
     # File helpers
@@ -659,7 +961,7 @@ class MattermostAdapter(BasePlatformAdapter):
         # Determine message type.
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
-        if message_text.startswith("/"):
+        if message_text.startswith("/") or message_text.startswith("./"):
             msg_type = MessageType.COMMAND
 
         # Download file attachments immediately (URLs require auth headers
@@ -736,5 +1038,3 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
-
-

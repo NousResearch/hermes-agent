@@ -106,6 +106,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.provider_error_mapping import format_tool_boundary_error, safe_tool_error_payload
 from utils import atomic_json_write, env_var_enabled
 
 
@@ -7966,7 +7967,7 @@ class AIAgent:
             try:
                 result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
             except Exception as tool_error:
-                result = f"Error executing tool '{function_name}': {tool_error}"
+                result = format_tool_boundary_error(function_name, tool_error)
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
@@ -8358,7 +8359,9 @@ class AIAgent:
                     function_result = self.context_compressor.handle_tool_call(function_name, function_args, messages=messages)
                     _ce_result = function_result
                 except Exception as tool_error:
-                    function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
+                    _p = safe_tool_error_payload(tool_error)
+                    _p["error"] = f"Context engine tool '{function_name}' failed: {_p['error']}"
+                    function_result = json.dumps(_p, ensure_ascii=False)
                     logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 finally:
                     tool_duration = time.time() - tool_start_time
@@ -8382,7 +8385,9 @@ class AIAgent:
                     function_result = self._memory_manager.handle_tool_call(function_name, function_args)
                     _mem_result = function_result
                 except Exception as tool_error:
-                    function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
+                    _p = safe_tool_error_payload(tool_error)
+                    _p["error"] = f"Memory tool '{function_name}' failed: {_p['error']}"
+                    function_result = json.dumps(_p, ensure_ascii=False)
                     logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 finally:
                     tool_duration = time.time() - tool_start_time
@@ -8410,7 +8415,7 @@ class AIAgent:
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
-                    function_result = f"Error executing tool '{function_name}': {tool_error}"
+                    function_result = format_tool_boundary_error(function_name, tool_error)
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 finally:
                     tool_duration = time.time() - tool_start_time
@@ -8429,7 +8434,7 @@ class AIAgent:
                         skip_pre_tool_call_hook=True,
                     )
                 except Exception as tool_error:
-                    function_result = f"Error executing tool '{function_name}': {tool_error}"
+                    function_result = format_tool_boundary_error(function_name, tool_error)
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
@@ -11657,10 +11662,14 @@ class AIAgent:
                         for tc in msg["tool_calls"]:
                             if not tc or not isinstance(tc, dict): continue
                             if tc["id"] not in answered_ids:
+                                _tp = safe_tool_error_payload(e)
+                                _tp["error"] = (
+                                    f"Error during API call (orphan tool result): {_tp['error']}"
+                                )
                                 err_msg = {
                                     "role": "tool",
                                     "tool_call_id": tc["id"],
-                                    "content": f"Error executing tool: {error_msg}",
+                                    "content": json.dumps(_tp, ensure_ascii=False),
                                 }
                                 messages.append(err_msg)
                     break

@@ -91,6 +91,29 @@ class TestSignalAdapterInit:
         assert adapter._account_normalized == "+15551234567"
 
 
+class TestSignalConnectCleanup:
+    """Regression coverage for failed connect() cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_releases_lock_and_closes_client_on_healthcheck_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=503))
+        mock_client.aclose = AsyncMock()
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock") as mock_release:
+            result = await adapter.connect()
+
+        assert result is False
+        mock_client.aclose.assert_awaited_once()
+        mock_release.assert_called_once_with("signal-phone", "+15551234567")
+        assert adapter.client is None
+        assert adapter._platform_lock_identity is None
+
+
 class TestSignalHelpers:
     def test_redact_phone_long(self):
         from gateway.platforms.helpers import redact_phone

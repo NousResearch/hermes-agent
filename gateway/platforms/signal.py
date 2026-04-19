@@ -223,31 +223,40 @@ class SignalAdapter(BasePlatformAdapter):
             return False
 
         # Acquire scoped lock to prevent duplicate Signal listeners for the same phone
+        lock_acquired = False
         try:
             if not self._acquire_platform_lock('signal-phone', self.account, 'Signal account'):
                 return False
+            lock_acquired = True
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
         self.client = httpx.AsyncClient(timeout=30.0)
-
-        # Health check — verify signal-cli daemon is reachable
         try:
-            resp = await self.client.get(f"{self.http_url}/api/v1/check", timeout=10.0)
-            if resp.status_code != 200:
-                logger.error("Signal: health check failed (status %d)", resp.status_code)
+            # Health check — verify signal-cli daemon is reachable
+            try:
+                resp = await self.client.get(f"{self.http_url}/api/v1/check", timeout=10.0)
+                if resp.status_code != 200:
+                    logger.error("Signal: health check failed (status %d)", resp.status_code)
+                    return False
+            except Exception as e:
+                logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
                 return False
-        except Exception as e:
-            logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
-            return False
 
-        self._running = True
-        self._last_sse_activity = time.time()
-        self._sse_task = asyncio.create_task(self._sse_listener())
-        self._health_monitor_task = asyncio.create_task(self._health_monitor())
+            self._running = True
+            self._last_sse_activity = time.time()
+            self._sse_task = asyncio.create_task(self._sse_listener())
+            self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
-        logger.info("Signal: connected to %s", self.http_url)
-        return True
+            logger.info("Signal: connected to %s", self.http_url)
+            return True
+        finally:
+            if not self._running:
+                if self.client:
+                    await self.client.aclose()
+                    self.client = None
+                if lock_acquired:
+                    self._release_platform_lock()
 
     async def disconnect(self) -> None:
         """Stop SSE listener and clean up."""

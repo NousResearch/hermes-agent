@@ -1224,6 +1224,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    # Reject during an in-flight turn.  If we mutated history while
+    # the agent thread is running, prompt.submit's post-run history
+    # write would either clobber the undo (version matches) or
+    # silently drop the agent's output (version mismatch, see below).
+    # Neither is what the user wants — make them /interrupt first.
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /undo")
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
@@ -1243,6 +1250,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /compress")
     try:
         with session["history_lock"]:
             removed, usage = _compress_session_history(session, str(params.get("focus_topic", "") or "").strip())
@@ -1443,12 +1452,33 @@ def _(rid, params: dict) -> dict:
             )
 
             last_reasoning = None
+            status_note = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     with session["history_lock"]:
-                        if int(session.get("history_version", 0)) == history_version:
+                        current_version = int(session.get("history_version", 0))
+                        if current_version == history_version:
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                        else:
+                            # History mutated externally during the turn
+                            # (undo/compress/retry/rollback now guard on
+                            # session.running, but this is the defensive
+                            # backstop for any path that slips past).
+                            # Surface the desync rather than silently
+                            # dropping the agent's output — the UI can
+                            # show the response and warn that it was
+                            # not persisted.
+                            print(
+                                f"[tui_gateway] prompt.submit: history_version mismatch "
+                                f"(expected={history_version} current={current_version}) — "
+                                f"agent output NOT written to session history",
+                                file=sys.stderr,
+                            )
+                            status_note = (
+                                "History changed during this turn — the response above is visible "
+                                "but was not saved to session history."
+                            )
                 raw = result.get("final_response", "")
                 status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
                 lr = result.get("last_reasoning")
@@ -1461,6 +1491,8 @@ def _(rid, params: dict) -> dict:
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
+            if status_note:
+                payload["warning"] = status_note
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
@@ -2168,6 +2200,8 @@ def _(rid, params: dict) -> dict:
     if name == "retry":
         if not session:
             return _err(rid, 4001, "no active session to retry")
+        if session.get("running"):
+            return _err(rid, 4009, "session busy — /interrupt the current turn before /retry")
         history = session.get("history", [])
         if not history:
             return _err(rid, 4018, "no previous user message to retry")
@@ -2578,6 +2612,13 @@ def _(rid, params: dict) -> dict:
     file_path = params.get("file_path", "")
     if not target:
         return _err(rid, 4014, "hash required")
+    # Full-history rollback mutates session history.  Rejecting during
+    # an in-flight turn prevents prompt.submit from silently dropping
+    # the agent's output (version mismatch path) or clobbering the
+    # rollback (version-matches path).  A file-scoped rollback only
+    # touches disk, so we allow it.
+    if not file_path and session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before full rollback.restore")
     try:
         def go(mgr, cwd):
             resolved = _resolve_checkpoint_hash(mgr, cwd, target)

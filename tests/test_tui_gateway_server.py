@@ -546,3 +546,169 @@ def test_session_info_includes_mcp_servers(monkeypatch):
 
     assert info["mcp_servers"] == fake_status
 
+
+# ---------------------------------------------------------------------------
+# History-mutating commands must reject while session.running is True.
+# Without these guards, prompt.submit's post-run history write either
+# clobbers the mutation (version matches) or silently drops the agent's
+# output (version mismatch) — both produce UI<->backend state desync.
+# ---------------------------------------------------------------------------
+
+
+def test_session_undo_rejects_while_running():
+    """Fix for TUI silent-drop #1: /undo must not mutate history
+    while the agent is mid-turn — would either clobber the undo or
+    cause prompt.submit to silently drop the agent's response."""
+    server._sessions["sid"] = _session(running=True, history=[
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ])
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("error"), "session.undo should reject while running"
+        assert resp["error"]["code"] == 4009
+        assert "session busy" in resp["error"]["message"]
+        # History must be unchanged
+        assert len(server._sessions["sid"]["history"]) == 2
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_undo_allowed_when_idle():
+    """Regression guard: when not running, /undo still works."""
+    server._sessions["sid"] = _session(running=False, history=[
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ])
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert resp["result"]["removed"] == 2
+        assert server._sessions["sid"]["history"] == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_compress_rejects_while_running(monkeypatch):
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("error")
+        assert resp["error"]["code"] == 4009
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_rollback_restore_rejects_full_history_while_running(monkeypatch):
+    """Full-history rollback must reject; file-scoped rollback still allowed."""
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "rollback.restore", "params": {"session_id": "sid", "hash": "abc"}}
+        )
+        assert resp.get("error"), "full-history rollback should reject while running"
+        assert resp["error"]["code"] == 4009
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
+    """Fix for TUI silent-drop #2: the defensive backstop at prompt.submit
+    must attach a 'warning' to message.complete when history was
+    mutated externally during the turn (instead of silently dropping
+    the agent's output)."""
+    # Agent bumps history_version itself mid-run to simulate an external
+    # mutation slipping past the guards.
+    session_ref = {"s": None}
+
+    class _RacyAgent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            # Simulate: something external bumped history_version
+            # while we were running.
+            with session_ref["s"]["history_lock"]:
+                session_ref["s"]["history_version"] += 1
+            return {"final_response": "agent reply", "messages": [{"role": "assistant", "content": "agent reply"}]}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_RacyAgent())
+    session_ref["s"] = server._sessions["sid"]
+    emits: list[tuple] = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+        resp = server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hi"}}
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        # History should NOT contain the agent's output (version mismatch)
+        assert server._sessions["sid"]["history"] == []
+
+        # message.complete must carry a 'warning' so the UI / operator
+        # knows the output was not persisted.
+        complete_calls = [a for a in emits if a[0] == "message.complete"]
+        assert len(complete_calls) == 1
+        _, _, payload = complete_calls[0]
+        assert "warning" in payload, (
+            "message.complete must include a 'warning' field on "
+            "history_version mismatch — otherwise the UI silently "
+            "shows output that was never persisted"
+        )
+        assert "not saved" in payload["warning"].lower() or "changed" in payload["warning"].lower()
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
+    """Regression guard: the backstop does not affect the happy path."""
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {"final_response": "reply", "messages": [{"role": "assistant", "content": "reply"}]}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    emits: list[tuple] = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+        resp = server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hi"}}
+        )
+        assert resp.get("result")
+
+        # History was written
+        assert server._sessions["sid"]["history"] == [{"role": "assistant", "content": "reply"}]
+        assert server._sessions["sid"]["history_version"] == 1
+
+        # No warning should be attached
+        complete_calls = [a for a in emits if a[0] == "message.complete"]
+        assert len(complete_calls) == 1
+        _, _, payload = complete_calls[0]
+        assert "warning" not in payload
+    finally:
+        server._sessions.pop("sid", None)
+

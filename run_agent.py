@@ -3086,6 +3086,168 @@ class AIAgent:
         summary["total_tokens"] = cu.total_tokens
         return summary
 
+    def _record_response_usage(self, response: Any, *, api_duration: float) -> Optional[Any]:
+        """Update compressor/session accounting from a successful API response."""
+        raw_usage = getattr(response, "usage", None)
+        if not raw_usage:
+            return None
+
+        canonical_usage = normalize_usage(
+            raw_usage,
+            provider=self.provider,
+            api_mode=self.api_mode,
+        )
+        prompt_tokens = canonical_usage.prompt_tokens
+        completion_tokens = canonical_usage.output_tokens
+        total_tokens = canonical_usage.total_tokens
+        usage_dict = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+        self.context_compressor.update_from_response(usage_dict)
+
+        # Cache discovered context length after successful call.
+        # Only persist limits confirmed by the provider (parsed
+        # from the error message), not guessed probe tiers.
+        if getattr(self.context_compressor, "_context_probed", False):
+            ctx = self.context_compressor.context_length
+            if getattr(self.context_compressor, "_context_probe_persistable", False):
+                save_context_length(self.model, self.base_url, ctx)
+                self._safe_print(
+                    f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}"
+                )
+            self.context_compressor._context_probed = False
+            self.context_compressor._context_probe_persistable = False
+
+        self.session_prompt_tokens += prompt_tokens
+        self.session_completion_tokens += completion_tokens
+        self.session_total_tokens += total_tokens
+        self.session_api_calls += 1
+        self.session_input_tokens += canonical_usage.input_tokens
+        self.session_output_tokens += canonical_usage.output_tokens
+        self.session_cache_read_tokens += canonical_usage.cache_read_tokens
+        self.session_cache_write_tokens += canonical_usage.cache_write_tokens
+        self.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+        # Log API call details for debugging/observability
+        _cache_pct = ""
+        if canonical_usage.cache_read_tokens and prompt_tokens:
+            _cache_pct = (
+                f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} "
+                f"({100 * canonical_usage.cache_read_tokens / prompt_tokens:.0f}%)"
+            )
+        logger.info(
+            "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
+            self.session_api_calls,
+            self.model,
+            self.provider or "unknown",
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            api_duration,
+            _cache_pct,
+        )
+
+        cost_result = estimate_usage_cost(
+            self.model,
+            canonical_usage,
+            provider=self.provider,
+            base_url=self.base_url,
+            api_key=getattr(self, "api_key", ""),
+        )
+        if cost_result.amount_usd is not None:
+            self.session_estimated_cost_usd += float(cost_result.amount_usd)
+        self.session_cost_status = cost_result.status
+        self.session_cost_source = cost_result.source
+
+        # Persist token counts to session DB for /insights.
+        # Do this for every platform with a session_id so non-CLI
+        # sessions (gateway, cron, delegated runs) cannot lose
+        # token/accounting data if a higher-level persistence path
+        # is skipped or fails. Gateway/session-store writes use
+        # absolute totals, so they safely overwrite these per-call
+        # deltas instead of double-counting them.
+        if self._session_db and self.session_id:
+            try:
+                self._session_db.update_token_counts(
+                    self.session_id,
+                    input_tokens=canonical_usage.input_tokens,
+                    output_tokens=canonical_usage.output_tokens,
+                    cache_read_tokens=canonical_usage.cache_read_tokens,
+                    cache_write_tokens=canonical_usage.cache_write_tokens,
+                    reasoning_tokens=canonical_usage.reasoning_tokens,
+                    estimated_cost_usd=float(cost_result.amount_usd)
+                    if cost_result.amount_usd is not None
+                    else None,
+                    cost_status=cost_result.status,
+                    cost_source=cost_result.source,
+                    billing_provider=self.provider,
+                    billing_base_url=self.base_url,
+                    billing_mode="subscription_included"
+                    if cost_result.status == "included"
+                    else None,
+                    model=self.model,
+                )
+            except Exception:
+                pass  # never block the agent loop
+
+        if self.verbose_logging:
+            logging.debug(
+                "Token usage: prompt=%s, completion=%s, total=%s",
+                f"{usage_dict['prompt_tokens']:,}",
+                f"{usage_dict['completion_tokens']:,}",
+                f"{usage_dict['total_tokens']:,}",
+            )
+
+        # Log cache hit stats when prompt caching is active
+        if self._use_prompt_caching:
+            if self.api_mode == "anthropic_messages":
+                # Anthropic uses cache_read_input_tokens / cache_creation_input_tokens
+                cached = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+                written = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            else:
+                # OpenRouter uses prompt_tokens_details.cached_tokens
+                details = getattr(response.usage, "prompt_tokens_details", None)
+                cached = getattr(details, "cached_tokens", 0) or 0 if details else 0
+                written = getattr(details, "cache_write_tokens", 0) or 0 if details else 0
+            prompt = usage_dict["prompt_tokens"]
+            hit_pct = (cached / prompt * 100) if prompt > 0 else 0
+            if not self.quiet_mode:
+                self._vprint(
+                    f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens "
+                    f"({hit_pct:.0f}% hit, {written:,} written)"
+                )
+
+        return canonical_usage
+
+    def _maybe_compress_after_empty_reasoning_response(
+        self,
+        messages: List[Dict[str, Any]],
+        system_message: str,
+        *,
+        real_tokens: int,
+        task_id: str,
+        status_message: str,
+    ) -> tuple[List[Dict[str, Any]], str, bool]:
+        """Try a one-pass context compaction before retrying an empty reasoning turn."""
+        if not self.compression_enabled or real_tokens <= 0:
+            return messages, system_message, False
+
+        compressor = getattr(self, "context_compressor", None)
+        if compressor is None or not compressor.should_compress(real_tokens):
+            return messages, system_message, False
+
+        original_len = len(messages)
+        self._emit_status(status_message)
+        compressed_messages, new_system_prompt = self._compress_context(
+            messages,
+            system_message,
+            approx_tokens=compressor.last_prompt_tokens or real_tokens,
+            task_id=task_id,
+        )
+        return compressed_messages, new_system_prompt, len(compressed_messages) < original_len
+
     def _dump_api_request_debug(
         self,
         api_kwargs: Dict[str, Any],
@@ -9389,6 +9551,7 @@ class AIAgent:
             thinking_sig_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
+            compression_restart_consumed_call = False
             restart_with_length_continuation = False
 
             finish_reason = "stop"
@@ -9756,6 +9919,11 @@ class AIAgent:
                             )
                             finish_reason = "length"
 
+                    canonical_usage = self._record_response_usage(
+                        response,
+                        api_duration=api_duration,
+                    )
+
                     if finish_reason == "length":
                         self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
 
@@ -9770,6 +9938,14 @@ class AIAgent:
                             _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
                             _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                             _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+                            _has_structured_reasoning = bool(
+                                _trunc_msg
+                                and (
+                                    getattr(_trunc_msg, "reasoning", None)
+                                    or getattr(_trunc_msg, "reasoning_content", None)
+                                    or getattr(_trunc_msg, "reasoning_details", None)
+                                )
+                            )
                         elif self.api_mode == "anthropic_messages":
                             # Anthropic response.content is a list of blocks
                             _text_parts = []
@@ -9777,6 +9953,9 @@ class AIAgent:
                                 if getattr(_blk, "type", None) == "text":
                                     _text_parts.append(getattr(_blk, "text", ""))
                             _trunc_content = "\n".join(_text_parts) if _text_parts else None
+                            _has_structured_reasoning = False
+                        else:
+                            _has_structured_reasoning = False
 
                         # A response is "thinking exhausted" only when the model
                         # actually produced reasoning blocks but no visible text after
@@ -9794,7 +9973,7 @@ class AIAgent:
                         )
                         _thinking_exhausted = (
                             not _trunc_has_tool_calls
-                            and _has_think_tags
+                            and (_has_think_tags or _has_structured_reasoning)
                             and (
                                 (_trunc_content is not None and not self._has_content_after_think_block(_trunc_content))
                                 or _trunc_content is None
@@ -9802,6 +9981,39 @@ class AIAgent:
                         )
 
                         if _thinking_exhausted:
+                            _real_tokens = (
+                                canonical_usage.total_tokens
+                                if canonical_usage is not None
+                                else (
+                                    (self.context_compressor.last_prompt_tokens or 0)
+                                    + (self.context_compressor.last_completion_tokens or 0)
+                                )
+                            )
+                            if (
+                                compression_attempts < max_compression_attempts
+                                and self.compression_enabled
+                                and _real_tokens > 0
+                                and self.context_compressor.should_compress(_real_tokens)
+                            ):
+                                compression_attempts += 1
+                                messages, active_system_prompt, compressed = (
+                                    self._maybe_compress_after_empty_reasoning_response(
+                                        messages,
+                                        system_message,
+                                        real_tokens=_real_tokens,
+                                        task_id=effective_task_id,
+                                        status_message=(
+                                            "🗜️ Thinking-only truncated response hit context pressure — "
+                                            "compacting context and retrying..."
+                                        ),
+                                    )
+                                )
+                                if compressed:
+                                    conversation_history = None
+                                    compression_restart_consumed_call = True
+                                    restart_with_compressed_messages = True
+                                    break
+
                             _exhaust_error = (
                                 "Model used all output tokens on reasoning with none left "
                                 "for the response. Try lowering reasoning effort or "
@@ -9930,115 +10142,6 @@ class AIAgent:
                                 "failed": True,
                                 "error": "First response truncated due to output length limit"
                             }
-                    
-                    # Track actual token usage from response for context management
-                    if hasattr(response, 'usage') and response.usage:
-                        canonical_usage = normalize_usage(
-                            response.usage,
-                            provider=self.provider,
-                            api_mode=self.api_mode,
-                        )
-                        prompt_tokens = canonical_usage.prompt_tokens
-                        completion_tokens = canonical_usage.output_tokens
-                        total_tokens = canonical_usage.total_tokens
-                        usage_dict = {
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
-                            "total_tokens": total_tokens,
-                        }
-                        self.context_compressor.update_from_response(usage_dict)
-
-                        # Cache discovered context length after successful call.
-                        # Only persist limits confirmed by the provider (parsed
-                        # from the error message), not guessed probe tiers.
-                        if getattr(self.context_compressor, "_context_probed", False):
-                            ctx = self.context_compressor.context_length
-                            if getattr(self.context_compressor, "_context_probe_persistable", False):
-                                save_context_length(self.model, self.base_url, ctx)
-                                self._safe_print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
-                            self.context_compressor._context_probed = False
-                            self.context_compressor._context_probe_persistable = False
-
-                        self.session_prompt_tokens += prompt_tokens
-                        self.session_completion_tokens += completion_tokens
-                        self.session_total_tokens += total_tokens
-                        self.session_api_calls += 1
-                        self.session_input_tokens += canonical_usage.input_tokens
-                        self.session_output_tokens += canonical_usage.output_tokens
-                        self.session_cache_read_tokens += canonical_usage.cache_read_tokens
-                        self.session_cache_write_tokens += canonical_usage.cache_write_tokens
-                        self.session_reasoning_tokens += canonical_usage.reasoning_tokens
-
-                        # Log API call details for debugging/observability
-                        _cache_pct = ""
-                        if canonical_usage.cache_read_tokens and prompt_tokens:
-                            _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
-                        logger.info(
-                            "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
-                            self.session_api_calls, self.model, self.provider or "unknown",
-                            prompt_tokens, completion_tokens, total_tokens,
-                            api_duration, _cache_pct,
-                        )
-
-                        cost_result = estimate_usage_cost(
-                            self.model,
-                            canonical_usage,
-                            provider=self.provider,
-                            base_url=self.base_url,
-                            api_key=getattr(self, "api_key", ""),
-                        )
-                        if cost_result.amount_usd is not None:
-                            self.session_estimated_cost_usd += float(cost_result.amount_usd)
-                        self.session_cost_status = cost_result.status
-                        self.session_cost_source = cost_result.source
-
-                        # Persist token counts to session DB for /insights.
-                        # Do this for every platform with a session_id so non-CLI
-                        # sessions (gateway, cron, delegated runs) cannot lose
-                        # token/accounting data if a higher-level persistence path
-                        # is skipped or fails. Gateway/session-store writes use
-                        # absolute totals, so they safely overwrite these per-call
-                        # deltas instead of double-counting them.
-                        if self._session_db and self.session_id:
-                            try:
-                                self._session_db.update_token_counts(
-                                    self.session_id,
-                                    input_tokens=canonical_usage.input_tokens,
-                                    output_tokens=canonical_usage.output_tokens,
-                                    cache_read_tokens=canonical_usage.cache_read_tokens,
-                                    cache_write_tokens=canonical_usage.cache_write_tokens,
-                                    reasoning_tokens=canonical_usage.reasoning_tokens,
-                                    estimated_cost_usd=float(cost_result.amount_usd)
-                                    if cost_result.amount_usd is not None else None,
-                                    cost_status=cost_result.status,
-                                    cost_source=cost_result.source,
-                                    billing_provider=self.provider,
-                                    billing_base_url=self.base_url,
-                                    billing_mode="subscription_included"
-                                    if cost_result.status == "included" else None,
-                                    model=self.model,
-                                )
-                            except Exception:
-                                pass  # never block the agent loop
-                        
-                        if self.verbose_logging:
-                            logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
-                        
-                        # Log cache hit stats when prompt caching is active
-                        if self._use_prompt_caching:
-                            if self.api_mode == "anthropic_messages":
-                                # Anthropic uses cache_read_input_tokens / cache_creation_input_tokens
-                                cached = getattr(response.usage, 'cache_read_input_tokens', 0) or 0
-                                written = getattr(response.usage, 'cache_creation_input_tokens', 0) or 0
-                            else:
-                                # OpenRouter uses prompt_tokens_details.cached_tokens
-                                details = getattr(response.usage, 'prompt_tokens_details', None)
-                                cached = getattr(details, 'cached_tokens', 0) or 0 if details else 0
-                                written = getattr(details, 'cache_write_tokens', 0) or 0 if details else 0
-                            prompt = usage_dict["prompt_tokens"]
-                            hit_pct = (cached / prompt * 100) if prompt > 0 else 0
-                            if not self.quiet_mode:
-                                self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
                     has_retried_429 = False  # Reset on success
                     # Clear Nous rate limit state on successful request —
@@ -10943,13 +11046,15 @@ class AIAgent:
                 break
 
             if restart_with_compressed_messages:
-                api_call_count -= 1
-                self.iteration_budget.refund()
+                if not compression_restart_consumed_call:
+                    api_call_count -= 1
+                    self.iteration_budget.refund()
                 # Count compression restarts toward the retry limit to prevent
                 # infinite loops when compression reduces messages but not enough
                 # to fit the context window.
                 retry_count += 1
                 restart_with_compressed_messages = False
+                compression_restart_consumed_call = False
                 continue
 
             if restart_with_length_continuation:
@@ -11558,6 +11663,28 @@ class AIAgent:
                             or getattr(assistant_message, "reasoning_content", None)
                             or getattr(assistant_message, "reasoning_details", None)
                         )
+                        _real_tokens = (
+                            (self.context_compressor.last_prompt_tokens or 0)
+                            + (self.context_compressor.last_completion_tokens or 0)
+                        )
+                        if _has_structured and compression_attempts < max_compression_attempts:
+                            messages, active_system_prompt, compressed = (
+                                self._maybe_compress_after_empty_reasoning_response(
+                                    messages,
+                                    system_message,
+                                    real_tokens=_real_tokens,
+                                    task_id=effective_task_id,
+                                    status_message=(
+                                        "🗜️ Thinking-only response hit context pressure — "
+                                        "compacting context before retry..."
+                                    ),
+                                )
+                            )
+                            if compressed:
+                                compression_attempts += 1
+                                conversation_history = None
+                                continue
+
                         if _has_structured and self._thinking_prefill_retries < 2:
                             self._thinking_prefill_retries += 1
                             logger.info(

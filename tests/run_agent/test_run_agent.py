@@ -2516,6 +2516,71 @@ class TestRunConversation:
         assert "Thinking Budget Exhausted" in result["final_response"]
         assert "/thinkon" in result["final_response"]
 
+    def test_length_structured_reasoning_exhausted_skips_continuation(self, agent):
+        """Structured reasoning fields should trigger thinking-budget recovery too."""
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content=None,
+            finish_reason="length",
+            reasoning_content="internal reasoning without visible text",
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        assert "output tokens" in result["error"].lower()
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+
+    def test_length_structured_reasoning_compresses_before_retry(self, agent):
+        """When thinking exhausts the budget under high context pressure, compact before retrying."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+        agent.context_compressor.threshold_tokens = 1000
+        history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "another question"},
+        ]
+        resp1 = _mock_response(
+            content=None,
+            finish_reason="length",
+            reasoning_content="internal reasoning without visible text",
+            usage={"prompt_tokens": 900, "completion_tokens": 200},
+        )
+        resp2 = _mock_response(
+            content="Recovered after compression.",
+            finish_reason="stop",
+            usage={"prompt_tokens": 120, "completion_tokens": 40},
+        )
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        compressed_messages = [
+            {"role": "user", "content": "Compressed summary of earlier context."},
+            {"role": "user", "content": "hello"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context", return_value=(compressed_messages, agent._cached_system_prompt)) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=history)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after compression."
+        assert result["api_calls"] == 2
+
     def test_length_empty_content_without_think_tags_retries_normally(self, agent):
         """When finish_reason='length' and content is None but no think tags,
         fall through to normal continuation retry (not thinking-exhaustion)."""
@@ -2534,6 +2599,47 @@ class TestRunConversation:
         # (up to 3), not immediately fire thinking-exhaustion.
         assert result["api_calls"] == 3
         assert result["completed"] is False
+
+    def test_reasoning_only_response_compresses_before_prefill_when_context_pressure_is_high(self, agent):
+        """Reasoning-only stop responses should compact context before adding more prefill state."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+        agent.context_compressor.threshold_tokens = 1000
+        history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "another question"},
+        ]
+        resp1 = _mock_response(
+            content=None,
+            finish_reason="stop",
+            reasoning_content="internal reasoning without visible text",
+            usage={"prompt_tokens": 900, "completion_tokens": 200},
+        )
+        resp2 = _mock_response(
+            content="Recovered after compression.",
+            finish_reason="stop",
+            usage={"prompt_tokens": 120, "completion_tokens": 40},
+        )
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        compressed_messages = [
+            {"role": "user", "content": "Compressed summary of earlier context."},
+            {"role": "user", "content": "hello"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context", return_value=(compressed_messages, agent._cached_system_prompt)) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=history)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after compression."
+        assert result["api_calls"] == 2
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)

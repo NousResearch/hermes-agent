@@ -341,6 +341,9 @@ def test_run_agent_injects_context_engine_prefetch_into_user_turn(tmp_path):
 
         agent = AIAgent(
             api_key="test-key-1234567890",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -377,6 +380,9 @@ def test_run_agent_does_not_inject_context_engine_prefetch_into_system_prompt(tm
 
         agent = AIAgent(
             api_key="test-key-1234567890",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -412,6 +418,9 @@ def test_agent_registers_context_engine_tool_schemas_and_routes_tool_calls(tmp_p
 
         agent = AIAgent(
             api_key="test-key-1234567890",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -445,6 +454,9 @@ def test_agent_calls_context_engine_lifecycle_hooks_for_start_reset_and_end(tmp_
 
         agent = AIAgent(
             api_key="test-key-1234567890",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -483,6 +495,9 @@ def test_agent_falls_back_to_builtin_compressor_when_lifeos_engine_load_fails(tm
 
         agent = AIAgent(
             api_key="test-key-1234567890",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -515,6 +530,9 @@ def test_run_agent_routes_context_engine_tool_call_end_to_end(tmp_path):
 
         agent = AIAgent(
             api_key="test-key-1234567890",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_mode="chat_completions",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

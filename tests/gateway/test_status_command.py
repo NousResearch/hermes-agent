@@ -50,6 +50,7 @@ def _make_runner(session_entry: SessionEntry):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
+    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = MagicMock()
@@ -221,6 +222,52 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
         session_entry.session_key,
         last_prompt_tokens=80,
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_discards_stale_result_after_session_invalidation(monkeypatch):
+    import gateway.run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
+    session_key = session_entry.session_key
+    runner.adapters[Platform.TELEGRAM]._post_delivery_callbacks = {session_key: object()}
+
+    async def _stale_result(**kwargs):
+        runner._invalidate_session_run_generation(kwargs["session_key"], reason="test_stale_result")
+        return {
+            "final_response": "late reply",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 80,
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "model": "openai/test-model",
+        }
+
+    runner._run_agent = AsyncMock(side_effect=_stale_result)
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    result = await runner._handle_message(_make_event("hello"))
+
+    assert result is None
+    runner.session_store.append_to_transcript.assert_not_called()
+    runner.session_store.update_session.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._post_delivery_callbacks
 
 
 

@@ -601,10 +601,6 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("message_recalled")
                 return self
 
-            def register_p2_customized_event(self, event_key, _handler):
-                calls.append(f"customized:{event_key}")
-                return self
-
             def build(self):
                 calls.append("build")
                 return "handler"
@@ -632,7 +628,6 @@ class TestAdapterBehavior(unittest.TestCase):
                 "bot_deleted",
                 "p2p_chat_entered",
                 "message_recalled",
-                "customized:drive.notice.comment_add_v1",
                 "build",
             ],
         )

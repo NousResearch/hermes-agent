@@ -428,6 +428,60 @@ _PARAM_DEFAULTS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _maybe_enrich_addgoods_response(skill_name: str, raw_response: str) -> str:
+    """After gds_m_addgoods succeeds, the backend only returns
+    ``{"code":100,"message":"发布成功"}`` — no goods_id.  LLM then tries
+    to guess one (seen: grabs timestamp from image URL) and calls
+    goodseditinfo with a hallucinated id, gets '暂无数据', and retries
+    addgoods → duplicate products get created.
+
+    Bridge does the lookup itself: after a successful addgoods, fetch
+    the top item from storegoodslist (mark=1) and splice its goods_id
+    into the response.  LLM sees ``result.goods_id`` and doesn't need
+    to guess.
+    """
+    if skill_name != "gds_m_addgoods":
+        return raw_response
+    try:
+        d = json.loads(raw_response)
+    except Exception:
+        return raw_response
+    if d.get("code") != 100:
+        return raw_response
+    if (d.get("result") or {}).get("goods_id"):
+        return raw_response  # backend already included it (unlikely but future-proof)
+    try:
+        lookup = _execute_skill(
+            "gds_m_storegoodslist",
+            {"page_size": 1, "mark": 1},
+            _internal=True,
+        )
+        lookup_d = json.loads(lookup)
+        newest = (lookup_d.get("result") or [None])[0]
+        if not newest or not newest.get("goods_id"):
+            return raw_response
+        # Splice into the original response so the LLM sees it
+        existing = d.get("result")
+        enriched = {
+            "goods_id": newest.get("goods_id"),
+            "goods_name": newest.get("goods_name"),
+            "sale_price": newest.get("sale_price"),
+            "stock_count": newest.get("stock_count"),
+            "ver": newest.get("ver"),
+        }
+        if isinstance(existing, dict):
+            enriched = {**existing, **enriched}
+        d["result"] = enriched
+        logger.info(
+            "[apmzoom] gds_m_addgoods: enriched response with goods_id=%s (%s)",
+            enriched["goods_id"], enriched.get("goods_name"),
+        )
+        return json.dumps(d, ensure_ascii=False)
+    except Exception as e:
+        logger.debug("[apmzoom] addgoods response enrichment failed: %s", e)
+        return raw_response
+
+
 def _build_class_cascade(goodsclasslist_result, target_leaf_id):
     """Walk a goodsclasslist tree and build the '1-6-7' cascade string
     for a given leaf class_id.  Returns empty string if not found."""
@@ -830,6 +884,11 @@ def _execute_skill(skill_name: str, params: Optional[Dict[str, Any]] = None,
             logger.info("[apmzoom] %s: cached method=GET (worker metadata override)", skill_name)
 
     if status == 200:
+        # Post-call enrichment hooks (bridge splices in data the LLM
+        # would otherwise have to hunt for — e.g. addgoods lacks
+        # goods_id in its response and the LLM was hallucinating one).
+        if not _internal:
+            raw = _maybe_enrich_addgoods_response(skill_name, raw)
         if len(raw) > 8000 and not _internal:
             raw = raw[:8000] + "\n…[truncated for context budget]"
         return raw

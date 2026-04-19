@@ -121,84 +121,6 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
-# ---------------------------------------------------------------------------
-# Markdown table → code block conversion
-# ---------------------------------------------------------------------------
-# Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
-# so pipe tables render as noisy backslash-pipe text with no alignment.
-# Wrapping the table in a fenced code block makes Telegram render it as
-# monospace preformatted text with columns intact.
-
-# Matches a GFM table delimiter row: optional outer pipes, cells containing
-# only dashes (with optional leading/trailing colons for alignment) separated
-# by '|'.  Requires at least one internal '|' so lone '---' horizontal rules
-# are NOT matched.
-_TABLE_SEPARATOR_RE = re.compile(
-    r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$'
-)
-
-
-def _is_table_row(line: str) -> bool:
-    """Return True if *line* could plausibly be a table data row."""
-    stripped = line.strip()
-    return bool(stripped) and '|' in stripped
-
-
-def _wrap_markdown_tables(text: str) -> str:
-    """Wrap GFM-style pipe tables in ``` fences so Telegram renders them.
-
-    Detected by a row containing '|' immediately followed by a delimiter
-    row matching :data:`_TABLE_SEPARATOR_RE`.  Subsequent pipe-containing
-    non-blank lines are consumed as the table body and included in the
-    wrapped block.  Tables inside existing fenced code blocks are left
-    alone.
-    """
-    if '|' not in text or '-' not in text:
-        return text
-
-    lines = text.split('\n')
-    out: list[str] = []
-    in_fence = False
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.lstrip()
-
-        # Track existing fenced code blocks — never touch content inside.
-        if stripped.startswith('```'):
-            in_fence = not in_fence
-            out.append(line)
-            i += 1
-            continue
-        if in_fence:
-            out.append(line)
-            i += 1
-            continue
-
-        # Look for a header row (contains '|') immediately followed by a
-        # delimiter row.
-        if (
-            '|' in line
-            and i + 1 < len(lines)
-            and _TABLE_SEPARATOR_RE.match(lines[i + 1])
-        ):
-            table_block = [line, lines[i + 1]]
-            j = i + 2
-            while j < len(lines) and _is_table_row(lines[j]):
-                table_block.append(lines[j])
-                j += 1
-            out.append('```')
-            out.extend(table_block)
-            out.append('```')
-            i = j
-            continue
-
-        out.append(line)
-        i += 1
-
-    return '\n'.join(out)
-
-
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -243,6 +165,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        self._runtime_startup_stage: Optional[str] = None
+        self._runtime_transport_mode: Optional[str] = None
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
@@ -267,6 +191,37 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         thread_id = metadata.get("thread_id") or metadata.get("message_thread_id")
         return str(thread_id) if thread_id is not None else None
+
+    def _write_telegram_runtime_status(
+        self,
+        *,
+        platform_state: str,
+        health: str,
+        startup_stage: Optional[str] = None,
+        transport_mode: Optional[str] = None,
+        retry_count: Optional[int] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        try:
+            from gateway.status import write_runtime_status
+
+            details = {
+                "health": health,
+                "startup_stage": startup_stage or self._runtime_startup_stage,
+                "transport_mode": transport_mode or self._runtime_transport_mode,
+            }
+            if retry_count is not None:
+                details["retry_count"] = retry_count
+            write_runtime_status(
+                platform=self.platform.value,
+                platform_state=platform_state,
+                error_code=error_code,
+                error_message=error_message,
+                platform_details=details,
+            )
+        except Exception:
+            pass
 
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
@@ -363,6 +318,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             logger.error("[%s] %s Last error: %s", self.name, message, error)
             self._set_fatal_error("telegram_network_error", message, retryable=True)
+            self._write_telegram_runtime_status(platform_state="retrying", health="degraded", startup_stage="polling_reconnect", transport_mode="polling", retry_count=attempt, error_code="telegram_network_error", error_message=message)
             await self._notify_fatal_error()
             return
 
@@ -390,6 +346,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            self._write_telegram_runtime_status(platform_state="connected", health="healthy", startup_stage="ready", transport_mode="polling", retry_count=0, error_code=None, error_message=None)
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
             # start_polling failed — polling is dead and no further error
@@ -415,6 +372,7 @@ class TelegramAdapter(BasePlatformAdapter):
         RETRY_DELAY = 10  # seconds
 
         if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
+            self._write_telegram_runtime_status(platform_state="retrying", health="degraded", startup_stage="polling_conflict", transport_mode="polling", retry_count=self._polling_conflict_count, error_code="telegram_polling_conflict", error_message=str(error))
             logger.warning(
                 "[%s] Telegram polling conflict (%d/%d), will retry in %ds. Error: %s",
                 self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
@@ -452,6 +410,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         logger.error("[%s] %s Original error: %s", self.name, message, error)
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
+        self._write_telegram_runtime_status(platform_state="fatal", health="down", startup_stage="polling_conflict", transport_mode="polling", retry_count=self._polling_conflict_count, error_code="telegram_polling_conflict", error_message=message)
         try:
             if self._app and self._app.updater:
                 await self._app.updater.stop()
@@ -770,6 +729,8 @@ class TelegramAdapter(BasePlatformAdapter):
             except ImportError:
                 NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
             _max_connect = 8
+            self._runtime_startup_stage = "initialize"
+            self._write_telegram_runtime_status(platform_state="connecting", health="degraded", startup_stage="initialize")
             for _attempt in range(_max_connect):
                 try:
                     await self._app.initialize()
@@ -790,6 +751,9 @@ class TelegramAdapter(BasePlatformAdapter):
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
 
             if webhook_url:
+                self._runtime_transport_mode = "webhook"
+                self._runtime_startup_stage = "start_webhook"
+                self._write_telegram_runtime_status(platform_state="connecting", health="degraded", startup_stage="start_webhook", transport_mode="webhook")
                 # ── Webhook mode ─────────────────────────────────────
                 # Telegram pushes updates to our HTTP endpoint.  This
                 # enables cloud platforms (Fly.io, Railway) to auto-wake
@@ -834,6 +798,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, webhook_port, webhook_path,
                 )
             else:
+                self._runtime_transport_mode = "polling"
+                self._runtime_startup_stage = "webhook_cleanup"
+                self._write_telegram_runtime_status(platform_state="connecting", health="degraded", startup_stage="webhook_cleanup", transport_mode="polling")
                 # ── Polling mode (default) ───────────────────────────
                 # Clear any stale webhook first so polling doesn't inherit a
                 # previous webhook registration and silently stop receiving updates.
@@ -856,6 +823,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
+                self._runtime_startup_stage = "start_polling"
+                self._write_telegram_runtime_status(platform_state="connecting", health="degraded", startup_stage="start_polling", transport_mode="polling")
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
@@ -891,6 +860,9 @@ class TelegramAdapter(BasePlatformAdapter):
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
+            self._runtime_startup_stage = "ready"
+            self._runtime_transport_mode = mode
+            self._write_telegram_runtime_status(platform_state="connected", health="healthy", startup_stage="ready", transport_mode=mode, retry_count=0, error_code=None, error_message=None)
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
@@ -908,8 +880,17 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             self._release_platform_lock()
-            message = f"Telegram startup failed: {e}"
-            self._set_fatal_error("telegram_connect_error", message, retryable=True)
+            stage = self._runtime_startup_stage or "connect"
+            code_map = {
+                "initialize": "telegram_initialize_error",
+                "webhook_cleanup": "telegram_webhook_cleanup_error",
+                "start_polling": "telegram_start_polling_error",
+                "start_webhook": "telegram_start_webhook_error",
+            }
+            error_code = code_map.get(stage, "telegram_connect_error")
+            message = f"Telegram startup failed during {stage}: {e}"
+            self._set_fatal_error(error_code, message, retryable=True)
+            self._write_telegram_runtime_status(platform_state="retrying", health="degraded", startup_stage=stage, transport_mode=self._runtime_transport_mode, error_code=error_code, error_message=message)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
     
@@ -1704,21 +1685,6 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
 
-    def _missing_media_path_error(self, label: str, path: str) -> str:
-        """Build an actionable file-not-found error for gateway MEDIA delivery.
-
-        Paths like /workspace/... or /output/... often only exist inside the
-        Docker sandbox, while the gateway process runs on the host.
-        """
-        error = f"{label} file not found: {path}"
-        if path.startswith(("/workspace/", "/output/", "/outputs/")):
-            error += (
-                " (path may only exist inside the Docker sandbox. "
-                "Bind-mount a host directory and emit the host-visible "
-                "path in MEDIA: for gateway file delivery.)"
-            )
-        return error
-
     async def send_voice(
         self,
         chat_id: str,
@@ -1734,7 +1700,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         try:
             if not os.path.exists(audio_path):
-                return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
+                return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             
             with open(audio_path, "rb") as audio_file:
                 # .ogg files -> send as voice (round playable bubble)
@@ -1782,7 +1748,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not os.path.exists(image_path):
-                return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
+                return SendResult(success=False, error=f"Image file not found: {image_path}")
 
             _thread = self._metadata_thread_id(metadata)
             with open(image_path, "rb") as image_file:
@@ -1819,7 +1785,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not os.path.exists(file_path):
-                return SendResult(success=False, error=self._missing_media_path_error("File", file_path))
+                return SendResult(success=False, error=f"File not found: {file_path}")
 
             display_name = file_name or os.path.basename(file_path)
             _thread = self._metadata_thread_id(metadata)
@@ -1853,7 +1819,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not os.path.exists(video_path):
-                return SendResult(success=False, error=self._missing_media_path_error("Video", video_path))
+                return SendResult(success=False, error=f"Video file not found: {video_path}")
 
             _thread = self._metadata_thread_id(metadata)
             with open(video_path, "rb") as f:
@@ -2053,12 +2019,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return key
 
         text = content
-
-        # 0) Pre-wrap GFM-style pipe tables in ``` fences.  Telegram can't
-        #    render tables natively, but fenced code blocks render as
-        #    monospace preformatted text with columns intact.  The wrapped
-        #    tables then flow through step (1) below as protected regions.
-        text = _wrap_markdown_tables(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
@@ -2395,7 +2355,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(update.message):
             return
 
-        event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
+        event = self._build_message_event(update.message, MessageType.TEXT)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
     
@@ -2406,7 +2366,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(update.message, is_command=True):
             return
         
-        event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
+        event = self._build_message_event(update.message, MessageType.COMMAND)
         await self.handle_message(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2442,7 +2402,7 @@ class TelegramAdapter(BasePlatformAdapter):
         parts.append(f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}")
         parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
 
-        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+        event = self._build_message_event(msg, MessageType.LOCATION)
         event.text = "\n".join(parts)
         await self.handle_message(event)
 
@@ -2593,7 +2553,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             msg_type = MessageType.DOCUMENT
         
-        event = self._build_message_event(msg, msg_type, update_id=update.update_id)
+        event = self._build_message_event(msg, msg_type)
         
         # Add caption as text
         if msg.caption:
@@ -2962,19 +2922,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
-    def _build_message_event(
-        self,
-        message: Message,
-        msg_type: MessageType,
-        update_id: Optional[int] = None,
-    ) -> MessageEvent:
-        """Build a MessageEvent from a Telegram message.
-
-        ``update_id`` is the ``Update.update_id`` from PTB; passing it through
-        lets ``/restart`` record the triggering offset so the new gateway
-        process can advance past it (prevents ``/restart`` being re-delivered
-        when PTB's graceful-shutdown ACK fails).
-        """
+    def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
+        """Build a MessageEvent from a Telegram message."""
         chat = message.chat
         user = message.from_user
         
@@ -3025,8 +2974,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
-            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
+            user_id=str(user.id) if user else None,
+            user_name=user.full_name if user else None,
             thread_id=thread_id_str,
             chat_topic=chat_topic,
         )
@@ -3053,7 +3002,6 @@ class TelegramAdapter(BasePlatformAdapter):
             source=source,
             raw_message=message,
             message_id=str(message.message_id),
-            platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,

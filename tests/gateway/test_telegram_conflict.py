@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.status import read_runtime_status
 
 
 def _ensure_telegram_mock():
@@ -237,7 +238,7 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
     ok = await adapter.connect()
 
     assert ok is False
-    assert adapter.fatal_error_code == "telegram_connect_error"
+    assert adapter.fatal_error_code == "telegram_initialize_error"
     assert adapter.fatal_error_retryable is True
     assert "Temporary failure in name resolution" in adapter.fatal_error_message
 
@@ -309,3 +310,107 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     app.stop.assert_not_awaited()
     app.shutdown.assert_awaited_once()
     warning.assert_not_called()
+
+
+
+@pytest.mark.asyncio
+async def test_connect_marks_webhook_cleanup_stage_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    updater = SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True)
+    bot = SimpleNamespace(delete_webhook=AsyncMock(side_effect=RuntimeError("cleanup failed")), set_my_commands=AsyncMock())
+    app = SimpleNamespace(bot=bot, updater=updater, add_handler=MagicMock(), initialize=AsyncMock(), start=AsyncMock())
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.fatal_error_code == "telegram_webhook_cleanup_error"
+    state = read_runtime_status()
+    assert state["platforms"]["telegram"]["details"]["startup_stage"] == "webhook_cleanup"
+    assert state["platforms"]["telegram"]["details"]["transport_mode"] == "polling"
+    assert state["platforms"]["telegram"]["details"]["health"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_connect_marks_start_webhook_stage_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.com/telegram")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    updater = SimpleNamespace(start_webhook=AsyncMock(side_effect=RuntimeError("bind failed")), stop=AsyncMock(), running=True)
+    bot = SimpleNamespace(set_my_commands=AsyncMock())
+    app = SimpleNamespace(bot=bot, updater=updater, add_handler=MagicMock(), initialize=AsyncMock(), start=AsyncMock())
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.fatal_error_code == "telegram_start_webhook_error"
+    state = read_runtime_status()
+    assert state["platforms"]["telegram"]["details"]["startup_stage"] == "start_webhook"
+    assert state["platforms"]["telegram"]["details"]["transport_mode"] == "webhook"
+    assert state["platforms"]["telegram"]["details"]["health"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_connect_marks_start_polling_stage_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    updater = SimpleNamespace(start_polling=AsyncMock(side_effect=RuntimeError("poll failed")), stop=AsyncMock(), running=True)
+    bot = SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock())
+    app = SimpleNamespace(bot=bot, updater=updater, add_handler=MagicMock(), initialize=AsyncMock(), start=AsyncMock())
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.fatal_error_code == "telegram_start_polling_error"
+    state = read_runtime_status()
+    assert state["platforms"]["telegram"]["details"]["startup_stage"] == "start_polling"
+    assert state["platforms"]["telegram"]["details"]["transport_mode"] == "polling"
+    assert state["platforms"]["telegram"]["details"]["health"] == "degraded"

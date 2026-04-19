@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -776,6 +777,65 @@ class TestKimiForCodingTemperature:
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["model"] == "kimi-for-coding"
         assert kwargs["temperature"] == 0.6
+
+    @pytest.mark.asyncio
+    async def test_copilot_acp_client_is_async_compatible(self):
+        """Copilot ACP must be wrapped before async_call_llm awaits it."""
+        from agent.auxiliary_client import _to_async_client
+        from agent.copilot_acp_client import CopilotACPClient
+
+        sync_client = CopilotACPClient(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            command="copilot",
+            args=["--acp", "--stdio"],
+        )
+
+        sync_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=[]))],
+            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            model="gpt-5.4-mini",
+        )
+
+        def fake_create(**kwargs):
+            return sync_response
+
+        sync_client.chat.completions.create = fake_create
+
+        async_client, model = _to_async_client(sync_client, "gpt-5.4-mini")
+        result = await async_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+        assert model == "gpt-5.4-mini"
+        assert result is sync_response
+        assert result.choices[0].message.content == "ok"
+
+    def test_copilot_acp_client_stream_mode_returns_iterable_chunks(self):
+        """Copilot ACP streaming must yield OpenAI-style chunks, not a bare response."""
+        from agent.copilot_acp_client import CopilotACPClient
+
+        client = CopilotACPClient(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            command="copilot",
+            args=["--acp", "--stdio"],
+        )
+        client._run_prompt = lambda *args, **kwargs: ("hello", "thinking")
+
+        stream = client.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        chunks = list(stream)
+        assert len(chunks) == 2
+        assert chunks[0].choices[0].delta.content == "hello"
+        assert chunks[0].choices[0].delta.reasoning_content == "thinking"
+        assert chunks[1].choices == []
+        assert hasattr(chunks[1], "usage")
 
     @pytest.mark.parametrize(
         "model,expected",

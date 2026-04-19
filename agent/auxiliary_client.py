@@ -644,6 +644,33 @@ class AsyncAnthropicAuxiliaryClient:
         self.base_url = sync_wrapper.base_url
 
 
+class _AsyncCopilotACPCompletionsAdapter:
+    """Async wrapper for the synchronous Copilot ACP adapter."""
+
+    def __init__(self, sync_adapter: Any):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncCopilotACPChatShim:
+    def __init__(self, adapter: _AsyncCopilotACPCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncCopilotACPClient:
+    """Async-compatible wrapper for Copilot ACP used by async auxiliary tasks."""
+
+    def __init__(self, sync_wrapper: "CopilotACPClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncCopilotACPCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncCopilotACPChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
 def _read_nous_auth() -> Optional[dict]:
     """Read and validate ~/.hermes/auth.json for an active Nous provider.
 
@@ -1351,7 +1378,7 @@ def _to_async_client(sync_client, model: str):
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
+            return AsyncCopilotACPClient(sync_client), model
     except ImportError:
         pass
 

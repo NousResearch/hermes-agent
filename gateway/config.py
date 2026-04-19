@@ -150,6 +150,32 @@ class Platform(Enum):
 # Used to distinguish real platforms from arbitrary strings.
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
+# ---------------------------------------------------------------------------
+# Plugin platform support
+# ---------------------------------------------------------------------------
+
+def register_plugin_platform(name: str):
+    """Dynamically add a new member to the Platform enum.
+
+    Called by the gateway when a plugin-registered platform needs to be
+    resolved.  The new member is cached — calling with the same *name*
+    twice returns the existing member.
+
+    Returns the new (or existing) Platform member.
+    """
+    clean = name.lower().strip()
+    try:
+        return Platform(clean)
+    except ValueError:
+        pass
+    # Create a new enum member dynamically
+    new_member = object.__new__(Platform)
+    new_member._name_ = clean.upper()
+    new_member._value_ = clean
+    Platform._member_map_[new_member._name_] = new_member
+    Platform._value2member_map_[clean] = new_member
+    return new_member
+
 
 @dataclass
 class HomeChannel:

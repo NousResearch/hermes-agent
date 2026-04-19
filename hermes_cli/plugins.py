@@ -587,6 +587,81 @@ class PluginContext:
         )
 
 
+    # -- platform adapter registration --------------------------------------
+
+    def register_platform_adapter(
+        self,
+        platform_name: str,
+        adapter_class: type,
+        check_fn=None,
+        *,
+        allowed_users_env: str = "",
+        allow_all_users_env: str = "",
+        platform_hint: str = "",
+    ) -> None:
+        """Register an external platform adapter for the gateway.
+
+        This allows plugins to provide new messaging platform adapters
+        without modifying the core gateway code.  The adapter must be a
+        subclass of ``gateway.platforms.base.BasePlatformAdapter``.
+
+        Args:
+            platform_name: Short lowercase identifier (e.g. ``"wea"``).
+                           Must be unique across built-in and plugin platforms.
+            adapter_class: The adapter class (not an instance).
+            check_fn: Optional callable returning ``True`` when the
+                       platform's runtime dependencies are met.
+            allowed_users_env: Env var name for per-user allowlist
+                               (e.g. ``"WEA_ALLOWED_USERS"``).
+            allow_all_users_env: Env var name for allow-all flag
+                                  (e.g. ``"WEA_ALLOW_ALL_USERS"``).
+            platform_hint: System prompt hint describing the platform's
+                           capabilities (formatting, media support, etc.).
+        """
+        clean = platform_name.lower().strip()
+        if not clean:
+            logger.warning(
+                "Plugin '%s' tried to register a platform adapter with an "
+                "empty name.",
+                self.manifest.name,
+            )
+            return
+
+        # Reject if it conflicts with a built-in platform
+        try:
+            from gateway.config import Platform
+            Platform(clean)
+            logger.warning(
+                "Plugin '%s' tried to register platform '%s' which conflicts "
+                "with a built-in platform. Skipping.",
+                self.manifest.name, clean,
+            )
+            return
+        except ValueError:
+            pass  # Good — no conflict
+
+        if clean in self._manager._platform_adapters:
+            logger.warning(
+                "Plugin '%s' tried to register platform '%s' which is "
+                "already registered by another plugin. Skipping.",
+                self.manifest.name, clean,
+            )
+            return
+
+        self._manager._platform_adapters[clean] = {
+            "adapter_class": adapter_class,
+            "check_fn": check_fn,
+            "plugin": self.manifest.name,
+            "allowed_users_env": allowed_users_env,
+            "allow_all_users_env": allow_all_users_env,
+            "platform_hint": platform_hint,
+        }
+        logger.info(
+            "Plugin %s registered platform adapter: %s",
+            self.manifest.name, clean,
+        )
+
+
 # ---------------------------------------------------------------------------
 # PluginManager
 # ---------------------------------------------------------------------------
@@ -606,6 +681,8 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        # Plugin platform adapter registry: platform_name → metadata dict.
+        self._platform_adapters: Dict[str, Dict[str, Any]] = {}
 
     # -----------------------------------------------------------------------
     # Public

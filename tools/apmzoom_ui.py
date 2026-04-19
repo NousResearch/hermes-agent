@@ -186,19 +186,22 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
                     "type": "string",
                     "description": "LLM-suggested goods_name (can be vision's category + color)",
                 },
-                "recommended_class_cascade_id": {
-                    "type": "string",
+                "recommended_class_id": {
+                    "type": "integer",
                     "description": (
-                        "Cascade path like '1-6-7' built by walking the class tree "
-                        "(top → sub → leaf).  addgoods accepts ONLY this cascade "
-                        "format, not a single class_id."
+                        "Leaf class_id the LLM picked based on vision.category "
+                        "(e.g. 12 for 毛衣).  The bridge will auto-compute the "
+                        "'1-6-12' cascade format on addgoods — LLM doesn't have "
+                        "to build it."
                     ),
                 },
-                "class_options": {
+                "class_tree": {
                     "type": "array",
                     "description": (
-                        "Full class tree flattened to [{cascade_id:'1-6-7', name:'女装-上衣-毛衣'}] "
-                        "so the merchant can pick a different leaf from the dropdown."
+                        "Raw result from goodsclasslist (tree of "
+                        "{goods_class_id, goods_class_name, ls_child}).  "
+                        "Frontend walks it to render a cascading category picker. "
+                        "Keep raw structure — less for LLM to reformat per turn."
                     ),
                 },
                 "make_address_options": {
@@ -227,8 +230,7 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
             "required": [
                 "preview_url",
                 "vision_fields",
-                "recommended_class_cascade_id",
-                "class_options",
+                "class_tree",
                 "make_address_options",
             ],
         },

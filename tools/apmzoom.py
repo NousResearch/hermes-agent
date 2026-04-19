@@ -428,6 +428,86 @@ _PARAM_DEFAULTS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _build_class_cascade(goodsclasslist_result, target_leaf_id):
+    """Walk a goodsclasslist tree and build the '1-6-7' cascade string
+    for a given leaf class_id.  Returns empty string if not found."""
+    def walk(nodes, path):
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            cid = n.get("goods_class_id")
+            cur = path + [cid]
+            if cid == target_leaf_id:
+                return cur
+            children = n.get("ls_child") or []
+            if children:
+                found = walk(children, cur)
+                if found:
+                    return found
+        return None
+
+    path = walk(goodsclasslist_result or [], [])
+    return "-".join(str(x) for x in path) if path else ""
+
+
+def _maybe_build_cascade_id(skill_name: str, params: Dict[str, Any]) -> None:
+    """If addgoods payload has `goods_class_cascade_id` that doesn't look
+    like a cascade ('1-6-7') — e.g. the LLM passed a single leaf id '7' or
+    it's missing entirely while `class_id` is provided — fetch the tree
+    once and upgrade the value to a real cascade.  One place for the
+    bridge to rescue LLMs that struggle with the cascade format."""
+    if skill_name != "gds_m_addgoods":
+        return
+
+    cascade = params.get("goods_class_cascade_id")
+    class_id = params.get("class_id") or params.get("goods_class_id")
+
+    def looks_cascade(v):
+        return isinstance(v, str) and v.count("-") >= 1 and all(
+            p.isdigit() for p in v.split("-")
+        )
+
+    # Already a proper cascade — nothing to do
+    if looks_cascade(cascade):
+        return
+
+    # Pick the best source leaf id: prefer numeric cascade value, then
+    # explicit class_id / goods_class_id fallback.
+    target_leaf = None
+    if cascade is not None:
+        try:
+            target_leaf = int(str(cascade).strip())
+        except Exception:
+            target_leaf = None
+    if target_leaf is None and class_id is not None:
+        try:
+            target_leaf = int(class_id)
+        except Exception:
+            target_leaf = None
+
+    if target_leaf is None:
+        return  # nothing to rebuild from
+
+    try:
+        # Use internal=True to skip the 8KB response truncation — the class
+        # tree is ~9-12 KB and would otherwise land invalid JSON here.
+        raw = _execute_skill("gds_m_goodsclasslist", {}, _internal=True)
+        d = json.loads(raw)
+        tree = d.get("result") or []
+        built = _build_class_cascade(tree, target_leaf)
+        if built:
+            params["goods_class_cascade_id"] = built
+            # Drop the now-redundant single id so backend doesn't get confused
+            params.pop("class_id", None)
+            params.pop("goods_class_id", None)
+            logger.info(
+                "[apmzoom] %s: rebuilt goods_class_cascade_id '%s' → '%s' (from leaf=%s)",
+                skill_name, cascade, built, target_leaf,
+            )
+    except Exception as e:
+        logger.debug("[apmzoom] cascade_id rebuild failed: %s", e)
+
+
 def _apply_param_defaults(skill_name: str, params: Dict[str, Any]) -> None:
     """Mutate `params` to fill in bridge-side defaults for well-known
     skill fields whose upstream defaults don't actually fire.  No-op for
@@ -608,8 +688,12 @@ def _parse_openclaw_endpoint_md(path: Path) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _execute_skill(skill_name: str, params: Optional[Dict[str, Any]] = None,
-                   merchant_id_override: str = "") -> str:
-    """Call one apmzoom skill via HTTP.  Returns JSON string for LLM consumption."""
+                   merchant_id_override: str = "", _internal: bool = False) -> str:
+    """Call one apmzoom skill via HTTP.  Returns JSON string for LLM consumption.
+
+    _internal=True skips the 8KB response truncation so bridge-internal
+    callers (cascade_id rebuild, etc.) can parse the full response.
+    """
     params = params or {}
     home = _hermes_home()
 
@@ -650,6 +734,7 @@ def _execute_skill(skill_name: str, params: Optional[Dict[str, Any]] = None,
     # the injected ver counts toward the required set.
     _maybe_autofetch_ver(skill_name, meta, params)
     _apply_param_defaults(skill_name, params)
+    _maybe_build_cascade_id(skill_name, params)
 
     # Pre-flight param validation (short-circuit before HTTP).  For skills
     # whose frontmatter declares a `parameters:` spec, ensure required
@@ -745,7 +830,7 @@ def _execute_skill(skill_name: str, params: Optional[Dict[str, Any]] = None,
             logger.info("[apmzoom] %s: cached method=GET (worker metadata override)", skill_name)
 
     if status == 200:
-        if len(raw) > 8000:
+        if len(raw) > 8000 and not _internal:
             raw = raw[:8000] + "\n…[truncated for context budget]"
         return raw
     if status == 0:

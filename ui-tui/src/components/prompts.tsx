@@ -155,31 +155,21 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   const [sel, setSel] = useState(0)
 
   useInput((ch, key) => {
-    if (key.escape || (key.ctrl && ch.toLowerCase() === 'c')) {
-      onCancel()
-
-      return
-    }
-
     const lower = ch.toLowerCase()
 
+    if (key.escape || (key.ctrl && lower === 'c') || lower === 'n') {
+      return onCancel()
+    }
+
     if (lower === 'y') {
-      onConfirm()
-
-      return
+      return onConfirm()
     }
 
-    if (lower === 'n') {
-      onCancel()
-
-      return
-    }
-
-    if (key.upArrow && sel > 0) {
+    if (key.upArrow) {
       setSel(0)
     }
 
-    if (key.downArrow && sel < 1) {
+    if (key.downArrow) {
       setSel(1)
     }
 
@@ -189,12 +179,10 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   })
 
   const accent = req.danger ? t.color.error : t.color.warn
-  const confirmLabel = req.confirmLabel ?? 'Yes'
-  const cancelLabel = req.cancelLabel ?? 'No'
 
   const rows = [
-    { color: t.color.cornsilk, label: cancelLabel },
-    { color: req.danger ? t.color.error : t.color.cornsilk, label: confirmLabel }
+    { color: t.color.cornsilk, label: req.cancelLabel ?? 'No' },
+    { color: req.danger ? t.color.error : t.color.cornsilk, label: req.confirmLabel ?? 'Yes' }
   ]
 
   return (

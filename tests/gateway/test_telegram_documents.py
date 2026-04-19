@@ -497,6 +497,19 @@ class TestSendDocument:
         connected_adapter._bot.send_document.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_send_document_outputs_path_has_docker_hint(self, connected_adapter):
+        """Legacy /outputs paths also get the Docker hint."""
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path="/outputs/report.txt",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
+        connected_adapter._bot.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_send_document_not_connected(self, adapter):
         """If bot is None, returns not connected error."""
         result = await adapter.send_document(
@@ -677,6 +690,17 @@ class TestSendVideo:
 
         assert result.success is False
         assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_video_workspace_path_has_docker_hint(self, connected_adapter):
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path="/workspace/video.mp4",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_send_video_not_connected(self, adapter):

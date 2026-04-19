@@ -107,7 +107,6 @@ async def test_runner_allows_cron_only_mode_when_no_platforms_are_enabled(monkey
     assert state["gateway_state"] == "running"
 
 
-<<<<<<< HEAD
 @pytest.mark.asyncio
 async def test_runner_records_connected_platform_state_on_success(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

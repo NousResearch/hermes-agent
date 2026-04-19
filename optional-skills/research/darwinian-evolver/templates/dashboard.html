@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>darwinian-evolver · dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0e1015;
+      --panel: #161921;
+      --ink: #dfe3ec;
+      --muted: #8893a8;
+      --accent: #6fd1ff;
+      --accent-dim: #1f3b50;
+      --good: #7be495;
+      --bad: #f37575;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--ink); margin: 0;
+    }
+    header { padding: 18px 24px; border-bottom: 1px solid #1f232c;
+             display: flex; justify-content: space-between; align-items: center; }
+    header h1 { font-size: 18px; font-weight: 600; margin: 0; color: var(--accent); }
+    header .meta { font-size: 12px; color: var(--muted); }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px 24px; }
+    .panel { background: var(--panel); border: 1px solid #1f232c;
+             border-radius: 10px; padding: 16px; }
+    .panel h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600;
+                text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .kpi { background: #1c2130; border-radius: 8px; padding: 12px; }
+    .kpi .label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                  letter-spacing: 0.08em; }
+    .kpi .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .best { grid-column: span 2; background: var(--panel);
+            border: 1px solid #1f232c; border-radius: 10px; padding: 16px; }
+    .best pre { background: #0b0d12; padding: 10px; border-radius: 6px;
+                color: var(--ink); white-space: pre-wrap; font-size: 13px; margin: 6px 0; }
+    #lineage-mermaid { background: #0b0d12; padding: 12px; border-radius: 6px;
+                       min-height: 180px; }
+    .status-pill { display: inline-block; padding: 2px 8px; border-radius: 10px;
+                   font-size: 11px; margin-left: 8px; background: var(--accent-dim);
+                   color: var(--accent); }
+    .input { width: 100%; background: #0b0d12; color: var(--ink);
+             border: 1px solid #28303f; border-radius: 6px; padding: 6px 8px;
+             font-family: inherit; font-size: 13px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+    button { background: var(--accent-dim); color: var(--accent); border: 0;
+             padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    button:hover { background: #2a5d7e; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>darwinian-evolver
+      <span id="live" class="status-pill">connecting…</span>
+    </h1>
+    <div class="meta" id="exp-name">—</div>
+  </header>
+
+  <main>
+    <div class="panel" style="grid-column: span 2;">
+      <h2>summary</h2>
+      <div class="kpis">
+        <div class="kpi"><div class="label">generation</div><div class="value" id="kpi-gen">—</div></div>
+        <div class="kpi"><div class="label">LLM calls</div><div class="value" id="kpi-calls">—</div></div>
+        <div class="kpi"><div class="label">spent (USD)</div><div class="value" id="kpi-usd">—</div></div>
+        <div class="kpi"><div class="label">objectives</div><div class="value" id="kpi-obj">—</div></div>
+      </div>
+    </div>
+
+    <div class="best" style="grid-column: span 2;">
+      <h2>best so far</h2>
+      <pre id="best-body">waiting for first generation…</pre>
+    </div>
+
+    <div class="panel">
+      <h2>fitness over time</h2>
+      <div id="fit-chart" style="height: 280px;"></div>
+    </div>
+
+    <div class="panel">
+      <h2>operator attribution</h2>
+      <div id="op-chart" style="height: 280px;"></div>
+    </div>
+
+    <div class="panel" style="grid-column: span 2;">
+      <h2>lineage</h2>
+      <div class="row">
+        <input class="input" id="cid-input" placeholder="candidate id"/>
+        <button id="cid-go">resolve</button>
+      </div>
+      <div id="lineage-mermaid"></div>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    async function getJSON(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${url} → ${res.status}`);
+      return res.json();
+    }
+
+    async function refreshSummary() {
+      const s = await getJSON('/api/summary');
+      $('exp-name').textContent = s.experiment;
+      $('kpi-gen').textContent = s.generations;
+      $('kpi-calls').textContent = s.budget.calls ?? 0;
+      $('kpi-usd').textContent = (s.budget.usd ?? 0).toFixed(4);
+      $('kpi-obj').textContent = (s.objectives || []).length || '—';
+      if (s.best) {
+        $('best-body').textContent =
+          `id: ${s.best.id}\n` +
+          `score: ${s.best.score.toFixed(4)}${s.best.held_out ? ' (held-out)' : ''}\n\n` +
+          s.best.preview;
+      }
+      return s;
+    }
+
+    async function refreshFitness(objectives) {
+      const traces = [];
+      for (const obj of objectives) {
+        const series = await getJSON(`/api/fitness?objective=${encodeURIComponent(obj)}`);
+        traces.push({
+          x: series.map(r => r.generation),
+          y: series.map(r => r.best),
+          name: `${obj} · best`,
+          mode: 'lines+markers',
+          line: { width: 2 },
+        });
+        traces.push({
+          x: series.map(r => r.generation),
+          y: series.map(r => r.mean),
+          name: `${obj} · mean`,
+          mode: 'lines',
+          line: { width: 1, dash: 'dot' },
+        });
+      }
+      Plotly.react('fit-chart', traces, {
+        margin: { t: 10, r: 10, l: 40, b: 40 },
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: 'transparent',
+        font: { color: '#dfe3ec' },
+        xaxis: { title: 'generation', gridcolor: '#1f232c' },
+        yaxis: { title: 'score', gridcolor: '#1f232c' },
+        legend: { orientation: 'h', y: -0.3 },
+      }, { displayModeBar: false });
+    }
+
+    async function refreshOperators() {
+      const ops = await getJSON('/api/operators');
+      Plotly.react('op-chart', [{
+        type: 'bar',
+        x: ops.map(o => o.count),
+        y: ops.map(o => o.operator),
+        orientation: 'h',
+        marker: { color: '#6fd1ff' },
+      }], {
+        margin: { t: 10, r: 10, l: 140, b: 30 },
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: 'transparent',
+        font: { color: '#dfe3ec' },
+        xaxis: { gridcolor: '#1f232c' },
+        yaxis: { automargin: true },
+      }, { displayModeBar: false });
+    }
+
+    async function renderLineage(cid) {
+      if (!cid) return;
+      const data = await getJSON(`/api/lineage/${encodeURIComponent(cid)}`);
+      const lines = ['graph TD'];
+      for (const e of data.edges) {
+        lines.push(`    ${e.parent_id} -- ${e.operator} --> ${e.child_id}`);
+      }
+      if (lines.length === 1) lines.push(`    ${cid}[${cid}]`);
+      const graph = lines.join('\n');
+      const target = $('lineage-mermaid');
+      target.innerHTML = `<pre class="mermaid">${graph}</pre>`;
+      if (window.mermaid) mermaid.run({ querySelector: '.mermaid' });
+    }
+
+    $('cid-go').addEventListener('click', () => renderLineage($('cid-input').value.trim()));
+
+    async function tick() {
+      try {
+        const s = await refreshSummary();
+        const objs = (s.objectives && s.objectives.length) ? s.objectives : ['fitness'];
+        await refreshFitness(objs);
+        await refreshOperators();
+      } catch (e) { console.warn(e); }
+    }
+
+    tick();
+    setInterval(tick, 3000);
+
+    (function openWebSocket() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/api/stream`);
+      ws.onopen    = () => { $('live').textContent = 'live'; };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'generation') tick();
+        } catch (e) {}
+      };
+      ws.onclose   = () => { $('live').textContent = 'reconnecting…'; setTimeout(openWebSocket, 2000); };
+    })();
+
+    if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+  </script>
+</body>
+</html>

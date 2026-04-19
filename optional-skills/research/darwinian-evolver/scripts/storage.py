@@ -61,10 +61,53 @@ CREATE TABLE IF NOT EXISTS budget_ledger (
     operator      TEXT NOT NULL
 );
 
+-- v0.2: LLM response cache (content-addressed per request body)
+CREATE TABLE IF NOT EXISTS llm_cache (
+    key               TEXT PRIMARY KEY,
+    response          TEXT NOT NULL,
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    model             TEXT NOT NULL DEFAULT '',
+    created_at        INTEGER NOT NULL
+);
+
+-- v0.2: Pairwise judge votes (Bradley-Terry aggregation source)
+CREATE TABLE IF NOT EXISTS pairwise_votes (
+    generation INTEGER NOT NULL,
+    left_id    TEXT    NOT NULL REFERENCES candidates(id),
+    right_id   TEXT    NOT NULL REFERENCES candidates(id),
+    winner     TEXT    NOT NULL,
+    eval_seed  INTEGER NOT NULL,
+    PRIMARY KEY (generation, left_id, right_id, eval_seed)
+);
+
+-- v0.2: Bradley-Terry MLE scores per (candidate, generation)
+CREATE TABLE IF NOT EXISTS bt_scores (
+    candidate_id TEXT    NOT NULL REFERENCES candidates(id),
+    generation   INTEGER NOT NULL,
+    log_odds     REAL    NOT NULL,
+    iters        INTEGER NOT NULL,
+    PRIMARY KEY (candidate_id, generation)
+);
+
+-- v0.2: Constitutional-critic post-hoc reviews
+CREATE TABLE IF NOT EXISTS critic_evaluations (
+    candidate_id TEXT    NOT NULL REFERENCES candidates(id),
+    generation   INTEGER NOT NULL,
+    risk         REAL    NOT NULL,
+    evidence     TEXT    NOT NULL DEFAULT '',
+    signal_tags  TEXT    NOT NULL DEFAULT '[]',
+    model        TEXT    NOT NULL DEFAULT '',
+    evaluated_at INTEGER NOT NULL,
+    PRIMARY KEY (candidate_id, generation, model)
+);
+
 CREATE INDEX IF NOT EXISTS idx_fitness_candidate ON fitness(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_child     ON lineage(child_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_parent    ON lineage(parent_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_gen    ON candidates(generation);
+CREATE INDEX IF NOT EXISTS idx_bt_gen            ON bt_scores(generation);
+CREATE INDEX IF NOT EXISTS idx_critic_gen        ON critic_evaluations(generation);
 """
 
 
@@ -307,3 +350,101 @@ def lineage_hash(conn: sqlite3.Connection) -> str:
             h.update(str(tuple(row)).encode("utf-8"))
         h.update(b"|")
     return h.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# v0.2: Pairwise votes + Bradley-Terry scores (feature 3)
+# ---------------------------------------------------------------------------
+
+
+def record_pairwise_vote(
+    conn: sqlite3.Connection,
+    generation: int,
+    left_id: str,
+    right_id: str,
+    winner: str,
+    eval_seed: int,
+) -> None:
+    """Record one pairwise judge verdict.
+
+    ``winner`` is one of ``"left" | "right" | "tie"``. Primary key is
+    ``(generation, left_id, right_id, eval_seed)`` so rerunning the
+    same pair with the same seed overwrites rather than duplicates.
+    """
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO pairwise_votes "
+            "(generation, left_id, right_id, winner, eval_seed) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (int(generation), left_id, right_id, winner, int(eval_seed)),
+        )
+
+
+def record_bt_score(
+    conn: sqlite3.Connection,
+    generation: int,
+    candidate_id: str,
+    log_odds: float,
+    iters: int,
+) -> None:
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO bt_scores "
+            "(candidate_id, generation, log_odds, iters) VALUES (?, ?, ?, ?)",
+            (candidate_id, int(generation), float(log_odds), int(iters)),
+        )
+
+
+def get_pairwise_votes(conn: sqlite3.Connection, generation: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT left_id, right_id, winner, eval_seed FROM pairwise_votes "
+        "WHERE generation = ?",
+        (int(generation),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# v0.2: Constitutional critic evaluations (feature 4)
+# ---------------------------------------------------------------------------
+
+
+def record_critic_evaluation(
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    generation: int,
+    risk: float,
+    evidence: str,
+    signal_tags: list[str],
+    model: str,
+) -> None:
+    """Persist one critic review. Primary key is
+    ``(candidate_id, generation, model)`` so re-running the same model
+    on the same candidate overwrites rather than duplicates.
+    """
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO critic_evaluations "
+            "(candidate_id, generation, risk, evidence, signal_tags, model, evaluated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (candidate_id, int(generation), float(risk),
+             str(evidence), json.dumps(signal_tags, ensure_ascii=False),
+             str(model), int(time.time())),
+        )
+
+
+def get_critic_evaluation(
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    generation: int,
+) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT risk, evidence, signal_tags, model FROM critic_evaluations "
+        "WHERE candidate_id = ? AND generation = ? ORDER BY evaluated_at DESC LIMIT 1",
+        (candidate_id, int(generation)),
+    ).fetchone()
+    if row is None:
+        return None
+    out = dict(row)
+    out["signal_tags"] = json.loads(out["signal_tags"] or "[]")
+    return out

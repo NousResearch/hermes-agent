@@ -26,9 +26,12 @@ import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 import httpx
+
+if TYPE_CHECKING:  # pragma: no cover
+    from cache import ResponseCache
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +146,7 @@ class LLMClient:
     timeout_s:   float = 60.0
     max_retries: int = 4
     budget: Optional[BudgetLedger] = None
+    cache:  Optional["ResponseCache"] = None
     _client: Optional[httpx.AsyncClient] = field(default=None, init=False, repr=False)
     _sem:    Optional[asyncio.Semaphore] = field(default=None, init=False, repr=False)
 
@@ -199,6 +203,15 @@ class LLMClient:
         if seed is not None:
             body["seed"] = int(seed)
 
+        # Cache short-circuit: if the exact same request body has been
+        # served before, return the stored response. We intentionally do
+        # NOT record a budget line here — the original call already did,
+        # and charging twice would overstate spend on reruns.
+        if self.cache is not None:
+            hit = self.cache.get(body)
+            if hit is not None:
+                return hit.response
+
         async with self._sem:
             last_exc: Optional[Exception] = None
             for attempt in range(self.max_retries + 1):
@@ -212,6 +225,14 @@ class LLMClient:
                     data = resp.json()
                     content = (data["choices"][0]["message"].get("content") or "").strip()
                     usage = data.get("usage") or {}
+                    if self.cache is not None:
+                        # Persist before the budget so a crash mid-record
+                        # still leaves the response available to replays.
+                        self.cache.put(
+                            body, content,
+                            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                            completion_tokens=int(usage.get("completion_tokens", 0)),
+                        )
                     if self.budget is not None:
                         self.budget.record(
                             int(usage.get("prompt_tokens", 0)),

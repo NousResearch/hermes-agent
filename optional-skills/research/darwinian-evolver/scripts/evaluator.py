@@ -49,6 +49,12 @@ def fitness_spec(
     timeout_s: float = 30.0,
     objectives: Optional[list[str]] = None,
     generalization_gap: float = 0.15,
+    judge: str = "scalar",
+    pairwise_rounds: int = 40,
+    critic: str = "off",
+    critic_threshold: float = 0.5,
+    critic_top_k: int = 5,
+    critic_model: Optional[str] = None,
 ) -> Callable[[Callable], Callable]:
     """Decorator that attaches evaluator metadata to a user fitness fn.
 
@@ -59,8 +65,23 @@ def fitness_spec(
         @fitness_spec(held_out_frac=0.2, objectives=["accuracy", "cost"])
         def fitness(candidate, context): ...
 
-    The decorated function still behaves like a normal callable; the
-    metadata is read from ``fn.__evolver_spec__``.
+    v0.2 adds four optional metadata keys:
+
+    ``judge``
+        ``"scalar"`` (default, existing behaviour) or ``"pairwise"``
+        to enable Bradley-Terry pairwise judging. In pairwise mode the
+        ``fitness`` function is not called — the LLM judge is the fitness.
+
+    ``pairwise_rounds``
+        When ``judge="pairwise"``, the number of pair comparisons per
+        generation.
+
+    ``critic`` / ``critic_threshold`` / ``critic_top_k`` / ``critic_model``
+        Enable and tune the constitutional reward-hacking critic. See
+        ``scripts/critic.py`` for the review schema.
+
+    The metadata is read from ``fn.__evolver_spec__``; the function
+    still behaves like a normal callable.
     """
 
     def deco(fn: Callable) -> Callable:
@@ -69,6 +90,12 @@ def fitness_spec(
             "timeout_s":          float(timeout_s),
             "objectives":         list(objectives) if objectives else None,
             "generalization_gap": float(generalization_gap),
+            "judge":              str(judge),
+            "pairwise_rounds":    int(pairwise_rounds),
+            "critic":             str(critic),
+            "critic_threshold":   float(critic_threshold),
+            "critic_top_k":       int(critic_top_k),
+            "critic_model":       critic_model,
         }
         return fn
 
@@ -81,15 +108,36 @@ def load_fitness(experiment_dir: Path) -> Callable:
     Returns the ``fitness`` callable. Raises ``FileNotFoundError`` if
     the file is missing and ``AttributeError`` if the ``fitness``
     symbol doesn't exist.
+
+    The experiment directory is prepended to ``sys.path`` before
+    import so ``from evolver_sdk import fitness_spec`` (the shim
+    created by ``evolver init``) resolves.
     """
+    import sys as _sys
+
     path = experiment_dir / "fitness.py"
     if not path.exists():
         raise FileNotFoundError(f"missing fitness.py at {path}")
-    spec = importlib.util.spec_from_file_location(f"user_fitness_{experiment_dir.name}", path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"could not load spec from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+
+    dir_str = str(experiment_dir)
+    added = False
+    if dir_str not in _sys.path:
+        _sys.path.insert(0, dir_str)
+        added = True
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"user_fitness_{experiment_dir.name}", path,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"could not load spec from {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        if added:
+            try:
+                _sys.path.remove(dir_str)
+            except ValueError:
+                pass
     if not hasattr(module, "fitness"):
         raise AttributeError(f"fitness.py must define a `fitness` function: {path}")
     return module.fitness
@@ -103,6 +151,12 @@ def read_spec(fn: Callable) -> dict:
         "timeout_s":          spec.get("timeout_s",          30.0),
         "objectives":         spec.get("objectives",         None),
         "generalization_gap": spec.get("generalization_gap", 0.15),
+        "judge":              spec.get("judge",              "scalar"),
+        "pairwise_rounds":    spec.get("pairwise_rounds",    40),
+        "critic":             spec.get("critic",             "off"),
+        "critic_threshold":   spec.get("critic_threshold",   0.5),
+        "critic_top_k":       spec.get("critic_top_k",       5),
+        "critic_model":       spec.get("critic_model",       None),
     }
 
 
@@ -249,6 +303,86 @@ async def held_out_guard(
 # ---------------------------------------------------------------------------
 # Successive halving (Hyperband-lite)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Pairwise evaluation (v0.2 feature 3)
+# ---------------------------------------------------------------------------
+
+
+async def evaluate_pairwise(
+    population: list[Individual],
+    pj,                             # judge.PairwiseJudge — injected
+    *,
+    conn,                           # sqlite3.Connection — for vote persistence
+    generation: int,
+    rounds: int,
+    seed: int,
+    concurrency: int = 4,
+) -> int:
+    """Fill fitness via Bradley-Terry aggregation of pairwise verdicts.
+
+    Side-effects:
+      * every verdict is written to ``pairwise_votes`` (keyed by
+        ``(generation, left_id, right_id, eval_seed)``),
+      * the resulting log-odds per candidate are written to
+        ``bt_scores`` AND copied onto ``Individual.fitness`` so the
+        existing selector pipeline (tournament / MAP-Elites / ES) works
+        unchanged.
+
+    Returns the number of verdicts collected (excluding ties).
+    """
+    import random as _random
+
+    # Lazy import to avoid evaluator.py ↔ judge.py circular import at
+    # module load.
+    import judge as judge_module
+    import storage as storage_module
+
+    if len(population) < 2:
+        for ind in population:
+            ind.fitness = 0.0
+        return 0
+
+    rng = _random.Random(seed)
+    cid_to_ind = {ind.cid: ind for ind in population}
+    ids = list(cid_to_ind.keys())
+    schedule = judge_module.sample_pair_schedule(ids, rounds=rounds, rng=rng)
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+    verdicts: list[Optional[str]] = [None] * len(schedule)
+
+    async def worker(i: int, a: str, b: str) -> None:
+        async with sem:
+            sub_rng = _random.Random(seed * 100003 + i)
+            verdicts[i] = await pj.judge(
+                cid_to_ind[a].genome, cid_to_ind[b].genome,
+                seed=seed * 997 + i, rng=sub_rng,
+            )
+
+    await asyncio.gather(*(worker(i, a, b) for i, (a, b) in enumerate(schedule)))
+
+    votes: list[tuple[str, str]] = []
+    recorded = 0
+    for i, (a, b) in enumerate(schedule):
+        verdict = verdicts[i] or "tie"
+        if verdict == "a":
+            storage_module.record_pairwise_vote(conn, generation, a, b, "left", seed)
+            votes.append((a, b))
+            recorded += 1
+        elif verdict == "b":
+            storage_module.record_pairwise_vote(conn, generation, a, b, "right", seed)
+            votes.append((b, a))
+            recorded += 1
+        else:
+            storage_module.record_pairwise_vote(conn, generation, a, b, "tie", seed)
+
+    scores, iters = judge_module.aggregate_bradley_terry(votes)
+    for ind in population:
+        score = float(scores.get(ind.cid, 0.0))
+        ind.fitness = score
+        storage_module.record_bt_score(conn, generation, ind.cid, score, iters)
+    return recorded
 
 
 async def successive_halving(

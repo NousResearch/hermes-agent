@@ -44,6 +44,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import adapters    # noqa: E402
 import algorithms  # noqa: E402
+import cache       # noqa: E402
+import critic      # noqa: E402
+import judge       # noqa: E402
 import operators   # noqa: E402
 import storage     # noqa: E402
 import evaluator   # noqa: E402
@@ -280,6 +283,8 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
     spec = read_spec(fitness_fn)
     objectives = spec["objectives"]
     primary_obj = objectives[0] if objectives else None
+    judge_mode = spec["judge"]
+    pairwise_rounds = spec["pairwise_rounds"]
 
     if args.algorithm == "nsga2" and not objectives:
         _err("nsga2 requires fitness_spec(objectives=[...]) to be set")
@@ -287,6 +292,11 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
         # User returned dict fitness but picked single-objective algo;
         # fall back to primary objective for selection.
         pass
+    if judge_mode == "pairwise" and objectives:
+        _err(
+            "pairwise judge is incompatible with multi-objective fitness "
+            "(NSGA-II mode) in v0.2. Set objectives=None or judge='scalar'."
+        )
 
     rng = random.Random(args.seed)
     conn = storage.open_db(exp / "lineage.db")
@@ -298,7 +308,86 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
         on_record=lambda i, o, u, op: storage.record_budget(conn, i, o, u, op),
     )
 
-    async with LLMClient.from_hermes(concurrency=args.concurrency, budget=ledger) as llm:
+    # v0.2: per-experiment LLM response cache — invisible to user-facing
+    # code but ensures ``evolver replay --seed N`` is bit-for-bit
+    # reproducible at zero additional LLM cost. We read the flag via
+    # getattr so callers that build Namespaces by hand (mostly tests)
+    # continue to work without opting into the newer attribute set.
+    no_cache = getattr(args, "no_cache", False)
+    response_cache = None if no_cache else cache.ResponseCache(conn)
+
+    async with LLMClient.from_hermes(
+        concurrency=args.concurrency, budget=ledger, cache=response_cache,
+    ) as llm:
+        # Pairwise judge is materialised once per run and reused across
+        # generations so the LLM client's connection pool stays warm.
+        pairwise_judge = judge.PairwiseJudge(client=llm) if judge_mode == "pairwise" else None
+
+        # Constitutional critic (feature 4) — off by default.
+        critic_obj = None
+        if spec["critic"] == "on":
+            critic_obj = critic.ConstitutionalCritic(
+                client=llm,
+                threshold=spec["critic_threshold"],
+                model_override=spec["critic_model"],
+            )
+
+        async def _evaluate(pop: list[Individual], gen: int, step_seed: int) -> None:
+            """Dispatch to the right evaluator given the fitness spec."""
+            if pairwise_judge is not None:
+                await evaluator.evaluate_pairwise(
+                    pop, pairwise_judge,
+                    conn=conn, generation=gen,
+                    rounds=pairwise_rounds, seed=step_seed,
+                    concurrency=args.concurrency,
+                )
+            else:
+                await evaluate_batch(
+                    pop, fitness_fn,
+                    seed=step_seed, concurrency=args.concurrency,
+                )
+
+        async def _apply_critic(pop: list[Individual], gen: int) -> None:
+            """Review the top-K and apply placement-score penalties in place.
+
+            Raw fitness rows in SQLite are already written — the
+            penalty affects only ``Individual.fitness`` in memory,
+            which is what the selector/archive see. The audit trail in
+            ``fitness`` table therefore remains pristine.
+            """
+            if critic_obj is None or not pop:
+                return
+            k = max(1, int(spec["critic_top_k"]))
+
+            def _score(ind: Individual) -> float:
+                f = ind.fitness
+                if isinstance(f, dict):
+                    return float(f.get(primary_obj or next(iter(f)), float("nan")))
+                return float(f)
+
+            top = sorted(pop, key=_score, reverse=True)[:k]
+            tasks = [critic_obj.review(ind.genome, fitness_value=ind.fitness) for ind in top]
+            reviews = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for ind, review in zip(top, reviews):
+                if isinstance(review, Exception):
+                    continue
+                storage.record_critic_evaluation(
+                    conn, ind.cid, gen,
+                    risk=review.risk,
+                    evidence=review.evidence,
+                    signal_tags=review.signal_tags,
+                    model=review.model,
+                )
+                penalty = critic_obj.penalty(review, _score(ind))
+                if penalty > 0:
+                    if isinstance(ind.fitness, dict):
+                        # In multi-objective mode, dock the primary objective.
+                        obj_key = primary_obj or next(iter(ind.fitness))
+                        ind.fitness[obj_key] = float(ind.fitness[obj_key]) - penalty
+                    else:
+                        ind.fitness = float(ind.fitness) - penalty
+
         # ------------ seed population ------------
         seeds = _load_seeds(exp)
         if not seeds:
@@ -316,16 +405,14 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
             storage.insert_candidate(conn, s, generation=0,
                                      descriptor={"d": list(ind.descriptor)},
                                      parents=())
-        await evaluate_batch(
-            population, fitness_fn,
-            seed=args.seed, concurrency=args.concurrency,
-        )
+        await _evaluate(population, gen=0, step_seed=args.seed)
         for ind in population:
             if isinstance(ind.fitness, dict):
                 for k, v in ind.fitness.items():
                     storage.record_fitness(conn, ind.cid, k, float(v), eval_seed=args.seed)
             else:
                 storage.record_fitness(conn, ind.cid, "fitness", float(ind.fitness), eval_seed=args.seed)
+        await _apply_critic(population, gen=0)
 
         archive: MapElitesArchive | None = None
         if args.algorithm == "map-elites":
@@ -357,16 +444,14 @@ async def _run_loop(args: argparse.Namespace, exp: Path) -> dict:
                         descriptor={"d": list(child.descriptor)},
                         parents=parents_edges,
                     )
-                await evaluate_batch(
-                    offspring, fitness_fn,
-                    seed=args.seed + gen, concurrency=args.concurrency,
-                )
+                await _evaluate(offspring, gen=gen, step_seed=args.seed + gen)
                 for ind in offspring:
                     if isinstance(ind.fitness, dict):
                         for k, v in ind.fitness.items():
                             storage.record_fitness(conn, ind.cid, k, float(v), eval_seed=args.seed + gen)
                     else:
                         storage.record_fitness(conn, ind.cid, "fitness", float(ind.fitness), eval_seed=args.seed + gen)
+                await _apply_critic(offspring, gen=gen)
 
                 if args.algorithm == "es":
                     population = mu_plus_lambda(population, offspring,
@@ -532,6 +617,60 @@ def cmd_budget(args: argparse.Namespace) -> None:
     conn.close()
 
 
+def cmd_dashboard(args: argparse.Namespace) -> None:
+    """``evolver dashboard <dir>`` — launches the read-only FastAPI UI.
+
+    We import dashboard.py lazily so ``evolver --help`` and every other
+    subcommand works on a Python with no fastapi installed. On import
+    failure we print an install hint and exit non-zero.
+    """
+    exp = _resolve_experiment(args.dir)
+    if not exp.exists():
+        _err(f"experiment not found: {exp}")
+    try:
+        import dashboard  # noqa: WPS433 — local lazy import by design
+    except ImportError as exc:
+        _err(str(exc))
+        return
+    try:
+        import uvicorn  # type: ignore[import]
+    except ImportError:
+        _err("uvicorn is required for `evolver dashboard`; "
+             "install with `pip install uvicorn`.")
+        return
+
+    host = args.host
+    if host not in ("127.0.0.1", "localhost"):
+        print(
+            f"WARNING: binding dashboard to {host} exposes read-only "
+            f"experiment data on the network. No auth is enforced.",
+            flush=True,
+        )
+    app = dashboard.build_app(exp)
+    _out({"ok": True, "listening": f"http://{host}:{args.port}", "experiment": exp.name})
+    uvicorn.run(app, host=host, port=args.port, log_level="warning")
+
+
+def cmd_cache(args: argparse.Namespace) -> None:
+    """``evolver cache {stats|purge}`` — LLM response cache control.
+
+    v0.2 ships a transparent cache so replay is deterministic at zero
+    extra cost. This subcommand lets the user inspect or clear it
+    without hand-editing SQLite.
+    """
+    exp = _resolve_experiment(args.dir)
+    conn = storage.open_db(exp / "lineage.db")
+    rc = cache.ResponseCache(conn)
+    if args.action == "stats":
+        _out({"cache": rc.stats()})
+    elif args.action == "purge":
+        n = rc.purge()
+        _out({"purged": n})
+    else:  # pragma: no cover — argparse guards this
+        _err(f"unknown cache action {args.action!r}")
+    conn.close()
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     exp = _resolve_experiment(args.dir)
     conn = storage.open_db(exp / "lineage.db")
@@ -590,7 +729,9 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="USD per million input tokens (for budget accounting)")
     pr.add_argument("--output-rate", dest="output_rate", type=float, default=0.0,
                     help="USD per million output tokens (for budget accounting)")
-    pr.set_defaults(fn=cmd_run)
+    pr.add_argument("--no-cache",    dest="no_cache", action="store_true",
+                    help="disable the LLM response cache (always hits the network)")
+    pr.set_defaults(fn=cmd_run, no_cache=False)
 
     ps = sub.add_parser("status", help="show generations, budget, and best-so-far")
     ps.add_argument("dir"); ps.set_defaults(fn=cmd_status)
@@ -621,6 +762,17 @@ def _build_parser() -> argparse.ArgumentParser:
     prp.add_argument("dir")
     prp.add_argument("--seed", type=int, default=42)
     prp.set_defaults(fn=cmd_replay)
+
+    pc = sub.add_parser("cache", help="inspect or purge the LLM response cache")
+    pc.add_argument("dir")
+    pc.add_argument("action", choices=["stats", "purge"])
+    pc.set_defaults(fn=cmd_cache)
+
+    pd_ = sub.add_parser("dashboard", help="serve a read-only FastAPI dashboard")
+    pd_.add_argument("dir")
+    pd_.add_argument("--host", default="127.0.0.1")
+    pd_.add_argument("--port", type=int, default=8787)
+    pd_.set_defaults(fn=cmd_dashboard)
 
     return p
 

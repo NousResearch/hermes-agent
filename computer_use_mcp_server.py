@@ -56,6 +56,8 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
         "active": bool(record.get("active")),
         "approved": bool(record.get("approved")),
         "virtual_cursor": cursor,
+        "window_title": record.get("window_title", ""),
+        "screenshot_path": record.get("screenshot_path", ""),
     }
 
 
@@ -307,6 +309,8 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
     session["active"] = True
     session["app_name"] = frontmost_app_name or requested_app or session.get("app_name", "desktop")
     session["approved"] = _is_app_approved(session["app_name"])
+    session["window_title"] = frontmost.get("window_title", "")
+    session["screenshot_path"] = screenshot.get("path", "")
     session.setdefault("virtual_cursor", _fresh_virtual_cursor())
     return {
         "success": True,

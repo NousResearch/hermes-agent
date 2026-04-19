@@ -202,6 +202,8 @@ class TestApprovalAndSessions:
         assert listed["success"] is True
         assert listed["active_sessions"][0]["app_name"] == "Safari"
         assert listed["active_sessions"][0]["app_session_id"] == started["app_session_id"]
+        assert listed["active_sessions"][0]["window_title"] == "Docs"
+        assert listed["active_sessions"][0]["screenshot_path"] == "/tmp/shot.png"
 
         stopped = adapter.stop_app_session_impl(app_name="Safari")
 

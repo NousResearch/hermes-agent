@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, Observational Memory, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, observational_memory, retaindb, byterover, supermemory
 ```
 
 ## How It Works
@@ -402,6 +402,48 @@ hermes config set memory.provider holographic
 
 ---
 
+### Observational Memory
+
+Shared local markdown memory across Hermes, Claude Code, and Codex. Observational Memory keeps context in inspectable files, derives compact startup memory (`profile.md` + `active.md`), and lets Hermes search or write into that same store.
+
+| | |
+|---|---|
+| **Best for** | Cross-agent shared memory that stays local and inspectable |
+| **Requires** | `pip install "observational-memory>=0.5.1"`; `om install` recommended for Claude/Codex hooks |
+| **Data storage** | Local markdown files |
+| **Cost** | Free local storage; normal LLM cost for observer/reflector writeback |
+
+**Tools:** `om_context` (compact shared startup context), `om_search` (cross-agent memory search), `om_remember` (store explicit observations)
+
+**Setup:**
+```bash
+hermes memory setup    # select "observational_memory"
+
+# Optional but recommended if Claude Code / Codex should share the same store:
+om install
+```
+
+Or manually:
+```bash
+hermes config set memory.provider observational_memory
+```
+
+**Config:** `$HERMES_HOME/observational_memory.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `llm_provider` | `inherit-existing` | Hermes writeback provider (`inherit-existing`, `anthropic`, `openai`) |
+| `memory_dir` | `~/.local/share/observational-memory` | Shared OM store |
+| `search_backend` | `bm25` | Local search backend |
+| `writeback_mode` | `incremental` | `incremental`, `session_end`, or `off` |
+
+**Unique capabilities:**
+- Shared memory across Hermes, Claude Code, and Codex from the same local files
+- Compact startup context derived from long-term reflections and recent observations
+- Local-first workflow: memories stay readable, greppable, and easy to back up
+
+---
+
 ### RetainDB
 
 Cloud memory API with hybrid search (Vector + BM25 + Reranking), 7 memory types, and delta compression.
@@ -527,6 +569,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
+| **Observational Memory** | Local | Free/Paid | 3 | `observational-memory` | Shared Hermes/Claude/Codex markdown memory |
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
@@ -536,8 +579,9 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
-- **Cloud providers** (RetainDB) auto-derive profile-scoped project names
+- **Shared-local providers** (Observational Memory) can point at a global local store while still keeping Hermes activation config profile-scoped
+- **Config file providers** (Honcho, Mem0, Hindsight, Observational Memory, Supermemory) store activation/config in `$HERMES_HOME/` so each profile has its own settings
+- **Cloud providers** (RetainDB, Supermemory) use profile-scoped project names or container tags when configured
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 
 ## Building a Memory Provider

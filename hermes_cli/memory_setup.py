@@ -84,6 +84,7 @@ def _install_dependencies(provider_name: str) -> None:
         "mem0ai": "mem0",
         "hindsight-client": "hindsight_client",
         "hindsight-all": "hindsight",
+        "observational-memory": "observational_memory",
     }
 
     # Check which packages are missing

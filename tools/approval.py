@@ -824,18 +824,63 @@ def check_dangerous_command(command: str, env_type: str,
 
 
 # =========================================================================
-# Combined pre-exec guard (tirith + dangerous command detection)
+# Tirith rule translations (Chinese)
 # =========================================================================
+_TIRITH_RULES_ZH: dict[str, str] = {
+    # Pipe to interpreter / shell injection
+    "curl_pipe_shell": "将远程内容管道传输到 shell 执行",
+    "pipe_to_interpreter": "将输出管道传输到解释器执行",
+    "wget_pipe_shell": "将 wget 下载内容管道传输到 shell 执行",
+    "process_substitution_shell": "通过进程替换执行 shell 命令",
+    # URL-related
+    "homograph_url": "检测到同形异义 URL（Unicode 混淆）",
+    "shortened_url": "检测到短链接",
+    "suspicious_url": "检测到可疑 URL",
+    # File/network
+    "file_download_exec": "下载并执行远程文件",
+    "sshd_config_change": "修改 SSH 配置",
+    # Injection
+    "terminal_injection": "终端注入攻击",
+    "ansi_injection": "ANSI 转义注入",
+    "backtick_injection": "反引号命令注入",
+    # Credential
+    "credential_exfiltration": "凭证外泄风险",
+    "ssh_key_access": "SSH 密钥访问",
+    # Other
+    "dangerous_environment": "危险环境变量设置",
+    "unsafe_variable_expansion": "不安全变量展开",
+}
+
+_TIRITH_SEVERITY_ZH: dict[str, str] = {
+    "CRITICAL": "致命",
+    "critical": "致命",
+    "HIGH": "高危",
+    "high": "高危",
+    "MEDIUM": "中危",
+    "medium": "中危",
+    "LOW": "低危",
+    "low": "低危",
+    "INFO": "信息",
+    "info": "信息",
+}
+
 
 def _format_tirith_description(tirith_result: dict) -> str:
     """Build a human-readable description from tirith findings.
 
     Includes severity, title, and description for each finding so users
     can make an informed approval decision.
+
+    Translates to Chinese when approvals.language is configured as 'zh'.
     """
+    lang = _get_approval_language()
+    is_zh = (lang == "zh")
+
     findings = tirith_result.get("findings") or []
     if not findings:
         summary = tirith_result.get("summary") or "security issue detected"
+        if is_zh:
+            return f"安全扫描：{summary}"
         return f"Security scan: {summary}"
 
     parts = []
@@ -843,14 +888,49 @@ def _format_tirith_description(tirith_result: dict) -> str:
         severity = f.get("severity", "")
         title = f.get("title", "")
         desc = f.get("description", "")
+
+        # Translate severity
+        if is_zh and severity in _TIRITH_SEVERITY_ZH:
+            severity = _TIRITH_SEVERITY_ZH[severity]
+
+        # Translate title based on rule_id if available
+        if is_zh:
+            rule_id = f.get("rule_id", "")
+            if rule_id in _TIRITH_RULES_ZH:
+                title = _TIRITH_RULES_ZH[rule_id]
+            # Also try to translate common English titles as fallback
+            _title_translations = {
+                "Pipe to interpreter": "管道传输到解释器",
+                "Pipe to shell": "管道传输到 shell",
+                "Homograph URL": "同形异义 URL",
+                "Shortened URL": "短链接",
+                "Terminal injection": "终端注入",
+                "Credential exfiltration": "凭证外泄",
+                "SSH key access": "SSH 密钥访问",
+                "Dangerous environment": "危险环境变量",
+                "File download and execution": "下载并执行文件",
+            }
+            if title in _title_translations:
+                title = _title_translations[title]
+
         if title and desc:
-            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+            if is_zh:
+                parts.append(f"[{severity}] {title}：{desc}" if severity else f"{title}：{desc}")
+            else:
+                parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
         elif title:
-            parts.append(f"[{severity}] {title}" if severity else title)
+            if is_zh:
+                parts.append(f"[{severity}] {title}" if severity else title)
+            else:
+                parts.append(f"[{severity}] {title}" if severity else title)
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
+        if is_zh:
+            return f"安全扫描：{summary}"
         return f"Security scan: {summary}"
 
+    if is_zh:
+        return "安全扫描 — " + "; ".join(parts)
     return "Security scan — " + "; ".join(parts)
 
 

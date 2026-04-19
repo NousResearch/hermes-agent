@@ -9345,7 +9345,7 @@ class GatewayRunner:
         _bg_review_pending_lock = threading.Lock()
 
         def _deliver_bg_review_message(message: str) -> None:
-            if not _status_adapter:
+            if not ctx["_status_adapter"]:
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -9369,7 +9369,7 @@ class GatewayRunner:
 
         # Background review delivery — send "💾 Memory updated" etc. to user
         def _bg_review_send(message: str) -> None:
-            if not _status_adapter:
+            if not ctx["_status_adapter"]:
                 return
             if not _bg_review_release.is_set():
                 with _bg_review_pending_lock:
@@ -9702,7 +9702,7 @@ class GatewayRunner:
         """
         # Start progress message sender if enabled
         progress_task = None
-        if tool_progress_enabled:
+        if ctx["tool_progress_enabled"]:
             progress_task = asyncio.create_task(ctx["send_progress_messages"]())
 
         # Start stream consumer task — polls for consumer creation since it

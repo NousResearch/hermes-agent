@@ -1,0 +1,139 @@
+name: Supply Chain Audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**/*.py'
+      - '**/*.pth'
+      - '**/setup.py'
+      - '**/setup.cfg'
+      - '**/sitecustomize.py'
+      - '**/usercustomize.py'
+      - '**/__init__.pth'
+
+permissions:
+  pull-requests: write
+  contents: read
+
+# Narrow, high-signal scanner. Only fires on critical indicators of supply
+# chain attacks (e.g. the litellm-style payloads). Low-signal heuristics
+# (plain base64, plain exec/eval, dependency/Dockerfile/workflow edits,
+# Actions version unpinning, outbound POST/PUT) were intentionally
+# removed — they fired on nearly every PR and trained reviewers to ignore
+# the scanner. Keep this file's checks ruthlessly narrow: if you find
+# yourself adding WARNING-tier patterns here again, make a separate
+# advisory-only workflow instead.
+
+jobs:
+  scan:
+    name: Scan PR for critical supply chain risks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan diff for critical patterns
+        id: scan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # Added lines only, excluding lockfiles.
+          DIFF=$(git diff "$BASE".."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+
+          FINDINGS=""
+
+          # --- .pth files (auto-execute on Python startup) ---
+          # The exact mechanism used in the litellm supply chain attack:
+          # https://github.com/BerriAI/litellm/issues/24512
+          PTH_FILES=$(git diff --name-only "$BASE".."$HEAD" | grep '\.pth$' || true)
+          if [ -n "$PTH_FILES" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: .pth file added or modified
+          Python \`.pth\` files in \`site-packages/\` execute automatically when the interpreter starts — no import required.
+
+          **Files:**
+          \`\`\`
+          ${PTH_FILES}
+          \`\`\`
+          "
+          fi
+
+          # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
+          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
+          if [ -n "$B64_EXEC_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: base64 decode + exec/eval combo
+          Base64-decoded strings passed directly to exec/eval — the signature of hidden credential-stealing payloads.
+
+          **Matches:**
+          \`\`\`
+          ${B64_EXEC_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- subprocess with encoded/obfuscated command argument ---
+          PROC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
+          if [ -n "$PROC_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: subprocess with encoded/obfuscated command
+          Subprocess calls whose command strings are base64- or hex-encoded are a strong indicator of payload execution.
+
+          **Matches:**
+          \`\`\`
+          ${PROC_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- Install-hook files (setup.py/sitecustomize/usercustomize/__init__.pth) ---
+          # These execute during pip install or interpreter startup.
+          SETUP_HITS=$(git diff --name-only "$BASE".."$HEAD" | grep -E '(^|/)(setup\.py|setup\.cfg|sitecustomize\.py|usercustomize\.py|__init__\.pth)$' || true)
+          if [ -n "$SETUP_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: Install-hook file added or modified
+          These files can execute code during package installation or interpreter startup.
+
+          **Files:**
+          \`\`\`
+          ${SETUP_HITS}
+          \`\`\`
+          "
+          fi
+
+          if [ -n "$FINDINGS" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "$FINDINGS" > /tmp/findings.md
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post critical finding comment
+        if: steps.scan.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY="## 🚨 CRITICAL Supply Chain Risk Detected
+
+          This PR contains a pattern that has been used in real supply chain attacks. A maintainer must review the flagged code carefully before merging.
+
+          $(cat /tmp/findings.md)
+
+          ---
+          *Scanner only fires on high-signal indicators: .pth files, base64+exec/eval combos, subprocess with encoded commands, or install-hook files. Low-signal warnings were removed intentionally — if you're seeing this comment, the finding is worth inspecting.*"
+
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
+
+      - name: Fail on critical findings
+        if: steps.scan.outputs.found == 'true'
+        run: |
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
+          exit 1

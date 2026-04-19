@@ -3338,10 +3338,55 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     async def _hydrate_bot_identity(self) -> None:
-        """Best-effort discovery of bot identity for precise group mention gating."""
+        """Best-effort discovery of bot identity for precise group mention gating
+        and self-sent bot event filtering.
+
+        Populates ``_bot_open_id`` and ``_bot_name`` from /open-apis/bot/v3/info
+        (no extra scopes required beyond the tenant access token). Falls back to
+        the application info endpoint for ``_bot_name`` only when the first probe
+        doesn't return it. Each field is hydrated independently — a value already
+        supplied via env vars (FEISHU_BOT_OPEN_ID / FEISHU_BOT_USER_ID /
+        FEISHU_BOT_NAME) is preserved and skips its probe.
+        """
         if not self._client:
             return
-        if any((self._bot_open_id, self._bot_user_id, self._bot_name)):
+        if self._bot_open_id and self._bot_name:
+            # Everything the self-send filter and precise mention gate need is
+            # already in place; nothing to probe.
+            return
+
+        # Primary probe: /open-apis/bot/v3/info — returns bot_name + open_id, no
+        # extra scopes required. This is the same endpoint the onboarding wizard
+        # uses via probe_bot().
+        if not self._bot_open_id or not self._bot_name:
+            try:
+                resp = await asyncio.to_thread(
+                    self._client.request,
+                    method="GET",
+                    url="/open-apis/bot/v3/info",
+                    body=None,
+                    raw_response=True,
+                )
+                content = getattr(resp, "content", None)
+                if content:
+                    payload = json.loads(content)
+                    parsed = _parse_bot_response(payload) or {}
+                    open_id = (parsed.get("bot_open_id") or "").strip()
+                    bot_name = (parsed.get("bot_name") or "").strip()
+                    if open_id and not self._bot_open_id:
+                        self._bot_open_id = open_id
+                    if bot_name and not self._bot_name:
+                        self._bot_name = bot_name
+            except Exception:
+                logger.debug(
+                    "[Feishu] /bot/v3/info probe failed during hydration",
+                    exc_info=True,
+                )
+
+        # Fallback probe for _bot_name only: application info endpoint. Needs
+        # admin:app.info:readonly or application:application:self_manage scope,
+        # so it's best-effort.
+        if self._bot_name:
             return
         try:
             request = self._build_get_application_request(app_id=self._app_id, lang="en_us")
@@ -3350,17 +3395,17 @@ class FeishuAdapter(BasePlatformAdapter):
                 code = getattr(response, "code", None)
                 if code == 99991672:
                     logger.warning(
-                        "[Feishu] Unable to hydrate bot identity from application info. "
+                        "[Feishu] Unable to hydrate bot name from application info. "
                         "Grant admin:app.info:readonly or application:application:self_manage "
                         "so group @mention gating can resolve the bot name precisely."
                     )
                 return
             app = getattr(getattr(response, "data", None), "app", None)
             app_name = (getattr(app, "app_name", None) or "").strip()
-            if app_name:
+            if app_name and not self._bot_name:
                 self._bot_name = app_name
         except Exception:
-            logger.debug("[Feishu] Failed to hydrate bot identity", exc_info=True)
+            logger.debug("[Feishu] Failed to hydrate bot name from application info", exc_info=True)
 
     # =========================================================================
     # Deduplication — seen message ID cache (persistent)

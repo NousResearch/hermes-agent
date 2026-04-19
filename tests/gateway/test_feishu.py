@@ -2685,6 +2685,135 @@ class TestAdapterBehavior(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+class TestHydrateBotIdentity(unittest.TestCase):
+    """Hydration of bot identity via /open-apis/bot/v3/info and application info.
+
+    Covers the manual-setup path where FEISHU_BOT_OPEN_ID / FEISHU_BOT_USER_ID
+    are not configured. Hydration must populate _bot_open_id so that
+    _is_self_sent_bot_message() can filter the adapter's own outbound echoes.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        return FeishuAdapter(PlatformConfig())
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydration_populates_open_id_from_bot_info(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hermes Bot",
+                    "open_id": "ou_hermes_hydrated",
+                },
+            }
+        ).encode("utf-8")
+        response = SimpleNamespace(content=payload)
+        adapter._client.request = Mock(return_value=response)
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_hermes_hydrated")
+        self.assertEqual(adapter._bot_name, "Hermes Bot")
+        # Application-info fallback must NOT run when bot_name is already set.
+        self.assertFalse(
+            adapter._client.application.v6.application.get.called
+            if hasattr(adapter._client, "application") else False
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_env",
+            "FEISHU_BOT_NAME": "Env Hermes",
+        },
+        clear=True,
+    )
+    def test_hydration_skipped_when_env_vars_supply_both_fields(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock()
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        # Neither probe should run — both fields are already populated.
+        adapter._client.request.assert_not_called()
+        self.assertEqual(adapter._bot_open_id, "ou_env")
+        self.assertEqual(adapter._bot_name, "Env Hermes")
+
+    @patch.dict(os.environ, {"FEISHU_BOT_OPEN_ID": "ou_env"}, clear=True)
+    def test_hydration_fills_only_missing_fields(self):
+        """Env-var open_id must NOT be overwritten by a different probe value."""
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hermes Bot",
+                    "open_id": "ou_probe_DIFFERENT",
+                },
+            }
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(content=payload))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_env")  # preserved
+        self.assertEqual(adapter._bot_name, "Hermes Bot")  # filled in
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydration_tolerates_probe_failure_and_falls_back_to_app_info(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock(side_effect=RuntimeError("network down"))
+
+        # Make the application-info fallback succeed for _bot_name.
+        app_response = Mock()
+        app_response.success = Mock(return_value=True)
+        app_response.data = SimpleNamespace(app=SimpleNamespace(app_name="Fallback Bot"))
+        adapter._client.application.v6.application.get = Mock(return_value=app_response)
+        adapter._build_get_application_request = Mock(return_value=object())
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        # Primary probe failed — open_id stays empty, but bot_name came from app-info.
+        self.assertEqual(adapter._bot_open_id, "")
+        self.assertEqual(adapter._bot_name, "Fallback Bot")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydrated_open_id_enables_self_send_filter(self):
+        """E2E: after hydration, _is_self_sent_bot_message() rejects adapter's own id."""
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {"code": 0, "bot": {"bot_name": "Hermes", "open_id": "ou_hermes"}}
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(content=payload))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self_event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_hermes", user_id=""),
+            )
+        )
+        peer_event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_peer_bot", user_id=""),
+            )
+        )
+        self.assertTrue(adapter._is_self_sent_bot_message(self_event))
+        self.assertFalse(adapter._is_self_sent_bot_message(peer_event))
+
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestPendingInboundQueue(unittest.TestCase):
     """Tests for the loop-not-ready race (#5499): inbound events arriving
     before or during adapter loop transitions must be queued for replay

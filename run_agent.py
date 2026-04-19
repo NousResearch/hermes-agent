@@ -7760,6 +7760,12 @@ class AIAgent:
                     )
                 except Exception:
                     pass
+            # Runtime snapshot: memory write detected
+            try:
+                from tools.snapshot_engine import auto_snapshot
+                auto_snapshot(trigger="memory_write")
+            except Exception:
+                pass
             return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
@@ -8106,6 +8112,12 @@ class AIAgent:
         if num_tools > 0:
             turn_tool_msgs = messages[-num_tools:]
             enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+            # Runtime snapshot: concurrent tool execution batch completed
+            try:
+                from tools.snapshot_engine import auto_snapshot
+                auto_snapshot(trigger="tool_result")
+            except Exception:
+                pass
 
         # ── /steer injection ──────────────────────────────────────────────
         # Append any pending user steer text to the last tool result so the
@@ -8492,6 +8504,12 @@ class AIAgent:
         num_tools_seq = len(assistant_message.tool_calls)
         if num_tools_seq > 0:
             enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+            # Runtime snapshot: tool execution batch completed
+            try:
+                from tools.snapshot_engine import auto_snapshot
+                auto_snapshot(trigger="tool_result")
+            except Exception:
+                pass
 
         # ── /steer injection ──────────────────────────────────────────────
         # See _execute_tool_calls_parallel for the rationale. Same hook,
@@ -8817,6 +8835,10 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
+
+        # Sponge: immediately absorb user message (non-blocking, background)
+        if self._memory_manager and original_user_message:
+            self._memory_manager.absorb_message("user", original_user_message)
         
         if not self.quiet_mode:
             self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
@@ -11809,6 +11831,8 @@ class AIAgent:
         # injected skill content that bloats / breaks provider queries.
         if self._memory_manager and final_response and original_user_message:
             try:
+                # Sponge: immediately absorb assistant response (non-blocking)
+                self._memory_manager.absorb_message("assistant", final_response)
                 self._memory_manager.sync_all(original_user_message, final_response)
                 self._memory_manager.queue_prefetch_all(original_user_message)
             except Exception:

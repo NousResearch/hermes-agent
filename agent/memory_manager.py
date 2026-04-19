@@ -218,6 +218,19 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def absorb_message(self, role: str, content: str) -> None:
+        """Sponge-mode: immediately queue message for background absorption.
+
+        Non-blocking. Call for every message as it arrives.
+        """
+        for provider in self._providers:
+            try:
+                absorb_fn = getattr(provider, "absorb_message", None)
+                if absorb_fn:
+                    absorb_fn(role, content)
+            except Exception:
+                pass
+
     # -- Tools ---------------------------------------------------------------
 
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:

@@ -31,6 +31,117 @@ cd "$SCRIPT_DIR"
 
 PYTHON_VERSION="3.11"
 
+# ============================================================================
+# Git update — careful local-changes handling
+# ============================================================================
+
+_git_update() {
+    # Not a git repo? Skip silently.
+    if ! git -C "$SCRIPT_DIR" rev-parse --git-dir &>/dev/null; then
+        return 0
+    fi
+
+    echo -e "${CYAN}→${NC} Checking for upstream updates..."
+
+    # Fetch without merging so we can compare
+    if ! git fetch origin main --quiet 2>/dev/null; then
+        echo -e "${YELLOW}⚠${NC} Could not reach upstream — skipping update check."
+        return 0
+    fi
+
+    LOCAL=$(git rev-parse HEAD)
+    REMOTE=$(git rev-parse origin/main)
+
+    if [ "$LOCAL" = "$REMOTE" ]; then
+        echo -e "${GREEN}✓${NC} Already up to date."
+        return 0
+    fi
+
+    COMMITS_BEHIND=$(git rev-list --count HEAD..origin/main)
+    echo -e "${CYAN}→${NC} ${COMMITS_BEHIND} new commit(s) available upstream."
+
+    # Check for local modifications (tracked files only)
+    LOCAL_CHANGES=$(git status --porcelain --untracked-files=no)
+
+    if [ -z "$LOCAL_CHANGES" ]; then
+        # Clean working tree — just pull
+        echo -e "${CYAN}→${NC} No local changes detected. Pulling..."
+        git merge --ff-only origin/main
+        echo -e "${GREEN}✓${NC} Updated to $(git rev-parse --short HEAD)."
+        return 0
+    fi
+
+    # --- Local changes exist ---
+    CHANGED_FILES=$(git diff --name-only HEAD)
+    echo ""
+    echo -e "${YELLOW}⚠  Local changes detected in:${NC}"
+    echo "$CHANGED_FILES" | sed 's/^/    /'
+    echo ""
+    echo "  What do you want to do?"
+    echo "  [1] Stash local changes, update, then restore them  (risky: merge conflicts possible)"
+    echo "  [2] Skip the update, keep local changes as-is       (safe)"
+    echo "  [3] Show a full diff first"
+    echo ""
+    read -p "  Choice [1/2/3]: " -n 1 -r GIT_CHOICE
+    echo ""
+
+    case "$GIT_CHOICE" in
+        3)
+            echo ""
+            git diff HEAD
+            echo ""
+            read -p "  Choice [1/2]: " -n 1 -r GIT_CHOICE
+            echo ""
+            ;;
+    esac
+
+    case "$GIT_CHOICE" in
+        1)
+            STASH_MSG="hermes-setup-autostash-$(date +%Y%m%d-%H%M%S)"
+            echo -e "${CYAN}→${NC} Stashing local changes as: ${STASH_MSG}"
+            git stash push -m "$STASH_MSG" -- $CHANGED_FILES
+
+            echo -e "${CYAN}→${NC} Pulling upstream..."
+            if ! git merge --ff-only origin/main; then
+                echo -e "${RED}✗${NC} Merge failed. Restoring your stash..."
+                git stash pop
+                echo -e "${GREEN}✓${NC} Your changes are back. No update was applied."
+                return 1
+            fi
+            echo -e "${GREEN}✓${NC} Updated to $(git rev-parse --short HEAD)."
+
+            echo -e "${CYAN}→${NC} Restoring your local changes..."
+            if git stash pop; then
+                echo -e "${GREEN}✓${NC} Local changes restored cleanly."
+            else
+                echo ""
+                echo -e "${RED}⚠  MERGE CONFLICT during stash pop!${NC}"
+                echo "    Your changes are partially applied. Conflicting files are marked in git status."
+                echo "    Resolve conflicts manually:"
+                echo "      git status"
+                echo "      git diff"
+                echo "      # edit conflicting files"
+                echo "      git add <file>"
+                echo "      git stash drop   # when done"
+                echo ""
+                echo "    Your original stash is: ${STASH_MSG}"
+                echo "    To fully abort and go back to the upstream state:"
+                echo "      git checkout -- ."
+                echo "      git stash drop"
+                return 1
+            fi
+            ;;
+        2)
+            echo -e "${YELLOW}⚠${NC} Skipping update. Your local changes are untouched."
+            ;;
+        *)
+            echo -e "${YELLOW}⚠${NC} Invalid choice — skipping update to be safe."
+            ;;
+    esac
+}
+
+_git_update
+
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
@@ -295,16 +406,24 @@ if is_termux; then
     export PATH="$COMMAND_LINK_DIR:$PATH"
     echo -e "${GREEN}✓${NC} $COMMAND_LINK_DISPLAY_DIR is already on PATH in Termux"
 else
-    # Determine the appropriate shell config file
-    SHELL_CONFIG=""
-    if [[ "$SHELL" == *"zsh"* ]]; then
+    SHELL_CONFIG=""    # posix shells: bash/zsh
+    FISH_CONFIG=""     # fish gets its own conf.d snippet
+
+    # ── Fish shell ──────────────────────────────────────────────────────────
+    if [[ "$SHELL" == *"fish"* ]]; then
+        FISH_CONFIG="$HOME/.config/fish/conf.d/hermes.fish"
+    # ── Zsh ─────────────────────────────────────────────────────────────────
+    elif [[ "$SHELL" == *"zsh"* ]]; then
         SHELL_CONFIG="$HOME/.zshrc"
+    # ── Bash ────────────────────────────────────────────────────────────────
     elif [[ "$SHELL" == *"bash"* ]]; then
         SHELL_CONFIG="$HOME/.bashrc"
         [ ! -f "$SHELL_CONFIG" ] && SHELL_CONFIG="$HOME/.bash_profile"
+    # ── Fallback: probe existing files (fish first) ──────────────────────────
     else
-        # Fallback to checking existing files
-        if [ -f "$HOME/.zshrc" ]; then
+        if [ -d "$HOME/.config/fish" ]; then
+            FISH_CONFIG="$HOME/.config/fish/conf.d/hermes.fish"
+        elif [ -f "$HOME/.zshrc" ]; then
             SHELL_CONFIG="$HOME/.zshrc"
         elif [ -f "$HOME/.bashrc" ]; then
             SHELL_CONFIG="$HOME/.bashrc"
@@ -313,10 +432,23 @@ else
         fi
     fi
 
-    if [ -n "$SHELL_CONFIG" ]; then
-        # Touch the file just in case it doesn't exist yet but was selected
-        touch "$SHELL_CONFIG" 2>/dev/null || true
+    # ── Write fish PATH entry ────────────────────────────────────────────────
+    if [ -n "$FISH_CONFIG" ]; then
+        mkdir -p "$(dirname "$FISH_CONFIG")"
+        if [ -f "$FISH_CONFIG" ] && grep -q '\.local/bin' "$FISH_CONFIG" 2>/dev/null; then
+            echo -e "${GREEN}✓${NC} ~/.local/bin already in $FISH_CONFIG"
+        else
+            {
+                echo "# Hermes Agent — ensure ~/.local/bin is on PATH"
+                echo 'fish_add_path "$HOME/.local/bin"'
+            } >> "$FISH_CONFIG"
+            echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $FISH_CONFIG"
+        fi
+    fi
 
+    # ── Write posix PATH entry ───────────────────────────────────────────────
+    if [ -n "$SHELL_CONFIG" ]; then
+        touch "$SHELL_CONFIG" 2>/dev/null || true
         if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
             if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
                 echo "" >> "$SHELL_CONFIG"
@@ -369,7 +501,14 @@ if is_termux; then
     echo ""
 else
     echo "  1. Reload your shell:"
-    echo "     source $SHELL_CONFIG"
+    if [ -n "$FISH_CONFIG" ]; then
+        echo "     source $FISH_CONFIG"
+        echo "     # or just open a new terminal"
+    elif [ -n "$SHELL_CONFIG" ]; then
+        echo "     source $SHELL_CONFIG"
+    else
+        echo "     Open a new terminal"
+    fi
     echo ""
     echo "  2. Run the setup wizard to configure API keys:"
     echo "     hermes setup"

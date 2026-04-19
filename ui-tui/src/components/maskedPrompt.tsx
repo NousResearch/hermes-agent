@@ -2,6 +2,7 @@ import { Box, Text } from '@hermes/ink'
 import { useState } from 'react'
 
 import type { Theme } from '../theme.js'
+import { isMac } from '../lib/platform.js'
 
 import { TextInput } from './textInput.js'
 
@@ -18,7 +19,7 @@ export function MaskedPrompt({ cols = 80, icon, label, onSubmit, sub, t }: Maske
 
       <Box>
         <Text color={t.color.label}>{'> '}</Text>
-        <TextInput columns={Math.max(20, cols - 6)} mask="*" onChange={setValue} onSubmit={onSubmit} value={value} />
+        <TextInput columns={Math.max(20, cols - 6)} allowClipboardHotkeys={isMac} mask="*" onChange={setValue} onSubmit={onSubmit} value={value} />
       </Box>
     </Box>
   )

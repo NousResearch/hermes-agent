@@ -13,7 +13,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
-- Brave: https://api.search.brave.com (search only; extract/crawl fall back to Firecrawl)
+- Brave: https://api.search.brave.com (search only; extract/crawl require Firecrawl as fallback)
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -374,8 +374,10 @@ _BRAVE_BASE_URL = "https://api.search.brave.com/res/v1"
 def _brave_search(query: str, limit: int = 5) -> dict:
     """Call the Brave Search API and return results in the standard format.
 
-    Brave exposes search only (no extract/crawl), so ``web_extract_tool`` and
-    ``web_crawl_tool`` fall back to Firecrawl for Brave users.
+    Brave exposes search only. ``web_extract_tool`` falls back to Firecrawl
+    automatically when ``FIRECRAWL_API_KEY`` is configured, and returns a
+    clear ``tool_error`` otherwise. ``web_crawl_tool`` is gated by the
+    existing ``check_firecrawl_api_key()`` guard in that function.
     Auth is via the ``X-Subscription-Token`` header.
     """
     api_key = os.getenv("BRAVE_API_KEY")
@@ -1305,6 +1307,20 @@ async def web_extract_tool(
         else:
             backend = _get_backend()
 
+            # Brave has no extract API. Fall back to Firecrawl when it is
+            # configured; otherwise emit a clear error with remediation
+            # steps rather than a cryptic failure.
+            if backend == "brave":
+                if check_firecrawl_api_key():
+                    logger.info("Brave backend has no extract — routing extract to Firecrawl")
+                    backend = "firecrawl"
+                else:
+                    return tool_error(
+                        "Brave backend supports web_search only. Configure FIRECRAWL_API_KEY "
+                        "for extract, or set web.backend to firecrawl/tavily/exa/parallel.",
+                        success=False,
+                    )
+
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
             elif backend == "exa":
@@ -1316,14 +1332,6 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
-            elif backend == "brave":
-                # Brave has no extract API — tell the caller to switch
-                # backends or configure Firecrawl for extraction.
-                return tool_error(
-                    "Brave backend supports web_search only. Configure FIRECRAWL_API_KEY "
-                    "or set web.backend to firecrawl/tavily/exa/parallel for extract.",
-                    success=False,
-                )
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2

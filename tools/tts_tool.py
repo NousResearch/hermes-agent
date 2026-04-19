@@ -193,6 +193,9 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     """
     Generate audio using Edge TTS.
 
+    Retries transient Edge failures like ``NoAudioReceived`` and can walk
+    through configured fallback voices before giving up.
+
     Args:
         text: Text to convert.
         output_path: Where to save the MP3 file.
@@ -203,17 +206,55 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     """
     _edge_tts = _import_edge_tts()
     edge_config = tts_config.get("edge", {})
-    voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
+    primary_voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
+    fallback_voices = edge_config.get("fallback_voices", []) or []
+    retry_attempts = max(1, int(edge_config.get("retry_attempts", 2)))
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
 
-    kwargs = {"voice": voice}
+    voice_candidates = []
+    for candidate in [primary_voice, *fallback_voices]:
+        if candidate and candidate not in voice_candidates:
+            voice_candidates.append(candidate)
+
+    kwargs_base = {}
     if speed != 1.0:
         pct = round((speed - 1.0) * 100)
-        kwargs["rate"] = f"{pct:+d}%"
+        kwargs_base["rate"] = f"{pct:+d}%"
 
-    communicate = _edge_tts.Communicate(text, **kwargs)
-    await communicate.save(output_path)
-    return output_path
+    failures = []
+    for voice in voice_candidates:
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            except OSError:
+                pass
+
+            try:
+                communicate = _edge_tts.Communicate(text, voice=voice, **kwargs_base)
+                await communicate.save(output_path)
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    return output_path
+                raise RuntimeError("Edge TTS returned an empty audio file")
+            except Exception as exc:
+                failures.append(f"{voice} attempt {attempt}: {type(exc).__name__}: {exc}")
+                logger.warning(
+                    "Edge TTS failed for voice=%s attempt=%s/%s: %s",
+                    voice,
+                    attempt,
+                    retry_attempts,
+                    exc,
+                )
+                try:
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                except OSError:
+                    pass
+                if attempt < retry_attempts:
+                    await asyncio.sleep(min(1.0, 0.25 * attempt))
+
+    failure_summary = "; ".join(failures[-6:])
+    raise RuntimeError(f"Edge TTS failed after retries: {failure_summary}")
 
 
 # ===========================================================================

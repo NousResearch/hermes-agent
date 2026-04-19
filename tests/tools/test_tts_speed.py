@@ -18,8 +18,12 @@ def clean_env(monkeypatch):
 
 class TestEdgeTtsSpeed:
     def _run(self, tts_config, tmp_path):
+        async def _save(path):
+            from pathlib import Path
+            Path(path).write_bytes(b"edge-audio")
+
         mock_comm = MagicMock()
-        mock_comm.save = AsyncMock()
+        mock_comm.save = AsyncMock(side_effect=_save)
         mock_edge = MagicMock()
         mock_edge.Communicate = MagicMock(return_value=mock_comm)
 

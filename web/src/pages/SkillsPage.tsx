@@ -328,7 +328,7 @@ export default function SkillsPage() {
                       : t.skills.all}
                   </CardTitle>
                   <Badge variant="secondary" className="text-[10px]">
-                    {activeSkills.length} {t.skills.skillCount.replace("{count}", String(activeSkills.length)).replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                    {t.skills.skillCount.replace("{count}", String(activeSkills.length)).replace("{s}", activeSkills.length !== 1 ? "s" : "")}
                   </Badge>
                 </div>
               </CardHeader>

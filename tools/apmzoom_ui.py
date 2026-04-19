@@ -138,6 +138,29 @@ UI_COMPONENTS: Dict[str, Dict[str, Any]] = {
             "required": ["preview_url", "vision_fields"],
         },
     },
+    "ui_batch_editor": {
+        "display": "Render a batch product editor for multi-item upload",
+        "description": (
+            "Shows N items with vision results, lets the merchant edit each "
+            "+ check the ones to publish. Use in batch-upload-and-publish "
+            "after concurrent vision + goodsclasslist. On submit, frontend "
+            "returns an array of addgoods payloads (only for checked items)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": (
+                        "One entry per uploaded image: "
+                        "{preview_url, vision_fields, recommended_class_id, "
+                        "class_options, llm_note?}"
+                    ),
+                },
+            },
+            "required": ["items"],
+        },
+    },
 }
 
 

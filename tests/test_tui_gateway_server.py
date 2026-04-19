@@ -1108,3 +1108,79 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
 
     # Cleanup
     server._sessions.pop(sid, None)
+
+
+# --------------------------------------------------------------------------
+# model.options — curated-list parity with `hermes model` and classic /model
+# --------------------------------------------------------------------------
+
+
+def test_model_options_does_not_overwrite_curated_models(monkeypatch):
+    """The TUI model.options handler must surface the same curated model
+    list as `hermes model` and the classic CLI /model picker.
+
+    Regression: earlier versions of this handler unconditionally replaced
+    each provider's curated ``models`` field with ``provider_model_ids()``
+    (live /models catalog).  That pulled in hundreds of non-agentic models
+    for providers like Nous whose /models endpoint returns image/video
+    generators, rerankers, embeddings, and TTS models alongside chat models.
+    """
+    curated_providers = [
+        {
+            "slug": "nous",
+            "name": "Nous",
+            "models": ["moonshotai/kimi-k2.5", "anthropic/claude-opus-4.7"],
+            "total_models": 30,
+            "source": "built-in",
+            "is_current": False,
+            "is_user_defined": False,
+        },
+    ]
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"providers": {}, "custom_providers": []},
+    )
+
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=curated_providers,
+    ) as listing:
+        # If provider_model_ids gets called at all, the handler is still
+        # overwriting curated with live — that's the regression we're
+        # guarding against.
+        with patch("hermes_cli.models.provider_model_ids") as live_fetch:
+            resp = server._methods["model.options"](99, {"session_id": ""})
+
+    assert "result" in resp, resp
+    providers = resp["result"]["providers"]
+    nous = next((p for p in providers if p.get("slug") == "nous"), None)
+    assert nous is not None
+    assert nous["models"] == [
+        "moonshotai/kimi-k2.5",
+        "anthropic/claude-opus-4.7",
+    ]
+    assert nous["total_models"] == 30
+    # Handler must not consult the live catalog — curated is the truth.
+    live_fetch.assert_not_called()
+    # list_authenticated_providers is the single source.
+    assert listing.call_count == 1
+
+
+def test_model_options_propagates_list_exception(monkeypatch):
+    """If list_authenticated_providers itself raises, surface as an RPC
+    error rather than swallowing to a blank picker."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"providers": {}, "custom_providers": []},
+    )
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        side_effect=RuntimeError("catalog blew up"),
+    ):
+        resp = server._methods["model.options"](77, {"session_id": ""})
+    assert "error" in resp
+    assert resp["error"]["code"] == 5033
+    assert "catalog blew up" in resp["error"]["message"]

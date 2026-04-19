@@ -122,6 +122,20 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# Detects a GFM table separator row such as ``|---|---|`` or ``|:---:|---:|``.
+_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[:\-| ]+\|\s*$")
+# Detects presence of a GFM table anywhere in a block of content.
+_TABLE_HINT_RE = re.compile(r"^\s*\|[:\- ]+\|", re.MULTILINE)
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$", re.MULTILINE)
+_HTML_BR_RE = re.compile(r"<br\s*/?\s*>", re.IGNORECASE)
+# Detects inline markdown (bold/italic/code/link) in a table cell so the
+# column can be promoted from plain ``text`` to ``lark_md`` for rendering.
+_INLINE_MD_IN_CELL_RE = re.compile(
+    r"\*\*[^*\n]+\*\*"
+    r"|__[^_\n]+__"
+    r"|`[^`\n]+`"
+    r"|\[[^\]]+\]\([^)]+\)"
+)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -429,6 +443,141 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _transform_text_for_feishu(text: str) -> str:
+    """Adjust inline markdown so it renders acceptably in Feishu.
+
+    Feishu's post ``md`` and card ``markdown`` grammars do not support ATX
+    headings or raw ``<br>`` tags — without this transform, ``# foo`` shows
+    as literal text and ``<br>`` shows as ``<br>`` in the rendered message.
+    Headings are rewritten as bold lines and ``<br>`` tags are replaced with
+    real newlines so emphasis and line breaks display as intended.
+    """
+    text = _HEADING_RE.sub(lambda m: f"**{m.group(2)}**", text)
+    text = _HTML_BR_RE.sub("\n", text)
+    return text
+
+
+def _is_table_row(s: str) -> bool:
+    stripped = s.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and len(stripped) >= 2
+
+
+def _split_markdown_for_feishu(content: str) -> list[dict]:
+    """Split markdown content into ordered text/table segments.
+
+    Each segment is either ``{"type": "text", "content": str}`` for regular
+    markdown, or ``{"type": "table", "headers": list[str], "rows": list[list[str]]}``
+    for a GFM table (header row followed by a ``| --- |`` separator row).
+    """
+    lines = content.split("\n")
+    segments: list[dict] = []
+    text_buffer: list[str] = []
+    i = 0
+    n = len(lines)
+
+    def flush_text() -> None:
+        if not text_buffer:
+            return
+        joined = "\n".join(text_buffer).strip("\n")
+        if joined.strip():
+            segments.append({"type": "text", "content": joined})
+        text_buffer.clear()
+
+    while i < n:
+        line = lines[i]
+        if (
+            _is_table_row(line)
+            and i + 1 < n
+            and _TABLE_SEPARATOR_RE.match(lines[i + 1])
+        ):
+            flush_text()
+            headers = [c.strip() for c in line.strip().strip("|").split("|")]
+            i += 2
+            rows: list[list[str]] = []
+            while i < n and _is_table_row(lines[i]):
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                cells = (cells + [""] * len(headers))[: len(headers)]
+                rows.append(cells)
+                i += 1
+            segments.append({"type": "table", "headers": headers, "rows": rows})
+            continue
+        text_buffer.append(line)
+        i += 1
+
+    flush_text()
+    return segments
+
+
+def _build_feishu_table_element(headers: list[str], rows: list[list[str]]) -> dict:
+    """Build a Feishu card v2 ``table`` component from parsed GFM table data.
+
+    A column is emitted with ``data_type: "lark_md"`` when any cell in that
+    column contains inline markdown (``**bold**``, ``*italic*``, ``` `code` ```,
+    ``[text](url)``) so Feishu renders the formatting instead of showing
+    literal ``**`` / backticks. Columns of pure plain text stay on the
+    safer ``text`` type.
+    """
+    columns: list[dict] = []
+    for idx, header in enumerate(headers):
+        column_cells = [row[idx] if idx < len(row) else "" for row in rows]
+        data_type = (
+            "lark_md"
+            if any(_INLINE_MD_IN_CELL_RE.search(cell) for cell in column_cells)
+            else "text"
+        )
+        columns.append({
+            "name": f"col_{idx}",
+            "display_name": header,
+            "data_type": data_type,
+            "width": "auto",
+            "horizontal_align": "left",
+        })
+    row_data = [
+        {f"col_{idx}": cell for idx, cell in enumerate(row)}
+        for row in rows
+    ]
+    return {
+        "tag": "table",
+        "page_size": 10,
+        "row_height": "low",
+        "header_style": {
+            "text_align": "left",
+            "text_size": "normal",
+            "background_style": "grey",
+            "text_color": "default",
+            "bold": True,
+            "lines": 1,
+        },
+        "columns": columns,
+        "rows": row_data,
+    }
+
+
+def _build_markdown_card_payload(content: str) -> str:
+    """Build a Feishu card JSON v2 payload that renders tables natively.
+
+    Feishu's post ``md`` and card ``markdown`` elements both silently drop
+    GFM pipe tables. The only Feishu surface that renders tabular data is
+    the card v2 ``table`` component, so content containing a markdown table
+    is emitted as an interactive card where each GFM table becomes a native
+    table element and surrounding markdown stays in ``markdown`` elements.
+    """
+    segments = _split_markdown_for_feishu(content)
+    elements: list[dict] = []
+    for seg in segments:
+        if seg["type"] == "text":
+            md = _transform_text_for_feishu(seg["content"]).strip()
+            if md:
+                elements.append({"tag": "markdown", "content": md})
+        else:
+            elements.append(_build_feishu_table_element(seg["headers"], seg["rows"]))
+    card = {
+        "schema": "2.0",
+        "body": {"elements": elements},
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
 def _build_markdown_post_payload(content: str) -> str:
     return json.dumps(
         {
@@ -437,7 +586,7 @@ def _build_markdown_post_payload(content: str) -> str:
                     [
                         {
                             "tag": "md",
-                            "text": content,
+                            "text": _transform_text_for_feishu(content),
                         }
                     ]
                 ],
@@ -3364,6 +3513,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Feishu's post ``md`` and card ``markdown`` elements silently drop
+        # GFM tables, so any content containing a markdown table is routed to
+        # a card v2 payload whose native ``table`` component renders rows.
+        if _TABLE_HINT_RE.search(content):
+            return "interactive", _build_markdown_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

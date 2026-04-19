@@ -498,6 +498,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
+        self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
@@ -636,6 +637,30 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_message(message: DiscordMessage):
+                # Wait for on_ready to finish resolving username-based
+                # allowlist entries.  Without this block, messages
+                # arriving between Discord's READY event and the end
+                # of _resolve_allowed_usernames compare author IDs
+                # (numeric) against a set that may still contain raw
+                # usernames (strings) from DISCORD_ALLOWED_USERS —
+                # legitimate users get silently rejected for the first
+                # few seconds after every reconnect.  The wait is a
+                # near-instant no-op in steady state (_ready_event is
+                # already set); only the startup / reconnect window
+                # ever blocks.
+                if not adapter_self._ready_event.is_set():
+                    try:
+                        await asyncio.wait_for(
+                            adapter_self._ready_event.wait(),
+                            timeout=30.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] on_message timed out waiting for _ready_event; "
+                            "allowlist check may use pre-resolved entries",
+                            adapter_self.name,
+                        )
+
                 # Dedup: Discord RESUME replays events after reconnects (#4777)
                 if adapter_self._dedup.is_duplicate(str(message.id)):
                     return
@@ -1231,57 +1256,74 @@ class DiscordAdapter(BasePlatformAdapter):
     # Voice channel methods (join / leave / play)
     # ------------------------------------------------------------------
 
+    def _voice_lock_for(self, guild_id: int) -> "asyncio.Lock":
+        """Return the per-guild lock, creating it on first use.
+
+        Voice join/leave/move must be serialized per guild — without
+        this, two concurrent /voice channel invocations both see
+        _voice_clients.get(guild_id) return None, both call
+        channel.connect(), and discord.py raises ClientException
+        ('Already connected') on the loser.
+        """
+        lock = self._voice_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._voice_locks[guild_id] = lock
+        return lock
+
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
         if not self._client or not DISCORD_AVAILABLE:
             return False
         guild_id = channel.guild.id
 
-        # Already connected in this guild?
-        existing = self._voice_clients.get(guild_id)
-        if existing and existing.is_connected():
-            if existing.channel.id == channel.id:
+        async with self._voice_lock_for(guild_id):
+            # Already connected in this guild?
+            existing = self._voice_clients.get(guild_id)
+            if existing and existing.is_connected():
+                if existing.channel.id == channel.id:
+                    self._reset_voice_timeout(guild_id)
+                    return True
+                await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
                 return True
-            await existing.move_to(channel)
+
+            vc = await channel.connect()
+            self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
+
+            # Start voice receiver (Phase 2: listen to users)
+            try:
+                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver.start()
+                self._voice_receivers[guild_id] = receiver
+                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
+                    self._voice_listen_loop(guild_id)
+                )
+            except Exception as e:
+                logger.warning("Voice receiver failed to start: %s", e)
+
             return True
-
-        vc = await channel.connect()
-        self._voice_clients[guild_id] = vc
-        self._reset_voice_timeout(guild_id)
-
-        # Start voice receiver (Phase 2: listen to users)
-        try:
-            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-            receiver.start()
-            self._voice_receivers[guild_id] = receiver
-            self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                self._voice_listen_loop(guild_id)
-            )
-        except Exception as e:
-            logger.warning("Voice receiver failed to start: %s", e)
-
-        return True
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
-        # Stop voice receiver first
-        receiver = self._voice_receivers.pop(guild_id, None)
-        if receiver:
-            receiver.stop()
-        listen_task = self._voice_listen_tasks.pop(guild_id, None)
-        if listen_task:
-            listen_task.cancel()
+        async with self._voice_lock_for(guild_id):
+            # Stop voice receiver first
+            receiver = self._voice_receivers.pop(guild_id, None)
+            if receiver:
+                receiver.stop()
+            listen_task = self._voice_listen_tasks.pop(guild_id, None)
+            if listen_task:
+                listen_task.cancel()
 
-        vc = self._voice_clients.pop(guild_id, None)
-        if vc and vc.is_connected():
-            await vc.disconnect()
-        task = self._voice_timeout_tasks.pop(guild_id, None)
-        if task:
-            task.cancel()
-        self._voice_text_channels.pop(guild_id, None)
-        self._voice_sources.pop(guild_id, None)
+            vc = self._voice_clients.pop(guild_id, None)
+            if vc and vc.is_connected():
+                await vc.disconnect()
+            task = self._voice_timeout_tasks.pop(guild_id, None)
+            if task:
+                task.cancel()
+            self._voice_text_channels.pop(guild_id, None)
+            self._voice_sources.pop(guild_id, None)
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120

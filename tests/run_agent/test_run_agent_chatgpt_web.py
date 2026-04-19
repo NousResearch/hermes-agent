@@ -657,6 +657,8 @@ def test_build_api_kwargs_chatgpt_web_with_tools_injects_protocol_and_disables_r
     assert "<tool_call>" in kwargs["instructions"]
     assert "<tool_response>" in kwargs["instructions"]
     assert "search_files" in kwargs["instructions"]
+    assert "Universal tool-call cookbook" in kwargs["instructions"]
+    assert "guess the next tool call needed to advance the main goal" in kwargs["instructions"]
     assert "does not support Hermes tool calls" not in kwargs["instructions"]
 
     rewritten_user = kwargs["messages"][-1]["content"]
@@ -696,9 +698,40 @@ def test_build_api_kwargs_chatgpt_web_refreshes_runtime_reminder_after_tool_resp
     rewritten_user = kwargs["messages"][0]["content"]
     assert rewritten_user.startswith("Original user request:\nUse Hermes tools to run Python")
     assert "You have already received at least one <tool_response>." in rewritten_user
+    assert "Use the available tool schema plus the latest <tool_response> to guess the next tool call" in rewritten_user
     assert "Otherwise, give the final answer directly with no extra tool-call markup." in rewritten_user
     assert "follow the original user's requested output format exactly" in rewritten_user
     assert "Hermes has already determined that this turn requires a tool call." not in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_strictly_pushes_consecutive_tool_flow_after_tool_response(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Run shell commands",
+            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+        },
+    }]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": (
+                "Original user request:\nContinue debugging and keep using consecutive tool calls. "
+                "Do not answer in English until the task is complete.\n\n"
+                "Runtime reminder:\nThe tool available for this turn is: terminal."
+            ),
+        },
+        {"role": "tool", "content": '{"ok": true, "stdout": "repo root found"}'},
+    ])
+
+    rewritten_user = kwargs["messages"][0]["content"]
+    assert "Hermes expects you to keep advancing the task through tool use until the original request is actually complete." in rewritten_user
+    assert "Do not answer the user yet and do not narrate that you will continue later." in rewritten_user
+    assert "guess the single best next tool call needed for the main task" in rewritten_user
 
 
 def test_wrap_chatgpt_web_response_extracts_xml_tool_calls(monkeypatch):
@@ -939,6 +972,75 @@ def test_run_chatgpt_web_completion_retries_once_after_stale_thread_404(monkeypa
     assert response.choices[0].message.content == "Recovered"
     assert agent._chatgpt_web_conversation_id == "conv_reset"
     assert agent._chatgpt_web_parent_message_id == "msg_reset"
+
+
+def test_run_chatgpt_web_completion_retries_once_after_stale_thread_500(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent._chatgpt_web_conversation_id = "conv_existing"
+    agent._chatgpt_web_parent_message_id = "msg_existing"
+
+    calls = []
+
+    def _fake_stream(**kwargs):
+        calls.append((kwargs.get("conversation_id"), kwargs.get("parent_message_id")))
+        if len(calls) == 1:
+            request = httpx.Request("POST", "https://chatgpt.com/backend-api/f/conversation")
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError("server error", request=request, response=response)
+        return {
+            "content": "Recovered after reset",
+            "conversation_id": "conv_reset_500",
+            "parent_message_id": "msg_reset_500",
+            "message_id": "msg_reset_500",
+            "model": "gpt-5-thinking",
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr("hermes_cli.chatgpt_web.stream_chatgpt_web_completion", _fake_stream)
+
+    response = agent._run_chatgpt_web_completion({
+        "model": "gpt-5-thinking",
+        "messages": [{"role": "user", "content": "hi"}],
+        "conversation_id": "conv_existing",
+        "parent_message_id": "msg_existing",
+        "instructions": "Be concise.",
+    })
+
+    assert calls == [("conv_existing", "msg_existing"), (None, None)]
+    assert response.choices[0].message.content == "Recovered after reset"
+    assert agent._chatgpt_web_conversation_id == "conv_reset_500"
+    assert agent._chatgpt_web_parent_message_id == "msg_reset_500"
+
+
+def test_wrap_chatgpt_web_response_synthesizes_followup_tool_call_for_progress_narration(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Run shell commands",
+            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+        },
+    }]
+    agent._chatgpt_web_forced_tool_call = {
+        "name": "terminal",
+        "arguments": {"command": "pwd"},
+        "mode": "if_pending_work",
+    }
+
+    response = agent._wrap_chatgpt_web_response({
+        "content": "I found the repo root. Next I will inspect the skills directory.",
+        "message_id": "msg_progress",
+        "model": "gpt-5-thinking",
+        "finish_reason": "stop",
+    })
+
+    message = response.choices[0].message
+    assert message.content == ""
+    assert message.tool_calls is not None
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0].function.name == "terminal"
+    assert message.tool_calls[0].function.arguments == '{"command": "pwd"}'
 
 
 def test_interruptible_api_call_chatgpt_web_closes_request_client_on_interrupt(monkeypatch):

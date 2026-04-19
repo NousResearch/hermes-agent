@@ -32,6 +32,12 @@ DEFAULT_CHATGPT_WEB_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+_TOOL_RESPONSE_CONTINUATION_HINT = (
+    "[Hermes continuation hint: if the main task is not complete yet, your next assistant "
+    "message should usually be EXACTLY ONE <tool_call>...</tool_call> block for the single "
+    "best next tool call. Use the tool schemas plus this tool result to guess the next call. "
+    "Do not reply with progress narration like 'I will continue'.]"
+)
 
 
 def _default_user_agent() -> str:
@@ -412,7 +418,12 @@ def _format_initial_message(
             rendered = "\n".join(part for part in rendered_parts if part).strip()
         elif role == "tool":
             if content.strip():
-                rendered = f"<tool_response>\n{content.strip()}\n</tool_response>"
+                rendered = (
+                    "<tool_response>\n"
+                    f"{content.strip()}\n"
+                    f"{_TOOL_RESPONSE_CONTINUATION_HINT}\n"
+                    "</tool_response>"
+                )
 
         if rendered:
             transcript_lines.append(f"{role.title()}:\n{rendered}")

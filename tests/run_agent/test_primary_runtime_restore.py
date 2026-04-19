@@ -262,6 +262,18 @@ class TestTryRecoverPrimaryTransport:
 
         assert result is True
 
+    def test_recovers_on_read_error(self):
+        agent = _make_agent(provider="custom")
+        error = _make_transport_error("ReadError")
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+
     def test_recovers_on_openai_api_connection_error(self):
         agent = _make_agent(provider="custom")
         error = _make_transport_error("APIConnectionError")

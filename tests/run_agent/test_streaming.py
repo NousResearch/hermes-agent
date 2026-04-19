@@ -587,6 +587,38 @@ class TestStreamingFallback:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_read_error_retried_as_transient(self, mock_close, mock_create):
+        """httpx.ReadError (connection reset by peer) should be retried."""
+        from run_agent import AIAgent
+        import httpx
+
+        read_error = httpx.ReadError(
+            "connection reset by peer",
+            request=httpx.Request("POST", "http://localhost:11434/v1/chat/completions"),
+        )
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = read_error
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="http://localhost:11434/v1",
+            model="gemma4:latest",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with pytest.raises(httpx.ReadError, match="connection reset by peer"):
+            agent._interruptible_streaming_api_call({})
+
+        assert mock_client.chat.completions.create.call_count == 3
+        assert mock_close.call_count >= 2
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_sse_connection_lost_retried_as_transient(self, mock_close, mock_create):
         """SSE 'Network connection lost' (APIError w/ no status_code) retries like httpx errors.
 
@@ -1130,4 +1162,3 @@ class TestPartialToolCallWarning:
         assert "Stream stalled" not in content, (
             f"Unexpected warning on text-only partial stream: {content!r}"
         )
-

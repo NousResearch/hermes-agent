@@ -1970,8 +1970,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if not message_id or self._is_duplicate(message_id):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
-        if getattr(sender, "sender_type", "") == "bot":
-            logger.debug("[Feishu] Dropping bot-originated event: %s", message_id)
+        if self._is_self_sent_bot_message(event):
+            logger.debug("[Feishu] Dropping self-sent bot event: %s", message_id)
             return
 
         chat_type = getattr(message, "chat_type", "p2p")
@@ -3292,6 +3292,23 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         if normalized.mentioned_ids:
             return self._post_mentions_bot(normalized.mentioned_ids)
+        return False
+
+    def _is_self_sent_bot_message(self, event: Any) -> bool:
+        """Return True only for Feishu events emitted by this Hermes bot."""
+        sender = getattr(event, "sender", None)
+        sender_type = str(getattr(sender, "sender_type", "") or "").strip().lower()
+        if sender_type not in {"bot", "app"}:
+            return False
+
+        sender_id = getattr(sender, "sender_id", None)
+        sender_open_id = str(getattr(sender_id, "open_id", "") or "").strip()
+        sender_user_id = str(getattr(sender_id, "user_id", "") or "").strip()
+
+        if self._bot_open_id and sender_open_id == self._bot_open_id:
+            return True
+        if self._bot_user_id and sender_user_id == self._bot_user_id:
+            return True
         return False
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:

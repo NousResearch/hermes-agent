@@ -746,6 +746,57 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(
         os.environ,
         {
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_other_bot_sender_is_not_treated_as_self_sent_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_other_bot", user_id="u_other_bot"),
+            )
+        )
+
+        self.assertFalse(adapter._is_self_sent_bot_message(event))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_self_bot_sender_is_treated_as_self_sent_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        by_open_id = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_hermes", user_id="u_other"),
+            )
+        )
+        by_user_id = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="app",
+                sender_id=SimpleNamespace(open_id="ou_other", user_id="u_hermes"),
+            )
+        )
+
+        self.assertTrue(adapter._is_self_sent_bot_message(by_open_id))
+        self.assertTrue(adapter._is_self_sent_bot_message(by_user_id))
+
+    @patch.dict(
+        os.environ,
+        {
             "FEISHU_GROUP_POLICY": "allowlist",
             "FEISHU_ALLOWED_USERS": "ou_allowed",
             "FEISHU_BOT_NAME": "Hermes Bot",

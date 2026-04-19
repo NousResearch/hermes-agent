@@ -317,6 +317,60 @@ class TestStripThinkBlocks:
         result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
         assert "<thought>" not in result
 
+    # ─── Unterminated-block coverage (#8878, #9568, #10408) ──────────────
+    # Reasoning models served via NIM / MiniMax M2.7 frequently drop the
+    # closing tag, leaking raw reasoning into assistant content. The open
+    # tag appears at a block boundary (start of text or after a newline);
+    # everything from that tag to end-of-string is stripped.
+
+    def test_unterminated_think_block_content_stripped(self, agent):
+        """Content after unterminated <think> is fully stripped."""
+        result = agent._strip_think_blocks("<think>orphaned reasoning without close")
+        assert "orphaned reasoning" not in result
+        assert result.strip() == ""
+
+    def test_unterminated_thought_block_content_stripped(self, agent):
+        """Gemma-style <thought> with no close is fully stripped."""
+        result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
+        assert "orphaned reasoning" not in result
+        assert result.strip() == ""
+
+    def test_unterminated_multiline_block_stripped(self, agent):
+        """Multi-line unterminated blocks are stripped in full."""
+        result = agent._strip_think_blocks(
+            "<think>\nmulti\nline\nreasoning\nthat never closes"
+        )
+        assert "multi" not in result
+        assert "never closes" not in result
+
+    def test_unterminated_block_after_answer_preserves_prefix(self, agent):
+        """Visible answer before a line-starting unterminated tag is kept."""
+        result = agent._strip_think_blocks(
+            "Answer is 42.\n<think>actually let me reconsider"
+        )
+        assert "Answer is 42." in result
+        assert "reconsider" not in result
+
+    def test_inline_think_mention_in_prose_not_over_stripped(self, agent):
+        """Mid-line `<think>` mentioned in prose must not swallow the rest
+        of the content (the block-boundary check prevents this)."""
+        text = "Use the <think> tag like this in your prose."
+        result = agent._strip_think_blocks(text)
+        # Block-boundary check prevents unterminated-strip from firing
+        assert "prose" in result
+        assert "Use the" in result
+
+    def test_mixed_case_closed_pair_stripped(self, agent):
+        """Mixed-case variants <THINK>…</THINK>, <Thinking>…</Thinking> are
+        handled by case-insensitive closed-pair regex, so the trailing
+        content is preserved."""
+        result = agent._strip_think_blocks("<THINK>upper</THINK>final")
+        assert "upper" not in result
+        assert "final" in result
+        result = agent._strip_think_blocks("<Thinking>mixed</Thinking>final")
+        assert "mixed" not in result
+        assert "final" in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):

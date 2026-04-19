@@ -54,6 +54,11 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
     cursor = dict(record.get("virtual_cursor") or {"x": None, "y": None, "detached": True, "visible": True})
     overlay_path = str(record.get("overlay_screenshot_path", "") or "")
     session_state_path = str(record.get("session_state_path", "") or "")
+    pending_pointer_action = record.get("pending_pointer_action")
+    if isinstance(pending_pointer_action, dict):
+        pending_pointer_action = dict(pending_pointer_action)
+    else:
+        pending_pointer_action = None
     return {
         "app_name": record["app_name"],
         "app_session_id": record["app_session_id"],
@@ -65,6 +70,7 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
         "overlay_screenshot_path": overlay_path,
         "overlay_media_tag": _media_tag_for_path(overlay_path),
         "session_state_path": session_state_path,
+        "pending_pointer_action": pending_pointer_action,
     }
 
 
@@ -189,6 +195,18 @@ def _write_session_state(session: dict[str, Any]) -> str:
 def _sync_session_artifacts(session: dict[str, Any]) -> str:
     _sync_virtual_cursor_overlay(session)
     return _write_session_state(session)
+
+
+def _record_pending_pointer_action(session: dict[str, Any], action_type: str, **fields: Any) -> dict[str, Any]:
+    payload = {
+        "action_id": f"ptr-{uuid.uuid4().hex}",
+        "action_type": action_type,
+    }
+    for key, value in fields.items():
+        if value is not None:
+            payload[key] = value
+    session["pending_pointer_action"] = payload
+    return payload
 
 
 def _sync_virtual_cursor_overlay(session: dict[str, Any]) -> str:
@@ -531,6 +549,15 @@ def click_impl(*, index: int | None = None, x: int | None = None, y: int | None 
         cursor["x"] = x
     if y is not None:
         cursor["y"] = y
+    _record_pending_pointer_action(
+        session,
+        "click",
+        x=cursor.get("x"),
+        y=cursor.get("y"),
+        index=index,
+        button=button,
+        click_count=click_count,
+    )
     _sync_session_artifacts(session)
     return _preview_pointer_response("click", session)
 
@@ -549,6 +576,14 @@ def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = 
         cursor["x"] = x
     if y is not None:
         cursor["y"] = y
+    _record_pending_pointer_action(
+        session,
+        "scroll",
+        x=cursor.get("x"),
+        y=cursor.get("y"),
+        index=index,
+        delta_y=delta_y,
+    )
     _sync_session_artifacts(session)
     response = _preview_pointer_response("scroll", session)
     response["delta_y"] = delta_y
@@ -562,6 +597,14 @@ def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
     cursor["x"] = end_x
     cursor["y"] = end_y
+    _record_pending_pointer_action(
+        session,
+        "drag",
+        start_x=start_x,
+        start_y=start_y,
+        end_x=end_x,
+        end_y=end_y,
+    )
     _sync_session_artifacts(session)
     response = _preview_pointer_response("drag", session)
     response["drag_path"] = {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}

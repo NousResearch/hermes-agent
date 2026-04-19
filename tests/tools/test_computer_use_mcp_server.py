@@ -202,6 +202,53 @@ class TestApprovalAndSessions:
         assert [c["action"] for c in calls] == ["activate_app", "frontmost_app", "screenshot"]
         assert calls[0]["app_name"] == "Safari"
 
+    def test_get_app_state_preserves_pending_pointer_action_on_refresh(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "screenshot_path": "/tmp/old-shot.png",
+                "pending_pointer_action": {
+                    "action_id": "ptr-1",
+                    "action_type": "click",
+                    "x": 12,
+                    "y": 34,
+                    "button": "left",
+                    "click_count": 1,
+                },
+                "virtual_cursor": {"x": 12, "y": 34, "detached": True, "visible": True},
+            }
+        })
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "window_title": "Docs"}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_session_id="app-1")
+
+        state_path = Path(result["session_state_path"])
+        payload = json.loads(state_path.read_text())
+        assert payload["pending_pointer_action"]["action_id"] == "ptr-1"
+        assert payload["pending_pointer_action"]["action_type"] == "click"
+        assert payload["pending_pointer_action"]["x"] == 12
+        assert payload["pending_pointer_action"]["y"] == 34
+
     def test_get_app_state_rejects_unknown_app_session_id(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
 
@@ -707,8 +754,39 @@ class TestUnsupportedActions:
         payload = json.loads(state_path.read_text())
         assert payload["app_session_id"] == "app-2"
         assert payload["virtual_cursor"] == {"x": 50, "y": 60, "detached": True, "visible": True}
+        assert payload["pending_pointer_action"]["action_type"] == "click"
+        assert payload["pending_pointer_action"]["x"] == 50
+        assert payload["pending_pointer_action"]["y"] == 60
+        assert payload["pending_pointer_action"]["button"] == "left"
+        assert payload["pending_pointer_action"]["click_count"] == 1
 
-    def test_drag_updates_virtual_cursor_to_end_position(self, monkeypatch):
+    def test_scroll_updates_pending_pointer_action_in_session_state(self, monkeypatch, tmp_path):
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            },
+        })
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+
+        result = adapter.scroll_impl(x=7, y=8, delta_y=240, app_session_id="app-2")
+
+        state_path = Path(result["session_state_path"])
+        assert state_path.exists() is True
+        payload = json.loads(state_path.read_text())
+        assert payload["pending_pointer_action"]["action_type"] == "scroll"
+        assert payload["pending_pointer_action"]["x"] == 7
+        assert payload["pending_pointer_action"]["y"] == 8
+        assert payload["pending_pointer_action"]["delta_y"] == 240
+
+    def test_drag_updates_virtual_cursor_to_end_position(self, monkeypatch, tmp_path):
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
             "safari": {
                 "app_name": "Safari",
@@ -718,12 +796,20 @@ class TestUnsupportedActions:
                 "virtual_cursor": {"x": 10, "y": 20, "detached": True, "visible": True},
             }
         })
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
 
         result = adapter.drag_impl(start_x=10, start_y=20, end_x=30, end_y=40)
 
         assert result["success"] is False
         assert result["preview_only"] is True
         assert result["virtual_cursor"] == {"x": 30, "y": 40, "detached": True, "visible": True}
+        state_path = Path(result["session_state_path"])
+        payload = json.loads(state_path.read_text())
+        assert payload["pending_pointer_action"]["action_type"] == "drag"
+        assert payload["pending_pointer_action"]["start_x"] == 10
+        assert payload["pending_pointer_action"]["start_y"] == 20
+        assert payload["pending_pointer_action"]["end_x"] == 30
+        assert payload["pending_pointer_action"]["end_y"] == 40
 
     def test_click_stub_is_explicit(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {

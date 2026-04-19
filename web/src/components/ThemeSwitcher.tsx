@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Palette, Check } from "lucide-react";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { BUILTIN_THEMES, useTheme } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -56,9 +57,12 @@ export function ThemeSwitcher() {
         aria-haspopup="listbox"
       >
         <Palette className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline font-mondwest tracking-wide uppercase text-[0.65rem]">
+        <Typography
+          mondwest
+          className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
+        >
           {label}
-        </span>
+        </Typography>
       </button>
 
       {open && (
@@ -72,9 +76,12 @@ export function ThemeSwitcher() {
           )}
         >
           <div className="border-b border-current/20 px-3 py-2">
-            <span className="font-mondwest text-[0.65rem] tracking-[0.15em] uppercase text-midground/70">
+            <Typography
+              mondwest
+              className="text-[0.65rem] tracking-[0.15em] uppercase text-midground/70"
+            >
               {t.theme?.title ?? "Theme"}
-            </span>
+            </Typography>
           </div>
 
           {availableThemes.map((th) => {
@@ -100,13 +107,16 @@ export function ThemeSwitcher() {
                 {preset ? <ThemeSwatch theme={preset.name} /> : <PlaceholderSwatch />}
 
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="truncate font-mondwest text-[0.75rem] tracking-wide uppercase">
+                  <Typography
+                    mondwest
+                    className="truncate text-[0.75rem] tracking-wide uppercase"
+                  >
                     {th.label}
-                  </span>
+                  </Typography>
                   {th.description && (
-                    <span className="truncate font-sans text-[0.65rem] normal-case tracking-normal text-midground/50">
+                    <Typography className="truncate text-[0.65rem] normal-case tracking-normal text-midground/50">
                       {th.description}
-                    </span>
+                    </Typography>
                   )}
                 </div>
 

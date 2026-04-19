@@ -15,6 +15,7 @@ import {
   Code,
   Zap,
 } from "lucide-react";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { SkillInfo, ToolsetInfo } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
@@ -193,7 +194,7 @@ export default function SkillsPage() {
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Package className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-base font-semibold">{t.skills.title}</h1>
+          <H2 variant="sm">{t.skills.title}</H2>
           <span className="text-xs text-muted-foreground">
             {t.skills.enabledOf.replace("{enabled}", String(enabledCount)).replace("{total}", String(skills.length))}
           </span>

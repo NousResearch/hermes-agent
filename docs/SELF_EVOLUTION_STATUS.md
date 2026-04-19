@@ -1,6 +1,6 @@
 # Hermes Self Evolution Status
 
-Updated: 2026-04-19 17:03:27 +0800
+Updated: 2026-04-19 20:27:34 +0800
 
 ## 结论
 Hermes 的自主进化层已经从“原则/宣言”推进到“可运行的受控闭环”，并且这份总览文档已接入自动更新。
@@ -19,7 +19,7 @@ Hermes 的自主进化层已经从“原则/宣言”推进到“可运行的受
 - 已执行低风险动作：skill_patch / hermes-self-evolution-maintenance / Captured same-turn continuation discipline and asset maturity rules for candidate generation.
 - 当前 top priority：skill / hermes-self-evolution-maintenance / low
 - 闭环状态：candidate_generation=active, top_priority_execution=manual-low-risk-executed-in-live-session, rerank_after_execution=active
-- snapshot 对齐：aligned_with_next_actions=True, run_stamp=2026-04-19T17-03-27+0800
+- snapshot 对齐：aligned_with_next_actions=True, run_stamp=2026-04-19T20-27-34+0800
 - embedded healthcheck：no-output
 
 ## 本轮收敛说明
@@ -74,7 +74,7 @@ Hermes 的自主进化层已经从“原则/宣言”推进到“可运行的受
 - Latest snapshot:
   - `/Users/blank/.hermes/hermes-agent/docs/retrospectives/status_snapshots/latest-candidate-actions-status.md`
 - History snapshot:
-  - `/Users/blank/.hermes/hermes-agent/docs/retrospectives/status_snapshots/2026-04-19T17-03-27+0800-candidate-actions-status.md`
+  - `/Users/blank/.hermes/hermes-agent/docs/retrospectives/status_snapshots/2026-04-19T20-27-34+0800-candidate-actions-status.md`
 
 ## 当前闭环能力分层
 ### 1. Doctrine / policy

@@ -1,7 +1,7 @@
 # Self Evolution Candidate Actions Status
 
-- Generated at: 2026-04-19T20:27:34.945518+08:00
-- Snapshot run stamp: 2026-04-19T20-27-34+0800
+- Generated at: 2026-04-19T18:32:01.979358+08:00
+- Snapshot run stamp: 2026-04-19T18-32-01+0800
 - Rule engine: state-based-v1.6
 - Has auto retro: True
 - Has report: True
@@ -17,7 +17,7 @@
 - 已执行低风险动作：skill_patch / hermes-self-evolution-maintenance / Captured same-turn continuation discipline and asset maturity rules for candidate generation.
 - 当前 top priority：skill / hermes-self-evolution-maintenance / low
 - 闭环状态：candidate_generation=active, top_priority_execution=manual-low-risk-executed-in-live-session, rerank_after_execution=active
-- snapshot 对齐：aligned_with_next_actions=True, run_stamp=2026-04-19T20-27-34+0800
+- snapshot 对齐：aligned_with_next_actions=True, run_stamp=2026-04-19T18-32-01+0800
 - embedded healthcheck：no-output
 
 ## Drift Flags

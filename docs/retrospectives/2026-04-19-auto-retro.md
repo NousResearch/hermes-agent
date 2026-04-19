@@ -1,6 +1,6 @@
 # Hermes Auto Retrospective
 
-Generated: 2026-04-19T17:03:27.379806+08:00
+Generated: 2026-04-19T20:27:34.672550+08:00
 
 ## Summary
 - 当前状态：自主进化闭环正在运行
@@ -12,7 +12,7 @@ Generated: 2026-04-19T17:03:27.379806+08:00
 - 已执行低风险动作：skill_patch / hermes-self-evolution-maintenance / Captured same-turn continuation discipline and asset maturity rules for candidate generation.
 - 当前 top priority：skill / hermes-self-evolution-maintenance / low
 - 闭环状态：candidate_generation=active, top_priority_execution=manual-low-risk-executed-in-live-session, rerank_after_execution=active
-- snapshot 对齐：aligned_with_next_actions=True, run_stamp=2026-04-19T17-03-27+0800
+- snapshot 对齐：aligned_with_next_actions=True, run_stamp=2026-04-19T20-27-34+0800
 - embedded healthcheck：no-output
 
 ## Convergence This Round
@@ -26,13 +26,14 @@ Generated: 2026-04-19T17:03:27.379806+08:00
 - none
 
 ## Snapshot Alignment
-- 历史 snapshot：/Users/blank/.hermes/hermes-agent/docs/retrospectives/status_snapshots/2026-04-19T17-03-27+0800-candidate-actions-status.md
+- 历史 snapshot：/Users/blank/.hermes/hermes-agent/docs/retrospectives/status_snapshots/2026-04-19T20-27-34+0800-candidate-actions-status.md
 - latest snapshot：/Users/blank/.hermes/hermes-agent/docs/retrospectives/status_snapshots/latest-candidate-actions-status.md
-- snapshot run stamp：2026-04-19T17-03-27+0800
+- snapshot run stamp：2026-04-19T20-27-34+0800
 
 ## Healthcheck
 - surface consistency status: healthy
-- embedded health status: no-output
+- embedded health status: healthy
+- report embedded health status: no-output
 - rule engine: state-based-v1.6
 - failed checks: none
 

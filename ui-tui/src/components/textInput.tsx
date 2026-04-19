@@ -519,22 +519,22 @@ export function TextInput({
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
 
-      if (k.ctrl && inp === 'z') {
+      if ((k.ctrl || k.meta) && inp === 'z') {
         return swap(undo, redo)
       }
 
-      if ((k.ctrl && inp === 'y') || (k.meta && k.shift && inp === 'z')) {
+      if (((k.ctrl || k.meta) && inp === 'y') || ((k.ctrl || k.meta) && k.shift && inp === 'z')) {
         return swap(redo, undo)
       }
 
-      if (k.ctrl && inp === 'a') {
+      if ((k.ctrl || k.meta) && inp === 'a') {
         return selectAll()
       }
 
       if (k.home) {
         clearSel()
         c = 0
-      } else if (k.end || (k.ctrl && inp === 'e')) {
+      } else if (k.end || (k.ctrl && inp === 'e') || (k.meta && inp === 'e')) {
         clearSel()
         c = v.length
       } else if (k.leftArrow) {
@@ -553,10 +553,10 @@ export function TextInput({
           clearSel()
           c = mod ? wordRight(v, c) : nextPos(v, c)
         }
-      } else if (k.meta && inp === 'b') {
+      } else if ((k.ctrl || k.meta) && inp === 'b') {
         clearSel()
         c = wordLeft(v, c)
-      } else if (k.meta && inp === 'f') {
+      } else if ((k.ctrl || k.meta) && inp === 'f') {
         clearSel()
         c = wordRight(v, c)
       } else if (range && (k.backspace || delFwd)) {
@@ -579,7 +579,7 @@ export function TextInput({
         } else {
           v = v.slice(0, c) + v.slice(nextPos(v, c))
         }
-      } else if (k.ctrl && inp === 'w') {
+      } else if ((k.ctrl || k.meta) && inp === 'w') {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
@@ -591,7 +591,7 @@ export function TextInput({
         } else {
           return
         }
-      } else if (k.ctrl && inp === 'u') {
+      } else if ((k.ctrl || k.meta) && inp === 'u') {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
@@ -599,7 +599,7 @@ export function TextInput({
           v = v.slice(c)
           c = 0
         }
-      } else if (k.ctrl && inp === 'k') {
+      } else if ((k.ctrl || k.meta) && inp === 'k') {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start

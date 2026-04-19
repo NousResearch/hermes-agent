@@ -517,6 +517,20 @@ class TestScanSkillCommands:
         # partial one growing from 0.
         assert observed_sizes == [skill_count] * skill_count
 
+    def test_non_ascii_name_registers_command(self, tmp_path):
+        """A CJK skill name slugs to itself (punctuation still stripped) instead of "" and being
+        silently dropped (#12351); ``resolve_skill_command_key`` round-trips it."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "novel-clipper"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: 小说+拆条\ndescription: Split novels into clips.\n---\n\nBody.\n", encoding="utf-8"
+            )
+            result = scan_skill_commands()
+            assert "/小说拆条" in result
+            assert result["/小说拆条"]["name"] == "小说+拆条"
+            assert resolve_skill_command_key("小说拆条") == "/小说拆条"
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

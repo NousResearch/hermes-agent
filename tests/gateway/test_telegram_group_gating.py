@@ -74,6 +74,21 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("/status"), is_command=True) is True
 
 
+def test_email_like_substrings_do_not_count_as_mentions():
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(_group_message("email me at foo@hermes_bot.example")) is False
+
+
+def test_longer_handles_do_not_count_as_bot_mentions():
+    adapter = _make_adapter(require_mention=True)
+    text = "ping @hermes_botx for help"
+
+    assert adapter._should_process_message(
+        _group_message(text, entities=[_mention_entity(text, "@hermes_botx")])
+    ) is False
+
+
 def test_free_response_chats_bypass_mention_requirement():
     adapter = _make_adapter(require_mention=True, free_response_chats=["-200"])
 

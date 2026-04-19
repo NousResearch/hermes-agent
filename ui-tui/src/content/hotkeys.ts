@@ -1,16 +1,21 @@
+import { isMac } from '../lib/platform.js'
+
+const mod = isMac ? 'Cmd' : 'Ctrl'
+const pasteMod = isMac ? 'Cmd' : 'Alt'
+
 export const HOTKEYS: [string, string][] = [
-  ['Ctrl+C', 'interrupt / clear draft / exit'],
-  ['Ctrl+D', 'exit'],
-  ['Ctrl+G', 'open $EDITOR for prompt'],
-  ['Ctrl+L', 'new session (clear)'],
-  ['Alt+V / /paste', 'paste clipboard image'],
+  [mod + '+C / ' + mod + '+Shift+C', 'copy selection'],
+  [mod + '+D', 'exit'],
+  [mod + '+G', 'open $EDITOR for prompt'],
+  [mod + '+L', 'new session (clear)'],
+  [pasteMod + '+V / /paste', 'paste clipboard image'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
-  ['Ctrl+A/E', 'home / end of line'],
-  ['Ctrl+Z / Ctrl+Y', 'undo / redo input edits'],
-  ['Ctrl+W', 'delete word'],
-  ['Ctrl+U/K', 'delete to start / end'],
-  ['Ctrl+←/→', 'jump word'],
+  [mod + '+A/E', 'home / end of line'],
+  [mod + '+Z / ' + mod + '+Y', 'undo / redo input edits'],
+  [mod + '+W', 'delete word'],
+  [mod + '+U/K', 'delete to start / end'],
+  [mod + '+←/→', 'jump word'],
   ['Home/End', 'start / end of line'],
   ['Shift+Enter / Alt+Enter', 'insert newline'],
   ['\\+Enter', 'multi-line continuation (fallback)'],

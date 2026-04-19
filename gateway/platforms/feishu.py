@@ -492,14 +492,6 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
-def parse_feishu_post_content(raw_content: str) -> FeishuPostParseResult:
-    try:
-        parsed = json.loads(raw_content) if raw_content else {}
-    except json.JSONDecodeError:
-        return FeishuPostParseResult(text_content=FALLBACK_POST_TEXT)
-    return parse_feishu_post_payload(parsed)
-
-
 def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
     resolved = _resolve_post_payload(payload)
     if not resolved:

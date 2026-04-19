@@ -26,6 +26,7 @@ _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
+_IS_MACOS = sys.platform == "darwin"
 _UNSET = object()
 
 
@@ -89,26 +90,93 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return the kernel start time for a process when available.
+
+    Linux: reads ``/proc/<pid>/stat`` field 22 (clock ticks).
+    macOS/BSD: falls back to ``ps -olstart=`` (process start timestamp).
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text().split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        return None
+        pass
+
+    # macOS / BSD fallback: ps -olstart= gives start time as a date string.
+    # Convert to epoch seconds for comparison.
+    try:
+        out = subprocess.check_output(
+            ["ps", "-olstart=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        lstart_str = out.decode().strip()
+        if lstart_str:
+            from datetime import datetime as dt
+            # Format: "Sun Apr 19 15:06:41 2026"
+            parsed = dt.strptime(lstart_str, "%a %b %d %H:%M:%S %Y")
+            return int(parsed.timestamp())
+    except Exception:
+        pass
+    return None
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Return the process command line as a space-separated string."""
+    """Return the process command line as a space-separated string.
+
+    Linux: reads ``/proc/<pid>/cmdline``.
+    macOS/BSD: falls back to ``ps -ocommand=``.
+    """
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
     except (FileNotFoundError, PermissionError, OSError):
+        raw = None
+
+    if raw:
+        return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+
+    # macOS / BSD fallback
+    try:
+        out = subprocess.check_output(
+            ["ps", "-ocommand=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        cmd = out.decode("utf-8", errors="ignore").strip()
+        return cmd if cmd else None
+    except Exception:
         return None
 
-    if not raw:
-        return None
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+
+def _is_process_stopped(pid: int) -> bool:
+    """Check if a process is in a stopped/traced state.
+
+    Linux: reads ``/proc/<pid>/status`` State line.
+    macOS/BSD: falls back to ``ps -ostat=``.
+    """
+    # Linux /proc
+    try:
+        proc_status = Path(f"/proc/{pid}/status")
+        if proc_status.exists():
+            for line in proc_status.read_text().splitlines():
+                if line.startswith("State:"):
+                    state = line.split()[1]
+                    return state in ("T", "t")  # stopped or tracing stop
+    except (OSError, PermissionError):
+        pass
+
+    # macOS / BSD fallback
+    try:
+        out = subprocess.check_output(
+            ["ps", "-ostat=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        stat = out.decode().strip()
+        return "T" in stat  # ps stat includes 'T' for stopped/traced
+    except Exception:
+        return False
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
@@ -354,18 +422,8 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still respond to os.kill(pid, 0) but are not
                 # actually running. Treat them as stale so --replace works.
-                if not stale:
-                    try:
-                        _proc_status = Path(f"/proc/{existing_pid}/status")
-                        if _proc_status.exists():
-                            for _line in _proc_status.read_text().splitlines():
-                                if _line.startswith("State:"):
-                                    _state = _line.split()[1]
-                                    if _state in ("T", "t"):  # stopped or tracing stop
-                                        stale = True
-                                    break
-                    except (OSError, PermissionError):
-                        pass
+                if not stale and _is_process_stopped(existing_pid):
+                    stale = True
         if stale:
             try:
                 lock_path.unlink(missing_ok=True)
@@ -398,8 +456,19 @@ def release_scoped_lock(scope: str, identity: str) -> None:
         return
     if existing.get("pid") != os.getpid():
         return
-    if existing.get("start_time") != _get_process_start_time(os.getpid()):
-        return
+    recorded_start = existing.get("start_time")
+    current_start = _get_process_start_time(os.getpid())
+    if recorded_start is not None and current_start is not None:
+        # Both available — strict comparison
+        if recorded_start != current_start:
+            return
+    elif recorded_start is None and current_start is None:
+        # Neither available (macOS without ps) — fallback: verify this
+        # process still looks like the gateway that would own the lock.
+        if not _looks_like_gateway_process(os.getpid()):
+            return
+    # Mixed None/non-None: lock was created under different code version.
+    # Allow release only when PIDs match (already checked above).
     try:
         lock_path.unlink(missing_ok=True)
     except OSError:
@@ -527,12 +596,15 @@ def consume_takeover_marker_for_self() -> bool:
     # Does the marker name THIS process?
     our_pid = os.getpid()
     our_start_time = _get_process_start_time(our_pid)
-    matches = (
-        target_pid == our_pid
-        and target_start_time is not None
-        and our_start_time is not None
-        and target_start_time == our_start_time
-    )
+    if target_pid == our_pid and target_start_time is not None and our_start_time is not None:
+        # Both available — strict comparison
+        matches = target_start_time == our_start_time
+    elif target_pid == our_pid and target_start_time is None:
+        # Old marker from before macOS start_time fallback — fall back to
+        # PID + cmdline heuristic.
+        matches = _looks_like_gateway_process(our_pid)
+    else:
+        matches = False
 
     # Consume the marker whether it matched or not — a marker that doesn't
     # match our identity is stale-for-us anyway.

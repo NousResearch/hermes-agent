@@ -1504,10 +1504,10 @@ def curated_models_for_provider(
     # Try live API first (Codex, Nous, etc. all support /models)
     live = provider_model_ids(normalized)
     if live:
-        return [(m, "") for m in live]
+        models = live
+    else:
+        models = _PROVIDER_MODELS.get(normalized, [])
 
-    # Fallback to static catalog
-    models = _PROVIDER_MODELS.get(normalized, [])
     return [(m, "") for m in models]
 
 

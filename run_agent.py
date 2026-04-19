@@ -957,6 +957,8 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        persist_session: bool = True,
+        e2ee_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1033,6 +1035,7 @@ class AIAgent:
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
+        self._e2ee_config = e2ee_config
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -5603,9 +5606,31 @@ class AIAgent:
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
         if "http_client" not in client_kwargs:
-            keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
-            if keepalive_http is not None:
-                client_kwargs["http_client"] = keepalive_http
+            e2ee_cfg = getattr(self, "_e2ee_config", None)
+            if e2ee_cfg and e2ee_cfg.get("signing_public_key"):
+                import httpx as _httpx
+                import socket as _socket
+                from hermes_cli.e2ee_transport import E2EETransport
+                _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
+                if hasattr(_socket, "TCP_KEEPIDLE"):
+                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
+                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
+                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
+                elif hasattr(_socket, "TCP_KEEPALIVE"):
+                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                inner_transport = E2EETransport(
+                    e2ee_cfg["signing_public_key"],
+                    e2ee_cfg.get("signing_algo", "ecdsa"),
+                    inner=_httpx.HTTPTransport(socket_options=_sock_opts),
+                )
+                logger.info("E2EE transport installed (algo=%s, key[:16]=%s)",
+                            e2ee_cfg.get("signing_algo", "ecdsa"),
+                            e2ee_cfg["signing_public_key"][:16])
+                client_kwargs["http_client"] = _httpx.Client(transport=inner_transport)
+            else:
+                keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+                if keepalive_http is not None:
+                    client_kwargs["http_client"] = keepalive_http
         # Uses the module-level `OpenAI` name, resolved lazily on first
         # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
         client = OpenAI(**client_kwargs)

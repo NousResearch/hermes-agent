@@ -3456,6 +3456,7 @@ class HermesCLI:
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
         self._provider_source = runtime.get("source")
+        self._e2ee_config = runtime.get("e2ee")
         self.api_key = api_key
         self.base_url = base_url
 
@@ -3644,6 +3645,7 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                e2ee_config=getattr(self, "_e2ee_config", None),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
@@ -11418,7 +11420,8 @@ class HermesCLI:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
+                choices = list(model_list)
+                choices += ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"
                 else:

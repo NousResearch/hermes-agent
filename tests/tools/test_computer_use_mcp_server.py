@@ -132,6 +132,51 @@ class TestApprovalAndSessions:
         assert first["app_session_id"] == second["app_session_id"]
         assert first["app_name"] == "Safari"
 
+    def test_get_app_state_can_resume_by_app_session_id(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+        adapter.approve_app_impl("Safari")
+        calls = []
+
+        def fake_cc(**kwargs):
+            calls.append(kwargs)
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "window_title": "Docs"}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_session_id="app-1")
+
+        assert result["success"] is True
+        assert result["app_name"] == "Safari"
+        assert result["app_session_id"] == "app-1"
+        assert result["virtual_cursor"] == {"x": 11, "y": 22, "detached": True, "visible": True}
+        assert [c["action"] for c in calls] == ["activate_app", "frontmost_app", "screenshot"]
+        assert calls[0]["app_name"] == "Safari"
+
+    def test_get_app_state_rejects_unknown_app_session_id(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+
+        result = adapter.get_app_state_impl(app_session_id="missing")
+
+        assert result["success"] is False
+        assert result["session_required"] is True
+
     def test_list_active_sessions_and_stop_session(self, monkeypatch, tmp_path):
         store_path = tmp_path / "ComputerUseAppApprovals.json"
         monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)

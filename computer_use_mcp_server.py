@@ -265,8 +265,16 @@ def list_apps_impl(limit: int = 100) -> dict[str, Any]:
     }
 
 
-def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
+def get_app_state_impl(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
+    session = None
     requested_app = _normalize_app_name(app_name)
+    wanted_session_id = str(app_session_id or "").strip()
+    if wanted_session_id:
+        session = _find_session(app_session_id=wanted_session_id)
+        if not session or not session.get("active"):
+            return _session_required_error("getting app state")
+        requested_app = _normalize_app_name(session.get("app_name"))
+
     if requested_app and not _is_app_approved(requested_app):
         pending_session = _ensure_app_session(requested_app, active=False)
         return {
@@ -295,7 +303,11 @@ def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
         return {"success": False, "error": screenshot["error"]}
 
     frontmost_app_name = _normalize_app_name(frontmost.get("app_name"))
-    session = _ensure_app_session(frontmost_app_name or requested_app, active=True)
+    session = session or _ensure_app_session(frontmost_app_name or requested_app, active=True)
+    session["active"] = True
+    session["app_name"] = frontmost_app_name or requested_app or session.get("app_name", "desktop")
+    session["approved"] = _is_app_approved(session["app_name"])
+    session.setdefault("virtual_cursor", _fresh_virtual_cursor())
     return {
         "success": True,
         "app_name": frontmost_app_name,
@@ -418,9 +430,9 @@ if mcp:
         return revoke_app_impl(app_name)
 
     @mcp.tool()
-    def get_app_state(app_name: str | None = None) -> dict[str, Any]:
+    def get_app_state(app_name: str | None = None, app_session_id: str | None = None) -> dict[str, Any]:
         """Activate an app if requested, then return a fresh screenshot and frontmost window metadata."""
-        return get_app_state_impl(app_name=app_name)
+        return get_app_state_impl(app_name=app_name, app_session_id=app_session_id)
 
     @mcp.tool()
     def type_text(text: str, app_session_id: str | None = None) -> dict[str, Any]:

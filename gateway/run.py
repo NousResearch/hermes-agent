@@ -753,6 +753,26 @@ class GatewayRunner:
             chat_id for chat_id, mode in self._voice_mode.items() if mode == "off"
         )
 
+    async def _safe_adapter_disconnect(self, adapter, platform) -> None:
+        """Call adapter.disconnect() defensively, swallowing any error.
+
+        Used when adapter.connect() failed or raised — the adapter may
+        have allocated partial resources (aiohttp.ClientSession, poll
+        tasks, child subprocesses) that would otherwise leak and surface
+        as "Unclosed client session" warnings at process exit.
+
+        Must tolerate partial-init state and never raise, since callers
+        use it inside error-handling blocks.
+        """
+        try:
+            await adapter.disconnect()
+        except Exception as e:
+            logger.debug(
+                "Defensive %s disconnect after failed connect raised: %s",
+                platform.value if platform is not None else "adapter",
+                e,
+            )
+
     # -----------------------------------------------------------------
 
     def _flush_memories_for_session(
@@ -1628,7 +1648,7 @@ class GatewayRunner:
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
             "Your current task will be interrupted. "
-            "Send any message after restart to resume where it left off."
+            "Send any message after restart and I'll try to resume where you left off."
             if self._restart_requested
             else "Your current task will be interrupted."
         )
@@ -2002,6 +2022,15 @@ class GatewayRunner:
                     logger.info("✓ %s connected", platform.value)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
+                    # Defensive cleanup: a failed connect() may have
+                    # allocated resources (aiohttp.ClientSession, poll
+                    # tasks, bridge subprocesses) before giving up.
+                    # Without this call, those resources are orphaned
+                    # and Python logs "Unclosed client session" at
+                    # process exit. Adapter disconnect() implementations
+                    # are expected to be idempotent and tolerate
+                    # partial-init state.
+                    await self._safe_adapter_disconnect(adapter, platform)
                     if adapter.has_fatal_error:
                         self._update_platform_runtime_status(
                             platform.value,
@@ -2042,6 +2071,10 @@ class GatewayRunner:
                         }
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
+                # Same defensive cleanup path for exceptions — an adapter
+                # that raised mid-connect may still have a live
+                # aiohttp.ClientSession or child subprocess.
+                await self._safe_adapter_disconnect(adapter, platform)
                 self._update_platform_runtime_status(
                     platform.value,
                     platform_state="retrying",
@@ -2462,6 +2495,40 @@ class GatewayRunner:
                     timeout,
                     self._running_agent_count(),
                 )
+                # Mark forcibly-interrupted sessions as resume_pending BEFORE
+                # interrupting the agents.  This preserves each session's
+                # session_id + transcript so the next message on the same
+                # session_key auto-resumes from the existing conversation
+                # instead of getting routed through suspend_recently_active()
+                # and converted into a fresh session.  Terminal escalation
+                # for genuinely stuck sessions still flows through the
+                # existing ``.restart_failure_counts`` stuck-loop counter
+                # (incremented below, threshold 3), which sets
+                # ``suspended=True`` and overrides resume_pending.
+                #
+                # Iterate self._running_agents (current) rather than the
+                # drain-start ``active_agents`` snapshot — the snapshot
+                # may include sessions that finished gracefully during
+                # the drain window, and marking those falsely would give
+                # them a stray restart-interruption system note on their
+                # next turn even though their previous turn completed
+                # cleanly.  Skip pending sentinels for the same reason
+                # _interrupt_running_agents() does: their agent hasn't
+                # started yet, there's nothing to interrupt, and the
+                # session shouldn't carry a misleading resume flag.
+                _resume_reason = (
+                    "restart_timeout" if self._restart_requested else "shutdown_timeout"
+                )
+                for _sk, _agent in list(self._running_agents.items()):
+                    if _agent is _AGENT_PENDING_SENTINEL:
+                        continue
+                    try:
+                        self.session_store.mark_resume_pending(_sk, _resume_reason)
+                    except Exception as _e:
+                        logger.debug(
+                            "mark_resume_pending failed for %s: %s",
+                            _sk[:20], _e,
+                        )
                 self._interrupt_running_agents(
                     "Gateway restarting" if self._restart_requested else "Gateway shutting down"
                 )
@@ -3042,8 +3109,8 @@ class GatewayRunner:
 
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
+                ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
                 resolve_command as _resolve_cmd_inner,
-                should_bypass_active_session as _should_bypass_active_inner,
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
@@ -3178,11 +3245,9 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
-            # Gateway-handled info/control commands must never fall through to
-            # the interrupt path. If they are queued as pending text, the
-            # slash-command safety net discards them before the user sees any
-            # response.
-            if _cmd_def_inner and _should_bypass_active_inner(_cmd_def_inner.name):
+            # Gateway-handled info/control commands with dedicated
+            # running-agent handlers.
+            if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
                 if _cmd_def_inner.name == "help":
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
@@ -3191,6 +3256,21 @@ class GatewayRunner:
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
+
+            # Catch-all: any other recognized slash command reached the
+            # running-agent guard. Reject gracefully rather than falling
+            # through to interrupt + discard. Without this, commands
+            # like /model, /reasoning, /voice, /insights, /title,
+            # /resume, /retry, /undo, /compress, /usage, /provider,
+            # /reload-mcp, /sethome, /reset (all registered as Discord
+            # slash commands) would interrupt the agent AND get
+            # silently discarded by the slash-command safety net,
+            # producing a zero-char response. See #5057, #6252, #10370.
+            if _cmd_def_inner:
+                return (
+                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
+                    f"mid-turn. Wait for the current response or `/stop` first."
+                )
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
@@ -4241,8 +4321,20 @@ class GatewayRunner:
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
             # restarts where the session was active (never completed).
+            #
+            # Also clear the resume_pending flag (set by drain-timeout
+            # shutdown) — the turn ran to completion, so recovery
+            # succeeded and subsequent messages should no longer receive
+            # the restart-interruption system note.
             if session_key:
                 self._clear_restart_failure_count(session_key)
+                try:
+                    self.session_store.clear_resume_pending(session_key)
+                except Exception as _e:
+                    logger.debug(
+                        "clear_resume_pending failed for %s: %s",
+                        session_key[:20], _e,
+                    )
 
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
@@ -9516,7 +9608,40 @@ class GatewayRunner:
             # restart, crash, SIGTERM).  Prepend a system note so the model
             # finishes processing the pending tool results before addressing
             # the user's new message.  (#4493)
-            if agent_history and agent_history[-1].get("role") == "tool":
+            #
+            # Session-level resume_pending (set on drain-timeout shutdown)
+            # escalates the wording — the transcript's last role may be
+            # anything (tool, assistant with unfinished work, etc.), so we
+            # give a stronger, reason-aware instruction that subsumes the
+            # tool-tail case.
+            _resume_entry = None
+            if session_key:
+                try:
+                    _resume_entry = self.session_store._entries.get(session_key)
+                except Exception:
+                    _resume_entry = None
+            _is_resume_pending = bool(
+                _resume_entry is not None and getattr(_resume_entry, "resume_pending", False)
+            )
+
+            if _is_resume_pending:
+                _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
+                _reason_phrase = (
+                    "a gateway restart"
+                    if _reason == "restart_timeout"
+                    else "a gateway shutdown"
+                    if _reason == "shutdown_timeout"
+                    else "a gateway interruption"
+                )
+                message = (
+                    f"[System note: Your previous turn in this session was interrupted "
+                    f"by {_reason_phrase}. The conversation history below is intact. "
+                    f"If it contains unfinished tool result(s), process them first and "
+                    f"summarize what was accomplished, then address the user's new "
+                    f"message below.]\n\n"
+                    + message
+                )
+            elif agent_history and agent_history[-1].get("role") == "tool":
                 message = (
                     "[System note: Your previous turn was interrupted before you could "
                     "process the last tool result(s). The conversation history contains "

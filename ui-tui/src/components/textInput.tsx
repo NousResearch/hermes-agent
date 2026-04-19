@@ -2,6 +2,8 @@ import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { setInputSelection } from '../app/inputSelectionStore.js'
+
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
   useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
@@ -351,6 +353,28 @@ export function TextInput({
     }
   }, [value])
 
+  useEffect(() => {
+    if (!focus) {
+      return
+    }
+
+    if (selected) {
+      setInputSelection({
+        clear: () => {
+          selRef.current = null
+          setSel(null)
+        },
+        end: selected.end,
+        start: selected.start,
+        value: vRef.current
+      })
+    } else {
+      setInputSelection(null)
+    }
+
+    return () => setInputSelection(null)
+  }, [focus, selected])
+
   useEffect(
     () => () => {
       if (pasteTimer.current) {
@@ -464,7 +488,7 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
-      if (eventRaw === '\x1bv' || eventRaw === '\x1bV') {
+      if (eventRaw === '\x1bv' || eventRaw === '\x1bV' || eventRaw === '\x16') {
         return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
       }
 

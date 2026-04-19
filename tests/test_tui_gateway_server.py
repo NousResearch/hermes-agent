@@ -363,6 +363,28 @@ def test_image_attach_appends_local_image(monkeypatch):
     assert len(server._sessions["sid"]["attached_images"]) == 1
 
 
+def test_commands_catalog_surfaces_quick_commands(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {
+        "build": {"type": "exec", "command": "npm run build"},
+        "git": {"type": "alias", "target": "/shell git"},
+        "notes": {"type": "exec", "command": "cat NOTES.md", "description": "Open design notes"},
+    }})
+
+    resp = server.handle_request({"id": "1", "method": "commands.catalog", "params": {}})
+
+    pairs = dict(resp["result"]["pairs"])
+    assert "npm run build" in pairs["/build"]
+    assert pairs["/git"].startswith("alias →")
+    assert pairs["/notes"] == "Open design notes"
+
+    user_cat = next(c for c in resp["result"]["categories"] if c["name"] == "User commands")
+    user_pairs = dict(user_cat["pairs"])
+    assert set(user_pairs) == {"/build", "/git", "/notes"}
+
+    assert resp["result"]["canon"]["/build"] == "/build"
+    assert resp["result"]["canon"]["/notes"] == "/notes"
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {"boom": {"type": "exec", "command": "boom"}}})
     monkeypatch.setattr(
@@ -508,4 +530,19 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
 
     assert "error" in resp, resp
     assert resp["error"]["code"] == 4010
+
+
+def test_session_info_includes_mcp_servers(monkeypatch):
+    fake_status = [
+        {"name": "github", "transport": "http", "tools": 12, "connected": True},
+        {"name": "filesystem", "transport": "stdio", "tools": 4, "connected": True},
+        {"name": "broken", "transport": "stdio", "tools": 0, "connected": False},
+    ]
+    fake_mod = types.ModuleType("tools.mcp_tool")
+    fake_mod.get_mcp_status = lambda: fake_status
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool", fake_mod)
+
+    info = server._session_info(types.SimpleNamespace(tools=[], model=""))
+
+    assert info["mcp_servers"] == fake_status
 

@@ -251,7 +251,7 @@ Skills for interacting with social platforms — posting, reading, monitoring, a
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| `xitter` | Interact with X/Twitter via the x-cli terminal client using official X API credentials. Use for posting, reading timelines, searching tweets, liking, retweeting, bookmarks, mentions, and user lookups. | `social-media/xitter` |
+| `xurl` | Interact with X/Twitter via xurl, the official X API CLI. Use for posting, replying, quoting, searching, timelines, mentions, likes, reposts, bookmarks, follows, DMs, media upload, and raw v2 endpoint access. | `social-media/xurl` |
 
 ## software-development
 
@@ -296,6 +296,7 @@ hermes skills install official/<category>/<skill>
 |-------|-------------|------|
 | `blender-mcp` | Control Blender directly from Hermes via socket connection to the blender-mcp addon. Create 3D objects, materials, animations, and run arbitrary Blender Python (bpy) code. | `creative/blender-mcp` |
 | `meme-generation` | Generate real meme images by picking a template and overlaying text with Pillow. Produces actual .png meme files. | `creative/meme-generation` |
+| `touchdesigner-mcp` | Control a running TouchDesigner instance via the twozero MCP plugin — create operators, set parameters, wire connections, execute Python, build real-time audio-reactive visuals and GLSL networks. 36 native tools. | `creative/touchdesigner-mcp` |
 
 ## devops
 

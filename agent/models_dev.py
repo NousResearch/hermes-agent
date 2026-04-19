@@ -420,7 +420,10 @@ def list_provider_models(provider: str) -> List[str]:
     models = _get_provider_models(provider)
     if models is None:
         return []
-    return list(models.keys())
+    return [
+        mid for mid in models.keys()
+        if not _should_hide_from_provider_catalog(provider, mid)
+    ]
 
 
 # Patterns that indicate non-agentic or noise models (TTS, embedding,
@@ -431,6 +434,43 @@ _NOISE_PATTERNS: re.Pattern = re.compile(
     r"-image\b|-image-preview\b|-customtools\b",
     re.IGNORECASE,
 )
+
+# Google's live Gemini catalogs currently include a mix of stale slugs and
+# Gemma models whose TPM quotas are too small for normal Hermes agent traffic.
+# Keep capability metadata available for direct/manual use, but hide these from
+# the Gemini model catalogs we surface in setup and model selection.
+_GOOGLE_HIDDEN_MODELS = frozenset({
+    # Low-TPM Gemma models that trip Google input-token quota walls under
+    # agent-style traffic despite advertising large context windows.
+    "gemma-4-31b-it",
+    "gemma-4-26b-it",
+    "gemma-4-26b-a4b-it",
+    "gemma-3-1b",
+    "gemma-3-1b-it",
+    "gemma-3-2b",
+    "gemma-3-2b-it",
+    "gemma-3-4b",
+    "gemma-3-4b-it",
+    "gemma-3-12b",
+    "gemma-3-12b-it",
+    "gemma-3-27b",
+    "gemma-3-27b-it",
+    # Stale/retired Google slugs that still surface through models.dev-backed
+    # Gemini selection but 404 on the current Google endpoints.
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-8b",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+})
+
+
+def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
+    provider_lower = (provider or "").strip().lower()
+    model_lower = (model_id or "").strip().lower()
+    if provider_lower in {"gemini", "google"} and model_lower in _GOOGLE_HIDDEN_MODELS:
+        return True
+    return False
 
 
 def list_agentic_models(provider: str) -> List[str]:
@@ -447,6 +487,8 @@ def list_agentic_models(provider: str) -> List[str]:
     result = []
     for mid, entry in models.items():
         if not isinstance(entry, dict):
+            continue
+        if _should_hide_from_provider_catalog(provider, mid):
             continue
         if not entry.get("tool_call", False):
             continue
@@ -582,5 +624,3 @@ def get_model_info(
             return _parse_model_info(mid, mdata, mdev_id)
 
     return None
-
-

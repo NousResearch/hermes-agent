@@ -41,7 +41,7 @@ CREATE_THREAD_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "Optional initial message to send into the new thread after creation.",
+                "description": "Optional message to post in the parent channel as the thread anchor. This message becomes the thread starter. If omitted, a default anchor message is used.",
             },
             "message_id": {
                 "type": "string",
@@ -78,14 +78,50 @@ def _get_discord_token() -> str | None:
     return None
 
 
+async def _send_channel_message(
+    token: str,
+    channel_id: str,
+    content: str,
+) -> dict:
+    """Send a message to a Discord channel via REST API. Returns message data."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+
+    _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+    _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
+    ) as session:
+        async with session.post(
+            url, headers=headers, json={"content": content}, **_req_kw,
+        ) as resp:
+            if resp.status not in (200, 201):
+                error_body = await resp.text()
+                return {"error": f"Failed to send seed message ({resp.status}): {error_body}"}
+            return {"success": True, "message_id": (await resp.json()).get("id")}
+
+
 async def _create_discord_thread(
     token: str,
     channel_id: str,
     name: str,
     message_id: str | None = None,
+    seed_content: str | None = None,
     auto_archive_duration: int = 1440,
 ) -> dict:
     """Create a Discord thread via REST API.
+
+    When no message_id is given, sends a seed message to the parent channel
+    first and creates the thread from it. This makes the thread visible in
+    the channel's thread list (standalone threads are hidden).
 
     Returns a dict with thread_id, thread_name on success, or error on failure.
     """
@@ -101,6 +137,18 @@ async def _create_discord_thread(
 
     headers = {"Authorization": f"Bot {token}"}
 
+    # If no message_id provided, send a seed message and thread from it
+    # so the thread appears in the channel's thread list.
+    seed_result = {}
+    if not message_id:
+        seed_text = seed_content or f"🧵 **{name}**"
+        seed_result = await _send_channel_message(token, channel_id, seed_text)
+        if not seed_result.get("success"):
+            # Fallback: try standalone thread (less visible but still works)
+            logger.warning("Seed message failed, falling back to standalone thread")
+        else:
+            message_id = seed_result["message_id"]
+
     # Build the endpoint URL
     if message_id:
         url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/threads"
@@ -110,7 +158,6 @@ async def _create_discord_thread(
     body = {
         "name": name[:100],
         "auto_archive_duration": auto_archive_duration,
-        "type": 11,  # Public thread (type 12 = private thread)
     }
 
     async with aiohttp.ClientSession(
@@ -132,11 +179,14 @@ async def _create_discord_thread(
     if not thread_id:
         return {"error": "Discord API returned thread data without an ID"}
 
-    return {
+    result = {
         "success": True,
         "thread_id": str(thread_id),
         "thread_name": thread_name,
     }
+    if seed_result.get("success"):
+        result["seed_message_id"] = seed_result["message_id"]
+    return result
 
 
 async def _send_discord_message_to_thread(
@@ -198,13 +248,14 @@ def create_thread_tool(args, **kw) -> str:
     try:
         from model_tools import _run_async
 
-        # Step 1: Create the thread
+        # Step 1: Create the thread (uses message as seed content in parent channel)
         result = _run_async(
             _create_discord_thread(
                 token,
                 channel_id,
                 name,
                 message_id=message_id,
+                seed_content=message,
                 auto_archive_duration=auto_archive_duration,
             )
         )
@@ -212,19 +263,6 @@ def create_thread_tool(args, **kw) -> str:
 
         if not result_dict.get("success"):
             return json.dumps(result_dict)
-
-        thread_id = result_dict["thread_id"]
-
-        # Step 2: Send initial message if provided
-        if message:
-            msg_result = _run_async(
-                _send_discord_message_to_thread(token, thread_id, message)
-            )
-            msg_dict = json.loads(msg_result) if isinstance(msg_result, str) else msg_result
-            if msg_dict.get("success"):
-                result_dict["initial_message_id"] = msg_dict.get("message_id")
-            else:
-                result_dict["message_warning"] = msg_dict.get("error", "Failed to send initial message")
 
         return json.dumps(result_dict)
 

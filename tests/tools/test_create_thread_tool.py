@@ -71,34 +71,39 @@ class TestCreateThreadToolHandler:
 
     @patch("tools.create_thread_tool._get_discord_token", return_value="fake-token")
     @patch("model_tools._run_async")
-    def test_successful_thread_creation(self, mock_run_async, mock_token):
+    def test_successful_thread_creation_with_message(self, mock_run_async, mock_token):
         from tools.create_thread_tool import create_thread_tool
 
-        # First call: create thread -> second call: send message
-        mock_run_async.side_effect = [
-            {"success": True, "thread_id": "999888777", "thread_name": "test-thread"},
-            {"success": True, "message_id": "111222333"},
-        ]
+        # Single call to _create_discord_thread (which internally sends seed + creates thread)
+        mock_run_async.return_value = {
+            "success": True,
+            "thread_id": "999888777",
+            "thread_name": "test-thread",
+            "seed_message_id": "111222333",
+        }
 
         result = json.loads(create_thread_tool({
             "channel_id": "123456",
             "name": "test-thread",
-            "message": "Hello!",
+            "message": "Hello from the tool!",
         }))
 
         assert result["success"] is True
         assert result["thread_id"] == "999888777"
         assert result["thread_name"] == "test-thread"
-        assert result["initial_message_id"] == "111222333"
-        assert mock_run_async.call_count == 2
+        assert result["seed_message_id"] == "111222333"
+        assert mock_run_async.call_count == 1
 
     @patch("tools.create_thread_tool._get_discord_token", return_value="fake-token")
     @patch("model_tools._run_async")
-    def test_thread_without_message(self, mock_run_async, mock_token):
+    def test_thread_without_message_uses_default_seed(self, mock_run_async, mock_token):
         from tools.create_thread_tool import create_thread_tool
 
         mock_run_async.return_value = {
-            "success": True, "thread_id": "999", "thread_name": "no-msg"
+            "success": True,
+            "thread_id": "999",
+            "thread_name": "no-msg",
+            "seed_message_id": "888",
         }
 
         result = json.loads(create_thread_tool({
@@ -108,8 +113,7 @@ class TestCreateThreadToolHandler:
 
         assert result["success"] is True
         assert result["thread_id"] == "999"
-        assert "initial_message_id" not in result
-        # Only called once (no message send)
+        assert result["seed_message_id"] == "888"
         assert mock_run_async.call_count == 1
 
     @patch("tools.create_thread_tool._get_discord_token", return_value="fake-token")
@@ -131,45 +135,23 @@ class TestCreateThreadToolHandler:
 
     @patch("tools.create_thread_tool._get_discord_token", return_value="fake-token")
     @patch("model_tools._run_async")
-    def test_message_send_failure_is_graceful(self, mock_run_async, mock_token):
-        from tools.create_thread_tool import create_thread_tool
-
-        mock_run_async.side_effect = [
-            {"success": True, "thread_id": "555666", "thread_name": "partial"},
-            {"error": "rate limited"},
-        ]
-
-        result = json.loads(create_thread_tool({
-            "channel_id": "123456",
-            "name": "partial",
-            "message": "This might fail",
-        }))
-
-        # Thread was created successfully
-        assert result["success"] is True
-        assert result["thread_id"] == "555666"
-        # Message failed but didn't break the response
-        assert "message_warning" in result
-        assert "initial_message_id" not in result
-
-    @patch("tools.create_thread_tool._get_discord_token", return_value="fake-token")
-    @patch("model_tools._run_async")
-    def test_thread_name_truncated_to_100(self, mock_run_async, mock_token):
+    def test_thread_from_existing_message(self, mock_run_async, mock_token):
         from tools.create_thread_tool import create_thread_tool
 
         mock_run_async.return_value = {
-            "success": True, "thread_id": "123", "thread_name": "a" * 100
+            "success": True,
+            "thread_id": "555666",
+            "thread_name": "from-message",
         }
 
         result = json.loads(create_thread_tool({
             "channel_id": "123456",
-            "name": "a" * 200,  # Way too long
+            "name": "from-message",
+            "message_id": "444333",
         }))
 
         assert result["success"] is True
-        # Verify the async function was called — name truncation happens inside _create_discord_thread
-        call_args = mock_run_async.call_args[0][0]
-        # The coroutine is opaque, but we know the name gets sliced in the async function
+        assert result["thread_id"] == "555666"
 
     @patch("tools.create_thread_tool._get_discord_token", return_value="fake-token")
     @patch("model_tools._run_async", side_effect=Exception("async blew up"))

@@ -24,6 +24,38 @@ except Exception:
     pass
 
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
+from tui_gateway.setup_services import (
+    bootstrap_provider_config as _bootstrap_provider_config_impl,
+    build_setup_catalog_payload as _build_setup_catalog_payload_impl,
+    build_setup_status_payload as _build_setup_status_payload_impl,
+    native_setup_catalog as _native_setup_catalog_impl,
+    persist_bootstrap_model as _persist_bootstrap_model_impl,
+    run_setup_bootstrap as _run_setup_bootstrap_impl,
+    setup_provider_models as _setup_provider_models_impl,
+    setup_provider_status as _setup_provider_status_impl,
+)
+from tui_gateway.skills_services import (
+    SKILLS_AUDIT_ACTION as _SKILLS_AUDIT_ACTION,
+    SKILLS_BROWSE_ACTION as _SKILLS_BROWSE_ACTION,
+    SKILLS_CHECK_ACTION as _SKILLS_CHECK_ACTION,
+    SKILLS_INSPECT_ACTION as _SKILLS_INSPECT_ACTION,
+    SKILLS_INSTALL_ACTION as _SKILLS_INSTALL_ACTION,
+    SKILLS_LIST_ACTION as _SKILLS_LIST_ACTION,
+    SKILLS_MANAGE_ACTIONS as _SKILLS_MANAGE_ACTIONS,
+    SKILLS_SEARCH_ACTION as _SKILLS_SEARCH_ACTION,
+    SKILLS_UNINSTALL_ACTION as _SKILLS_UNINSTALL_ACTION,
+    SKILLS_UPDATE_ACTION as _SKILLS_UPDATE_ACTION,
+    dispatch_skills_manage as _dispatch_skills_manage_impl,
+    normalize_skills_action as _normalize_skills_action_impl,
+)
+from tui_gateway.tools_services import (
+    build_tools_catalog_payload as _build_tools_catalog_payload_impl,
+    configure_mcp_servers as _configure_mcp_servers_impl,
+    configure_tool_provider as _configure_tool_provider_impl,
+    configure_tools as _configure_tools_impl,
+    probe_mcp_servers as _probe_mcp_servers_impl,
+    slugify_name as _slugify_name_impl,
+)
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
@@ -35,6 +67,44 @@ _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45))
+_LIVE_WORK_COMMANDS = frozenset({"handoff", "init-deep", "start-work", "ralph-loop", "ulw-loop"})
+_NATIVE_PRODUCT_COMMANDS = frozenset({"setup", "skills", "tools"})
+_LIVE_SLASH_COMMANDS = frozenset({"model", "provider"}) | _LIVE_WORK_COMMANDS
+_LEGACY_SLASH_WORKER_COMMANDS = frozenset({
+    "agents",
+    "browser",
+    "config",
+    "cron",
+    "debug",
+    "fast",
+    "gquota",
+    "history",
+    "insights",
+    "platforms",
+    "plugins",
+    "profile",
+    "reload",
+    "reload-mcp",
+    "rollback",
+    "save",
+    "snapshot",
+    "status",
+    "stop",
+    "title",
+    "toolsets",
+})
+_SLASH_EXEC_COMMANDS = _LIVE_SLASH_COMMANDS | _LEGACY_SLASH_WORKER_COMMANDS
+
+
+def _routing_owner(name: str) -> str:
+    canonical = _resolve_slash_command_name(name)
+    if canonical in _NATIVE_PRODUCT_COMMANDS:
+        return "native"
+    if canonical in _LIVE_SLASH_COMMANDS:
+        return "slash-live"
+    if canonical in _LEGACY_SLASH_WORKER_COMMANDS:
+        return "slash-legacy"
+    return "dispatch"
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -218,6 +288,25 @@ def _sess(params, rid):
     return (None, err) if err else (s, _wait_agent(s, rid))
 
 
+def _parse_slash_command(command: str) -> tuple[str, str]:
+    parts = command.strip().lstrip("/").split(None, 1)
+    if not parts:
+        return "", ""
+    return parts[0].lower(), (parts[1].strip() if len(parts) > 1 else "")
+
+
+def _resolve_slash_command_name(name: str) -> str:
+    if not name:
+        return ""
+    try:
+        from hermes_cli.commands import resolve_command
+
+        resolved = resolve_command(name)
+        return resolved.name if resolved else name
+    except Exception:
+        return name
+
+
 def _normalize_completion_path(path_part: str) -> str:
     expanded = os.path.expanduser(path_part)
     if os.name != "nt":
@@ -264,6 +353,19 @@ def _save_cfg(cfg: dict):
             _cfg_mtime = path.stat().st_mtime
         except Exception:
             _cfg_mtime = None
+
+
+def _slugify_name(value: str) -> str:
+    return _slugify_name_impl(value)
+
+
+def _capture_console_output(fn, *args, **kwargs) -> str:
+    from rich.console import Console
+
+    console = Console(record=True, width=100, force_terminal=False, color_system=None)
+    kwargs.setdefault("console", console)
+    fn(*args, **kwargs)
+    return console.export_text(clear=False).strip()
 
 
 def _set_session_context(session_key: str) -> list:
@@ -395,6 +497,69 @@ def _load_enabled_toolsets() -> list[str] | None:
         return None
 
 
+def _visible_tool_payload(enabled_toolsets: list[str] | None) -> tuple[list[dict], set[str]]:
+    from model_tools import get_tool_definitions
+
+    tools = get_tool_definitions(enabled_toolsets=enabled_toolsets, quiet_mode=True)
+    visible_names = {
+        str(tool.get("function", {}).get("name", "") or "")
+        for tool in tools
+        if str(tool.get("function", {}).get("name", "") or "")
+    }
+    return tools, visible_names
+
+
+def _tool_summary_row(tool: dict) -> dict:
+    fn = tool.get("function", {}) or {}
+    name = str(fn.get("name", "") or "")
+    desc = str(fn.get("description", "") or "").split("\n")[0]
+    if ". " in desc:
+        desc = desc[:desc.index(". ") + 1]
+    return {"name": name, "description": desc}
+
+
+def _derive_visible_toolsets(enabled_toolsets: list[str] | None) -> tuple[list[dict], list[dict], set[str]]:
+    from model_tools import get_available_toolsets
+    from toolsets import get_toolset_contract, get_toolset_info
+
+    visible_tools, visible_names = _visible_tool_payload(enabled_toolsets)
+    visible_rows_by_name = {
+        row["name"]: row
+        for row in (_tool_summary_row(tool) for tool in visible_tools)
+        if row["name"]
+    }
+
+    items = []
+    for name, metadata in sorted(get_available_toolsets().items()):
+        info = get_toolset_info(name) or {}
+        contract = get_toolset_contract(name) or {}
+        resolved_tools = list(info.get("resolved_tools") or metadata.get("tools") or contract.get("tools") or [])
+        visible_members = [tool_name for tool_name in resolved_tools if tool_name in visible_names]
+        items.append({
+            "name": name,
+            "description": info.get("description") or metadata.get("description", ""),
+            "tool_count": len(resolved_tools),
+            "enabled": bool(visible_members),
+            "tools": resolved_tools,
+            "resolved_tools": resolved_tools,
+            "visible_tools": [visible_rows_by_name[tool_name] for tool_name in visible_members if tool_name in visible_rows_by_name],
+            "visible_tool_names": visible_members,
+            "available": metadata.get("available", True),
+            "requirements": list(metadata.get("requirements") or []),
+            "canonical_name": contract.get("canonical_name", metadata.get("canonical_name", name)),
+            "source": contract.get("source", metadata.get("source")),
+            "is_builtin": contract.get("is_builtin", metadata.get("is_builtin", False)),
+            "is_additive": contract.get("is_additive", metadata.get("is_additive", False)),
+            "is_alias": contract.get("is_alias", metadata.get("is_alias", False)),
+            "is_canonical_knowledge_surface": contract.get(
+                "is_canonical_knowledge_surface",
+                metadata.get("is_canonical_knowledge_surface", False),
+            ),
+            "boundary_note": contract.get("boundary_note", metadata.get("boundary_note")),
+        })
+    return items, visible_tools, visible_names
+
+
 def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
 
@@ -432,6 +597,33 @@ def _persist_model_switch(result) -> None:
     else:
         model_cfg.pop("base_url", None)
     save_config(cfg)
+
+
+def _setup_provider_models(provider: str, max_models: int = 24) -> tuple[list[str], str]:
+    return _setup_provider_models_impl(provider, max_models=max_models)
+
+
+def _setup_provider_status(provider: str) -> dict:
+    return _setup_provider_status_impl(provider)
+
+
+def _native_setup_catalog() -> list[dict]:
+    return _native_setup_catalog_impl(provider_status=_setup_provider_status, provider_models=_setup_provider_models)
+
+
+def _persist_bootstrap_model(provider: str, model: str, *, base_url: str = "", api_mode: str | None = None) -> None:
+    _persist_bootstrap_model_impl(provider, model, base_url=base_url, api_mode=api_mode)
+
+
+def _bootstrap_provider_config(provider: str, *, api_key: str = "", model: str = "", base_url: str = "") -> dict:
+    return _bootstrap_provider_config_impl(
+        provider,
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        provider_models=_setup_provider_models,
+        persist_model=_persist_bootstrap_model,
+    )
 
 
 def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
@@ -1357,6 +1549,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    return _start_prompt_submit(rid, sid, session, text)
+
+
+def _start_prompt_submit(rid, sid: str, session: dict, text: str) -> dict:
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
@@ -1878,13 +2074,59 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4002, f"unknown config key: {key}")
 
 
+def _setup_status_payload() -> dict:
+    from hermes_cli.main import _has_any_provider_configured
+
+    return _build_setup_status_payload_impl(
+        load_cfg=_load_cfg,
+        resolve_model=_resolve_model,
+        provider_configured=_has_any_provider_configured,
+    )
+
+
+def _setup_catalog_payload() -> dict:
+    from hermes_cli.main import _has_any_provider_configured
+
+    return _build_setup_catalog_payload_impl(
+        load_cfg=_load_cfg,
+        resolve_model=_resolve_model,
+        provider_configured=_has_any_provider_configured,
+        catalog_builder=_native_setup_catalog,
+    )
+
+
+def _setup_bootstrap_payload(params: dict) -> dict:
+    return _run_setup_bootstrap_impl(
+        provider=str(params.get("provider", "") or ""),
+        api_key=str(params.get("api_key", "") or ""),
+        model=str(params.get("model", "") or ""),
+        base_url=str(params.get("base_url", "") or ""),
+        bootstrapper=_bootstrap_provider_config,
+    )
+
+
 @method("setup.status")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.main import _has_any_provider_configured
-        return _ok(rid, {"provider_configured": bool(_has_any_provider_configured())})
+        return _ok(rid, _setup_status_payload())
     except Exception as e:
         return _err(rid, 5016, str(e))
+
+
+@method("setup.catalog")
+def _(rid, params: dict) -> dict:
+    try:
+        return _ok(rid, _setup_catalog_payload())
+    except Exception as e:
+        return _err(rid, 5034, str(e))
+
+
+@method("setup.bootstrap")
+def _(rid, params: dict) -> dict:
+    try:
+        return _ok(rid, _setup_bootstrap_payload(params))
+    except Exception as e:
+        return _err(rid, 5035, str(e))
 
 
 # ── Methods: tools & system ──────────────────────────────────────────
@@ -2059,6 +2301,13 @@ def _(rid, params: dict) -> dict:
     resolved = _resolve_name(name)
     if resolved != name:
         name = resolved
+
+    owner = _routing_owner(name)
+    if owner == "native":
+        return _err(rid, 4002, f"/{name} is handled by native product routing; command.dispatch is fallback-only")
+    if owner.startswith("slash"):
+        return _err(rid, 4002, f"/{name} is handled by slash.exec; command.dispatch is fallback-only")
+
     session = _sessions.get(params.get("session_id", ""))
 
     qcmds = _load_cfg().get("quick_commands", {})
@@ -2260,10 +2509,10 @@ def _(rid, params: dict) -> dict:
 
 def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
-    parts = command.lstrip("/").split(None, 1)
-    if not parts:
+    name, arg = _parse_slash_command(command)
+    if not name:
         return ""
-    name, arg, agent = parts[0], (parts[1].strip() if len(parts) > 1 else ""), session.get("agent")
+    agent = session.get("agent")
 
     try:
         if name == "model" and arg and agent:
@@ -2298,6 +2547,42 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     return ""
 
 
+def _run_live_work_slash(rid, sid: str, session: dict, command: str) -> dict:
+    from hermes_cli.work_command_adapter import WorkCommandContractError, prepare_work_command
+
+    name, arg = _parse_slash_command(command)
+    try:
+        prepared = prepare_work_command(
+            name,
+            raw_args=arg,
+            session_id=session["session_key"],
+            cwd=os.environ.get("TERMINAL_CWD") or os.getcwd(),
+        )
+    except WorkCommandContractError as exc:
+        return _err(rid, 4002, str(exc))
+    except Exception as exc:
+        return _err(rid, 5030, str(exc))
+
+    started = _start_prompt_submit(rid, sid, session, prepared)
+    if started.get("error"):
+        return started
+    return _ok(rid, {"output": f"/{name} started"})
+
+
+def _run_live_model_slash(rid, sid: str, session: dict, arg: str) -> dict:
+    if not arg:
+        return _err(rid, 4002, "model value required")
+    try:
+        result = _apply_model_switch(sid, session, arg)
+    except Exception as exc:
+        return _err(rid, 5001, str(exc))
+
+    payload = {"output": f"model → {result['value']}"}
+    if result.get("warning"):
+        payload["warning"] = result["warning"]
+    return _ok(rid, payload)
+
+
 @method("slash.exec")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
@@ -2308,6 +2593,23 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
 
+    sid = params.get("session_id", "")
+    name, arg = _parse_slash_command(cmd)
+    name = _resolve_slash_command_name(name)
+    normalized_cmd = f"{name}{(' ' + arg) if arg else ''}"
+    owner = _routing_owner(name)
+
+    if owner == "slash-live":
+        if name in _LIVE_WORK_COMMANDS:
+            return _run_live_work_slash(rid, sid, session, normalized_cmd)
+        return _run_live_model_slash(rid, sid, session, arg)
+
+    if owner == "native":
+        return _err(rid, 4002, f"/{name} is handled by native product routing; slash.exec is legacy-only")
+
+    if owner != "slash-legacy":
+        return _err(rid, 4002, f"/{name} is not eligible for slash.exec; use native routing or command.dispatch")
+
     worker = session.get("slash_worker")
     if not worker:
         try:
@@ -2317,8 +2619,8 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5030, f"slash worker start failed: {e}")
 
     try:
-        output = worker.run(cmd)
-        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
+        output = worker.run(normalized_cmd)
+        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, normalized_cmd)
         payload = {"output": output or "(no output)"}
         if warning:
             payload["warning"] = warning
@@ -2565,53 +2867,289 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5030, str(e))
 
 
+def _tools_catalog_payload() -> dict:
+    from hermes_cli.config import get_env_value, load_config
+    from hermes_cli.nous_subscription import get_nous_subscription_features
+    from hermes_cli.tools_config import (
+        CONFIGURABLE_TOOLSETS,
+        TOOL_CATEGORIES,
+        _get_effective_configurable_toolsets,
+        _get_platform_tools,
+    )
+    from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+    return _build_tools_catalog_payload_impl(
+        load_config=load_config,
+        get_env_value=get_env_value,
+        configurable_toolsets=CONFIGURABLE_TOOLSETS,
+        tool_categories=TOOL_CATEGORIES,
+        effective_toolsets=_get_effective_configurable_toolsets,
+        get_platform_tools=_get_platform_tools,
+        get_subscription_features=get_nous_subscription_features,
+        managed_nous_tools_enabled=managed_nous_tools_enabled,
+    )
+
+
+def _tools_provider_configure_payload(params: dict) -> dict:
+    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+    from hermes_cli.nous_subscription import get_nous_subscription_features
+    from hermes_cli.tools_config import TOOL_CATEGORIES
+    from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+    return _configure_tool_provider_impl(
+        toolset=str(params.get("toolset", "") or ""),
+        provider_name=str(params.get("provider", "") or ""),
+        model=str(params.get("model", "") or ""),
+        env_values=params.get("env") or {},
+        session_id=str(params.get("session_id", "") or ""),
+        session_lookup=_sessions.get,
+        reset_session_agent=_reset_session_agent,
+        catalog_payload_builder=_tools_catalog_payload,
+        load_config=load_config,
+        save_config=save_config,
+        save_env_value=save_env_value,
+        get_env_value=get_env_value,
+        tool_categories=TOOL_CATEGORIES,
+        get_subscription_features=get_nous_subscription_features,
+        managed_nous_tools_enabled=managed_nous_tools_enabled,
+    )
+
+
+def _tools_mcp_configure_payload(params: dict) -> dict:
+    from hermes_cli.config import load_config, save_config
+
+    return _configure_mcp_servers_impl(
+        action=str(params.get("action", "") or ""),
+        names=params.get("names", []) or [],
+        session_id=str(params.get("session_id", "") or ""),
+        session_lookup=_sessions.get,
+        reset_session_agent=_reset_session_agent,
+        catalog_payload_builder=_tools_catalog_payload,
+        load_config=load_config,
+        save_config=save_config,
+    )
+
+
+def _tools_mcp_probe_payload() -> dict:
+    from hermes_cli.config import load_config
+    from tools.mcp_tool import probe_mcp_server_tools
+
+    return _probe_mcp_servers_impl(
+        load_config=load_config,
+        probe_mcp_server_tools=probe_mcp_server_tools,
+    )
+
+
+def _validate_skills_manage_params(params: dict) -> dict:
+    action = _normalize_skills_action_impl(params.get("action"))
+    if action not in _SKILLS_MANAGE_ACTIONS:
+        raise ValueError(f"unknown skills action: {action}")
+
+    allowed_keys_by_action = {
+        _SKILLS_LIST_ACTION: frozenset({"action"}),
+        _SKILLS_SEARCH_ACTION: frozenset({"action", "query"}),
+        _SKILLS_BROWSE_ACTION: frozenset({"action", "page", "page_size", "query", "source"}),
+        _SKILLS_INSPECT_ACTION: frozenset({"action", "query"}),
+        _SKILLS_INSTALL_ACTION: frozenset({"action", "query"}),
+        _SKILLS_CHECK_ACTION: frozenset({"action", "query"}),
+        _SKILLS_UPDATE_ACTION: frozenset({"action", "query"}),
+        _SKILLS_AUDIT_ACTION: frozenset({"action", "query"}),
+        _SKILLS_UNINSTALL_ACTION: frozenset({"action", "query"}),
+    }
+    unexpected_keys = sorted(str(key) for key in params.keys() if key not in allowed_keys_by_action[action])
+    if unexpected_keys:
+        raise ValueError(f"unexpected skills params for {action}: {', '.join(unexpected_keys)}")
+
+    query = str(params.get("query", "") or "")
+    if action in {_SKILLS_SEARCH_ACTION, _SKILLS_INSPECT_ACTION, _SKILLS_INSTALL_ACTION, _SKILLS_UNINSTALL_ACTION} and not query.strip():
+        raise ValueError(f"skills.{action} requires query")
+
+    if action == _SKILLS_BROWSE_ACTION:
+        for key in ("page", "page_size"):
+            raw = params.get(key)
+            if raw is None or str(raw).strip() == "":
+                continue
+            value = int(raw)
+            if value <= 0:
+                raise ValueError(f"skills.browse requires positive {key}")
+
+    return dict(params, action=action, query=query)
+
+
+def _skills_manage_payload(params: dict) -> dict:
+    validated = _validate_skills_manage_params(params)
+
+    from hermes_cli.banner import get_available_skills
+    from hermes_cli.skills_hub import browse_skills, do_audit, do_check, do_install, do_uninstall, do_update, inspect_skill
+    from tools.skills_hub import GitHubAuth, create_source_router, unified_search
+
+    return _dispatch_skills_manage_impl(
+        validated,
+        get_available_skills=get_available_skills,
+        capture_console_output=_capture_console_output,
+        auth_factory=GitHubAuth,
+        source_router_factory=create_source_router,
+        unified_search=unified_search,
+        browse_skills=browse_skills,
+        inspect_skill=inspect_skill,
+        do_install=do_install,
+        do_check=do_check,
+        do_update=do_update,
+        do_audit=do_audit,
+        do_uninstall=do_uninstall,
+    )
+
+
+def _tools_configure_payload(params: dict) -> dict:
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.tools_config import (
+        CONFIGURABLE_TOOLSETS,
+        _get_platform_tools,
+        _get_plugin_toolset_keys,
+        _save_platform_tools,
+    )
+
+    return _configure_tools_impl(
+        action=str(params.get("action", "") or ""),
+        targets=params.get("names", []) or [],
+        session_id=str(params.get("session_id", "") or ""),
+        session_lookup=_sessions.get,
+        reset_session_agent=_reset_session_agent,
+        load_config=load_config,
+        save_config=save_config,
+        configurable_toolsets=CONFIGURABLE_TOOLSETS,
+        plugin_toolset_keys=_get_plugin_toolset_keys,
+        get_platform_tools=_get_platform_tools,
+        save_platform_tools=_save_platform_tools,
+    )
+
+
 @method("tools.list")
 def _(rid, params: dict) -> dict:
     try:
-        from toolsets import get_all_toolsets, get_toolset_info
         session = _sessions.get(params.get("session_id", ""))
-        enabled = set(getattr(session["agent"], "enabled_toolsets", []) or []) if session else set(_load_enabled_toolsets() or [])
-
-        items = []
-        for name in sorted(get_all_toolsets().keys()):
-            info = get_toolset_info(name)
-            if not info:
-                continue
-            items.append({
-                "name": name,
-                "description": info["description"],
-                "tool_count": info["tool_count"],
-                "enabled": name in enabled if enabled else True,
-                "tools": info["resolved_tools"],
-            })
+        enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
+        toolsets, _, _ = _derive_visible_toolsets(enabled)
+        items = [{
+            "name": item["name"],
+            "description": item["description"],
+            "tool_count": item["tool_count"],
+            "enabled": item["enabled"],
+            "tools": item["resolved_tools"],
+            "canonical_name": item["canonical_name"],
+            "source": item["source"],
+            "is_builtin": item["is_builtin"],
+            "is_additive": item["is_additive"],
+            "is_alias": item["is_alias"],
+            "is_canonical_knowledge_surface": item["is_canonical_knowledge_surface"],
+            "boundary_note": item["boundary_note"],
+            "visible_tools": item["visible_tools"],
+        } for item in toolsets]
         return _ok(rid, {"toolsets": items})
     except Exception as e:
         return _err(rid, 5031, str(e))
 
 
+@method("tools.catalog")
+def _(rid, params: dict) -> dict:
+    try:
+        return _ok(rid, _tools_catalog_payload())
+    except Exception as e:
+        return _err(rid, 5036, str(e))
+
+
+@method("tools.provider.configure")
+def _(rid, params: dict) -> dict:
+    try:
+        return _ok(rid, _tools_provider_configure_payload(params))
+    except ValueError as e:
+        message = str(e)
+        if message == "toolset required":
+            return _err(rid, 4019, message)
+        if message == "provider required":
+            return _err(rid, 4020, message)
+        return _err(rid, 5037, message)
+    except TypeError as e:
+        return _err(rid, 4021, str(e))
+    except LookupError as e:
+        message = str(e)
+        if message.startswith("toolset has no native provider flow"):
+            return _err(rid, 4022, message)
+        if message.startswith("unknown provider for "):
+            return _err(rid, 4023, message)
+        return _err(rid, 5037, message)
+    except Exception as e:
+        return _err(rid, 5037, str(e))
+
+
+@method("tools.mcp.configure")
+def _(rid, params: dict) -> dict:
+    try:
+        return _ok(rid, _tools_mcp_configure_payload(params))
+    except ValueError as e:
+        message = str(e)
+        if message.startswith("unknown mcp action: "):
+            return _err(rid, 4024, message)
+        if message == "server names required":
+            return _err(rid, 4025, message)
+        return _err(rid, 5038, message)
+    except Exception as e:
+        return _err(rid, 5038, str(e))
+
+
+@method("tools.mcp.probe")
+def _(rid, params: dict) -> dict:
+    try:
+        return _ok(rid, _tools_mcp_probe_payload())
+    except Exception as e:
+        return _err(rid, 5039, str(e))
+
+
 @method("tools.show")
 def _(rid, params: dict) -> dict:
     try:
-        from model_tools import get_toolset_for_tool, get_tool_definitions
+        from model_tools import get_toolset_for_tool
 
         session = _sessions.get(params.get("session_id", ""))
         enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
-        tools = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
-        sections = {}
+        toolsets, tools, _ = _derive_visible_toolsets(enabled)
+        visible_rows = []
+        for tool in sorted(tools, key=lambda t: t.get("function", {}).get("name", "")):
+            row = _tool_summary_row(tool)
+            if not row["name"]:
+                continue
+            row["owner_toolset"] = get_toolset_for_tool(row["name"]) or "unknown"
+            visible_rows.append(row)
 
-        for tool in sorted(tools, key=lambda t: t["function"]["name"]):
-            name = tool["function"]["name"]
-            desc = str(tool["function"].get("description", "") or "").split("\n")[0]
-            if ". " in desc:
-                desc = desc[:desc.index(". ") + 1]
-            sections.setdefault(get_toolset_for_tool(name) or "unknown", []).append({
-                "name": name,
-                "description": desc,
+        sections = [
+            {
+                "name": item["name"],
+                "canonical_name": item["canonical_name"],
+                "description": item["description"],
+                "source": item["source"],
+                "is_builtin": item["is_builtin"],
+                "is_additive": item["is_additive"],
+                "is_alias": item["is_alias"],
+                "is_canonical_knowledge_surface": item["is_canonical_knowledge_surface"],
+                "boundary_note": item["boundary_note"],
+                "tools": item["visible_tools"],
+            }
+            for item in toolsets
+            if item["enabled"] and item["is_canonical_knowledge_surface"]
+        ]
+
+        legacy_sections = {}
+        for row in visible_rows:
+            legacy_sections.setdefault(row["owner_toolset"], []).append({
+                "name": row["name"],
+                "description": row["description"],
             })
 
         return _ok(rid, {
-            "sections": [{"name": name, "tools": rows} for name, rows in sorted(sections.items())],
-            "total": len(tools),
+            "sections": sections,
+            "legacy_sections": [{"name": name, "tools": rows} for name, rows in sorted(legacy_sections.items())],
+            "tools": visible_rows,
+            "total": len(visible_rows),
         })
     except Exception as e:
         return _err(rid, 5034, str(e))
@@ -2619,52 +3157,15 @@ def _(rid, params: dict) -> dict:
 
 @method("tools.configure")
 def _(rid, params: dict) -> dict:
-    action = str(params.get("action", "") or "").strip().lower()
-    targets = [str(name).strip() for name in params.get("names", []) or [] if str(name).strip()]
-    if action not in {"disable", "enable"}:
-        return _err(rid, 4017, f"unknown tools action: {action}")
-    if not targets:
-        return _err(rid, 4018, "names required")
-
     try:
-        from hermes_cli.config import load_config, save_config
-        from hermes_cli.tools_config import (
-            CONFIGURABLE_TOOLSETS,
-            _apply_mcp_change,
-            _apply_toolset_change,
-            _get_platform_tools,
-            _get_plugin_toolset_keys,
-        )
-
-        cfg = load_config()
-        valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
-        toolset_targets = [name for name in targets if ":" not in name]
-        mcp_targets = [name for name in targets if ":" in name]
-        unknown = [name for name in toolset_targets if name not in valid_toolsets]
-        toolset_targets = [name for name in toolset_targets if name in valid_toolsets]
-
-        if toolset_targets:
-            _apply_toolset_change(cfg, "cli", toolset_targets, action)
-
-        missing_servers = _apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
-        save_config(cfg)
-
-        session = _sessions.get(params.get("session_id", ""))
-        info = _reset_session_agent(params.get("session_id", ""), session) if session else None
-        enabled = sorted(_get_platform_tools(load_config(), "cli", include_default_mcp_servers=False))
-        changed = [
-            name for name in targets
-            if name not in unknown and (":" not in name or name.split(":", 1)[0] not in missing_servers)
-        ]
-
-        return _ok(rid, {
-            "changed": changed,
-            "enabled_toolsets": enabled,
-            "info": info,
-            "missing_servers": sorted(missing_servers),
-            "reset": bool(session),
-            "unknown": unknown,
-        })
+        return _ok(rid, _tools_configure_payload(params))
+    except ValueError as e:
+        message = str(e)
+        if message.startswith("unknown tools action: "):
+            return _err(rid, 4017, message)
+        if message == "names required":
+            return _err(rid, 4018, message)
+        return _err(rid, 5035, message)
     except Exception as e:
         return _err(rid, 5035, str(e))
 
@@ -2672,21 +3173,23 @@ def _(rid, params: dict) -> dict:
 @method("toolsets.list")
 def _(rid, params: dict) -> dict:
     try:
-        from toolsets import get_all_toolsets, get_toolset_info
         session = _sessions.get(params.get("session_id", ""))
-        enabled = set(getattr(session["agent"], "enabled_toolsets", []) or []) if session else set(_load_enabled_toolsets() or [])
-
-        items = []
-        for name in sorted(get_all_toolsets().keys()):
-            info = get_toolset_info(name)
-            if not info:
-                continue
-            items.append({
-                "name": name,
-                "description": info["description"],
-                "tool_count": info["tool_count"],
-                "enabled": name in enabled if enabled else True,
-            })
+        enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
+        toolsets, _, _ = _derive_visible_toolsets(enabled)
+        items = [{
+            "name": item["name"],
+            "description": item["description"],
+            "tool_count": item["tool_count"],
+            "enabled": item["enabled"],
+            "canonical_name": item["canonical_name"],
+            "source": item["source"],
+            "is_builtin": item["is_builtin"],
+            "is_additive": item["is_additive"],
+            "is_alias": item["is_alias"],
+            "is_canonical_knowledge_surface": item["is_canonical_knowledge_surface"],
+            "boundary_note": item["boundary_note"],
+            "tools": item["resolved_tools"],
+        } for item in toolsets]
         return _ok(rid, {"toolsets": items})
     except Exception as e:
         return _err(rid, 5032, str(e))
@@ -2728,29 +3231,10 @@ def _(rid, params: dict) -> dict:
 
 @method("skills.manage")
 def _(rid, params: dict) -> dict:
-    action, query = params.get("action", "list"), params.get("query", "")
     try:
-        if action == "list":
-            from hermes_cli.banner import get_available_skills
-            return _ok(rid, {"skills": get_available_skills()})
-        if action == "search":
-            from hermes_cli.skills_hub import unified_search, GitHubAuth, create_source_router
-            raw = unified_search(query, create_source_router(GitHubAuth()), source_filter="all", limit=20) or []
-            return _ok(rid, {"results": [{"name": r.name, "description": r.description} for r in raw]})
-        if action == "install":
-            from hermes_cli.skills_hub import do_install
-            class _Q:
-                def print(self, *a, **k): pass
-            do_install(query, skip_confirm=True, console=_Q())
-            return _ok(rid, {"installed": True, "name": query})
-        if action == "browse":
-            from hermes_cli.skills_hub import browse_skills
-            pg = int(params.get("page", 0) or 0) or (int(query) if query.isdigit() else 1)
-            return _ok(rid, browse_skills(page=pg, page_size=int(params.get("page_size", 20))))
-        if action == "inspect":
-            from hermes_cli.skills_hub import inspect_skill
-            return _ok(rid, {"info": inspect_skill(query) or {}})
-        return _err(rid, 4017, f"unknown skills action: {action}")
+        return _ok(rid, _skills_manage_payload(params))
+    except ValueError as e:
+        return _err(rid, 4017, str(e))
     except Exception as e:
         return _err(rid, 5024, str(e))
 

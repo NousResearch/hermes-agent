@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from toolsets import resolve_toolset, get_toolset, validate_toolset
+from toolsets import resolve_toolset, get_toolset, get_toolset_contract, validate_toolset
 
 
 class TestHermesApiServerToolset:
@@ -22,6 +22,7 @@ class TestHermesApiServerToolset:
         tools = resolve_toolset("hermes-api-server")
         assert "web_search" in tools
         assert "web_extract" in tools
+        assert "web_crawl" not in tools
 
     def test_toolset_includes_core_tools(self):
         tools = resolve_toolset("hermes-api-server")
@@ -34,6 +35,39 @@ class TestHermesApiServerToolset:
         ]
         for tool in expected:
             assert tool in tools, f"Missing expected tool: {tool}"
+
+    def test_toolset_includes_repo_code_knowledge_primitives(self):
+        tools = resolve_toolset("hermes-api-server")
+        expected = [
+            "read_file", "search_files",
+            "ast_list_defs", "ast_find_nodes",
+            "lsp_document_symbols", "lsp_definition", "lsp_diagnostics",
+        ]
+        for tool in expected:
+            assert tool in tools, f"Missing repo-code knowledge primitive: {tool}"
+
+    def test_api_server_default_covers_each_canonical_knowledge_surface_as_overlay(self):
+        api_tools = set(resolve_toolset("hermes-api-server"))
+        canonical_names = [
+            "repo-code-knowledge",
+            "web-research-knowledge",
+            "document-pdf-diagram-intelligence",
+        ]
+
+        for name in canonical_names:
+            contract = get_toolset_contract(name)
+            assert contract is not None
+            assert contract["canonical_name"] == name
+            assert contract["is_builtin"] is True
+            assert contract["is_additive"] is False
+            assert contract["is_canonical_knowledge_surface"] is True
+            assert set(contract["tools"]) <= api_tools
+
+    def test_api_server_default_is_not_replaced_by_canonical_surface_names(self):
+        contract = get_toolset_contract("hermes-api-server")
+        assert contract is not None
+        assert contract["canonical_name"] == "hermes-api-server"
+        assert contract["is_canonical_knowledge_surface"] is False
 
     def test_toolset_includes_code_intel_tools(self):
         tools = resolve_toolset("hermes-api-server")

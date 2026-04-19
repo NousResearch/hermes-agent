@@ -691,6 +691,81 @@ class HermesACPAgent(acp.Agent):
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
 
+    @staticmethod
+    def _truncate_tool_description(description: str, limit: int = 80) -> str:
+        rendered = str(description or "").strip()
+        if len(rendered) <= limit:
+            return rendered
+        return rendered[: limit - 3] + "..."
+
+    @classmethod
+    def _format_surface_line(cls, contract: dict[str, Any], description: str) -> str:
+        canonical_name = contract.get("canonical_name") or contract.get("name") or "?"
+        if contract.get("is_canonical_knowledge_surface"):
+            label = "built-in/canonical"
+        elif contract.get("is_additive"):
+            label = f"additive/{contract.get('source', 'registry')}"
+        else:
+            label = f"built-in/{contract.get('source', 'toolset')}"
+        tools = contract.get("tools") or []
+        suffix = f" [{label}; {len(tools)} raw tools]"
+        summary = cls._truncate_tool_description(description, limit=100)
+        return f"  {canonical_name}{suffix}: {summary}" if summary else f"  {canonical_name}{suffix}"
+
+    @classmethod
+    def _collect_visible_surface_sections(
+        cls,
+        visible_tool_names: set[str],
+        enabled_toolsets: list[str],
+    ) -> list[str]:
+        from toolsets import get_all_toolsets, get_toolset_contract
+
+        lines: list[str] = []
+        all_toolsets = get_all_toolsets()
+
+        canonical_lines: list[str] = []
+        seen_canonical: set[str] = set()
+        for toolset_name, toolset_info in all_toolsets.items():
+            contract = get_toolset_contract(toolset_name)
+            if not contract or not contract.get("is_canonical_knowledge_surface"):
+                continue
+            contract_tools = set(contract.get("tools") or [])
+            if not contract_tools or not contract_tools.issubset(visible_tool_names):
+                continue
+            canonical_name = contract.get("canonical_name") or toolset_name
+            if canonical_name in seen_canonical:
+                continue
+            seen_canonical.add(canonical_name)
+            canonical_lines.append(cls._format_surface_line(contract, toolset_info.get("description", "")))
+
+        if canonical_lines:
+            lines.append("Canonical built-in knowledge surfaces visible from current tool membership:")
+            lines.extend(canonical_lines)
+
+        additive_lines: list[str] = []
+        seen_additive: set[str] = set()
+        for toolset_name in enabled_toolsets:
+            contract = get_toolset_contract(toolset_name)
+            if not contract or not contract.get("is_additive"):
+                continue
+            contract_tools = set(contract.get("tools") or [])
+            if contract_tools and not contract_tools.issubset(visible_tool_names):
+                continue
+            canonical_name = contract.get("canonical_name") or toolset_name
+            if canonical_name in seen_additive:
+                continue
+            seen_additive.add(canonical_name)
+            toolset_info = all_toolsets.get(toolset_name) or all_toolsets.get(canonical_name) or {}
+            additive_lines.append(cls._format_surface_line(contract, toolset_info.get("description", "")))
+
+        if additive_lines:
+            if lines:
+                lines.append("")
+            lines.append("Additive tool surfaces visible from current tool membership:")
+            lines.extend(additive_lines)
+
+        return lines
+
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
             from model_tools import get_tool_definitions
@@ -698,13 +773,21 @@ class HermesACPAgent(acp.Agent):
             tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
             if not tools:
                 return "No tools available."
+            visible_tool_names = {
+                t.get("function", {}).get("name", "?")
+                for t in tools
+                if t.get("function", {}).get("name")
+            }
             lines = [f"Available tools ({len(tools)}):"]
+            surface_lines = self._collect_visible_surface_sections(visible_tool_names, list(toolsets))
+            if surface_lines:
+                lines.append("")
+                lines.extend(surface_lines)
+                lines.append("")
+            lines.append(f"Raw tools ({len(tools)}):")
             for t in tools:
                 name = t.get("function", {}).get("name", "?")
-                desc = t.get("function", {}).get("description", "")
-                # Truncate long descriptions
-                if len(desc) > 80:
-                    desc = desc[:77] + "..."
+                desc = self._truncate_tool_description(t.get("function", {}).get("description", ""))
                 lines.append(f"  {name}: {desc}")
             return "\n".join(lines)
         except Exception as e:

@@ -270,6 +270,75 @@ async def test_handle_message_discards_stale_result_after_session_invalidation(m
     assert session_key not in runner.adapters[Platform.TELEGRAM]._post_delivery_callbacks
 
 
+@pytest.mark.asyncio
+async def test_handle_message_stale_result_keeps_newer_generation_callback(monkeypatch):
+    import gateway.run as gateway_run
+
+    class _Adapter:
+        def __init__(self):
+            self._post_delivery_callbacks = {}
+
+        async def send(self, *args, **kwargs):
+            return None
+
+        def pop_post_delivery_callback(self, session_key, *, generation=None):
+            entry = self._post_delivery_callbacks.get(session_key)
+            if entry is None:
+                return None
+            if isinstance(entry, tuple):
+                entry_generation, callback = entry
+                if generation is not None and entry_generation != generation:
+                    return None
+                self._post_delivery_callbacks.pop(session_key, None)
+                return callback
+            if generation is not None:
+                return None
+            return self._post_delivery_callbacks.pop(session_key, None)
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
+    session_key = session_entry.session_key
+    adapter = _Adapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    async def _stale_result(**kwargs):
+        # Simulate a newer run claiming the callback slot before the stale run unwinds.
+        runner._session_run_generation[session_key] = 2
+        adapter._post_delivery_callbacks[session_key] = (2, lambda: None)
+        return {
+            "final_response": "late reply",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 80,
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "model": "openai/test-model",
+        }
+
+    runner._run_agent = AsyncMock(side_effect=_stale_result)
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    result = await runner._handle_message(_make_event("hello"))
+
+    assert result is None
+    assert session_key in adapter._post_delivery_callbacks
+    assert adapter._post_delivery_callbacks[session_key][0] == 2
+
+
 
 @pytest.mark.asyncio
 async def test_status_command_bypasses_active_session_guard():

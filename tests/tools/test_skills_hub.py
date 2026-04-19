@@ -695,6 +695,48 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_handles_bytes_content(self):
+        """Regression test for issue #2739: bytes content should not crash."""
+        # String content bundle
+        bundle_str = SkillBundle(
+            name="test-skill",
+            files={"SKILL.md": "test content"},
+            source="test",
+            identifier="test",
+            trust_level="community",
+        )
+        hash_str = bundle_content_hash(bundle_str)
+
+        # Bytes content bundle (as used by OptionalSkillSource)
+        bundle_bytes = SkillBundle(
+            name="test-skill",
+            files={"SKILL.md": b"test content"},
+            source="test",
+            identifier="test",
+            trust_level="community",
+        )
+        hash_bytes = bundle_content_hash(bundle_bytes)
+
+        # Both should produce the same hash for identical content
+        assert hash_str == hash_bytes
+
+    def test_bundle_content_hash_handles_mixed_str_and_bytes(self):
+        """Mixed str and bytes content in a bundle should work correctly."""
+        bundle = SkillBundle(
+            name="mixed-skill",
+            files={
+                "SKILL.md": "text content",
+                "scripts/helper.py": b"binary content",
+            },
+            source="test",
+            identifier="test",
+            trust_level="community",
+        )
+        # Should not crash and return a valid hash
+        hash_result = bundle_content_hash(bundle)
+        assert hash_result.startswith("sha256:")
+        assert len(hash_result) == 24  # sha256: + 16 hex chars
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

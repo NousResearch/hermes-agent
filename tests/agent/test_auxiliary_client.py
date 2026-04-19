@@ -832,6 +832,92 @@ class TestKimiForCodingTemperature:
 
         assert kwargs["temperature"] == 0.3
 
+    # ── Endpoint-aware overrides: api.moonshot.ai vs api.kimi.com/coding ──
+    # The public Moonshot chat endpoint and the Coding Plan endpoint enforce
+    # different temperature contracts for the same model name.  `kimi-k2.5` on
+    # api.moonshot.ai rejects 0.6 with HTTP 400 "only 1 is allowed for this
+    # model", while the Coding Plan docs mandate 0.6.  Override must pick the
+    # right value per base_url.
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.moonshot.ai/v1",
+            "https://api.moonshot.ai/v1/",
+            "https://API.MOONSHOT.AI/v1",
+        ],
+    )
+    def test_kimi_k2_5_public_api_forces_temperature_1(self, base_url):
+        """kimi-k2.5 on the public Moonshot API only accepts temperature=1."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+            base_url=base_url,
+        )
+
+        assert kwargs["temperature"] == 1.0
+
+    def test_kimi_k2_5_coding_plan_keeps_temperature_0_6(self):
+        """kimi-k2.5 on api.kimi.com/coding keeps the Coding Plan's 0.6 lock."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+            base_url="https://api.kimi.com/coding/v1",
+        )
+
+        assert kwargs["temperature"] == 0.6
+
+    def test_kimi_k2_5_no_base_url_falls_back_to_coding_plan_lock(self):
+        """Without a base_url hint, the Coding Plan default (0.6) applies.
+
+        Preserves PR #12144 backward compatibility for callers that don't thread
+        the client's base_url through.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+        )
+
+        assert kwargs["temperature"] == 0.6
+
+    @pytest.mark.parametrize(
+        "model,expected",
+        [
+            # Only kimi-k2.5 diverges on api.moonshot.ai; the rest keep the
+            # Coding Plan lock (empirically verified against Moonshot in April
+            # 2026: turbo-preview accepts 0.6, thinking-turbo accepts 1.0).
+            ("kimi-k2-turbo-preview", 0.6),
+            ("kimi-k2-0905-preview", 0.6),
+            ("kimi-k2-thinking", 1.0),
+            ("kimi-k2-thinking-turbo", 1.0),
+            ("moonshotai/kimi-k2-thinking-turbo", 1.0),
+        ],
+    )
+    def test_other_kimi_k2_family_unchanged_on_public_api(self, model, expected):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+            base_url="https://api.moonshot.ai/v1",
+        )
+
+        assert kwargs["temperature"] == expected
+
 
 # ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)

@@ -1900,6 +1900,9 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._followup_queue: list = []  # mirror of _pending_input for display; entries are {"id": str, "payload": ...}
+        self._cancelled_followups: set = set()  # UUIDs recalled via Alt+Up, skipped in process_loop
+        self._followup_recall_count: int = 0   # how many recalls done in this recall session
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -2236,6 +2239,11 @@ class HermesCLI:
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
                     ]
+
+            # Follow-up queue indicator
+            if self._followup_queue:
+                frags.append(("class:status-bar-dim", " │ "))
+                frags.append(("class:status-bar-warn", f"📬 {len(self._followup_queue)}"))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -8823,13 +8831,82 @@ class HermesCLI:
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
-            """Alt+Enter inserts a newline for multi-line input."""
-            event.current_buffer.insert_text('\n')
+            """Alt+Enter: queue message as follow-up (sent after current response).
+
+            When agent is idle, behaves like Enter (sends immediately to _pending_input).
+            When agent is running, queues without interrupting — sent as the next turn.
+            _followup_queue mirrors what's pending for status display.
+            Use Ctrl+J / Ctrl+Enter for inserting a newline in multi-line input.
+            """
+            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._clarify_state or cli_ref._approval_state:
+                return
+
+            text = event.app.current_buffer.text.strip()
+            has_images = bool(cli_ref._attached_images)
+            if not text and not has_images:
+                return
+
+            images = list(cli_ref._attached_images)
+            cli_ref._attached_images.clear()
+            payload = (text, images) if images else text
+
+            import uuid as _uuid_mod
+            tag = _uuid_mod.uuid4().hex
+            # Wrap with tag so process_loop can identify and cancel by ID, not text
+            cli_ref._pending_input.put({"_followup_tag": tag, "payload": payload})
+            cli_ref._followup_queue.append({"id": tag, "payload": payload, "text": text})
+            event.app.current_buffer.reset(append_to_history=True)
+
+            queue_depth = len(cli_ref._followup_queue)
+            preview = text[:60] + ("..." if len(text) > 60 else "")
+            if cli_ref._agent_running:
+                _cprint(f"  {_DIM}📬 Queued follow-up #{queue_depth}: \"{preview}\"{_RST}")
+            else:
+                _cprint(f"  {_DIM}📬 Queued: \"{preview}\"{_RST}")
+            event.app.invalidate()
 
         @kb.add('c-j')
         def handle_ctrl_enter(event):
-            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
+            """Ctrl+J (Ctrl+Enter in most terminals): insert a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
+
+        @kb.add('escape', 'up')
+        def handle_recall_followup(event):
+            """Alt+Up: recall the most recently queued follow-up back into the input.
+
+            Pops the last item from _followup_queue (LIFO — most recent first) and
+            appends its text to the current input, separated by '\\n---\\n'.
+            If multiple follow-ups are queued, repeated Alt+Up recalls them one by one.
+            The recalled item is added to _cancelled_followups so process_loop skips it.
+            """
+            if not cli_ref._followup_queue:
+                return
+
+            buf = event.app.current_buffer
+
+            # Pop the most recently queued item (last = most recent)
+            item = cli_ref._followup_queue.pop()
+            recalled_text = item["text"]
+
+            # Cancel by UUID — immune to duplicate-text false positives
+            cli_ref._cancelled_followups.add(item["id"])
+
+            # Append to current buffer — separator only from the second recall onwards
+            current = buf.text
+            if cli_ref._followup_recall_count > 0 and current.strip():
+                buf.text = current.rstrip() + '\n---\n' + recalled_text
+            else:
+                buf.text = (current + recalled_text) if current else recalled_text
+            buf.cursor_position = len(buf.text)
+            cli_ref._followup_recall_count += 1
+
+            remaining = len(cli_ref._followup_queue)
+            if remaining:
+                _cprint(f"  {_DIM}📬 Recalled follow-up ({remaining} still queued){_RST}")
+            else:
+                cli_ref._followup_recall_count = 0
+                _cprint(f"  {_DIM}📬 Follow-up recalled — queue empty{_RST}")
+            event.app.invalidate()
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
@@ -9368,7 +9445,13 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                hints = []
+                if cli_ref._followup_queue:
+                    hints.append(f"📬 {len(cli_ref._followup_queue)} queued")
+                suffix = "  · " + " · ".join(hints) if hints else ""
+                return f"Enter to interrupt · Alt+Enter to queue follow-up{suffix}"
+            if cli_ref._followup_queue:
+                return f"📬 {len(cli_ref._followup_queue)} follow-up{'s' if len(cli_ref._followup_queue) > 1 else ''} queued — Alt+Enter to add more"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""
@@ -9977,6 +10060,18 @@ class HermesCLI:
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
+                        # Unwrap tagged followup items (queued via Alt+Enter)
+                        if isinstance(user_input, dict) and "_followup_tag" in user_input:
+                            tag = user_input["_followup_tag"]
+                            user_input = user_input["payload"]
+                            # Sync display mirror — only pop for tagged items, not regular Enter
+                            if self._followup_queue:
+                                self._followup_queue.pop(0)
+                                app.invalidate()
+                            # Skip items recalled via Alt+Up (cancelled by UUID, not text)
+                            if tag in self._cancelled_followups:
+                                self._cancelled_followups.discard(tag)
+                                continue
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:

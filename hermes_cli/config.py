@@ -7426,6 +7426,10 @@ def _sanitize_env_lines(lines: list) -> list:
             sanitized.append(raw + "\n")
             continue
 
+        # Detect stale KEY=*** placeholders.
+        if stripped.endswith("=***") and stripped.split("=")[0] in known_keys:
+            continue
+
         # Detect concatenated KEY=VALUE pairs on one line.
         # Search for known KEY= patterns at any position in the line.
         # We collect full needle ranges so we can drop matches that are

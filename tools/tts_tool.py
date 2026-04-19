@@ -148,7 +148,8 @@ def _resolve_elevenlabs_api_key(tts_config: Optional[Dict[str, Any]] = None) -> 
     cfg = tts_config if tts_config is not None else _load_tts_config()
     el_cfg = cfg.get("elevenlabs", {}) if isinstance(cfg, dict) else {}
     if isinstance(el_cfg, dict):
-        cfg_key = str(el_cfg.get("api_key", "")).strip()
+        _val = el_cfg.get("api_key")
+        cfg_key = _val.strip() if isinstance(_val, str) else ""
         if cfg_key:
             return cfg_key
     return os.getenv("ELEVENLABS_API_KEY", "").strip()
@@ -244,7 +245,10 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     """
     api_key = _resolve_elevenlabs_api_key(tts_config)
     if not api_key:
-        raise ValueError("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/")
+        raise ValueError(
+            "ElevenLabs API key not set. Set ELEVENLABS_API_KEY env var or "
+            "tts.elevenlabs.api_key in config. Get one at https://elevenlabs.io/"
+        )
 
     el_config = tts_config.get("elevenlabs", {})
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
@@ -1111,7 +1115,7 @@ def stream_tts_to_speaker(
 
         api_key = _resolve_elevenlabs_api_key(tts_config)
         if not api_key:
-            logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
+            logger.warning("Neither tts.elevenlabs.api_key nor ELEVENLABS_API_KEY set; streaming TTS audio disabled")
         else:
             try:
                 ElevenLabs = _import_elevenlabs()

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText } from '../lib/clipboard.js'
-import { isMac } from '../lib/platform.js'
+import { isActionMod, isMac } from '../lib/platform.js'
 import { writeOsc52Clipboard } from '../lib/osc52.js'
 
 type InkExt = typeof Ink & {
@@ -514,11 +514,11 @@ export function TextInput({
         }
 
         if (allowClipboardHotkeys) {
-          const text = readClipboardText()
-
-          if (text) {
-            return pastePlainText(text)
-          }
+          void readClipboardText().then(text => {
+            if (text) {
+              pastePlainText(text)
+            }
+          })
         }
 
         return
@@ -557,26 +557,26 @@ export function TextInput({
 
       let c = curRef.current
       let v = vRef.current
-      const mod = k.ctrl || k.meta
+      const mod = isActionMod(k)
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
 
-      if ((k.ctrl || k.meta) && inp === 'z') {
+      if (mod && inp === 'z') {
         return swap(undo, redo)
       }
 
-      if (((k.ctrl || k.meta) && inp === 'y') || ((k.ctrl || k.meta) && k.shift && inp === 'z')) {
+      if ((mod && inp === 'y') || (mod && k.shift && inp === 'z')) {
         return swap(redo, undo)
       }
 
-      if ((k.ctrl || k.meta) && inp === 'a') {
+      if (mod && inp === 'a') {
         return selectAll()
       }
 
       if (k.home) {
         clearSel()
         c = 0
-      } else if (k.end || (k.ctrl && inp === 'e') || (k.meta && inp === 'e')) {
+      } else if (k.end || (mod && inp === 'e')) {
         clearSel()
         c = v.length
       } else if (k.leftArrow) {
@@ -595,10 +595,10 @@ export function TextInput({
           clearSel()
           c = mod ? wordRight(v, c) : nextPos(v, c)
         }
-      } else if ((k.ctrl || k.meta) && inp === 'b') {
+      } else if (mod && inp === 'b') {
         clearSel()
         c = wordLeft(v, c)
-      } else if ((k.ctrl || k.meta) && inp === 'f') {
+      } else if (mod && inp === 'f') {
         clearSel()
         c = wordRight(v, c)
       } else if (range && (k.backspace || delFwd)) {
@@ -621,7 +621,7 @@ export function TextInput({
         } else {
           v = v.slice(0, c) + v.slice(nextPos(v, c))
         }
-      } else if ((k.ctrl || k.meta) && inp === 'w') {
+      } else if (mod && inp === 'w') {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
@@ -633,7 +633,7 @@ export function TextInput({
         } else {
           return
         }
-      } else if ((k.ctrl || k.meta) && inp === 'u') {
+      } else if (mod && inp === 'u') {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
@@ -641,7 +641,7 @@ export function TextInput({
           v = v.slice(c)
           c = 0
         }
-      } else if ((k.ctrl || k.meta) && inp === 'k') {
+      } else if (mod && inp === 'k') {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start

@@ -96,6 +96,10 @@ from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
+
+_DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
+_DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
+
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
@@ -585,6 +589,7 @@ class GatewayRunner:
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        self._warn_if_docker_media_delivery_is_risky()
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -691,6 +696,53 @@ class GatewayRunner:
         self._background_tasks: set = set()
 
 
+    def _warn_if_docker_media_delivery_is_risky(self) -> None:
+        """Warn when Docker-backed gateways lack an explicit export mount.
+
+        MEDIA delivery happens in the gateway process, so paths emitted by the model
+        must be readable from the host. A plain container-local path like
+        `/workspace/report.txt` or `/output/report.txt` often exists only inside
+        Docker, so users commonly need a dedicated export mount such as
+        `host-dir:/output`.
+        """
+        if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+            return
+
+        connected = self.config.get_connected_platforms()
+        messaging_platforms = [p for p in connected if p not in {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}]
+        if not messaging_platforms:
+            return
+
+        raw_volumes = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+        volumes: List[str] = []
+        if raw_volumes:
+            try:
+                parsed = json.loads(raw_volumes)
+                if isinstance(parsed, list):
+                    volumes = [str(v) for v in parsed if isinstance(v, str)]
+            except Exception:
+                logger.debug("Could not parse TERMINAL_DOCKER_VOLUMES for gateway media warning", exc_info=True)
+
+        has_explicit_output_mount = False
+        for spec in volumes:
+            match = _DOCKER_VOLUME_SPEC_RE.match(spec)
+            if not match:
+                continue
+            container_path = match.group("container")
+            if container_path in _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS:
+                has_explicit_output_mount = True
+                break
+
+        if has_explicit_output_mount:
+            return
+
+        logger.warning(
+            "Docker backend is enabled for the messaging gateway but no explicit host-visible "
+            "output mount (for example '/home/user/.hermes/cache/documents:/output') is configured. "
+            "This is fine if the model already emits host-visible paths, but MEDIA file delivery can fail "
+            "for container-local paths like '/workspace/...' or '/output/...'."
+        )
+
 
 
     # -- Setup skill availability ----------------------------------------
@@ -751,6 +803,26 @@ class GatewayRunner:
         disabled_chats.update(
             chat_id for chat_id, mode in self._voice_mode.items() if mode == "off"
         )
+
+    async def _safe_adapter_disconnect(self, adapter, platform) -> None:
+        """Call adapter.disconnect() defensively, swallowing any error.
+
+        Used when adapter.connect() failed or raised — the adapter may
+        have allocated partial resources (aiohttp.ClientSession, poll
+        tasks, child subprocesses) that would otherwise leak and surface
+        as "Unclosed client session" warnings at process exit.
+
+        Must tolerate partial-init state and never raise, since callers
+        use it inside error-handling blocks.
+        """
+        try:
+            await adapter.disconnect()
+        except Exception as e:
+            logger.debug(
+                "Defensive %s disconnect after failed connect raised: %s",
+                platform.value if platform is not None else "adapter",
+                e,
+            )
 
     # -----------------------------------------------------------------
 
@@ -1539,7 +1611,7 @@ class GatewayRunner:
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
             "Your current task will be interrupted. "
-            "Send any message after restart to resume where it left off."
+            "Send any message after restart and I'll try to resume where you left off."
             if self._restart_requested
             else "Your current task will be interrupted."
         )
@@ -1913,6 +1985,15 @@ class GatewayRunner:
                     logger.info("✓ %s connected", platform.value)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
+                    # Defensive cleanup: a failed connect() may have
+                    # allocated resources (aiohttp.ClientSession, poll
+                    # tasks, bridge subprocesses) before giving up.
+                    # Without this call, those resources are orphaned
+                    # and Python logs "Unclosed client session" at
+                    # process exit. Adapter disconnect() implementations
+                    # are expected to be idempotent and tolerate
+                    # partial-init state.
+                    await self._safe_adapter_disconnect(adapter, platform)
                     if adapter.has_fatal_error:
                         self._update_platform_runtime_status(
                             platform.value,
@@ -1953,6 +2034,10 @@ class GatewayRunner:
                         }
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
+                # Same defensive cleanup path for exceptions — an adapter
+                # that raised mid-connect may still have a live
+                # aiohttp.ClientSession or child subprocess.
+                await self._safe_adapter_disconnect(adapter, platform)
                 self._update_platform_runtime_status(
                     platform.value,
                     platform_state="retrying",
@@ -2373,6 +2458,40 @@ class GatewayRunner:
                     timeout,
                     self._running_agent_count(),
                 )
+                # Mark forcibly-interrupted sessions as resume_pending BEFORE
+                # interrupting the agents.  This preserves each session's
+                # session_id + transcript so the next message on the same
+                # session_key auto-resumes from the existing conversation
+                # instead of getting routed through suspend_recently_active()
+                # and converted into a fresh session.  Terminal escalation
+                # for genuinely stuck sessions still flows through the
+                # existing ``.restart_failure_counts`` stuck-loop counter
+                # (incremented below, threshold 3), which sets
+                # ``suspended=True`` and overrides resume_pending.
+                #
+                # Iterate self._running_agents (current) rather than the
+                # drain-start ``active_agents`` snapshot — the snapshot
+                # may include sessions that finished gracefully during
+                # the drain window, and marking those falsely would give
+                # them a stray restart-interruption system note on their
+                # next turn even though their previous turn completed
+                # cleanly.  Skip pending sentinels for the same reason
+                # _interrupt_running_agents() does: their agent hasn't
+                # started yet, there's nothing to interrupt, and the
+                # session shouldn't carry a misleading resume flag.
+                _resume_reason = (
+                    "restart_timeout" if self._restart_requested else "shutdown_timeout"
+                )
+                for _sk, _agent in list(self._running_agents.items()):
+                    if _agent is _AGENT_PENDING_SENTINEL:
+                        continue
+                    try:
+                        self.session_store.mark_resume_pending(_sk, _resume_reason)
+                    except Exception as _e:
+                        logger.debug(
+                            "mark_resume_pending failed for %s: %s",
+                            _sk[:20], _e,
+                        )
                 self._interrupt_running_agents(
                     "Gateway restarting" if self._restart_requested else "Gateway shutting down"
                 )
@@ -2953,8 +3072,8 @@ class GatewayRunner:
 
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
+                ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
                 resolve_command as _resolve_cmd_inner,
-                should_bypass_active_session as _should_bypass_active_inner,
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
@@ -3019,6 +3138,54 @@ class GatewayRunner:
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
 
+            # /steer <prompt> — inject mid-run after the next tool call.
+            # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
+            # iterations inside the same agent run, by appending to the
+            # last tool result's content. No interrupt, no new user turn,
+            # no role-alternation violation.
+            if _cmd_def_inner and _cmd_def_inner.name == "steer":
+                steer_text = event.get_command_args().strip()
+                if not steer_text:
+                    return "Usage: /steer <prompt>"
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    # Agent hasn't started yet — queue as turn-boundary fallback.
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+                        queued_event = _ME(
+                            text=steer_text,
+                            message_type=_MT.TEXT,
+                            source=event.source,
+                            message_id=event.message_id,
+                            channel_prompt=event.channel_prompt,
+                        )
+                        adapter._pending_messages[_quick_key] = queued_event
+                    return "Agent still starting — /steer queued for the next turn."
+                if running_agent and hasattr(running_agent, "steer"):
+                    try:
+                        accepted = running_agent.steer(steer_text)
+                    except Exception as exc:
+                        logger.warning("Steer failed for session %s: %s", _quick_key[:20], exc)
+                        return f"⚠️ Steer failed: {exc}"
+                    if accepted:
+                        preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
+                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+                    return "Steer rejected (empty payload)."
+                # Running agent is missing or lacks steer() — fall back to queue.
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+                    queued_event = _ME(
+                        text=steer_text,
+                        message_type=_MT.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                    )
+                    adapter._pending_messages[_quick_key] = queued_event
+                return "No active agent — /steer queued for the next turn."
+
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
@@ -3041,11 +3208,9 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
-            # Gateway-handled info/control commands must never fall through to
-            # the interrupt path. If they are queued as pending text, the
-            # slash-command safety net discards them before the user sees any
-            # response.
-            if _cmd_def_inner and _should_bypass_active_inner(_cmd_def_inner.name):
+            # Gateway-handled info/control commands with dedicated
+            # running-agent handlers.
+            if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
                 if _cmd_def_inner.name == "help":
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
@@ -3054,6 +3219,21 @@ class GatewayRunner:
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
+
+            # Catch-all: any other recognized slash command reached the
+            # running-agent guard. Reject gracefully rather than falling
+            # through to interrupt + discard. Without this, commands
+            # like /model, /reasoning, /voice, /insights, /title,
+            # /resume, /retry, /undo, /compress, /usage, /provider,
+            # /reload-mcp, /sethome, /reset (all registered as Discord
+            # slash commands) would interrupt the agent AND get
+            # silently discarded by the slash-command safety net,
+            # producing a zero-char response. See #5057, #6252, #10370.
+            if _cmd_def_inner:
+                return (
+                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
+                    f"mid-turn. Wait for the current response or `/stop` first."
+                )
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
@@ -3259,6 +3439,21 @@ class GatewayRunner:
 
         if canonical == "btw":
             return await self._handle_btw_command(event)
+
+        if canonical == "steer":
+            # No active agent — /steer has no tool call to inject into.
+            # Strip the prefix so downstream treats it as a normal user
+            # message. If the payload is empty, surface the usage hint.
+            steer_payload = event.get_command_args().strip()
+            if not steer_payload:
+                return "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
+            try:
+                event.text = steer_payload
+            except Exception:
+                pass
+            # Do NOT return — fall through to _handle_message_with_agent
+            # at the end of this function so the rewritten text is sent
+            # to the agent as a regular user turn.
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
@@ -4089,8 +4284,20 @@ class GatewayRunner:
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
             # restarts where the session was active (never completed).
+            #
+            # Also clear the resume_pending flag (set by drain-timeout
+            # shutdown) — the turn ran to completion, so recovery
+            # succeeded and subsequent messages should no longer receive
+            # the restart-interruption system note.
             if session_key:
                 self._clear_restart_failure_count(session_key)
+                try:
+                    self.session_store.clear_resume_pending(session_key)
+                except Exception as _e:
+                    logger.debug(
+                        "clear_resume_pending failed for %s: %s",
+                        session_key[:20], _e,
+                    )
 
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
@@ -4738,6 +4945,26 @@ class GatewayRunner:
 
     async def _handle_restart_command(self, event: MessageEvent) -> str:
         """Handle /restart command - drain active work, then restart the gateway."""
+        # Defensive idempotency check: if the previous gateway process
+        # recorded this same /restart (same platform + update_id) and the new
+        # process is seeing it *again*, this is a re-delivery caused by PTB's
+        # graceful-shutdown `get_updates` ACK failing on the way out ("Error
+        # while calling `get_updates` one more time to mark all fetched
+        # updates. Suppressing error to ensure graceful shutdown. When
+        # polling for updates is restarted, updates may be received twice."
+        # in gateway.log).  Ignoring the stale redelivery prevents a
+        # self-perpetuating restart loop where every fresh gateway
+        # re-processes the same /restart command and immediately restarts
+        # again.
+        if self._is_stale_restart_redelivery(event):
+            logger.info(
+                "Ignoring redelivered /restart (platform=%s, update_id=%s) — "
+                "already processed by a previous gateway instance.",
+                event.source.platform.value if event.source and event.source.platform else "?",
+                event.platform_update_id,
+            )
+            return ""
+
         if self._restart_requested or self._draining:
             count = self._running_agent_count()
             if count:
@@ -4760,6 +4987,26 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Failed to write restart notify file: %s", e)
 
+        # Record the triggering platform + update_id in a dedicated dedup
+        # marker.  Unlike .restart_notify.json (which gets unlinked once the
+        # new gateway sends the "gateway restarted" notification), this
+        # marker persists so the new gateway can still detect a delayed
+        # /restart redelivery from Telegram.  Overwritten on every /restart.
+        try:
+            import json as _json
+            import time as _time
+            dedup_data = {
+                "platform": event.source.platform.value if event.source.platform else None,
+                "requested_at": _time.time(),
+            }
+            if event.platform_update_id is not None:
+                dedup_data["update_id"] = event.platform_update_id
+            (_hermes_home / ".restart_last_processed.json").write_text(
+                _json.dumps(dedup_data)
+            )
+        except Exception as e:
+            logger.debug("Failed to write restart dedup marker: %s", e)
+
         active_agents = self._running_agent_count()
         # When running under a service manager (systemd/launchd), use the
         # service restart path: exit with code 75 so the service manager
@@ -4774,6 +5021,58 @@ class GatewayRunner:
         if active_agents:
             return f"⏳ Draining {active_agents} active agent(s) before restart..."
         return "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+
+    def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
+        """Return True if this /restart is a Telegram re-delivery we already handled.
+
+        The previous gateway wrote ``.restart_last_processed.json`` with the
+        triggering platform + update_id when it processed the /restart.  If
+        we now see a /restart on the same platform with an update_id <= that
+        recorded value AND the marker is recent (< 5 minutes), it's a
+        redelivery and should be ignored.
+
+        Only applies to Telegram today (the only platform that exposes a
+        numeric cross-session update ordering); other platforms return False.
+        """
+        if event is None or event.source is None:
+            return False
+        if event.platform_update_id is None:
+            return False
+        if event.source.platform is None:
+            return False
+        # Only Telegram populates platform_update_id currently; be explicit
+        # so future platforms aren't accidentally gated by this check.
+        try:
+            platform_value = event.source.platform.value
+        except Exception:
+            return False
+        if platform_value != "telegram":
+            return False
+
+        try:
+            import json as _json
+            import time as _time
+            marker_path = _hermes_home / ".restart_last_processed.json"
+            if not marker_path.exists():
+                return False
+            data = _json.loads(marker_path.read_text())
+        except Exception:
+            return False
+
+        if data.get("platform") != platform_value:
+            return False
+        recorded_uid = data.get("update_id")
+        if not isinstance(recorded_uid, int):
+            return False
+        # Staleness guard: ignore markers older than 5 minutes.  A legitimately
+        # old marker (e.g. crash recovery where notify never fired) should not
+        # swallow a fresh /restart from the user.
+        requested_at = data.get("requested_at")
+        if isinstance(requested_at, (int, float)):
+            if _time.time() - requested_at > 300:
+                return False
+        return event.platform_update_id <= recorded_uid
+
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
@@ -5520,8 +5819,7 @@ class GatewayRunner:
             if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
                 return (
                     "Voice dependencies are missing (PyNaCl / davey). "
-                    "Install or reinstall Hermes with the messaging extra, e.g. "
-                    "`pip install hermes-agent[messaging]`."
+                    f"Install with: `{sys.executable} -m pip install PyNaCl`"
                 )
             return f"Failed to join voice channel: {e}"
 
@@ -9273,7 +9571,40 @@ class GatewayRunner:
             # restart, crash, SIGTERM).  Prepend a system note so the model
             # finishes processing the pending tool results before addressing
             # the user's new message.  (#4493)
-            if agent_history and agent_history[-1].get("role") == "tool":
+            #
+            # Session-level resume_pending (set on drain-timeout shutdown)
+            # escalates the wording — the transcript's last role may be
+            # anything (tool, assistant with unfinished work, etc.), so we
+            # give a stronger, reason-aware instruction that subsumes the
+            # tool-tail case.
+            _resume_entry = None
+            if session_key:
+                try:
+                    _resume_entry = self.session_store._entries.get(session_key)
+                except Exception:
+                    _resume_entry = None
+            _is_resume_pending = bool(
+                _resume_entry is not None and getattr(_resume_entry, "resume_pending", False)
+            )
+
+            if _is_resume_pending:
+                _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
+                _reason_phrase = (
+                    "a gateway restart"
+                    if _reason == "restart_timeout"
+                    else "a gateway shutdown"
+                    if _reason == "shutdown_timeout"
+                    else "a gateway interruption"
+                )
+                message = (
+                    f"[System note: Your previous turn in this session was interrupted "
+                    f"by {_reason_phrase}. The conversation history below is intact. "
+                    f"If it contains unfinished tool result(s), process them first and "
+                    f"summarize what was accomplished, then address the user's new "
+                    f"message below.]\n\n"
+                    + message
+                )
+            elif agent_history and agent_history[-1].get("role") == "tool":
                 message = (
                     "[System note: Your previous turn was interrupted before you could "
                     "process the last tool result(s). The conversation history contains "
@@ -10052,6 +10383,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 "Replacing existing gateway instance (PID %d) with --replace.",
                 existing_pid,
             )
+            # Record a takeover marker so the target's shutdown handler
+            # recognises its SIGTERM as a planned takeover and exits 0
+            # (rather than exit 1, which would trigger systemd's
+            # Restart=on-failure and start a flap loop against us).
+            # Best-effort — proceed even if the write fails.
+            try:
+                from gateway.status import write_takeover_marker
+                write_takeover_marker(existing_pid)
+            except Exception as e:
+                logger.debug("Could not write takeover marker: %s", e)
             try:
                 terminate_pid(existing_pid, force=False)
             except ProcessLookupError:
@@ -10061,6 +10402,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     "Permission denied killing PID %d. Cannot replace.",
                     existing_pid,
                 )
+                # Marker is scoped to a specific target; clean it up on
+                # give-up so it doesn't grief an unrelated future shutdown.
+                try:
+                    from gateway.status import clear_takeover_marker
+                    clear_takeover_marker()
+                except Exception:
+                    pass
                 return False
             # Wait up to 10 seconds for the old process to exit
             for _ in range(20):
@@ -10081,6 +10429,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             remove_pid_file()
+            # Clean up any takeover marker the old process didn't consume
+            # (e.g. SIGKILL'd before its shutdown handler could read it).
+            try:
+                from gateway.status import clear_takeover_marker
+                clear_takeover_marker()
+            except Exception:
+                pass
             # Also release all scoped locks left by the old process.
             # Stopped (Ctrl+Z) processes don't release locks on exit,
             # leaving stale lock files that block the new gateway from starting.
@@ -10148,8 +10503,27 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set up signal handlers
     def shutdown_signal_handler():
         nonlocal _signal_initiated_shutdown
-        _signal_initiated_shutdown = True
-        logger.info("Received SIGTERM/SIGINT — initiating shutdown")
+        # Planned --replace takeover check: when a sibling gateway is
+        # taking over via --replace, it wrote a marker naming this PID
+        # before sending SIGTERM. If present, treat the signal as a
+        # planned shutdown and exit 0 so systemd's Restart=on-failure
+        # doesn't revive us (which would flap-fight the replacer when
+        # both services are enabled, e.g. hermes.service + hermes-
+        # gateway.service from pre-rename installs).
+        planned_takeover = False
+        try:
+            from gateway.status import consume_takeover_marker_for_self
+            planned_takeover = consume_takeover_marker_for_self()
+        except Exception as e:
+            logger.debug("Takeover marker check failed: %s", e)
+
+        if planned_takeover:
+            logger.info(
+                "Received SIGTERM as a planned --replace takeover — exiting cleanly"
+            )
+        else:
+            _signal_initiated_shutdown = True
+            logger.info("Received SIGTERM/SIGINT — initiating shutdown")
         # Diagnostic: log all hermes-related processes so we can identify
         # what triggered the signal (hermes update, hermes gateway restart,
         # a stale detached subprocess, etc.).

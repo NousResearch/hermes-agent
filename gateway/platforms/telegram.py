@@ -1657,6 +1657,21 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
 
+    def _missing_media_path_error(self, label: str, path: str) -> str:
+        """Build an actionable file-not-found error for gateway MEDIA delivery.
+
+        Paths like /workspace/... or /output/... often only exist inside the
+        Docker sandbox, while the gateway process runs on the host.
+        """
+        error = f"{label} file not found: {path}"
+        if path.startswith(("/workspace/", "/output/", "/outputs/")):
+            error += (
+                " (path may only exist inside the Docker sandbox. "
+                "Bind-mount a host directory and emit the host-visible "
+                "path in MEDIA: for gateway file delivery.)"
+            )
+        return error
+
     async def send_voice(
         self,
         chat_id: str,
@@ -1673,7 +1688,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             import os
             if not os.path.exists(audio_path):
-                return SendResult(success=False, error=f"Audio file not found: {audio_path}")
+                return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             
             with open(audio_path, "rb") as audio_file:
                 # .ogg files -> send as voice (round playable bubble)
@@ -1722,7 +1737,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             import os
             if not os.path.exists(image_path):
-                return SendResult(success=False, error=f"Image file not found: {image_path}")
+                return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
 
             _thread = self._metadata_thread_id(metadata)
             with open(image_path, "rb") as image_file:
@@ -1759,7 +1774,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not os.path.exists(file_path):
-                return SendResult(success=False, error=f"File not found: {file_path}")
+                return SendResult(success=False, error=self._missing_media_path_error("File", file_path))
 
             display_name = file_name or os.path.basename(file_path)
             _thread = self._metadata_thread_id(metadata)
@@ -1793,7 +1808,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not os.path.exists(video_path):
-                return SendResult(success=False, error=f"Video file not found: {video_path}")
+                return SendResult(success=False, error=self._missing_media_path_error("Video", video_path))
 
             _thread = self._metadata_thread_id(metadata)
             with open(video_path, "rb") as f:
@@ -2326,7 +2341,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(update.message):
             return
 
-        event = self._build_message_event(update.message, MessageType.TEXT)
+        event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
     
@@ -2337,7 +2352,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(update.message, is_command=True):
             return
         
-        event = self._build_message_event(update.message, MessageType.COMMAND)
+        event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2373,7 +2388,7 @@ class TelegramAdapter(BasePlatformAdapter):
         parts.append(f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}")
         parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
 
-        event = self._build_message_event(msg, MessageType.LOCATION)
+        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
         await self.handle_message(event)
 
@@ -2524,7 +2539,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             msg_type = MessageType.DOCUMENT
         
-        event = self._build_message_event(msg, msg_type)
+        event = self._build_message_event(msg, msg_type, update_id=update.update_id)
         
         # Add caption as text
         if msg.caption:
@@ -2863,8 +2878,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
-    def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
-        """Build a MessageEvent from a Telegram message."""
+    def _build_message_event(
+        self,
+        message: Message,
+        msg_type: MessageType,
+        update_id: Optional[int] = None,
+    ) -> MessageEvent:
+        """Build a MessageEvent from a Telegram message.
+
+        ``update_id`` is the ``Update.update_id`` from PTB; passing it through
+        lets ``/restart`` record the triggering offset so the new gateway
+        process can advance past it (prevents ``/restart`` being re-delivered
+        when PTB's graceful-shutdown ACK fails).
+        """
         chat = message.chat
         user = message.from_user
         
@@ -2915,8 +2941,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else None,
-            user_name=user.full_name if user else None,
+            user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
+            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
         )
@@ -2943,6 +2969,7 @@ class TelegramAdapter(BasePlatformAdapter):
             source=source,
             raw_message=message,
             message_id=str(message.message_id),
+            platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,

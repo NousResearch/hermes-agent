@@ -266,7 +266,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'tool.complete':
         turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
 
-        if (ev.payload.inline_diff) {
+        if (ev.payload.inline_diff && getUiState().inlineDiffs) {
           sys(ev.payload.inline_diff)
         }
 

@@ -10,6 +10,7 @@ import type {
   ActivityItem,
   ApprovalReq,
   ClarifyReq,
+  ConfirmReq,
   DetailsMode,
   Msg,
   PanelSection,
@@ -53,10 +54,12 @@ export interface GatewayProviderProps {
 export interface OverlayState {
   approval: ApprovalReq | null
   clarify: ClarifyReq | null
+  confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
   picker: boolean
   secret: null | SecretReq
+  skillsHub: boolean
   sudo: null | SudoReq
 }
 
@@ -78,9 +81,13 @@ export interface UiState {
   compact: boolean
   detailsMode: DetailsMode
   info: null | SessionInfo
+  inlineDiffs: boolean
+  showCost: boolean
+  showReasoning: boolean
   sid: null | string
   status: string
   statusBar: boolean
+  streaming: boolean
   theme: Theme
   usage: Usage
 }
@@ -335,5 +342,6 @@ export interface AppOverlaysProps {
 
 export interface PasteSnippet {
   label: string
+  path?: string
   text: string
 }

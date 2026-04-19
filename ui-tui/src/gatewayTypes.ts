@@ -47,12 +47,17 @@ export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
   | { message?: string; name: string; type: 'skill' }
+  | { message: string; type: 'send' }
 
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   details_mode?: string
+  inline_diffs?: boolean
+  show_cost?: boolean
+  show_reasoning?: boolean
+  streaming?: boolean
   thinking_mode?: string
   tui_compact?: boolean
   tui_statusbar?: boolean
@@ -150,6 +155,11 @@ export interface SessionCloseResponse {
 
 export interface SessionInterruptResponse {
   ok?: boolean
+}
+
+export interface SessionSteerResponse {
+  status?: 'queued' | 'rejected'
+  text?: string
 }
 
 // ── Prompt / submission ──────────────────────────────────────────────

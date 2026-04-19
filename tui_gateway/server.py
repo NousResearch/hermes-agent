@@ -27,7 +27,7 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
-_pending: dict[str, threading.Event] = {}
+_pending: dict[str, tuple[str, threading.Event]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _stdout_lock = threading.Lock()
@@ -296,7 +296,7 @@ def _enable_gateway_prompts() -> None:
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
-    _pending[rid] = ev
+    _pending[rid] = (sid, ev)
     payload["request_id"] = rid
     _emit(event, sid, payload)
     ev.wait(timeout=timeout)
@@ -304,10 +304,19 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     return _answers.pop(rid, "")
 
 
-def _clear_pending():
-    for rid, ev in list(_pending.items()):
-        _answers[rid] = ""
-        ev.set()
+def _clear_pending(sid: str | None = None) -> None:
+    """Release pending prompts with an empty answer.
+
+    When *sid* is provided, only prompts owned by that session are
+    released — critical for session.interrupt, which must not
+    collaterally cancel clarify/sudo/secret prompts on unrelated
+    sessions sharing the same tui_gateway process.  When *sid* is
+    None, every pending prompt is released (used during shutdown).
+    """
+    for rid, (owner_sid, ev) in list(_pending.items()):
+        if sid is None or owner_sid == sid:
+            _answers[rid] = ""
+            ev.set()
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -588,6 +597,11 @@ def _session_info(agent) -> dict:
         info["skills"] = get_available_skills()
     except Exception:
         pass
+    try:
+        from tools.mcp_tool import get_mcp_status
+        info["mcp_servers"] = get_mcp_status()
+    except Exception:
+        info["mcp_servers"] = []
     try:
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command
@@ -1219,6 +1233,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    # Reject during an in-flight turn.  If we mutated history while
+    # the agent thread is running, prompt.submit's post-run history
+    # write would either clobber the undo (version matches) or
+    # silently drop the agent's output (version mismatch, see below).
+    # Neither is what the user wants — make them /interrupt first.
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /undo")
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
@@ -1238,6 +1259,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /compress")
     try:
         with session["history_lock"]:
             removed, usage = _compress_session_history(session, str(params.get("focus_topic", "") or "").strip())
@@ -1331,13 +1354,42 @@ def _(rid, params: dict) -> dict:
         return err
     if hasattr(session["agent"], "interrupt"):
         session["agent"].interrupt()
-    _clear_pending()
+    # Scope the pending-prompt release to THIS session.  A global
+    # _clear_pending() would collaterally cancel clarify/sudo/secret
+    # prompts on unrelated sessions sharing the same tui_gateway
+    # process, silently resolving them to empty strings.
+    _clear_pending(params.get("session_id", ""))
     try:
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
     except Exception:
         pass
     return _ok(rid, {"status": "interrupted"})
+
+
+@method("session.steer")
+def _(rid, params: dict) -> dict:
+    """Inject a user message into the next tool result without interrupting.
+
+    Mirrors AIAgent.steer(). Safe to call while a turn is running — the text
+    lands on the last tool result of the next tool batch and the model sees
+    it on its next iteration. No interrupt, no new user turn, no role
+    alternation violation.
+    """
+    text = (params.get("text") or "").strip()
+    if not text:
+        return _err(rid, 4002, "text is required")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None or not hasattr(agent, "steer"):
+        return _err(rid, 4010, "agent does not support steer")
+    try:
+        accepted = agent.steer(text)
+    except Exception as exc:
+        return _err(rid, 5000, f"steer failed: {exc}")
+    return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
 
 
 @method("terminal.resize")
@@ -1413,12 +1465,33 @@ def _(rid, params: dict) -> dict:
             )
 
             last_reasoning = None
+            status_note = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     with session["history_lock"]:
-                        if int(session.get("history_version", 0)) == history_version:
+                        current_version = int(session.get("history_version", 0))
+                        if current_version == history_version:
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                        else:
+                            # History mutated externally during the turn
+                            # (undo/compress/retry/rollback now guard on
+                            # session.running, but this is the defensive
+                            # backstop for any path that slips past).
+                            # Surface the desync rather than silently
+                            # dropping the agent's output — the UI can
+                            # show the response and warn that it was
+                            # not persisted.
+                            print(
+                                f"[tui_gateway] prompt.submit: history_version mismatch "
+                                f"(expected={history_version} current={current_version}) — "
+                                f"agent output NOT written to session history",
+                                file=sys.stderr,
+                            )
+                            status_note = (
+                                "History changed during this turn — the response above is visible "
+                                "but was not saved to session history."
+                            )
                 raw = result.get("final_response", "")
                 status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
                 lr = result.get("last_reasoning")
@@ -1431,6 +1504,8 @@ def _(rid, params: dict) -> dict:
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
+            if status_note:
+                payload["warning"] = status_note
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
@@ -1622,9 +1697,10 @@ def _(rid, params: dict) -> dict:
 
 def _respond(rid, params, key):
     r = params.get("request_id", "")
-    ev = _pending.get(r)
-    if not ev:
+    entry = _pending.get(r)
+    if not entry:
         return _err(rid, 4009, f"no pending {key} request")
+    _, ev = entry
     _answers[r] = params.get(key, "")
     ev.set()
     return _ok(rid, {"status": "ok"})
@@ -1924,6 +2000,13 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/logs", "Show recent gateway log lines", "TUI"),
 ]
 
+# Commands that queue messages onto _pending_input in the CLI.
+# In the TUI the slash worker subprocess has no reader for that queue,
+# so slash.exec rejects them → TUI falls through to command.dispatch.
+_PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
+    "retry", "queue", "q", "steer", "plan",
+})
+
 
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
@@ -1962,8 +2045,35 @@ def _(rid, params: dict) -> dict:
                 cat_order.append(cat)
             cat_map[cat].append([name, desc])
 
-        skill_count = 0
         warning = ""
+        try:
+            qcmds = _load_cfg().get("quick_commands", {}) or {}
+            if isinstance(qcmds, dict) and qcmds:
+                bucket = "User commands"
+                if bucket not in cat_map:
+                    cat_map[bucket] = []
+                    cat_order.append(bucket)
+                for qname, qc in sorted(qcmds.items()):
+                    if not isinstance(qc, dict):
+                        continue
+                    key = f"/{qname}"
+                    canon[key.lower()] = key
+                    qtype = qc.get("type", "")
+                    if qtype == "exec":
+                        default_desc = f"exec: {qc.get('command', '')}"
+                    elif qtype == "alias":
+                        default_desc = f"alias → {qc.get('target', '')}"
+                    else:
+                        default_desc = qtype or "quick command"
+                    qdesc = str(qc.get("description") or default_desc)
+                    qdesc = qdesc[:120] + ("…" if len(qdesc) > 120 else "")
+                    all_pairs.append([key, qdesc])
+                    cat_map[bucket].append([key, qdesc])
+        except Exception as e:
+            if not warning:
+                warning = f"quick_commands discovery unavailable: {e}"
+
+        skill_count = 0
         try:
             from agent.skill_commands import scan_skill_commands
             for k, info in sorted(scan_skill_commands().items()):
@@ -2091,6 +2201,77 @@ def _(rid, params: dict) -> dict:
                 return _ok(rid, {"type": "skill", "message": msg, "name": cmds[key].get("name", name)})
     except Exception:
         pass
+
+    # ── Commands that queue messages onto _pending_input in the CLI ───
+    # In the TUI the slash worker subprocess has no reader for that queue,
+    # so we handle them here and return a structured payload.
+
+    if name in ("queue", "q"):
+        if not arg:
+            return _err(rid, 4004, "usage: /queue <prompt>")
+        return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "retry":
+        if not session:
+            return _err(rid, 4001, "no active session to retry")
+        if session.get("running"):
+            return _err(rid, 4009, "session busy — /interrupt the current turn before /retry")
+        history = session.get("history", [])
+        if not history:
+            return _err(rid, 4018, "no previous user message to retry")
+        # Walk backwards to find the last user message
+        last_user_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_idx = i
+                break
+        if last_user_idx is None:
+            return _err(rid, 4018, "no previous user message to retry")
+        content = history[last_user_idx].get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+            )
+        if not content:
+            return _err(rid, 4018, "last user message is empty")
+        # Truncate history: remove everything from the last user message onward
+        # (mirrors CLI retry_last() which strips the failed exchange)
+        with session["history_lock"]:
+            session["history"] = history[:last_user_idx]
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        return _ok(rid, {"type": "send", "message": content})
+
+    if name == "steer":
+        if not arg:
+            return _err(rid, 4004, "usage: /steer <prompt>")
+        agent = session.get("agent") if session else None
+        if agent and hasattr(agent, "steer"):
+            try:
+                accepted = agent.steer(arg)
+                if accepted:
+                    return _ok(rid, {"type": "exec", "output": f"⏩ Steer queued — arrives after the next tool call: {arg[:80]}{'...' if len(arg) > 80 else ''}"})
+            except Exception:
+                pass
+        # Fallback: no active run, treat as next-turn message
+        return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "plan":
+        try:
+            from agent.skill_commands import build_skill_invocation_message as _bsim, build_plan_path
+            user_instruction = arg or ""
+            plan_path = build_plan_path(user_instruction)
+            msg = _bsim(
+                "/plan", user_instruction,
+                task_id=session.get("session_key", "") if session else "",
+                runtime_note=(
+                    "Save the markdown plan with write_file to this exact relative path "
+                    f"inside the active workspace/backend cwd: {plan_path}"
+                ),
+            )
+            if msg:
+                return _ok(rid, {"type": "send", "message": msg})
+        except Exception as e:
+            return _err(rid, 5030, f"plan skill failed: {e}")
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
@@ -2308,6 +2489,26 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
 
+    # Skill slash commands and _pending_input commands must NOT go through the
+    # slash worker — see _PENDING_INPUT_COMMANDS definition above.
+    # (/browser connect/disconnect also uses _pending_input for context
+    # notes, but the actual browser operations need the slash worker's
+    # env-var side effects, so they stay in slash.exec — only the context
+    # note to the model is lost, which is low-severity.)
+    _cmd_parts = cmd.split() if not cmd.startswith("/") else cmd.lstrip("/").split()
+    _cmd_base = _cmd_parts[0] if _cmd_parts else ""
+
+    if _cmd_base in _PENDING_INPUT_COMMANDS:
+        return _err(rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}")
+
+    try:
+        from agent.skill_commands import get_skill_commands
+        _cmd_key = f"/{_cmd_base}"
+        if _cmd_key in get_skill_commands():
+            return _err(rid, 4018, f"skill command: use command.dispatch for {_cmd_key}")
+    except Exception:
+        pass
+
     worker = session.get("slash_worker")
     if not worker:
         try:
@@ -2425,6 +2626,13 @@ def _(rid, params: dict) -> dict:
     file_path = params.get("file_path", "")
     if not target:
         return _err(rid, 4014, "hash required")
+    # Full-history rollback mutates session history.  Rejecting during
+    # an in-flight turn prevents prompt.submit from silently dropping
+    # the agent's output (version mismatch path) or clobbering the
+    # rollback (version-matches path).  A file-scoped rollback only
+    # touches disk, so we allow it.
+    if not file_path and session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before full rollback.restore")
     try:
         def go(mgr, cwd):
             resolved = _resolve_checkpoint_hash(mgr, cwd, target)

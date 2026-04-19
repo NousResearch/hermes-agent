@@ -669,6 +669,15 @@ class MessageEvent:
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
+
+    # Platform-specific update identifier.  For Telegram this is the
+    # ``update_id`` from the PTB Update wrapper; other platforms currently
+    # ignore it.  Used by ``/restart`` to record the triggering update so the
+    # new gateway can advance the Telegram offset past it and avoid processing
+    # the same ``/restart`` twice if PTB's graceful-shutdown ACK times out
+    # ("Error while calling `get_updates` one more time to mark all fetched
+    # updates" in gateway.log).
+    platform_update_id: Optional[int] = None
     
     # Media attachments
     # media_urls: local file paths (for vision tool access)
@@ -1045,16 +1054,40 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    # Default: the adapter treats ``finalize=True`` on edit_message as a
+    # no-op and is happy to have the stream consumer skip redundant final
+    # edits.  Subclasses that *require* an explicit finalize call to close
+    # out the message lifecycle (e.g. rich card / AI assistant surfaces
+    # such as DingTalk AI Cards) override this to True (class attribute or
+    # property) so the stream consumer knows not to short-circuit.
+    REQUIRES_EDIT_FINALIZE: bool = False
+
     async def edit_message(
         self,
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't
         support editing return success=False and callers fall back to
         sending a new message.
+
+        ``finalize`` signals that this is the last edit in a streaming
+        sequence.  Most platforms (Telegram, Slack, Discord, Matrix,
+        etc.) treat it as a no-op because their edit APIs have no notion
+        of message lifecycle state — an edit is an edit.  Platforms that
+        render streaming updates with a distinct "in progress" state and
+        require explicit closure (e.g. rich card / AI assistant surfaces
+        such as DingTalk AI Cards) use it to finalize the message and
+        transition the UI out of the streaming indicator — those should
+        also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
+        final edit through even when content is unchanged.  Callers
+        should set ``finalize=True`` on the final edit of a streamed
+        response (typically when ``got_done`` fires in the stream
+        consumer) and leave it ``False`` on intermediate edits.
         """
         return SendResult(success=False, error="Not supported")
 
@@ -1893,9 +1926,18 @@ class BasePlatformAdapter(ABC):
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued message from interrupt", self.name)
-                # Clean up current session before processing pending
-                if session_key in self._active_sessions:
-                    del self._active_sessions[session_key]
+                # Keep the _active_sessions entry live across the turn chain
+                # and only CLEAR the interrupt Event — do NOT delete the entry.
+                # If we deleted here, a concurrent inbound message arriving
+                # during the awaits below would pass the Level-1 guard, spawn
+                # its own _process_message_background, and run simultaneously
+                # with the recursive drain below.  Two agents on one
+                # session_key = duplicate responses, duplicate tool calls.
+                # Clearing the Event keeps the guard live so follow-ups take
+                # the busy-handler path (queue + interrupt) as intended.
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
                 typing_task.cancel()
                 try:
                     await typing_task
@@ -1953,6 +1995,34 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
+            # Late-arrival drain: a message may have arrived during the
+            # cleanup awaits above (typing_task cancel, stop_typing).  Such
+            # messages passed the Level-1 guard (entry still live, Event
+            # possibly set) and landed in _pending_messages via the
+            # busy-handler path.  Without this block, we would delete the
+            # active-session entry and the queued message would be silently
+            # dropped (user never gets a reply).
+            late_pending = self._pending_messages.pop(session_key, None)
+            if late_pending is not None:
+                logger.debug(
+                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                    self.name,
+                )
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
+                drain_task = asyncio.create_task(
+                    self._process_message_background(late_pending, session_key)
+                )
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
+                    pass
+                # Leave _active_sessions[session_key] populated — the drain
+                # task's own lifecycle will clean it up.
+                return
             # Clean up session tracking
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]
@@ -1963,12 +2033,26 @@ class BasePlatformAdapter(ABC):
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
         """
-        tasks = [task for task in self._background_tasks if not task.done()]
-        for task in tasks:
-            self._expected_cancelled_tasks.add(task)
-            task.cancel()
-        if tasks:
+        # Loop until no new tasks appear.  Without this, a message
+        # arriving during the `await asyncio.gather` below would spawn
+        # a fresh _process_message_background task (added to
+        # self._background_tasks at line ~1668 via handle_message),
+        # and the _background_tasks.clear() at the end of this method
+        # would drop the reference — the task runs untracked against a
+        # disconnecting adapter, logs send-failures, and may linger
+        # until it completes on its own.  Retrying the drain until the
+        # task set stabilizes closes the window.
+        MAX_DRAIN_ROUNDS = 5
+        for _ in range(MAX_DRAIN_ROUNDS):
+            tasks = [task for task in self._background_tasks if not task.done()]
+            if not tasks:
+                break
+            for task in tasks:
+                self._expected_cancelled_tasks.add(task)
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Loop: late-arrival tasks spawned during the gather above
+            # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._pending_messages.clear()

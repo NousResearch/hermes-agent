@@ -12,6 +12,7 @@ This module provides:
 - hermes config wizard   - Re-run setup wizard
 """
 
+import copy
 import os
 import platform
 import re
@@ -26,6 +27,7 @@ from typing import Dict, Any, Optional, List, Tuple
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -401,7 +403,11 @@ DEFAULT_CONFIG = {
         "container_persistent": True,   # Persist filesystem across sessions
         # Docker volume mounts — share host directories with the container.
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
-        # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
+        # Example:
+        # ["/home/user/projects:/workspace/projects",
+        #  "/home/user/.hermes/cache/documents:/output"]
+        # For gateway MEDIA delivery, write inside Docker to /output/... and emit
+        # the host-visible path in MEDIA:, not the container path.
         "docker_volumes": [],
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.
@@ -735,9 +741,14 @@ DEFAULT_CONFIG = {
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
     #   off    — skip all approval prompts (equivalent to --yolo)
+    #
+    # cron_mode — what to do when a cron job hits a dangerous command:
+    #   deny    — block the command and let the agent find another way (default, safe)
+    #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        "cron_mode": "deny",
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -769,6 +780,20 @@ DEFAULT_CONFIG = {
         "wrap_response": True,
     },
 
+    # execute_code settings — controls the tool used for programmatic tool calls.
+    "code_execution": {
+        # Execution mode:
+        #   project (default) — scripts run in the session's working directory
+        #     with the active virtualenv/conda env's python, so project deps
+        #     (pandas, torch, project packages) and relative paths resolve.
+        #   strict            — scripts run in an isolated temp directory with
+        #     hermes-agent's own python (sys.executable). Maximum isolation
+        #     and reproducibility; project deps and relative paths won't work.
+        # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
+        # tool whitelist apply identically in both modes.
+        "mode": "project",
+    },
+
     # Logging — controls file logging to ~/.hermes/logs/.
     # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
     "logging": {
@@ -786,7 +811,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 18,
+    "_config_version": 19,
 }
 
 # =============================================================================
@@ -2635,6 +2660,85 @@ def _expand_env_vars(obj):
     return obj
 
 
+def _items_by_unique_name(items):
+    """Return a name-indexed dict only when all items have unique string names."""
+    if not isinstance(items, list):
+        return None
+    indexed = {}
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            return None
+        name = item["name"]
+        if name in indexed:
+            return None
+        indexed[name] = item
+    return indexed
+
+
+def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
+    """Restore raw ``${VAR}`` templates when a value is otherwise unchanged.
+
+    ``load_config()`` expands env refs for runtime use. When a caller later
+    persists that config after modifying some unrelated setting, keep the
+    original on-disk template instead of writing the expanded plaintext
+    secret back to ``config.yaml``.
+
+    Prefer preserving the raw template when ``current`` still matches either
+    the value previously returned by ``load_config()`` for this config path or
+    the current environment expansion of ``raw``. This handles env-var
+    rotation between load and save while still treating mixed literal/template
+    string edits as caller-owned once their rendered value diverges.
+    """
+    if isinstance(current, str) and isinstance(raw, str) and re.search(r"\${[^}]+}", raw):
+        if current == raw:
+            return raw
+        if isinstance(loaded_expanded, str) and current == loaded_expanded:
+            return raw
+        if _expand_env_vars(raw) == current:
+            return raw
+        return current
+
+    if isinstance(current, dict) and isinstance(raw, dict):
+        return {
+            key: _preserve_env_ref_templates(
+                value,
+                raw.get(key),
+                loaded_expanded.get(key) if isinstance(loaded_expanded, dict) else None,
+            )
+            for key, value in current.items()
+        }
+
+    if isinstance(current, list) and isinstance(raw, list):
+        # Prefer matching named config objects (e.g. custom_providers) by name
+        # so harmless reordering doesn't drop the original template. If names
+        # are duplicated, fall back to positional matching instead of silently
+        # shadowing one entry.
+        current_by_name = _items_by_unique_name(current)
+        raw_by_name = _items_by_unique_name(raw)
+        loaded_by_name = _items_by_unique_name(loaded_expanded)
+        if current_by_name is not None and raw_by_name is not None:
+            return [
+                _preserve_env_ref_templates(
+                    item,
+                    raw_by_name.get(item.get("name")),
+                    loaded_by_name.get(item.get("name")) if loaded_by_name is not None else None,
+                )
+                for item in current
+            ]
+        return [
+            _preserve_env_ref_templates(
+                item,
+                raw[index] if index < len(raw) else None,
+                loaded_expanded[index]
+                if isinstance(loaded_expanded, list) and index < len(loaded_expanded)
+                else None,
+            )
+            for index, item in enumerate(current)
+        ]
+
+    return current
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url into model section.
 
@@ -2702,7 +2806,6 @@ def read_raw_config() -> Dict[str, Any]:
 
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
-    import copy
     ensure_hermes_home()
     config_path = get_config_path()
     
@@ -2723,8 +2826,11 @@ def load_config() -> Dict[str, Any]:
             config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
-    
-    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+
+    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    expanded = _expand_env_vars(normalized)
+    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(expanded)
+    return expanded
 
 
 _SECURITY_COMMENT = """
@@ -2759,7 +2865,7 @@ _FALLBACK_COMMENT = """
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
-# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
 # fallback_model:
 #   provider: openrouter
@@ -2803,7 +2909,7 @@ _COMMENTED_SECTIONS = """
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
-# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
 # fallback_model:
 #   provider: openrouter
@@ -2833,7 +2939,15 @@ def save_config(config: Dict[str, Any]):
 
     ensure_hermes_home()
     config_path = get_config_path()
-    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    normalized = current_normalized
+    raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
+    if raw_existing:
+        normalized = _preserve_env_ref_templates(
+            normalized,
+            raw_existing,
+            _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+        )
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
@@ -2851,6 +2965,7 @@ def save_config(config: Dict[str, Any]):
         extra_content="".join(parts) if parts else None,
     )
     _secure_file(config_path)
+    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
 def load_env() -> Dict[str, str]:

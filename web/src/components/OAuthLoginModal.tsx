@@ -175,7 +175,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess, onError }: Props
         </button>
         <div className="p-6 flex flex-col gap-4">
           <div>
-            <h2 id="oauth-modal-title" className="font-display text-base tracking-wider uppercase">
+            <h2 id="oauth-modal-title" className="font-mondwest text-base tracking-wider uppercase">
               {t.oauth.connect} {provider.name}
             </h2>
             {secondsLeft !== null && phase !== "approved" && phase !== "error" && (

@@ -1310,3 +1310,39 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+# ---------------------------------------------------------------------------
+# Issue #6133 — vars() on response objects that lack __dict__ raises TypeError.
+# The fix must use a safe fallback (hasattr __dict__ / model_dump) instead.
+# ---------------------------------------------------------------------------
+
+
+def test_run_conversation_slots_response_does_not_raise(monkeypatch):
+    """Response objects that define __slots__ (and therefore have no __dict__)
+    must not crash the invalid-response debug logging path."""
+
+    class _SlotsResponse:
+        __slots__ = ("output", "output_text", "status")
+
+        def __init__(self):
+            self.output = []
+            self.output_text = None
+            self.status = "completed"
+
+    agent = _build_agent(monkeypatch)
+    calls = {"n": 0}
+
+    def _fake_api(api_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _SlotsResponse()
+        return _codex_message_response("Recovered")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api)
+
+    result = agent.run_conversation("ping")
+
+    assert calls["n"] >= 2
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered"

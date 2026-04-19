@@ -9499,7 +9499,16 @@ class AIAgent:
                         # Check for x-openrouter-provider or similar metadata
                         if provider_name == "Unknown" and response:
                             # Log all response attributes for debugging
-                            resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                            try:
+                                if hasattr(response, "__dict__"):
+                                    _resp_dict = response.__dict__
+                                elif hasattr(response, "model_dump"):
+                                    _resp_dict = response.model_dump()
+                                else:
+                                    _resp_dict = {}
+                                resp_attrs = {k: str(v)[:100] for k, v in _resp_dict.items() if not k.startswith('_')}
+                            except (TypeError, AttributeError):
+                                resp_attrs = {}
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         

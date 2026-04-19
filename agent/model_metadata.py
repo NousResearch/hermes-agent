@@ -1200,6 +1200,77 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     return None
 
 
+def resolve_custom_providers_context_length(
+    config_data: dict,
+    model: str,
+    base_url: str,
+    *,
+    warn_on_invalid: bool = False,
+) -> int | None:
+    """Resolve per-model context_length from custom_providers in config data.
+
+    Walks the custom_providers list looking for a provider whose base_url
+    matches, then checks that provider's ``models.<model>.context_length``.
+
+    Returns the integer context_length if found, otherwise None.
+
+    When ``warn_on_invalid=True``, logs a warning and prints to stderr
+    if context_length exists but cannot be converted to int (e.g. "256K").
+    This matches the behaviour of the original AIAgent.__init__ path.
+
+    This replaces the inline custom_providers loops that were scattered
+    across run_agent.py and gateway/run.py.
+    """
+    if not base_url:
+        return None
+
+    try:
+        try:
+            from hermes_cli.config import get_compatible_custom_providers as _gcp
+            custom_providers = _gcp(config_data)
+        except Exception:
+            custom_providers = config_data.get("custom_providers")
+            if not isinstance(custom_providers, list):
+                custom_providers = []
+    except Exception:
+        custom_providers = []
+
+    normalized_base = base_url.rstrip("/")
+    for cp in custom_providers:
+        if not isinstance(cp, dict):
+            continue
+        cp_url = (cp.get("base_url") or "").rstrip("/")
+        if cp_url and cp_url == normalized_base:
+            cp_models = cp.get("models", {})
+            if isinstance(cp_models, dict):
+                cp_model_cfg = cp_models.get(model, {})
+                if isinstance(cp_model_cfg, dict):
+                    raw_ctx = cp_model_cfg.get("context_length")
+                    if raw_ctx is not None:
+                        try:
+                            return int(raw_ctx)
+                        except (TypeError, ValueError):
+                            if warn_on_invalid:
+                                import logging, sys
+                                logging.getLogger(__name__).warning(
+                                    "Invalid context_length for model %r in "
+                                    "custom_providers: %r — must be a plain "
+                                    "integer (e.g. 256000, not '256K'). "
+                                    "Falling back to auto-detection.",
+                                    model, raw_ctx,
+                                )
+                                print(
+                                    f"\n⚠ Invalid context_length for model {model!r} "
+                                    f"in custom_providers: {raw_ctx!r}\n"
+                                    f"  Must be a plain integer (e.g. 256000, not '256K').\n"
+                                    f"  Falling back to auto-detected context window.\n",
+                                    file=sys.stderr,
+                                )
+            break
+
+    return None
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",

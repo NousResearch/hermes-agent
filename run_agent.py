@@ -1796,51 +1796,12 @@ class AIAgent:
         # Check custom_providers per-model context_length
         if _config_context_length is None and _custom_providers:
             try:
-                from hermes_cli.config import get_custom_provider_context_length
-                _cp_ctx_resolved = get_custom_provider_context_length(
-                    model=self.model,
-                    base_url=self.base_url,
-                    custom_providers=_custom_providers,
-                )
-                if _cp_ctx_resolved:
-                    _config_context_length = int(_cp_ctx_resolved)
+                from agent.model_metadata import resolve_custom_providers_context_length
+                _config_context_length = resolve_custom_providers_context_length(
+                    _agent_cfg, self.model, self.base_url,
+                    warn_on_invalid=True)
             except Exception:
-                _cp_ctx_resolved = None
-
-            # Surface a clear warning if the user set a context_length but it
-            # wasn't a valid positive int — the helper silently skips those.
-            if _config_context_length is None:
-                _target = self.base_url.rstrip("/") if self.base_url else ""
-                for _cp_entry in _custom_providers:
-                    if not isinstance(_cp_entry, dict):
-                        continue
-                    _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
-                    if _target and _cp_url == _target:
-                        _cp_models = _cp_entry.get("models", {})
-                        if isinstance(_cp_models, dict):
-                            _cp_model_cfg = _cp_models.get(self.model, {})
-                            if isinstance(_cp_model_cfg, dict):
-                                _cp_ctx = _cp_model_cfg.get("context_length")
-                                if _cp_ctx is not None:
-                                    try:
-                                        _parsed = int(_cp_ctx)
-                                        if _parsed <= 0:
-                                            raise ValueError
-                                    except (TypeError, ValueError):
-                                        logger.warning(
-                                            "Invalid context_length for model %r in "
-                                            "custom_providers: %r — must be a positive "
-                                            "integer (e.g. 256000, not '256K'). "
-                                            "Falling back to auto-detection.",
-                                            self.model, _cp_ctx,
-                                        )
-                                        print(
-                                            f"\n⚠ Invalid context_length for model {self.model!r} in custom_providers: {_cp_ctx!r}\n"
-                                            f"  Must be a positive integer (e.g. 256000, not '256K').\n"
-                                            f"  Falling back to auto-detected context window.\n",
-                                            file=sys.stderr,
-                                        )
-                        break
+                pass (fix(context): extract helper + pass config_context_length to all call sites)
         
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting

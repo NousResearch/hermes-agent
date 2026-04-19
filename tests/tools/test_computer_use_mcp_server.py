@@ -1,5 +1,6 @@
 """Tests for the Hermes Codex-style computer-use MCP adapter."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -131,6 +132,38 @@ class TestApprovalAndSessions:
         assert first["session_id"] == second["session_id"]
         assert first["app_session_id"] == second["app_session_id"]
         assert first["app_name"] == "Safari"
+
+    def test_get_app_state_writes_session_state_file(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_SESSION_ID", "session-test")
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "Safari", "window_title": "Docs"}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        state_path = Path(result["session_state_path"])
+        assert state_path.exists() is True
+        payload = json.loads(state_path.read_text())
+        assert payload["session_id"] == "session-test"
+        assert payload["app_session_id"] == result["app_session_id"]
+        assert payload["app_name"] == "Safari"
+        assert payload["active"] is True
 
     def test_get_app_state_can_resume_by_app_session_id(self, monkeypatch, tmp_path):
         store_path = tmp_path / "ComputerUseAppApprovals.json"
@@ -319,6 +352,29 @@ class TestApprovalAndSessions:
         assert stopped["overlay_screenshot_path"] == ""
         assert stopped["overlay_media_tag"] == ""
         assert overlay_path.exists() is False
+
+    def test_stop_app_session_removes_session_state_file(self, monkeypatch, tmp_path):
+        state_root = tmp_path / "session-state"
+        state_root.mkdir()
+        state_path = state_root / "app-1.json"
+        state_path.write_text('{"app_session_id": "app-1"}')
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "session_state_path": str(state_path),
+                "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+            }
+        })
+
+        stopped = adapter.stop_app_session_impl(app_name="Safari")
+
+        assert stopped["success"] is True
+        assert stopped["session_state_path"] == ""
+        assert state_path.exists() is False
 
     def test_stop_app_session_does_not_delete_unmanaged_overlay_path(self, monkeypatch, tmp_path):
         overlay_path = tmp_path / "outside-overlay.png"
@@ -629,6 +685,28 @@ class TestUnsupportedActions:
         assert result["app_session_id"] == "app-2"
         assert result["virtual_cursor"] == {"x": 50, "y": 60, "detached": True, "visible": True}
         assert adapter._APP_SESSIONS["safari"]["virtual_cursor"] == {"x": None, "y": None, "detached": True, "visible": True}
+
+    def test_click_updates_session_state_file_for_target_session(self, monkeypatch, tmp_path):
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            },
+        })
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+
+        result = adapter.click_impl(x=50, y=60, app_session_id="app-2")
+
+        state_path = Path(result["session_state_path"])
+        assert state_path.exists() is True
+        payload = json.loads(state_path.read_text())
+        assert payload["app_session_id"] == "app-2"
+        assert payload["virtual_cursor"] == {"x": 50, "y": 60, "detached": True, "visible": True}
 
     def test_drag_updates_virtual_cursor_to_end_position(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {

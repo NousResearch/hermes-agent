@@ -53,6 +53,7 @@ def _approval_store_path() -> Path:
 def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
     cursor = dict(record.get("virtual_cursor") or {"x": None, "y": None, "detached": True, "visible": True})
     overlay_path = str(record.get("overlay_screenshot_path", "") or "")
+    session_state_path = str(record.get("session_state_path", "") or "")
     return {
         "app_name": record["app_name"],
         "app_session_id": record["app_session_id"],
@@ -63,6 +64,7 @@ def _session_payload(record: dict[str, Any]) -> dict[str, Any]:
         "screenshot_path": record.get("screenshot_path", ""),
         "overlay_screenshot_path": overlay_path,
         "overlay_media_tag": _media_tag_for_path(overlay_path),
+        "session_state_path": session_state_path,
     }
 
 
@@ -123,9 +125,20 @@ def _overlay_root() -> Path:
     return root
 
 
+def _session_state_root() -> Path:
+    root = get_hermes_home() / "computer-use" / "session-state"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _overlay_preview_path(session: dict[str, Any]) -> Path:
     app_session_id = str(session.get("app_session_id") or uuid.uuid4().hex)
     return _overlay_root() / f"{app_session_id}-cursor-preview.png"
+
+
+def _session_state_path(session: dict[str, Any]) -> Path:
+    app_session_id = str(session.get("app_session_id") or uuid.uuid4().hex)
+    return _session_state_root() / f"{app_session_id}.json"
 
 
 def _media_tag_for_path(path: str | Path | None) -> str:
@@ -146,6 +159,36 @@ def _clear_overlay_preview(session: dict[str, Any]) -> None:
         except (OSError, RuntimeError):
             pass
     session["overlay_screenshot_path"] = ""
+
+
+def _clear_session_state(session: dict[str, Any]) -> None:
+    raw = str(session.get("session_state_path") or "").strip()
+    if raw:
+        try:
+            path = Path(os.path.normpath(str(Path(raw).expanduser().absolute())))
+            managed_root = Path(os.path.normpath(str(_session_state_root().expanduser().absolute())))
+            if path.exists() and (path == managed_root or managed_root in path.parents):
+                path.unlink()
+        except (OSError, RuntimeError):
+            pass
+    session["session_state_path"] = ""
+
+
+def _write_session_state(session: dict[str, Any]) -> str:
+    state_path = _session_state_path(session)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    session["session_state_path"] = str(state_path)
+    payload = {
+        "session_id": _SESSION_ID,
+        **_session_payload(session),
+    }
+    state_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return str(state_path)
+
+
+def _sync_session_artifacts(session: dict[str, Any]) -> str:
+    _sync_virtual_cursor_overlay(session)
+    return _write_session_state(session)
 
 
 def _sync_virtual_cursor_overlay(session: dict[str, Any]) -> str:
@@ -313,6 +356,7 @@ def stop_app_session_impl(app_name: str | None = None, app_session_id: str | Non
     was_active = bool(record.get("active"))
     record["active"] = False
     _clear_overlay_preview(record)
+    _clear_session_state(record)
     return {
         "success": True,
         "stopped": was_active,
@@ -436,7 +480,7 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
     session["window_title"] = frontmost.get("window_title", "")
     session["screenshot_path"] = screenshot.get("path", "")
     session.setdefault("virtual_cursor", _fresh_virtual_cursor())
-    _sync_virtual_cursor_overlay(session)
+    _sync_session_artifacts(session)
     return {
         "success": True,
         "app_name": frontmost_app_name,
@@ -487,7 +531,7 @@ def click_impl(*, index: int | None = None, x: int | None = None, y: int | None 
         cursor["x"] = x
     if y is not None:
         cursor["y"] = y
-    _sync_virtual_cursor_overlay(session)
+    _sync_session_artifacts(session)
     return _preview_pointer_response("click", session)
 
 
@@ -505,7 +549,7 @@ def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = 
         cursor["x"] = x
     if y is not None:
         cursor["y"] = y
-    _sync_virtual_cursor_overlay(session)
+    _sync_session_artifacts(session)
     response = _preview_pointer_response("scroll", session)
     response["delta_y"] = delta_y
     return response
@@ -518,7 +562,7 @@ def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
     cursor["x"] = end_x
     cursor["y"] = end_y
-    _sync_virtual_cursor_overlay(session)
+    _sync_session_artifacts(session)
     response = _preview_pointer_response("drag", session)
     response["drag_path"] = {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}
     return response

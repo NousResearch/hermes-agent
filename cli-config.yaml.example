@@ -327,6 +327,16 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Anthropic prompt caching TTL
+# =============================================================================
+# When prompt caching is active (Claude via OpenRouter or native Anthropic),
+# Anthropic supports two TTL tiers for cached prefixes: "5m" (default) and
+# "1h". Other values are ignored and "5m" is used.
+#
+prompt_caching:
+  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
+
+# =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,

@@ -864,9 +864,45 @@ _LOGIN_TOOLS = {
 }
 
 
+def _collect_workflow_skills() -> set:
+    """Walk ~/.hermes/skills/apmzoom-workflows/*/SKILL.md and union all
+    `skills_used` entries.  Makes the allowlist self-adaptive: authors only
+    need to declare the skills they use in the workflow frontmatter, and
+    the bridge auto-registers them.  No more hand-editing DEFAULT_ALLOWLIST
+    when a new workflow references a previously-unregistered skill.
+    """
+    out: set = set()
+    base = _hermes_home() / "skills" / "apmzoom-workflows"
+    if not base.is_dir():
+        return out
+    for wf_dir in base.iterdir():
+        if not wf_dir.is_dir():
+            continue
+        md = wf_dir / "SKILL.md"
+        if not md.is_file():
+            continue
+        try:
+            content = md.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        # Extract the `skills_used:` YAML block from frontmatter.
+        m = re.search(r'(?m)^\s*skills_used:\s*$((?:\n\s+-\s*.*)+)', content)
+        if not m:
+            continue
+        for item in re.findall(r'-\s*"?([A-Za-z0-9_.-]+)"?\s*$', m.group(1), re.MULTILINE):
+            # Skip ui_* (they're registered separately by tools/apmzoom_ui.py).
+            if not item.startswith("ui_"):
+                out.add(item)
+    return out
+
+
 def _allowlist() -> set:
     raw = os.environ.get("APMZOOM_TOOL_ALLOWLIST", "").strip()
-    base = {s.strip() for s in raw.split(",") if s.strip()} if raw else set(DEFAULT_ALLOWLIST)
+    base = (
+        {s.strip() for s in raw.split(",") if s.strip()}
+        if raw
+        else set(DEFAULT_ALLOWLIST) | _collect_workflow_skills()
+    )
     if os.environ.get("APMZOOM_ALLOW_LOGIN_TOOLS", "").lower() not in ("1", "true", "yes"):
         base -= _LOGIN_TOOLS
     return base

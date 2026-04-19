@@ -373,6 +373,13 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
+                        logger.warning(
+                            "Skipping skill %r: normalized slug is empty after "
+                            "removing invalid characters. Skill names must "
+                            "contain at least one ASCII alphanumeric character "
+                            "(a-z, 0-9).",
+                            name,
+                        )
                         continue
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,

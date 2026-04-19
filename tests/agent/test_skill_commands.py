@@ -351,8 +351,9 @@ class TestScanSkillCommands:
         # The old buggy key should NOT exist
         assert "/jellyfin-+-jellystat-24h-summary" not in result
 
-    def test_allspecial_name_skipped(self, tmp_path):
-        """Skill with name consisting only of special chars is silently skipped."""
+    def test_allspecial_name_emits_warning(self, tmp_path, caplog):
+        """Skill with name consisting only of special chars is skipped with a warning."""
+        caplog.set_level('WARNING')
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = tmp_path / "bad-name"
             skill_dir.mkdir()
@@ -363,6 +364,35 @@ class TestScanSkillCommands:
         # Should not create a "/" key or any entry
         assert "/" not in result
         assert result == {}
+        # A warning should have been logged about the empty normalized slug
+        assert any(
+            "normalized slug is empty" in record.message or "at least one ASCII alphanumeric" in record.message
+            for record in caplog.records
+        )
+
+    def test_non_ascii_skill_name_not_registered_and_logs_warning(self, tmp_path, caplog):
+        """Skill with name containing only non-ASCII chars produces empty slug and logs warning."""
+        caplog.set_level('WARNING')
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "文档搜索")
+            result = scan_skill_commands()
+        # Non-ASCII chars are stripped, leaving empty slug → skill not registered
+        assert "/" not in result
+        assert result == {}
+        # A warning should have been logged about the empty normalized slug
+        assert any(
+            "normalized slug is empty" in record.message or "at least one ASCII alphanumeric" in record.message
+            for record in caplog.records
+        )
+
+    def test_mixed_ascii_nonascii_skill_name_strips_nonascii(self, tmp_path):
+        """Skill with mixed ASCII and non-ASCII chars registers with ASCII chars only."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "my-文档-tool")
+            result = scan_skill_commands()
+        # Non-ASCII chars stripped, multi-hyphen collapsed → /my-tool
+        assert "/my-tool" in result
+        assert result["/my-tool"]["name"] == "my-文档-tool"
 
     def test_slash_in_name_stripped_from_cmd_key(self, tmp_path):
         """Skill names with / chars produce clean cmd keys."""

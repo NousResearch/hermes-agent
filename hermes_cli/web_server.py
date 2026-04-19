@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import hmac
 import importlib.util
 import json
@@ -28,6 +29,23 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively sanitize data structures for JSON serialization.
+
+    Handles bytes objects that may contain non-UTF-8 data in the database.
+    """
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode("utf-8")
+        except (UnicodeDecodeError, ValueError):
+            return base64.b64encode(obj).decode("ascii")
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(item) for item in obj]
+    return obj
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -708,7 +726,12 @@ async def get_sessions(limit: int = 20, offset: int = 0):
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            return {
+                "sessions": _sanitize_for_json(sessions),
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
         finally:
             db.close()
     except Exception as e:
@@ -1896,7 +1919,7 @@ async def get_session_detail(session_id: str):
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        return session
+        return _sanitize_for_json(session)
     finally:
         db.close()
 
@@ -1910,7 +1933,7 @@ async def get_session_messages(session_id: str):
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         messages = db.get_messages(sid)
-        return {"session_id": sid, "messages": messages}
+        return {"session_id": sid, "messages": _sanitize_for_json(messages)}
     finally:
         db.close()
 

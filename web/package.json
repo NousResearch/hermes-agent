@@ -14,9 +14,13 @@
   },
   "dependencies": {
     "@nous-research/ui": "^0.3.0",
+    "@observablehq/plot": "^0.6.17",
+    "@react-three/fiber": "^9.6.0",
     "@tailwindcss/vite": "^4.2.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "gsap": "^3.15.0",
+    "leva": "^0.10.1",
     "lucide-react": "^0.577.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

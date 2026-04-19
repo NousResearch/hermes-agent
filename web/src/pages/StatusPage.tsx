@@ -9,7 +9,7 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
-import { Cell, Grid } from "@nous-research/ui/ui/components/grid/index";
+import { Cell, Grid } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { PlatformStatus, SessionInfo, StatusResponse } from "@/lib/api";
 import { timeAgo, isoTimeAgo } from "@/lib/utils";

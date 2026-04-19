@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Palette, Check } from "lucide-react";
-import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { Typography } from "@nous-research/ui";
 import { BUILTIN_THEMES, useTheme } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -23,7 +23,10 @@ export function ThemeSwitcher() {
   useEffect(() => {
     if (!open) return;
     const onMouseDown = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+      if (
+        wrapperRef.current &&
+        !wrapperRef.current.contains(e.target as Node)
+      ) {
         close();
       }
     };
@@ -104,7 +107,11 @@ export function ThemeSwitcher() {
                   isActive ? "text-midground" : "text-midground/60",
                 )}
               >
-                {preset ? <ThemeSwatch theme={preset.name} /> : <PlaceholderSwatch />}
+                {preset ? (
+                  <ThemeSwatch theme={preset.name} />
+                ) : (
+                  <PlaceholderSwatch />
+                )}
 
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <Typography

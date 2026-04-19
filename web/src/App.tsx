@@ -22,9 +22,7 @@ import {
   Code,
   Eye,
 } from "lucide-react";
-import { Cell, Grid } from "@nous-research/ui/ui/components/grid/index";
-import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
-import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { Cell, Grid, SelectionSwitcher, Typography } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import StatusPage from "@/pages/StatusPage";

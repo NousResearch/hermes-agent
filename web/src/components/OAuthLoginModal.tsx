@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Copy, X, Check, Loader2 } from "lucide-react";
-import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { Typography } from "@nous-research/ui";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

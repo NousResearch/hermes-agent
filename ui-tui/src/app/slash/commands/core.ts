@@ -8,6 +8,7 @@ import type {
   SessionSteerResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
+import { extractCodeBlocks } from '../../../lib/text.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -198,7 +199,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'copy selection or assistant message',
+    help: 'copy selection or assistant message (picker for code blocks)',
     name: 'copy',
     run: (arg, ctx) => {
       const { sys } = ctx.transcript
@@ -216,6 +217,26 @@ export const coreCommands: SlashCommand[] = [
 
       if (!target) {
         return sys('nothing to copy')
+      }
+
+      const blocks = extractCodeBlocks(target.text)
+
+      if (blocks.length > 0) {
+        const items = [
+          { label: 'Full response', text: target.text },
+          ...blocks.map((b, i) => {
+            const preview = b.code.split('\n', 1)[0]?.slice(0, 60) ?? ''
+
+            return {
+              label: `Block ${i + 1} (${b.lang}): ${preview}${preview.length < (b.code.split('\n', 1)[0]?.length ?? 0) ? '…' : ''}`,
+              text: b.code
+            }
+          })
+        ]
+
+        patchOverlayState({ copyPicker: { cursor: 0, items } })
+
+        return
       }
 
       writeOsc52Clipboard(target.text)

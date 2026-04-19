@@ -51,10 +51,21 @@ export interface GatewayProviderProps {
   value: GatewayServices
 }
 
+export interface CopyPickerState {
+  cursor: number
+  items: CopyPickerItem[]
+}
+
+export interface CopyPickerItem {
+  label: string
+  text: string
+}
+
 export interface OverlayState {
   approval: ApprovalReq | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  copyPicker: CopyPickerState | null
   modelPicker: boolean
   pager: null | PagerState
   picker: boolean

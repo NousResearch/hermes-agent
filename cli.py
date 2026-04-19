@@ -116,6 +116,19 @@ def _assistant_copy_text(content: Any) -> str:
     return _strip_reasoning_tags(_assistant_content_as_text(content))
 
 
+_CODE_BLOCK_RE = re.compile(
+    r"```(\w*)\n(.*?)```", re.DOTALL
+)
+
+
+def _extract_code_blocks(text: str) -> list[tuple[str, str]]:
+    """Return ``[(lang, code), ...]`` for every fenced code block in *text*."""
+    return [
+        (m.group(1) or "text", m.group(2).rstrip("\n"))
+        for m in _CODE_BLOCK_RE.finditer(text)
+    ]
+
+
 # =============================================================================
 # Configuration Loading
 # =============================================================================
@@ -3600,7 +3613,16 @@ class HermesCLI:
             _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
 
     def _write_osc52_clipboard(self, text: str) -> None:
-        """Copy *text* to terminal clipboard via OSC 52."""
+        """Copy *text* to clipboard — native first, OSC 52 fallback.
+
+        Tries ``pbcopy`` (macOS) / ``xclip`` / ``xsel`` / ``wl-copy``
+        (Linux) before sending an OSC 52 escape sequence.  Over SSH the
+        native tools are skipped (they'd write to the remote clipboard)
+        and OSC 52 is used instead.
+        """
+        if self._copy_to_system_clipboard(text):
+            return
+
         payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
         seq = f"\x1b]52;c;{payload}\x07"
         out = getattr(self, "_app", None)
@@ -3616,8 +3638,51 @@ class HermesCLI:
         sys.stdout.write(seq)
         sys.stdout.flush()
 
+    def _copy_to_system_clipboard(self, text: str) -> bool:
+        """Try native clipboard commands, return True on success.
+
+        Uses ``pbcopy`` on macOS, ``wl-copy`` / ``xclip`` / ``xsel`` on
+        Linux.  Over SSH (``SSH_CONNECTION`` set) native tools would write
+        to the *remote* clipboard, so this returns False and the caller
+        should fall back to OSC 52.
+        """
+        import shutil
+        import subprocess as _sp
+
+        if os.environ.get("SSH_CONNECTION"):
+            return False
+
+        if sys.platform == "darwin":
+            if shutil.which("pbcopy"):
+                try:
+                    _sp.run(["pbcopy"], input=text.encode(), check=True, timeout=2)
+                    return True
+                except Exception:
+                    return False
+
+        if sys.platform == "linux":
+            for cmd, args in [
+                ("wl-copy", []),
+                ("xclip", ["-selection", "clipboard"]),
+                ("xsel", ["--clipboard", "--input"]),
+            ]:
+                if shutil.which(cmd):
+                    try:
+                        _sp.run([cmd, *args], input=text.encode(), check=True, timeout=2)
+                        return True
+                    except Exception:
+                        continue
+
+        return False
+
     def _handle_copy_command(self, cmd_original: str) -> None:
-        """Handle /copy [number] — copy assistant output to clipboard."""
+        """Handle /copy [number] — copy assistant output to clipboard.
+
+        When the selected response contains fenced code blocks, shows an
+        interactive picker letting the user choose individual blocks or
+        the full response.  Press ``w`` in the picker to write the
+        selection to a file instead of copying to clipboard.
+        """
         parts = cmd_original.split(maxsplit=1)
         arg = parts[1].strip() if len(parts) > 1 else ""
 
@@ -3648,11 +3713,88 @@ class HermesCLI:
             _cprint("  Nothing to copy in that assistant response.")
             return
 
+        blocks = _extract_code_blocks(text)
+        if blocks:
+            self._copy_with_picker(text, blocks, idx)
+        else:
+            self._copy_text_to_clipboard(text, f"assistant response #{idx + 1}")
+
+    def _copy_with_picker(
+        self, full_text: str, blocks: list[tuple[str, str]], response_idx: int,
+    ) -> None:
+        """Show an interactive picker for code blocks inside a response."""
+        from hermes_cli.curses_ui import curses_copy_picker
+
+        labels: list[str] = ["Full response"]
+        for i, (lang, code) in enumerate(blocks):
+            preview = code.split("\n", 1)[0][:60]
+            if len(preview) < len(code.split("\n", 1)[0]):
+                preview += "…"
+            labels.append(f"Block {i + 1} ({lang}): {preview}")
+
+        payloads: list[str] = [full_text] + [code for _, code in blocks]
+
+        choice, write_to_file = curses_copy_picker(labels)
+        if choice is None:
+            _cprint("  Cancelled.")
+            return
+
+        selected = payloads[choice]
+
+        if write_to_file:
+            self._write_copy_to_file(selected, blocks[choice - 1][0] if choice > 0 else "")
+        else:
+            label = labels[choice]
+            self._copy_text_to_clipboard(selected, label)
+
+    def _copy_text_to_clipboard(self, text: str, label: str) -> None:
+        """Copy *text* to clipboard and print confirmation.
+
+        Tries native clipboard commands first (``pbcopy`` / ``xclip`` /
+        ``xsel``).  Falls back to OSC 52 over SSH or when no native
+        tool is available.
+        """
         try:
-            self._write_osc52_clipboard(text)
-            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+            if self._copy_to_system_clipboard(text):
+                _cprint(f"  Copied {label} to clipboard")
+            else:
+                self._write_osc52_clipboard(text)
+                _cprint(f"  Copied {label} to clipboard (via OSC 52)")
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
+
+    def _write_copy_to_file(self, text: str, lang: str) -> None:
+        """Prompt for a file path and write *text* to it."""
+        _EXT_MAP = {
+            "python": ".py", "py": ".py", "javascript": ".js", "js": ".js",
+            "typescript": ".ts", "ts": ".ts", "tsx": ".tsx", "jsx": ".jsx",
+            "rust": ".rs", "go": ".go", "java": ".java", "c": ".c",
+            "cpp": ".cpp", "cs": ".cs", "ruby": ".rb", "rb": ".rb",
+            "shell": ".sh", "bash": ".sh", "sh": ".sh", "zsh": ".sh",
+            "sql": ".sql", "html": ".html", "css": ".css", "json": ".json",
+            "yaml": ".yaml", "yml": ".yaml", "toml": ".toml", "xml": ".xml",
+            "markdown": ".md", "md": ".md",
+        }
+        ext = _EXT_MAP.get(lang.lower(), ".txt") if lang else ".txt"
+        default_name = f"copied_block{ext}"
+
+        try:
+            from prompt_toolkit import prompt as _pt_prompt
+            dest = _pt_prompt(f"  Write to [{default_name}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            _cprint("  Cancelled.")
+            return
+
+        dest = dest or default_name
+        dest_path = os.path.abspath(os.path.expanduser(dest))
+        try:
+            with open(dest_path, "w", encoding="utf-8") as f:
+                f.write(text)
+                if not text.endswith("\n"):
+                    f.write("\n")
+            _cprint(f"  Written to {dest_path}")
+        except Exception as e:
+            _cprint(f"  Write failed: {e}")
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""

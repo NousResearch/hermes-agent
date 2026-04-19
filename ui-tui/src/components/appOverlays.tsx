@@ -100,7 +100,7 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
+  const hasAny = overlay.copyPicker || overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
 
   if (!hasAny) {
     return null
@@ -136,6 +136,31 @@ export function FloatingOverlays({
       {overlay.skillsHub && (
         <FloatBox color={ui.theme.color.bronze}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={ui.theme} />
+        </FloatBox>
+      )}
+
+      {overlay.copyPicker && (
+        <FloatBox color={ui.theme.color.bronze}>
+          <Box flexDirection="column" paddingX={1} paddingY={1}>
+            <Box justifyContent="center" marginBottom={1}>
+              <Text bold color={ui.theme.color.gold}>Select content to copy</Text>
+            </Box>
+
+            {overlay.copyPicker.items.map((item, i) => (
+              <Text
+                bold={i === overlay.copyPicker!.cursor}
+                color={i === overlay.copyPicker!.cursor ? ui.theme.color.green : undefined}
+                key={i}
+              >
+                {i === overlay.copyPicker!.cursor ? ' → ' : '   '}
+                {item.label}
+              </Text>
+            ))}
+
+            <Box marginTop={1}>
+              <Text color={ui.theme.color.dim}>↑↓ navigate · Enter copy · Esc cancel</Text>
+            </Box>
+          </Box>
         </FloatBox>
       )}
 

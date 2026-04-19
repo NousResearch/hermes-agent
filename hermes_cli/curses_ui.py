@@ -431,6 +431,136 @@ def _numbered_single_fallback(
     return None
 
 
+def curses_copy_picker(
+    items: List[str],
+    *,
+    cancel_label: str = "Cancel",
+) -> tuple[int | None, bool]:
+    """Curses picker for /copy code-block selection.
+
+    Each item is a label shown in the list.  Returns ``(index, write)``
+    where *index* is the selected item (``None`` on cancel) and *write*
+    is ``True`` when the user pressed ``w`` instead of Enter (meaning
+    "write to file" rather than "copy to clipboard").
+    """
+    if not sys.stdin.isatty():
+        return (None, False)
+
+    try:
+        import curses
+        result_holder: list = [None, False]
+
+        all_items = list(items) + [cancel_label]
+        cancel_idx = len(items)
+
+        def _draw(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+                curses.init_pair(3, curses.COLOR_CYAN, -1)
+            cursor = 0
+            scroll_offset = 0
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+
+                try:
+                    hattr = curses.A_BOLD
+                    if curses.has_colors():
+                        hattr |= curses.color_pair(2)
+                    stdscr.addnstr(0, 0, "Select content to copy", max_x - 1, hattr)
+                    hint = "  \u2191\u2193 navigate  ENTER copy  w write to file  ESC cancel"
+                    stdscr.addnstr(1, 0, hint, max_x - 1, curses.A_DIM)
+                except curses.error:
+                    pass
+
+                visible_rows = max_y - 3
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible_rows:
+                    scroll_offset = cursor - visible_rows + 1
+
+                for draw_i, i in enumerate(
+                    range(scroll_offset, min(len(all_items), scroll_offset + visible_rows))
+                ):
+                    y = draw_i + 3
+                    if y >= max_y - 1:
+                        break
+                    arrow = "\u2192" if i == cursor else " "
+                    line = f" {arrow} {all_items[i]}"
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % len(all_items)
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % len(all_items)
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    result_holder[0] = cursor
+                    result_holder[1] = False
+                    return
+                elif key == ord("w"):
+                    result_holder[0] = cursor
+                    result_holder[1] = True
+                    return
+                elif key in (27, ord("q")):
+                    result_holder[0] = None
+                    result_holder[1] = False
+                    return
+
+        curses.wrapper(_draw)
+        flush_stdin()
+        idx = result_holder[0]
+        if idx is not None and idx >= cancel_idx:
+            return (None, False)
+        return (idx, result_holder[1])
+
+    except Exception:
+        return _copy_picker_numbered_fallback(items, cancel_label)
+
+
+def _copy_picker_numbered_fallback(
+    items: List[str],
+    cancel_label: str,
+) -> tuple[int | None, bool]:
+    """Text-based numbered fallback for the copy picker."""
+    from hermes_cli.colors import Colors as _C, color as _clr
+
+    print(_clr("\n  Select content to copy", _C.YELLOW))
+    print(_clr("  Enter number to copy, prefix with w to write to file.\n", _C.DIM))
+    for i, label in enumerate(items, 1):
+        print(f"  {i}. {label}")
+    print(f"  {len(items) + 1}. {cancel_label}")
+    print()
+    try:
+        val = input(_clr("  Choice: ", _C.DIM)).strip()
+        if not val:
+            return (None, False)
+        write = val.lower().startswith("w")
+        if write:
+            val = val[1:].strip()
+        idx = int(val) - 1
+        if 0 <= idx < len(items):
+            return (idx, write)
+    except (ValueError, KeyboardInterrupt, EOFError):
+        pass
+    return (None, False)
+
+
 def _numbered_fallback(
     title: str,
     items: List[str],

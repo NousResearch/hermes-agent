@@ -195,3 +195,20 @@ export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 
 export const isPasteBackedText = (text: string) =>
   /\[\[paste:\d+(?:[^\n]*?)\]\]|\[paste #\d+ (?:attached|excerpt)(?:[^\n]*?)\]/.test(text)
+
+const CODE_BLOCK_RE = /```(\w*)\n([\s\S]*?)```/g
+
+export interface CodeBlock {
+  code: string
+  lang: string
+}
+
+export const extractCodeBlocks = (text: string): CodeBlock[] => {
+  const blocks: CodeBlock[] = []
+
+  for (const m of text.matchAll(CODE_BLOCK_RE)) {
+    blocks.push({ code: m[2]!.replace(/\n$/, ''), lang: m[1] || 'text' })
+  }
+
+  return blocks
+}

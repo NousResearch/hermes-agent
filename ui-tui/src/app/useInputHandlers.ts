@@ -171,6 +171,31 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     const live = getUiState()
 
     if (isBlocked) {
+      if (overlay.copyPicker) {
+        const cp = overlay.copyPicker
+        const len = cp.items.length
+
+        if (key.upArrow) {
+          patchOverlayState({ copyPicker: { ...cp, cursor: (cp.cursor - 1 + len) % len } })
+        } else if (key.downArrow) {
+          patchOverlayState({ copyPicker: { ...cp, cursor: (cp.cursor + 1) % len } })
+        } else if (key.return) {
+          writeOsc52Clipboard(cp.items[cp.cursor]!.text)
+          patchOverlayState({ copyPicker: null })
+          actions.sys(`copied "${cp.items[cp.cursor]!.label}" to clipboard (OSC52)`)
+        } else if (ch === 'w') {
+          const item = cp.items[cp.cursor]!
+
+          patchOverlayState({ copyPicker: null })
+          actions.sys(`write-to-file is available in the classic CLI (/copy). Copied "${item.label}" via OSC52 instead.`)
+          writeOsc52Clipboard(item.text)
+        } else if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
+          patchOverlayState({ copyPicker: null })
+        }
+
+        return
+      }
+
       if (overlay.pager) {
         if (key.return || ch === ' ') {
           const nextOffset = overlay.pager.offset + pagerPageSize

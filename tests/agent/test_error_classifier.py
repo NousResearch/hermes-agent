@@ -56,7 +56,8 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large",
             "model_not_found", "format_error",
-            "thinking_signature", "long_context_tier", "unknown",
+            "thinking_signature", "long_context_tier",
+            "invalid_tool_args", "unknown",
         }
         actual = {r.value for r in FailoverReason}
         assert expected == actual
@@ -397,6 +398,86 @@ class TestClassifyApiError:
         e = MockAPIError("Too Many Requests", status_code=429)
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.rate_limit
+
+    # ── Provider-specific: Minimax invalid tool arguments ──
+
+    def test_minimax_invalid_tool_args_with_openrouter(self):
+        """OpenRouter rejecting minimax tool-call args as malformed JSON."""
+        e = MockAPIError(
+            "minimax midstream error: invalid params, "
+            "invalid function arguments json string, "
+            "tool_call_id: call_abc123",
+        )
+        result = classify_api_error(
+            e, provider="openrouter", model="minimax/minimax-m2.7",
+        )
+        assert result.reason == FailoverReason.invalid_tool_args
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_minimax_invalid_tool_args_together_ai(self):
+        """Together AI rejecting minimax request with explicit invalid_request_error type."""
+        e = MockAPIError(
+            "Input validation error",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Input validation error",
+                    "type": "invalid_request_error",
+                    "code": None,
+                }
+            },
+        )
+        result = classify_api_error(
+            e, provider="openrouter", model="minimax/minimax-m2.7",
+        )
+        assert result.reason == FailoverReason.invalid_tool_args
+        assert result.retryable is True
+
+    def test_minimax_input_validation_error_only_not_invalid_tool_args(self):
+        """Generic 'Input validation error' without tool-call evidence → not this reason."""
+        e = MockAPIError(
+            "Input validation error",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Input validation error",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+        # Without minimax model, should not match
+        result = classify_api_error(e, model="claude-sonnet-4")
+        assert result.reason != FailoverReason.invalid_tool_args
+
+    def test_minimax_input_validation_with_tool_evidence(self):
+        """'Input validation error' with tool-call terms → matches on minimax."""
+        e = MockAPIError(
+            "Input validation error on tool arguments",
+            status_code=400,
+        )
+        result = classify_api_error(
+            e, provider="openrouter", model="minimax/minimax-m2.7",
+        )
+        assert result.reason == FailoverReason.invalid_tool_args
+
+    def test_minimax_invalid_tool_args_without_openrouter_in_model(self):
+        """Same error but 'minimax' appears in the error message directly."""
+        e = Exception(
+            "minimax midstream error: invalid params, "
+            "invalid function arguments json string, "
+            "tool_call_id: call_xyz",
+        )
+        result = classify_api_error(
+            e, provider="openrouter", model="minimax/minimax-m2.7",
+        )
+        assert result.reason == FailoverReason.invalid_tool_args
+
+    def test_generic_invalid_params_not_invalid_tool_args(self):
+        """Generic 'invalid params' without minimax model → not this reason."""
+        e = Exception("invalid params: unsupported value")
+        result = classify_api_error(e, model="claude-sonnet-4")
+        assert result.reason != FailoverReason.invalid_tool_args
 
     # ── Transport errors ──
 

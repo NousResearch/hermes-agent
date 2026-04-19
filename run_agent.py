@@ -97,6 +97,7 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.provider_tweaks import get_provider_tweaks, merge_provider_tweaks
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -7119,6 +7120,16 @@ class AIAgent:
         # specific.  Only send to OpenRouter-compatible endpoints.
         # TODO: Nous Portal will add transparent proxy support — re-enable
         # for _is_nous when their backend is updated.
+        if _is_openrouter:
+            # Apply known-broken-endpoint tweaks (e.g. skip Minimax direct
+            # endpoint on minimax/* models where tool-call streams stall —
+            # MiniMax-M2#109, Hermes-PR#12072).  User-supplied preferences
+            # always win; these only supply defaults where absent.
+            _tweaks = get_provider_tweaks(self.model, self._base_url)
+            if _tweaks:
+                provider_preferences = merge_provider_tweaks(
+                    provider_preferences, _tweaks,
+                )
         if provider_preferences and _is_openrouter:
             extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self._base_url_lower
@@ -8602,6 +8613,14 @@ class AIAgent:
                     provider_preferences["order"] = self.providers_order
                 if self.provider_sort:
                     provider_preferences["sort"] = self.provider_sort
+                # Apply known-broken-endpoint tweaks (OpenRouter only).
+                if "openrouter.ai" in self._base_url_lower:
+                    _tweaks = get_provider_tweaks(self.model, self._base_url)
+                    if _tweaks:
+                        provider_preferences = merge_provider_tweaks(
+                            provider_preferences, _tweaks,
+                            log_label="iteration_summary",
+                        )
                 if provider_preferences:
                     summary_extra_body["provider"] = provider_preferences
 
@@ -10225,6 +10244,73 @@ class AIAgent:
                             self.log_prefix, len(messages),
                         )
                         continue
+
+                    # ── Invalid tool-call arguments recovery ────────────
+                    # Minimax (even when routed through Fireworks/OpenRouter)
+                    # sometimes streams a partial or malformed JSON object as
+                    # tool-call arguments.  OpenRouter rejects it mid-stream
+                    # with:
+                    #   "minimax midstream error: invalid params,
+                    #    invalid function arguments json string"
+                    #
+                    # 3-stage recovery strategy:
+                    #   retry 1 → normal retry (model may self-correct)
+                    #   retry 2 → strip the bad assistant message with the
+                    #              tool_calls and inject a JSON corrective
+                    #   retry 3 → triggers the standard fallback chain, so the
+                    #              next model gets a chance
+                    if classified.reason == FailoverReason.invalid_tool_args:
+                        if retry_count == 1:
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Model generated invalid "
+                                f"tool-call JSON — retrying (attempt "
+                                f"{retry_count}/{max_retries})...",
+                                force=True,
+                            )
+                        elif retry_count == 2:
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Model repeated invalid "
+                                f"tool-call JSON — injecting corrective and "
+                                f"retrying...",
+                                force=True,
+                            )
+                            # Strip the most recent assistant message that
+                            # carried tool_calls so the next turn can retry.
+                            _stripped = 0
+                            for _i in range(len(messages) - 1, -1, -1):
+                                _m = messages[_i]
+                                if (
+                                    isinstance(_m, dict)
+                                    and _m.get("role") == "assistant"
+                                    and _m.get("tool_calls")
+                                ):
+                                    messages.pop(_i)
+                                    _stripped += 1
+                                    break  # only one
+                            if _stripped > 0:
+                                self._vprint(
+                                    f"{self.log_prefix}🔧 Stripped {_stripped} "
+                                    f"bad assistant message(s)",
+                                    force=True,
+                                )
+                            # Inject a JSON-corrective reminder so the model
+                            # knows how to format arguments properly.
+                            _corrective = (
+                                "IMPORTANT: When calling a tool, you MUST "
+                                "format the arguments as valid JSON. Every "
+                                "argument value must be proper JSON (strings "
+                                "in double quotes, numbers without quotes, "
+                                "booleans as true/false, no trailing commas, "
+                                "no unmatched brackets). "
+                                'Example: {"query": "price of bitcoin"} '
+                                'NOT {"query: price of bitcoin"}. '
+                                "Validate your JSON before submitting."
+                            )
+                            messages.append({"role": "user", "content": _corrective})
+                            # Keep role alternation clean: drop the tool result
+                            # that preceded the stripped assistant message.
+                            if messages and messages[-1].get("role") == "tool":
+                                messages.pop()
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time

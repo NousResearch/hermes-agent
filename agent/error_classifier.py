@@ -52,6 +52,7 @@ class FailoverReason(enum.Enum):
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
+    invalid_tool_args = "invalid_tool_args"     # Model generated malformed tool-call arguments
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -356,6 +357,48 @@ def classify_api_error(
             retryable=True,
             should_compress=True,
         )
+
+    # Minimax (or routed equivalent) generates tool-call arguments that fail
+    # JSON validation.  Two surfacing modes:
+    #
+    #  1. OpenRouter midstream rejection (streaming):
+    #       "minimax midstream error: invalid params, invalid function
+    #        arguments json string, tool_call_id: call_..."
+    #
+    #  2. Together AI upfront rejection (before streaming):
+    #       status=400, body.error.type="invalid_request_error"
+    #     Together validates the entire request upfront; a malformed JSON
+    #     tool-call argument body triggers HTTP 400 with this generic message.
+    #
+    # Both are retryable — the model may self-correct on the next attempt.
+    _minimax = "minimax" in model_lower
+    if _minimax:
+        _err_obj = body.get("error", {}) if isinstance(body, dict) else {}
+        _err_type = _err_obj.get("type", "") or ""
+        _together_invalid_req = _err_type == "invalid_request_error"
+        # Tool-call co-occurrence evidence: "input validation error" is generic
+        # and could be anything (wrong param type, missing field, etc.).
+        # Only treat it as an invalid-tool-args error when the message also
+        # contains tool-call related terms, or when Together AI's explicit
+        # type field says so.
+        _input_val = "input validation error" in error_msg
+        _input_val_related = _input_val and (
+            "tool" in error_msg
+            or "argument" in error_msg
+            or "json" in error_msg
+            or "param" in error_msg
+        )
+        if (
+            "invalid function arguments json string" in error_msg
+            or "invalid params" in error_msg
+            or _input_val_related
+            or _together_invalid_req
+        ):
+            return _result(
+                FailoverReason.invalid_tool_args,
+                retryable=True,
+                should_compress=False,
+            )
 
     # ── 2. HTTP status code classification ──────────────────────────
 

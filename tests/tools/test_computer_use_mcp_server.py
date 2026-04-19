@@ -295,6 +295,53 @@ class TestApprovalAndSessions:
         assert first["app_session_id"] != second["app_session_id"]
 
 
+class TestOverlayPreviewRenderer:
+    def test_pixel_cursor_draw_args_use_block_rectangles(self):
+        draw_args = adapter._pixel_cursor_draw_args(10, 20)
+
+        assert "-stroke" not in draw_args
+        assert "#8b5cf6" in draw_args
+        assert "rectangle 10,20 13,23" in draw_args
+        assert any(isinstance(arg, str) and arg.startswith("rectangle ") for arg in draw_args)
+
+    def test_sync_virtual_cursor_overlay_uses_pixel_cursor_draw_args(self, monkeypatch, tmp_path):
+        screenshot_path = tmp_path / "shot.png"
+        screenshot_path.write_text("fake image bytes")
+        overlay_path = tmp_path / "overlay.png"
+        seen = {}
+
+        monkeypatch.setattr(adapter, "_overlay_preview_path", lambda session: overlay_path)
+        monkeypatch.setattr(adapter, "_pixel_cursor_draw_args", lambda x, y: ["-fill", "#8b5cf6", "-draw", f"rectangle {x},{y} {x + 3},{y + 3}"])
+        monkeypatch.setattr(adapter.shutil, "which", lambda name: "/opt/homebrew/bin/magick" if name == "magick" else None)
+
+        def fake_run(cmd, check, capture_output, text):
+            seen["cmd"] = cmd
+            return None
+
+        monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+        session = {
+            "app_name": "Safari",
+            "app_session_id": "app-1",
+            "screenshot_path": str(screenshot_path),
+            "virtual_cursor": {"x": 11, "y": 22, "detached": True, "visible": True},
+        }
+
+        result = adapter._sync_virtual_cursor_overlay(session)
+
+        assert result == str(overlay_path)
+        assert session["overlay_screenshot_path"] == str(overlay_path)
+        assert seen["cmd"] == [
+            "/opt/homebrew/bin/magick",
+            str(screenshot_path),
+            "-fill",
+            "#8b5cf6",
+            "-draw",
+            "rectangle 11,22 14,25",
+            str(overlay_path),
+        ]
+
+
 class TestKeyboardTools:
     def test_type_text_impl_requires_active_session(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {})

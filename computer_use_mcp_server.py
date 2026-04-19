@@ -67,6 +67,53 @@ def _fresh_virtual_cursor() -> dict[str, Any]:
     return {"x": None, "y": None, "detached": True, "visible": True}
 
 
+_PIXEL_CURSOR_SCALE = 4
+_PIXEL_CURSOR_COLORS = {
+    "1": "#0f172a",
+    "2": "#8b5cf6",
+    "3": "#c4b5fd",
+    "4": "#22d3ee",
+}
+_PIXEL_CURSOR_ROWS = [
+    "1.......",
+    "12......",
+    "123.....",
+    "1232....",
+    "12322...",
+    "123222..",
+    "1232222.",
+    "12333321",
+    "12324...",
+    "121.21..",
+    "1...21..",
+    "....11..",
+]
+
+
+def _pixel_cursor_draw_args(x: int, y: int) -> list[str]:
+    scale = _PIXEL_CURSOR_SCALE
+    draw_args = [
+        "-fill", "rgba(139,92,246,0.14)",
+        "-draw", f"rectangle {x - scale},{y - scale} {x + scale - 1},{y + scale - 1}",
+        "-fill", "rgba(34,211,238,0.16)",
+        "-draw", f"rectangle {x + (6 * scale)},{y + (7 * scale)} {x + (7 * scale) - 1},{y + (8 * scale) - 1}",
+    ]
+    for row_index, row in enumerate(_PIXEL_CURSOR_ROWS):
+        for col_index, token in enumerate(row):
+            color = _PIXEL_CURSOR_COLORS.get(token)
+            if not color:
+                continue
+            left = x + (col_index * scale)
+            top = y + (row_index * scale)
+            right = left + scale - 1
+            bottom = top + scale - 1
+            draw_args.extend([
+                "-fill", color,
+                "-draw", f"rectangle {left},{top} {right},{bottom}",
+            ])
+    return draw_args
+
+
 def _overlay_root() -> Path:
     root = get_hermes_home() / "computer-use" / "overlay-previews"
     root.mkdir(parents=True, exist_ok=True)
@@ -98,18 +145,14 @@ def _sync_virtual_cursor_overlay(session: dict[str, Any]) -> str:
 
     overlay_path = _overlay_preview_path(session)
     overlay_path.parent.mkdir(parents=True, exist_ok=True)
-    ix = int(x)
-    iy = int(y)
-    radius = 18
-    arm = 28
-    draw_args = [
-        "-stroke", "#8b5cf6",
-        "-strokewidth", "4",
-        "-fill", "rgba(139,92,246,0.18)",
-        "-draw", f"circle {ix},{iy} {ix + radius},{iy}",
-        "-draw", f"line {ix - arm},{iy} {ix + arm},{iy}",
-        "-draw", f"line {ix},{iy - arm} {ix},{iy + arm}",
-    ]
+    try:
+        ix = int(x)
+        iy = int(y)
+    except (TypeError, ValueError):
+        session["overlay_screenshot_path"] = ""
+        return ""
+
+    draw_args = _pixel_cursor_draw_args(ix, iy)
 
     try:
         subprocess.run([magick, str(screenshot_path), *draw_args, str(overlay_path)], check=True, capture_output=True, text=True)

@@ -16,6 +16,7 @@ def _make_agent(fallback_model=None):
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
+        patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client("https://example.com/v1", "test-key"), "test-model")),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -155,3 +156,34 @@ class TestFallbackChainAdvancement:
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
+
+    def test_named_custom_provider_transport_overrides_gpt5_responses_heuristic(self, tmp_path):
+        fbs = [{"provider": "gpt-backup", "model": "gpt-5.4"}]
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), "test-model")):
+            agent = _make_agent(fallback_model=fbs)
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """
+model:
+  default: test-model
+providers:
+  gpt-backup:
+    name: GPT Backup
+    api: https://example.com/v1
+    api_key: test-key
+    default_model: gpt-5.4
+    transport: chat_completions
+""".lstrip()
+        )
+
+        with (
+            patch.dict("os.environ", {"HERMES_HOME": str(hermes_home)}),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client("https://example.com/v1"), "gpt-5.4")),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "gpt-backup"
+        assert agent.model == "gpt-5.4"
+        assert agent.api_mode == "chat_completions"

@@ -6337,6 +6337,7 @@ class AIAgent:
         # access for Codex providers.
         try:
             from agent.auxiliary_client import resolve_provider_client
+            from hermes_cli.runtime_provider import resolve_runtime_provider
             # Pass base_url and api_key from fallback config so custom
             # endpoints (e.g. Ollama Cloud) resolve correctly instead of
             # falling through to OpenRouter defaults.
@@ -6346,6 +6347,14 @@ class AIAgent:
             # when no explicit key is in the fallback config.
             if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
                 fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
+            try:
+                fb_runtime = resolve_runtime_provider(
+                    requested=fb_provider,
+                    explicit_base_url=fb_base_url_hint,
+                    explicit_api_key=fb_api_key_hint,
+                )
+            except Exception:
+                fb_runtime = None
             fb_client, _resolved_fb_model = resolve_provider_client(
                 fb_provider, model=fb_model, raw_codex=True,
                 explicit_base_url=fb_base_url_hint,
@@ -6362,25 +6371,42 @@ class AIAgent:
             except Exception:
                 pass
 
-            # Determine api_mode from provider / base URL / model
-            fb_api_mode = "chat_completions"
-            fb_base_url = str(fb_client.base_url)
-            if fb_provider == "openai-codex":
-                fb_api_mode = "codex_responses"
-            elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
-                fb_api_mode = "anthropic_messages"
-            elif self._is_direct_openai_url(fb_base_url):
-                fb_api_mode = "codex_responses"
-            elif self._provider_model_requires_responses_api(
-                fb_model,
-                provider=fb_provider,
-            ):
-                # GPT-5.x models usually need Responses API, but keep
-                # provider-specific exceptions like Copilot gpt-5-mini on
-                # chat completions.
-                fb_api_mode = "codex_responses"
-            elif fb_provider == "bedrock" or "bedrock-runtime" in fb_base_url.lower():
-                fb_api_mode = "bedrock_converse"
+            configured_fb_api_mode = ""
+            runtime_fb_base_url = ""
+            if isinstance(fb_runtime, dict):
+                configured_fb_api_mode = str(fb_runtime.get("api_mode") or "").strip()
+                runtime_fb_base_url = str(fb_runtime.get("base_url") or "").strip()
+            if not configured_fb_api_mode:
+                try:
+                    from hermes_cli.providers import TRANSPORT_TO_API_MODE
+
+                    raw_fb_api_mode = str(fb.get("api_mode") or fb.get("transport") or "").strip()
+                    configured_fb_api_mode = TRANSPORT_TO_API_MODE.get(raw_fb_api_mode, raw_fb_api_mode)
+                except Exception:
+                    configured_fb_api_mode = str(fb.get("api_mode") or fb.get("transport") or "").strip()
+
+            # Determine api_mode from explicit config first, then provider / base URL / model.
+            fb_base_url = str(
+                getattr(fb_client, "base_url", "") or runtime_fb_base_url or fb_base_url_hint or ""
+            ).rstrip("/")
+            fb_api_mode = configured_fb_api_mode or "chat_completions"
+            if not configured_fb_api_mode:
+                if fb_provider == "openai-codex":
+                    fb_api_mode = "codex_responses"
+                elif fb_provider == "anthropic" or fb_base_url.lower().endswith("/anthropic"):
+                    fb_api_mode = "anthropic_messages"
+                elif self._is_direct_openai_url(fb_base_url):
+                    fb_api_mode = "codex_responses"
+                elif self._provider_model_requires_responses_api(
+                    fb_model,
+                    provider=fb_provider,
+                ):
+                    # GPT-5.x models usually need Responses API, but keep
+                    # provider-specific exceptions like Copilot gpt-5-mini on
+                    # chat completions.
+                    fb_api_mode = "codex_responses"
+                elif fb_provider == "bedrock" or "bedrock-runtime" in fb_base_url.lower():
+                    fb_api_mode = "bedrock_converse"
 
             old_model = self.model
             self.model = fb_model

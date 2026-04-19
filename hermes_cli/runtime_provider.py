@@ -288,6 +288,29 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
     if isinstance(providers, dict):
+        def _build_named_provider_result(provider_name: str, provider_entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            base_url = provider_entry.get("api") or provider_entry.get("url") or provider_entry.get("base_url") or ""
+            if not base_url:
+                return None
+            result = {
+                "name": provider_entry.get("name", provider_name),
+                "base_url": str(base_url).strip(),
+                "api_key": resolved_api_key,
+            }
+            if key_env:
+                result["key_env"] = key_env
+            api_mode = _parse_api_mode(provider_entry.get("api_mode") or provider_entry.get("transport"))
+            if api_mode:
+                result["api_mode"] = api_mode
+            model_name = str(
+                provider_entry.get("default_model")
+                or provider_entry.get("model")
+                or ""
+            ).strip()
+            if model_name:
+                result["model"] = model_name
+            return result
+
         for ep_name, entry in providers.items():
             if not isinstance(entry, dict):
                 continue
@@ -302,28 +325,18 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
-                base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
-                if base_url:
-                    return {
-                        "name": entry.get("name", ep_name),
-                        "base_url": base_url.strip(),
-                        "api_key": resolved_api_key,
-                        "model": entry.get("default_model", ""),
-                    }
+                result = _build_named_provider_result(ep_name, entry)
+                if result:
+                    return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
             if display_name:
                 display_norm = _normalize_custom_provider_name(display_name)
                 if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
                     # Found match by display name
-                    base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
-                    if base_url:
-                        return {
-                            "name": display_name,
-                            "base_url": base_url.strip(),
-                            "api_key": resolved_api_key,
-                            "model": entry.get("default_model", ""),
-                        }
+                    result = _build_named_provider_result(display_name, entry)
+                    if result:
+                        return result
 
     # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")

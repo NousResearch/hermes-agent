@@ -235,6 +235,32 @@ class TestResolveVisionProviderClientModelNormalization:
         assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
 
 
+class TestProvidersDictNamedCustomApiMode:
+    """providers: dict entries should preserve explicit transport/api_mode."""
+
+    def test_transport_is_exposed_as_api_mode_for_named_provider(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "main-model"},
+            "providers": {
+                "gpt-backup": {
+                    "name": "GPT Backup",
+                    "api": "https://example.com/v1",
+                    "api_key": "***",
+                    "default_model": "gpt-5.4",
+                    "transport": "chat_completions",
+                },
+            },
+        })
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+
+        provider = _get_named_custom_provider("gpt-backup")
+
+        assert provider is not None
+        assert provider["base_url"] == "https://example.com/v1"
+        assert provider["model"] == "gpt-5.4"
+        assert provider["api_mode"] == "chat_completions"
+
+
 class TestVisionPathApiMode:
     """Vision path should propagate api_mode to _get_cached_client."""
 

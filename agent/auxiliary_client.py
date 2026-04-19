@@ -1579,6 +1579,7 @@ def resolve_provider_client(
                 custom_key = os.getenv(custom_key_env, "").strip()
             custom_key = custom_key or "no-key-required"
             if custom_base:
+                api_mode = api_mode or custom_entry.get("api_mode")
                 final_model = _normalize_resolved_model(
                     model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",
                     provider,

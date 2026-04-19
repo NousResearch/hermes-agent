@@ -14,7 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 _tmp_dir = tempfile.TemporaryDirectory(prefix="ikb-tests-")
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_tmp_dir.name) / 'test.db'}"
-os.environ["JWT_SECRET"] = "test-secret"
+os.environ["JWT_SECRET"] = "test-secret-0123456789abcdef-0123456789abcdef"
 os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "720"
 
 from app.main import app

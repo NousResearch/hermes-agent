@@ -141,6 +141,27 @@ def test_format_initial_message_keeps_developer_instructions_on_remote_thread():
     assert "Latest user request:\nContinue from the latest step." in prompt
 
 
+def test_format_initial_message_renders_multimodal_user_text_without_image_noise():
+    from hermes_cli.chatgpt_web import _format_initial_message
+
+    prompt = _format_initial_message(
+        instructions="Follow Hermes rules.",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe the attached image briefly."},
+                    {"type": "input_image", "image_url": "file:///tmp/red-square.png"},
+                ],
+            },
+        ],
+        has_remote_thread=False,
+    )
+
+    assert "Describe the attached image briefly." in prompt
+    assert "file:///tmp/red-square.png" not in prompt
+
+
 def test_select_provider_and_model_lists_chatgpt_web_in_top_menu(monkeypatch):
     from hermes_cli import main as hermes_main
 
@@ -660,6 +681,48 @@ def test_stream_chatgpt_web_completion_tolerates_protocol_close_after_completion
     assert result["content"] == "OK"
     assert result["conversation_id"] == "conv_456"
     assert result["message_id"] == "msg_456"
+
+
+def test_stream_chatgpt_web_completion_routes_multimodal_turns_through_browser(monkeypatch):
+    from hermes_cli import chatgpt_web as chatgpt_web_mod
+
+    captured = {}
+
+    async def _fake_browser_multimodal_completion(**kwargs):
+        captured.update(kwargs)
+        return {
+            "content": "red square",
+            "conversation_id": "conv_browser",
+            "message_id": "msg_browser",
+            "parent_message_id": "msg_browser",
+            "model": "gpt-5-thinking",
+            "finish_reason": "stop",
+            "images": [],
+        }
+
+    monkeypatch.setattr(chatgpt_web_mod, "_chatgpt_web_debug_base", lambda: "http://127.0.0.1:9225")
+    monkeypatch.setattr(chatgpt_web_mod, "_chatgpt_web_browser_multimodal_completion", _fake_browser_multimodal_completion)
+
+    result = chatgpt_web_mod.stream_chatgpt_web_completion(
+        access_token="chatgpt-web-token",
+        model="gpt-5-thinking",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe the attached image."},
+                    {"type": "input_image", "image_url": "file:///tmp/red-square.png"},
+                ],
+            }
+        ],
+        timeout=15,
+    )
+
+    assert result["content"] == "red square"
+    assert captured["debug_base"] == "http://127.0.0.1:9225"
+    assert captured["model"] == "gpt-5-thinking"
+    assert captured["prompt_text"].startswith("Conversation so far:")
+    assert captured["image_sources"] == ["file:///tmp/red-square.png"]
 
 
 def test_stream_chatgpt_web_completion_resolves_async_generated_images(monkeypatch):

@@ -669,6 +669,35 @@ def _flatten_chatgpt_web_message_content(content: Any) -> str:
     return "\n".join(part for part in flattened if part).strip()
 
 
+def _normalize_chatgpt_web_message_content(content: Any) -> Any:
+    """Preserve multimodal blocks when ChatGPT Web can consume them directly."""
+    if isinstance(content, list):
+        normalized: list[dict[str, Any]] = []
+        saw_media = False
+        for part in content:
+            if not isinstance(part, dict):
+                if isinstance(part, str) and part:
+                    normalized.append({"type": "text", "text": part})
+                continue
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype in {"text", "input_text"}:
+                normalized.append({"type": "text", "text": str(part.get("text") or "")})
+                continue
+            if ptype in {"image_url", "input_image"}:
+                image_data = part.get("image_url", {})
+                if isinstance(image_data, dict):
+                    image_url = str(image_data.get("url") or "")
+                else:
+                    image_url = str(image_data or "")
+                if image_url:
+                    saw_media = True
+                    normalized.append({"type": "input_image", "image_url": image_url})
+                continue
+        if saw_media:
+            return normalized
+    return _flatten_chatgpt_web_message_content(content)
+
+
 def _extract_chatgpt_web_tool_calls(text: str) -> tuple[list[SimpleNamespace], str]:
     """Parse auxiliary ChatGPT Web XML tool-call blocks into OpenAI-like objects."""
     if not isinstance(text, str) or not text.strip():
@@ -815,9 +844,13 @@ class _ChatGptWebCompletionsAdapter:
             if not isinstance(msg, dict):
                 continue
             role = str(msg.get("role") or "user").strip().lower() or "user"
-            content = _flatten_chatgpt_web_message_content(msg.get("content"))
+            content = _normalize_chatgpt_web_message_content(msg.get("content"))
             if role == "system":
-                if content:
+                if isinstance(content, list):
+                    rendered = _flatten_chatgpt_web_message_content(content)
+                    if rendered:
+                        instructions_parts.append(rendered)
+                elif content:
                     instructions_parts.append(content)
                 continue
             payload_messages.append({"role": role, "content": content})

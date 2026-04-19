@@ -152,6 +152,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2-omni",
     "zai": "glm-5v-turbo",
+    "nous": "xiaomi/mimo-v2-omni",
 }
 
 # OpenRouter app attribution headers
@@ -933,20 +934,28 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         model = _NOUS_MODEL
     # Free-tier users can't use paid auxiliary models — use the free
     # models instead: mimo-v2-omni for vision, mimo-v2-pro for text tasks.
+    # For vision tasks, always use mimo-v2-omni regardless of tier —
+    # Nous inference API does not support image inputs for gemini models.
     try:
         from hermes_cli.models import check_nous_free_tier
         if check_nous_free_tier():
             model = _NOUS_FREE_TIER_VISION_MODEL if vision else _NOUS_FREE_TIER_AUX_MODEL
             logger.debug("Free-tier Nous account — using %s for auxiliary/%s",
                          model, "vision" if vision else "text")
+        elif vision:
+            model = _NOUS_FREE_TIER_VISION_MODEL
+            logger.debug("Nous vision task — using %s (gemini models lack "
+                         "image support on Nous inference API)", model)
     except Exception:
-        pass
+        if vision:
+            model = _NOUS_FREE_TIER_VISION_MODEL
+    if vision:
+        logger.debug("Nous vision: final model = %s", model)
     if runtime is not None:
         api_key, base_url = runtime
     else:
         api_key = _nous_api_key(nous or {})
         base_url = str((nous or {}).get("inference_base_url") or _nous_base_url()).rstrip("/")
-
     return (
         OpenAI(
             api_key=api_key,
@@ -1610,7 +1619,13 @@ def resolve_provider_client(
 
     # ── Nous Portal (OAuth) ──────────────────────────────────────────
     if provider == "nous":
-        client, default = _try_nous()
+        # Detect vision tasks: either explicit model override from
+        # _PROVIDER_VISION_MODELS, or caller passed a known vision model.
+        _is_vision = (
+            model in _PROVIDER_VISION_MODELS.values()
+            or (model or "").strip().lower() == "mimo-v2-omni"
+        )
+        client, default = _try_nous(vision=_is_vision)
         if client is None:
             logger.warning("resolve_provider_client: nous requested "
                            "but Nous Portal not configured (run: hermes auth)")

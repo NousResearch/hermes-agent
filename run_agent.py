@@ -1016,6 +1016,13 @@ class AIAgent:
         self._current_tool: str | None = None
         self._api_call_count: int = 0
 
+        # Tool call loop breaker — detects when the model repeatedly issues
+        # the *exact same* tool call (same name + same args) and forces a
+        # state change after N consecutive duplicates.  This prevents the
+        # agent from getting stuck in infinite tool-call loops.
+        self._tool_call_history: list[tuple[str, str]] = []  # (tool_name, args_hash)
+        self._tool_call_breach_threshold: int = 3  # consecutive identical calls before breaking
+
         # Rate limit tracking — updated from x-ratelimit-* response headers
         # after each API call.  Accessed by /usage slash command.
         self._rate_limit_state: Optional["RateLimitState"] = None
@@ -1419,6 +1426,12 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        # Circuit breaker: detect and break infinite tool-call loops.
+        # Tracks the last (tool_name, args_hash) pair.  When the same
+        # tool+args is called consecutively N times, we abort to force
+        # the LLM into a different strategy.
+        self._consecutive_tool_calls: list[tuple[str, str]] = []
+        self._circuit_breaker_threshold: int = 3
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -7617,6 +7630,35 @@ class AIAgent:
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
 
+        # ── Circuit breaker: detect infinite tool-call loops ─────────────
+        # Build a stable hash of (tool_name, args) to detect identical
+        # consecutive calls.  When the same tool+args fires N times in a
+        # row, the LLM is likely stuck in a retry loop — abort and force
+        # it to try a different approach.
+        import hashlib as _hashlib
+        args_key = json.dumps(function_args, sort_keys=True, ensure_ascii=False)
+        call_sig = f"{function_name}:{_hashlib.md5(args_key.encode('utf-8')).hexdigest()[:16]}"
+        
+        # Always record the call (append new entry each time)
+        self._consecutive_tool_calls.append((function_name, call_sig))
+        
+        # Check if the last N entries are all the same
+        n = len(self._consecutive_tool_calls)
+        if n >= self._circuit_breaker_threshold:
+            # Check if the last N entries all have the same signature
+            recent_sigs = [s for _, s in self._consecutive_tool_calls[-self._circuit_breaker_threshold:]]
+            if len(set(recent_sigs)) == 1:
+                # All same — circuit breaker triggered!
+                streak = len(self._consecutive_tool_calls)
+                msg = (
+                    f"[熔断器触发] 工具 '{function_name}' 连续 {streak} 次调用完全相同的参数，"
+                    f"已强制终止。请换用不同的工具或策略。"
+                )
+                logger.warning("Circuit breaker triggered: %s (streak=%d)", function_name, streak)
+                # Reset streak so future calls can succeed
+                self._consecutive_tool_calls.clear()
+                return json.dumps({"error": msg}, ensure_ascii=False)
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -8115,12 +8157,44 @@ class AIAgent:
                 except Exception:
                     pass  # never block tool execution
 
+            # ── Circuit breaker: detect infinite tool-call loops ──────────
+            # Same logic as in _invoke_tool() — the sequential path has its
+            # own inline dispatch and must also be protected.
+            _cb_bypass = False
+            if _block_msg is None:
+                import hashlib as _hashlib
+                _cb_args_key = json.dumps(function_args, sort_keys=True, ensure_ascii=False)
+                _cb_call_sig = f"{function_name}:{_hashlib.md5(_cb_args_key.encode('utf-8')).hexdigest()[:16]}"
+                
+                # Always record the call
+                self._consecutive_tool_calls.append((function_name, _cb_call_sig))
+                
+                # Check if the last N entries are all the same
+                _cb_n = len(self._consecutive_tool_calls)
+                if _cb_n >= self._circuit_breaker_threshold:
+                    _cb_recent_sigs = [s for _, s in self._consecutive_tool_calls[-self._circuit_breaker_threshold:]]
+                    if len(set(_cb_recent_sigs)) == 1:
+                        _cb_streak = len(self._consecutive_tool_calls)
+                        function_result = json.dumps({
+                            "error": (
+                                f"[熔断器触发] 工具 '{function_name}' 连续 {_cb_streak} 次调用完全相同的参数，"
+                                f"已强制终止。请换用不同的工具或策略。"
+                            )
+                        }, ensure_ascii=False)
+                        logger.warning("Circuit breaker triggered (sequential): %s (streak=%d)", function_name, _cb_streak)
+                        self._consecutive_tool_calls.clear()
+                        tool_duration = 0.0
+                        _cb_bypass = True
+
             tool_start_time = time.time()
 
-            if _block_msg is not None:
-                # Tool blocked by plugin policy — return error without executing.
-                function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
-                tool_duration = 0.0
+            if _block_msg is not None or _cb_bypass:
+                # Tool blocked by plugin policy or circuit breaker — return
+                # error without executing.  (_cb_bypass: function_result was
+                # already set in the circuit breaker block above.)
+                if _block_msg is not None:
+                    function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+                    tool_duration = 0.0
             elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(

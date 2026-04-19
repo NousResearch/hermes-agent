@@ -146,6 +146,16 @@ def _current_active_session() -> dict[str, Any] | None:
     return active_records[-1]
 
 
+def _resolve_session(app_session_id: str | None = None) -> dict[str, Any] | None:
+    wanted = str(app_session_id or "").strip()
+    if wanted:
+        record = _find_session(app_session_id=wanted)
+        if record and record.get("active"):
+            return record
+        return None
+    return _current_active_session()
+
+
 def _session_required_error(action: str) -> dict[str, Any]:
     return {
         "success": False,
@@ -302,28 +312,18 @@ def get_app_state_impl(app_name: str | None = None) -> dict[str, Any]:
     }
 
 
-def type_text_impl(text: str) -> dict[str, Any]:
-    session = _current_active_session()
+def type_text_impl(text: str, app_session_id: str | None = None) -> dict[str, Any]:
+    session = _resolve_session(app_session_id=app_session_id)
     if not session:
-        return {
-            "success": False,
-            "session_required": True,
-            "session_id": _SESSION_ID,
-            "error": "No active app session. Call get_app_state(app_name=...) before typing.",
-        }
+        return _session_required_error("typing")
     result = _decode(computer_control(action="keystroke", text=text))
     return {"success": not bool(result.get("error")), **result, **_session_payload(session), "session_id": _SESSION_ID}
 
 
-def press_key_impl(key: str, modifiers: list[str] | None = None) -> dict[str, Any]:
-    session = _current_active_session()
+def press_key_impl(key: str, modifiers: list[str] | None = None, app_session_id: str | None = None) -> dict[str, Any]:
+    session = _resolve_session(app_session_id=app_session_id)
     if not session:
-        return {
-            "success": False,
-            "session_required": True,
-            "session_id": _SESSION_ID,
-            "error": "No active app session. Call get_app_state(app_name=...) before pressing keys.",
-        }
+        return _session_required_error("pressing keys")
     result = _decode(computer_control(action="keystroke", key=key, modifiers=modifiers or []))
     return {"success": not bool(result.get("error")), **result, **_session_payload(session), "session_id": _SESSION_ID}
 
@@ -337,8 +337,8 @@ def _unsupported(action: str) -> dict[str, Any]:
 
 
 def click_impl(*, index: int | None = None, x: int | None = None, y: int | None = None,
-               button: str = "left", click_count: int = 1) -> dict[str, Any]:
-    session = _current_active_session()
+               button: str = "left", click_count: int = 1, app_session_id: str | None = None) -> dict[str, Any]:
+    session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("clicking")
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
@@ -354,8 +354,8 @@ def perform_secondary_action_impl(index: int, action_name: str) -> dict[str, Any
 
 
 def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = None,
-                delta_y: int = 0) -> dict[str, Any]:
-    session = _current_active_session()
+                delta_y: int = 0, app_session_id: str | None = None) -> dict[str, Any]:
+    session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("scrolling")
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
@@ -368,8 +368,8 @@ def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = 
     return response
 
 
-def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int) -> dict[str, Any]:
-    session = _current_active_session()
+def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id: str | None = None) -> dict[str, Any]:
+    session = _resolve_session(app_session_id=app_session_id)
     if not session:
         return _session_required_error("dragging")
     cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
@@ -423,20 +423,20 @@ if mcp:
         return get_app_state_impl(app_name=app_name)
 
     @mcp.tool()
-    def type_text(text: str) -> dict[str, Any]:
+    def type_text(text: str, app_session_id: str | None = None) -> dict[str, Any]:
         """Type literal text via Hermes' computer-control backend."""
-        return type_text_impl(text)
+        return type_text_impl(text, app_session_id=app_session_id)
 
     @mcp.tool()
-    def press_key(key: str, modifiers: list[str] | None = None) -> dict[str, Any]:
+    def press_key(key: str, modifiers: list[str] | None = None, app_session_id: str | None = None) -> dict[str, Any]:
         """Press one key or key combination via Hermes' computer-control backend."""
-        return press_key_impl(key, modifiers or [])
+        return press_key_impl(key, modifiers or [], app_session_id=app_session_id)
 
     @mcp.tool()
     def click(index: int | None = None, x: int | None = None, y: int | None = None,
-              button: str = "left", click_count: int = 1) -> dict[str, Any]:
+              button: str = "left", click_count: int = 1, app_session_id: str | None = None) -> dict[str, Any]:
         """Reserved for future pointer support. Returns an explicit unsupported result for now."""
-        return click_impl(index=index, x=x, y=y, button=button, click_count=click_count)
+        return click_impl(index=index, x=x, y=y, button=button, click_count=click_count, app_session_id=app_session_id)
 
     @mcp.tool()
     def perform_secondary_action(index: int, action_name: str) -> dict[str, Any]:
@@ -445,14 +445,14 @@ if mcp:
 
     @mcp.tool()
     def scroll(index: int | None = None, x: int | None = None, y: int | None = None,
-               delta_y: int = 0) -> dict[str, Any]:
+               delta_y: int = 0, app_session_id: str | None = None) -> dict[str, Any]:
         """Reserved for future scroll support."""
-        return scroll_impl(index=index, x=x, y=y, delta_y=delta_y)
+        return scroll_impl(index=index, x=x, y=y, delta_y=delta_y, app_session_id=app_session_id)
 
     @mcp.tool()
-    def drag(start_x: int, start_y: int, end_x: int, end_y: int) -> dict[str, Any]:
+    def drag(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id: str | None = None) -> dict[str, Any]:
         """Reserved for future drag support."""
-        return drag_impl(start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y)
+        return drag_impl(start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y, app_session_id=app_session_id)
 
     @mcp.tool()
     def set_value(index: int, value: str) -> dict[str, Any]:

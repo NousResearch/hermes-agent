@@ -201,7 +201,7 @@ class TestKeyboardTools:
 
     def test_type_text_impl_maps_to_computer_control(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
-            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True}
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
         })
         seen = {}
 
@@ -217,6 +217,20 @@ class TestKeyboardTools:
         assert result["app_session_id"] == "app-1"
         assert seen == {"action": "keystroke", "text": "uwu"}
 
+    def test_type_text_impl_can_target_specific_app_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+            "notes": {"app_name": "Notes", "app_session_id": "app-2", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+        })
+
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: '{"success": true}')
+
+        result = adapter.type_text_impl("uwu", app_session_id="app-2")
+
+        assert result["success"] is True
+        assert result["app_name"] == "Notes"
+        assert result["app_session_id"] == "app-2"
+
     def test_press_key_impl_requires_active_session(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
 
@@ -227,7 +241,7 @@ class TestKeyboardTools:
 
     def test_press_key_impl_maps_modifiers(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
-            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True}
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
         })
         seen = {}
 
@@ -242,6 +256,19 @@ class TestKeyboardTools:
         assert result["success"] is True
         assert result["app_session_id"] == "app-1"
         assert seen == {"action": "keystroke", "key": "return", "modifiers": ["command", "shift"]}
+
+    def test_press_key_impl_can_target_specific_app_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+            "notes": {"app_name": "Notes", "app_session_id": "app-2", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+        })
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: '{"success": true}')
+
+        result = adapter.press_key_impl("return", ["command"], app_session_id="app-2")
+
+        assert result["success"] is True
+        assert result["app_name"] == "Notes"
+        assert result["app_session_id"] == "app-2"
 
 
 class TestUnsupportedActions:
@@ -271,6 +298,31 @@ class TestUnsupportedActions:
         assert result["preview_only"] is True
         assert result["app_session_id"] == "app-1"
         assert result["virtual_cursor"] == {"x": 10, "y": 20, "detached": True, "visible": True}
+
+    def test_click_can_target_specific_app_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            },
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            },
+        })
+
+        result = adapter.click_impl(x=50, y=60, app_session_id="app-2")
+
+        assert result["app_name"] == "Notes"
+        assert result["app_session_id"] == "app-2"
+        assert result["virtual_cursor"] == {"x": 50, "y": 60, "detached": True, "visible": True}
+        assert adapter._APP_SESSIONS["safari"]["virtual_cursor"] == {"x": None, "y": None, "detached": True, "visible": True}
 
     def test_drag_updates_virtual_cursor_to_end_position(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {

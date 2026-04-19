@@ -366,6 +366,18 @@ compression:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Session search — summarizes matching past sessions
+#   session_search:
+#     provider: "auto"
+#     model: ""
+#     timeout: 30
+#     max_concurrency: 3    # Limit parallel summaries to reduce request-burst 429s
+#     extra_body: {}        # Provider-specific OpenAI-compatible request fields
+#                           # Example for providers that support request-body
+#                           # reasoning controls:
+#                           # extra_body:
+#                           #   enable_thinking: false
 
 # =============================================================================
 # Persistent Memory

@@ -370,6 +370,45 @@ def test_build_api_kwargs_chatgpt_web_supports_image_paths_with_spaces(monkeypat
 
 
 
+def test_build_api_kwargs_chatgpt_web_uses_direct_multimodal_when_browser_available(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATGPT_WEB_DEBUG_BASE", "http://127.0.0.1:9225")
+    agent = _build_agent(monkeypatch)
+    image_path = tmp_path / "red-square.png"
+    image_path.write_bytes(b"png")
+    agent.tools = [
+        {"type": "function", "function": {"name": "vision_analyze", "description": "Analyze images", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": f"Look at this local image: {image_path}. Answer only the dominant color and shape."},
+    ])
+
+    content = kwargs["messages"][-1]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert "attached image" in content[0]["text"]
+    assert content[1] == {"type": "input_image", "image_url": str(image_path)}
+    assert kwargs["history_and_training_disabled"] is False
+    assert "<tool_call>" not in kwargs["instructions"]
+
+
+def test_select_chatgpt_web_tools_still_honors_explicit_vision_tool_with_browser_available(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATGPT_WEB_DEBUG_BASE", "http://127.0.0.1:9225")
+    agent = _build_agent(monkeypatch)
+    image_path = tmp_path / "red-square.png"
+    image_path.write_bytes(b"png")
+    agent.tools = [
+        {"type": "function", "function": {"name": "vision_analyze", "description": "Analyze images", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": f"Use vision_analyze on {image_path} and answer only the dominant color."},
+    ])
+
+    assert [tool["function"]["name"] for tool in selected] == ["vision_analyze"]
+
+
 def test_build_api_kwargs_chatgpt_web_prefers_search_files_for_definition_lookup(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [
@@ -388,6 +427,48 @@ def test_build_api_kwargs_chatgpt_web_prefers_search_files_for_definition_lookup
     assert '\\\\b' in rewritten_user
     assert '"path": "run_agent.py"' in rewritten_user
 
+
+
+def test_chatgpt_web_extract_symbol_target_handles_where_is_defined_phrase(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    target = agent._chatgpt_web_extract_symbol_target(
+        "Can you check where stream_chatgpt_web_completion is defined in hermes_cli/chatgpt_web.py and answer only with the exact def line?"
+    )
+
+    assert target == "stream_chatgpt_web_completion"
+
+
+def test_select_chatgpt_web_tools_stops_after_exact_line_is_already_in_tool_response(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {
+            "role": "user",
+            "content": "Can you check where stream_chatgpt_web_completion is defined in hermes_cli/chatgpt_web.py and answer only with the exact def line?",
+        },
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "total_count": 1,
+                    "matches": [
+                        {
+                            "path": "hermes_cli/chatgpt_web.py",
+                            "line": 1450,
+                            "content": "def stream_chatgpt_web_completion(",
+                        }
+                    ],
+                }
+            ),
+        },
+    ])
+
+    assert selected == []
 
 
 def test_build_api_kwargs_chatgpt_web_prefers_delegate_task_for_explicit_subagent_file_inspection(monkeypatch):
@@ -512,16 +593,11 @@ def test_build_api_kwargs_chatgpt_web_infers_read_file_after_explicit_path_defin
         {"role": "tool", "content": f'{{"total_count": 1, "matches": [{{"path": "{target_path}", "line": 2, "content": "BETA = 1"}}]}}'},
     ])
 
-    rewritten_user = kwargs["messages"][0]["content"]
-    assert 'The tool available for this turn is: read_file.' in rewritten_user
-    assert '"path":' in rewritten_user
-    assert 'sample.py' in rewritten_user
-    assert '"offset": 2' in rewritten_user
-    assert '"limit": 1' in rewritten_user
-    assert agent._chatgpt_web_forced_tool_call == {
-        "name": "read_file",
-        "arguments": {"path": str(target_path), "offset": 2, "limit": 1},
-    }
+    assert kwargs["messages"][0]["content"] == (
+        f"Use Hermes tools to read the local file {target_path} and answer only with the exact line that defines BETA."
+    )
+    assert kwargs["messages"][1]["role"] == "tool"
+    assert agent._chatgpt_web_forced_tool_call is None
 
 
 

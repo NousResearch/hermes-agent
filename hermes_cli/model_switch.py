@@ -1087,7 +1087,10 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            # Track both the plain slug and the custom:-prefixed slug so
+            # Section 4 (custom_providers list) can detect duplicates (#12293).
             seen_slugs.add(ep_name.lower())
+            seen_slugs.add(custom_provider_slug(display_name).lower())
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named

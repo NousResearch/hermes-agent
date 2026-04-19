@@ -194,6 +194,43 @@ def test_list_enumerates_dict_format_models_alongside_default(monkeypatch):
     assert ds_rows[0]["total_models"] == 2
 
 
+def test_no_duplicate_when_user_provider_and_custom_provider_overlap(monkeypatch):
+    """Provider in user_providers must suppress duplicate from custom_providers (#12293).
+
+    Section 3 (user_providers) adds the plain slug. Section 4
+    (custom_providers) generates a ``custom:``-prefixed slug. Without the
+    fix, Section 4 doesn't find the plain slug in seen_slugs and emits a
+    duplicate row.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={
+            "my-modal": {
+                "name": "My Modal",
+                "api": "https://api.us-west-2.modal.direct/v1",
+                "default_model": "llama3",
+            },
+        },
+        custom_providers=[
+            {
+                "name": "My Modal",
+                "base_url": "https://api.us-west-2.modal.direct/v1",
+                "model": "llama3",
+            },
+        ],
+        max_models=50,
+    )
+
+    modal_rows = [p for p in providers if "modal" in p["name"].lower()]
+    assert len(modal_rows) == 1, (
+        f"Expected 1 provider row for 'My Modal', got {len(modal_rows)}: "
+        f"{[r['slug'] for r in modal_rows]}"
+    )
+
+
 def test_list_enumerates_dict_format_models_without_singular_model(monkeypatch):
     """Dict-format ``models:`` with no singular ``model:`` should still
     enumerate every dict key (previously the picker reported 0 models)."""

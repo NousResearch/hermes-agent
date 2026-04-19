@@ -2011,3 +2011,76 @@ class TestProgressMessageThread:
             "so each @mention starts its own thread"
         )
         assert msg_event.message_id == "2000000000.000001"
+
+
+class TestSlackReplyToText:
+    """Ensure MessageEvent.reply_to_text is populated on thread replies so
+    gateway.run can inject a ``[Replying to: "..."]`` prefix (parity with
+    Telegram/Discord/Feishu/WeCom)."""
+
+    @pytest.mark.asyncio
+    async def test_slack_reply_to_text_set_on_thread_reply(self, adapter):
+        """When a thread reply arrives and the parent was posted by a bot
+        (e.g. cron summary), reply_to_text must carry the parent's text."""
+        adapter._channel_team = {}  # primary workspace only
+        adapter._team_bot_user_ids = {}
+
+        # Mock conversations_replies to return a bot-posted parent
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B_CRON",
+                    "text": "メール要約: 新着メール3件あります",
+                },
+                {"ts": "1000.5", "user": "U_USER", "text": "詳細を教えて"},
+            ]
+        })
+
+        # Use a DM so mention-gating doesn't short-circuit the handler.
+        event = {
+            "text": "詳細を教えて",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1000.5",
+            "thread_ts": "1000.0",  # thread reply
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args is not None, (
+            "handle_message must be invoked for thread-reply DM"
+        )
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.reply_to_message_id == "1000.0"
+        # The critical assertion: parent text is exposed as reply_to_text so the
+        # gateway can inject it when not already in the session history.
+        assert msg_event.reply_to_text is not None
+        assert "メール要約" in msg_event.reply_to_text
+
+    @pytest.mark.asyncio
+    async def test_slack_reply_to_text_none_for_top_level_message(self, adapter):
+        """Top-level messages (no thread_ts) must not set reply_to_text."""
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1000.0",
+            # no thread_ts — top-level DM
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args is not None
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.reply_to_text is None
+        # Top-level message: reply_to_message_id must be falsy (None or empty).
+        assert not msg_event.reply_to_message_id

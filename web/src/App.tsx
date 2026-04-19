@@ -1,12 +1,30 @@
 import { useMemo } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 import {
-  Activity, BarChart3, Clock, FileText, KeyRound,
-  MessageSquare, Package, Settings, Puzzle,
-  Sparkles, Terminal, Globe, Database, Shield,
-  Wrench, Zap, Heart, Star, Code, Eye,
+  Activity,
+  BarChart3,
+  Clock,
+  FileText,
+  KeyRound,
+  MessageSquare,
+  Package,
+  Settings,
+  Puzzle,
+  Sparkles,
+  Terminal,
+  Globe,
+  Database,
+  Shield,
+  Wrench,
+  Zap,
+  Heart,
+  Star,
+  Code,
+  Eye,
 } from "lucide-react";
+import { Cell, Grid } from "@nous-research/ui/ui/components/grid/index";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import StatusPage from "@/pages/StatusPage";
@@ -25,8 +43,18 @@ import type { RegisteredPlugin } from "@/plugins";
 
 const BUILTIN_NAV: NavItem[] = [
   { path: "/", labelKey: "status", label: "Status", icon: Activity },
-  { path: "/sessions", labelKey: "sessions", label: "Sessions", icon: MessageSquare },
-  { path: "/analytics", labelKey: "analytics", label: "Analytics", icon: BarChart3 },
+  {
+    path: "/sessions",
+    labelKey: "sessions",
+    label: "Sessions",
+    icon: MessageSquare,
+  },
+  {
+    path: "/analytics",
+    labelKey: "analytics",
+    label: "Analytics",
+    icon: BarChart3,
+  },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
@@ -37,17 +65,38 @@ const BUILTIN_NAV: NavItem[] = [
 // Plugins can reference any of these by name in their manifest — keeps bundle
 // size sane vs. importing the full lucide-react set.
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
-  Activity, BarChart3, Clock, FileText, KeyRound,
-  MessageSquare, Package, Settings, Puzzle,
-  Sparkles, Terminal, Globe, Database, Shield,
-  Wrench, Zap, Heart, Star, Code, Eye,
+  Activity,
+  BarChart3,
+  Clock,
+  FileText,
+  KeyRound,
+  MessageSquare,
+  Package,
+  Settings,
+  Puzzle,
+  Sparkles,
+  Terminal,
+  Globe,
+  Database,
+  Shield,
+  Wrench,
+  Zap,
+  Heart,
+  Star,
+  Code,
+  Eye,
 };
 
-function resolveIcon(name: string): React.ComponentType<{ className?: string }> {
+function resolveIcon(
+  name: string,
+): React.ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
 }
 
-function buildNavItems(builtIn: NavItem[], plugins: RegisteredPlugin[]): NavItem[] {
+function buildNavItems(
+  builtIn: NavItem[],
+  plugins: RegisteredPlugin[],
+): NavItem[] {
   const items = [...builtIn];
 
   for (const { manifest } of plugins) {
@@ -97,69 +146,86 @@ export default function App() {
           "bg-background-base/90 backdrop-blur-sm",
         )}
       >
-        <div className="mx-auto flex h-12 max-w-[1600px] items-stretch">
-          <div className="flex items-center border-r border-current/20 px-3 sm:px-5 shrink-0">
-            <span
-              className="font-sans font-bold text-[1.0625rem] sm:text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-              style={{ mixBlendMode: "plus-lighter" }}
+        <div className="mx-auto flex h-12 max-w-[1600px]">
+          <div className="min-w-0 flex-1 overflow-x-auto scrollbar-none">
+            <Grid
+              className="h-full !border-t-0 !border-b-0"
+              style={{
+                gridTemplateColumns: `auto repeat(${navItems.length}, auto)`,
+              }}
             >
-              Hermes
-              <br />
-              Agent
-            </span>
-          </div>
+              <Cell className="flex items-center !p-0 !px-3 sm:!px-5">
+                <Typography
+                  className="font-bold text-[1.0625rem] sm:text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+                  style={{ mixBlendMode: "plus-lighter" }}
+                >
+                  Hermes
+                  <br />
+                  Agent
+                </Typography>
+              </Cell>
 
-          <nav className="flex items-stretch overflow-x-auto scrollbar-none">
-            {navItems.map(({ path, label, labelKey, icon: Icon }) => (
-              <NavLink
-                key={path}
-                to={path}
-                end={path === "/"}
-                className={({ isActive }) =>
-                  cn(
-                    "group relative inline-flex items-center gap-1.5 shrink-0",
-                    "border-r border-current/20 px-2.5 sm:px-4 py-2",
-                    "font-mondwest text-[0.65rem] sm:text-[0.8rem] tracking-[0.12em]",
-                    "whitespace-nowrap transition-colors cursor-pointer",
-                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                    isActive
-                      ? "text-midground"
-                      : "opacity-60 hover:opacity-100",
-                  )
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    <Icon className="h-3.5 w-3.5 shrink-0" />
-                    <span className="hidden sm:inline">
-                      {labelKey ? (t.app.nav as Record<string, string>)[labelKey] ?? label : label}
-                    </span>
+              {navItems.map(({ path, label, labelKey, icon: Icon }) => (
+                <Cell key={path} className="relative !p-0">
+                  <NavLink
+                    to={path}
+                    end={path === "/"}
+                    className={({ isActive }) =>
+                      cn(
+                        "group relative flex h-full w-full items-center gap-1.5",
+                        "px-2.5 sm:px-4 py-2",
+                        "font-mondwest text-[0.65rem] sm:text-[0.8rem] tracking-[0.12em]",
+                        "whitespace-nowrap transition-colors cursor-pointer",
+                        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                        isActive
+                          ? "text-midground"
+                          : "opacity-60 hover:opacity-100",
+                      )
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <Icon className="h-3.5 w-3.5 shrink-0" />
+                        <span className="hidden sm:inline">
+                          {labelKey
+                            ? ((t.app.nav as Record<string, string>)[
+                                labelKey
+                              ] ?? label)
+                            : label}
+                        </span>
 
-                    <span
-                      aria-hidden
-                      className="absolute inset-1 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                    />
+                        <span
+                          aria-hidden
+                          className="absolute inset-1 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+                        />
 
-                    {isActive && (
-                      <span
-                        aria-hidden
-                        className="absolute bottom-0 left-0 right-0 h-px bg-midground"
-                        style={{ mixBlendMode: "plus-lighter" }}
-                      />
+                        {isActive && (
+                          <span
+                            aria-hidden
+                            className="absolute bottom-0 left-0 right-0 h-px bg-midground"
+                            style={{ mixBlendMode: "plus-lighter" }}
+                          />
+                        )}
+                      </>
                     )}
-                  </>
-                )}
-              </NavLink>
-            ))}
-          </nav>
-
-          <div className="ml-auto flex items-center gap-2 border-l border-current/20 px-2 sm:px-4">
-            <ThemeSwitcher />
-            <LanguageSwitcher />
-            <span className="hidden sm:inline font-mondwest text-[0.7rem] tracking-[0.15em] opacity-50">
-              {t.app.webUi}
-            </span>
+                  </NavLink>
+                </Cell>
+              ))}
+            </Grid>
           </div>
+
+          <Grid className="h-full shrink-0 !border-t-0 !border-b-0">
+            <Cell className="flex items-center gap-2 !p-0 !px-2 sm:!px-4">
+              <ThemeSwitcher />
+              <LanguageSwitcher />
+              <Typography
+                mondwest
+                className="hidden sm:inline text-[0.7rem] tracking-[0.15em] opacity-50"
+              >
+                {t.app.webUi}
+              </Typography>
+            </Cell>
+          </Grid>
         </div>
       </header>
 
@@ -187,17 +253,25 @@ export default function App() {
       </main>
 
       <footer className="relative z-2 border-t border-current/20">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between px-3 sm:px-6 py-3">
-          <span className="font-mondwest text-[0.7rem] sm:text-[0.8rem] tracking-[0.12em] opacity-60">
-            {t.app.footer.name}
-          </span>
-          <span
-            className="font-mondwest text-[0.6rem] sm:text-[0.7rem] tracking-[0.15em] text-midground"
-            style={{ mixBlendMode: "plus-lighter" }}
-          >
-            {t.app.footer.org}
-          </span>
-        </div>
+        <Grid className="mx-auto max-w-[1600px] !border-t-0 !border-b-0">
+          <Cell className="flex items-center !px-3 sm:!px-6 !py-3">
+            <Typography
+              mondwest
+              className="text-[0.7rem] sm:text-[0.8rem] tracking-[0.12em] opacity-60"
+            >
+              {t.app.footer.name}
+            </Typography>
+          </Cell>
+          <Cell className="flex items-center justify-end !px-3 sm:!px-6 !py-3">
+            <Typography
+              mondwest
+              className="text-[0.6rem] sm:text-[0.7rem] tracking-[0.15em] text-midground"
+              style={{ mixBlendMode: "plus-lighter" }}
+            >
+              {t.app.footer.org}
+            </Typography>
+          </Cell>
+        </Grid>
       </footer>
     </div>
   );

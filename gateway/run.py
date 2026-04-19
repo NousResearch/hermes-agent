@@ -1111,7 +1111,12 @@ class GatewayRunner:
         return "restarting" if self._restart_requested else "shutting down"
 
     def _queue_during_drain_enabled(self) -> bool:
-        return self._restart_requested and self._busy_input_mode == "queue"
+        # Queue mode applies to both restarts and shutdowns — the user
+        # configured queue behavior and expects it to work regardless of
+        # why the gateway is draining.  The old AND logic (restart + queue)
+        # meant queue only worked during restarts, not during normal agent
+        # busy states or shutdowns.
+        return self._busy_input_mode == "queue"
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
@@ -1431,25 +1436,54 @@ class GatewayRunner:
             return True
 
         # --- Normal busy case (agent actively running a task) ---
-        # The user sent a message while the agent is working.  Interrupt the
-        # agent immediately so it stops the current tool-calling loop and
-        # processes the new message.  The pending message is stored in the
-        # adapter so the base adapter picks it up once the interrupted run
-        # returns.  A brief ack tells the user what's happening (debounced
-        # to avoid spam when they fire multiple messages quickly).
+        # The user sent a message while the agent is working.  Behavior depends
+        # on busy_input_mode config:
+        #   - "interrupt" (default): Interrupt the agent immediately so it stops
+        #     the current tool-calling loop and processes the new message.
+        #   - "queue": Queue the message for the next turn without interrupting.
+        # The pending message is stored in the adapter so the base adapter picks
+        # it up once the current run completes.  A brief ack tells the user what's
+        # happening (debounced to avoid spam when they fire multiple messages quickly).
 
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return False  # let default path handle it
 
-        # Store the message so it's processed as the next turn after the
-        # interrupt causes the current run to exit.
+        # Store the message so it's processed as the next turn (works for both
+        # interrupt and queue modes — the difference is whether we interrupt now).
         from gateway.platforms.base import merge_pending_message_event
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+        running_agent = self._running_agents.get(session_key)
+
+        # Queue mode: don't interrupt, just acknowledge queuing
+        if self._busy_input_mode == "queue":
+            # Debounce: only send an acknowledgment once every 30 seconds per session
+            # to avoid spamming the user when they send multiple messages quickly
+            _BUSY_ACK_COOLDOWN = 30
+            now = time.time()
+            last_ack = self._busy_ack_ts.get(session_key, 0)
+            if now - last_ack < _BUSY_ACK_COOLDOWN:
+                return True  # queued, ack already delivered recently
+
+            self._busy_ack_ts[session_key] = now
+
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content="⏳ Agent is busy — queued for the next turn.",
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+            except Exception as e:
+                logger.debug("Failed to send busy-ack: %s", e)
+
+            return True
+
+        # Interrupt mode: interrupt the running agent immediately
         # Interrupt the running agent — this aborts in-flight tool calls and
         # causes the agent loop to exit at the next check point.
-        running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 running_agent.interrupt(event.text)
@@ -4069,11 +4103,17 @@ class GatewayRunner:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
+                                    # Define callback to immediately persist session split
+                                    def _hyg_on_split(new_sid):
+                                        self.session_store.update_session_id_and_save(
+                                            session_entry.session_key, new_sid
+                                        )
                                     _compressed, _ = await loop.run_in_executor(
                                         None,
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
+                                            on_session_split=_hyg_on_split,
                                         ),
                                     )
 
@@ -4082,9 +4122,6 @@ class GatewayRunner:
                                     # the NEW session so the old transcript stays intact
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
-                                    if _hyg_new_sid != session_entry.session_id:
-                                        session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -6747,9 +6784,14 @@ class GatewayRunner:
                     return "Nothing to compress yet (the transcript is still all protected context)."
 
                 loop = asyncio.get_running_loop()
+                # Define callback to immediately persist session split
+                def _compress_on_split(new_sid):
+                    self.session_store.update_session_id_and_save(
+                        session_entry.session_key, new_sid
+                    )
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
+                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic, on_session_split=_compress_on_split)
                 )
 
                 # _compress_context already calls end_session() on the old session
@@ -6757,9 +6799,6 @@ class GatewayRunner:
                 # session_id for the continuation.  Write the compressed messages
                 # into the NEW session so the original history stays searchable.
                 new_session_id = tmp_agent.session_id
-                if new_session_id != session_entry.session_id:
-                    session_entry.session_id = new_session_id
-                    self.session_store._save()
 
                 self.session_store.rewrite_transcript(new_session_id, compressed)
                 # Reset stored token count — transcript changed, old value is stale
@@ -6834,6 +6873,32 @@ class GatewayRunner:
             else:
                 return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
+    def _enrich_candidates_with_display_info(
+        self, candidates: List[Dict], tree: 'SessionTree'
+    ) -> List[Dict]:
+        """用 list_sessions_rich 的数据补充候选的 preview 和 last_active 字段。"""
+        try:
+            user_source = candidates[0].get("source") if candidates else None
+            rich_sessions = self._session_db.list_sessions_rich(
+                source=user_source, limit=100, include_children=True
+            )
+            rich_map = {s["id"]: s for s in rich_sessions}
+
+            for c in candidates:
+                cid = c.get("id")
+                if cid in rich_map:
+                    rich = rich_map[cid]
+                    c["preview"] = rich.get("preview", "")
+                    c["last_active"] = rich.get("last_active")
+                # 如果候选是压缩叶子但 preview 来自原始节点
+                orig = c.get("_original_node")
+                if orig and not c.get("preview") and orig.id in rich_map:
+                    c["preview"] = rich_map[orig.id].get("preview", "")
+                    c["last_active"] = rich_map[orig.id].get("last_active")
+        except Exception:
+            pass
+        return candidates
+
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — switch to a previously-named session."""
         if not self._session_db:
@@ -6843,57 +6908,182 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
-        if not name:
-            # List recent titled sessions for this user/platform
+        user_source = source.platform.value if source.platform else None
+
+        # After gateway restart, the session_key may not exist in _entries.
+        # Avoid creating a spurious new session by checking if the entry exists.
+        _placeholder_result = self.session_store.ensure_placeholder_entry(session_key, source)
+        _is_placeholder_entry = _placeholder_result[1]  # is_new_placeholder
+
+        current_entry = self.session_store.get_or_create_session(source)
+        current_sid = current_entry.session_id
+
+        # Check if we're dealing with a placeholder entry (empty session_id)
+        # This happens after gateway restart when the session_key wasn't in _entries
+        _is_placeholder_entry = _is_placeholder_entry or not current_entry.session_id
+
+        # Build session tree once for all operations
+        tree = self._session_db.build_session_tree(source=user_source)
+
+        # Get message count threshold
+        resume_min_messages = 2
+        try:
+            if isinstance(self.config, dict):
+                resume_min_messages = self.config.get("resume_min_messages", 2)
+            else:
+                resume_min_messages = getattr(self.config, "resume_min_messages", 2)
+        except Exception:
+            pass
+
+        # Handle /resume last or /resume - shortcuts (resume most recent session)
+        if name in ("last", "-"):
             try:
-                user_source = source.platform.value if source.platform else None
-                sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
+                candidates = tree.get_resume_candidates(
+                    current_sid,
+                    source=user_source,
+                    min_messages=resume_min_messages,
+                    limit=1,
                 )
-                titled = [s for s in sessions if s.get("title")]
-                if not titled:
+
+                if candidates:
+                    candidates = self._enrich_candidates_with_display_info(candidates, tree)
+                    target_id = candidates[0].get("id")
+                else:
+                    # No candidates, fall back to list display
+                    name = ""  # Clear name to trigger list path below
+            except Exception as e:
+                logger.debug("Failed to resolve /resume last: %s", e)
+                name = ""  # Fall back to list display on error
+
+        if not name:
+            # List recent sessions with >= 3 messages for user selection
+            try:
+                candidates = tree.get_resume_candidates(
+                    current_sid,
+                    source=user_source,
+                    min_messages=resume_min_messages,
+                    limit=10,
+                )
+
+                if not candidates:
                     return (
-                        "No named sessions found.\n"
+                        f"No resumable sessions found (need ≥ {resume_min_messages} messages).\n"
                         "Use `/title My Session` to name your current session, "
                         "then `/resume My Session` to return to it later."
                     )
-                lines = ["📋 **Named Sessions**\n"]
-                for s in titled[:10]:
-                    title = s["title"]
-                    preview = s.get("preview", "")[:40]
+
+                candidates = self._enrich_candidates_with_display_info(candidates, tree)
+
+                lines = ["📋 **Recent Sessions**\n"]
+                # Import datetime for relative time calculation
+                from datetime import datetime, timezone as dt_timezone
+                now = datetime.now(dt_timezone.utc)
+
+                for i, s in enumerate(candidates, 1):
+                    title = s.get("title") or "untitled"
+                    msg_count = s.get("message_count", 0)
+                    preview = (s.get("preview") or "")[:40]
                     preview_part = f" — _{preview}_" if preview else ""
-                    lines.append(f"• **{title}**{preview_part}")
-                lines.append("\nUsage: `/resume <session name>`")
+
+                    # Calculate relative time (e.g., "2h ago", "3d ago")
+                    time_part = ""
+                    last_active = s.get("last_active")
+                    if last_active:
+                        try:
+                            if isinstance(last_active, (int, float)):
+                                last_active_dt = datetime.fromtimestamp(last_active, tz=dt_timezone.utc)
+                            elif isinstance(last_active, str):
+                                last_active_dt = datetime.fromisoformat(last_active.replace("Z", "+00:00"))
+                            else:
+                                last_active_dt = last_active
+                            if last_active_dt.tzinfo is None:
+                                last_active_dt = last_active_dt.replace(tzinfo=dt_timezone.utc)
+
+                            delta = now - last_active_dt
+                            days = delta.days
+                            hours = delta.total_seconds() / 3600
+                            minutes = delta.total_seconds() / 60
+
+                            if days > 0:
+                                time_part = f" • {days}d ago"
+                            elif hours >= 1:
+                                time_part = f" • {int(hours)}h ago"
+                            elif minutes >= 1:
+                                time_part = f" • {int(minutes)}m ago"
+                            else:
+                                time_part = " • just now"
+                        except Exception:
+                            pass  # Silently skip time parsing errors
+
+                    lines.append(f"`{i}`. **{title}** ({msg_count} msgs){time_part}{preview_part}")
+                lines.append("\nUsage: `/resume <number or session name>`")
+
+                # Store candidates for numeric lookup (per-source to avoid conflicts)
+                if not hasattr(self, "_resume_candidates_map"):
+                    self._resume_candidates_map = {}
+                self._resume_candidates_map[session_key] = candidates
                 return "\n".join(lines)
+
             except Exception as e:
-                logger.debug("Failed to list titled sessions: %s", e)
+                logger.debug("Failed to list sessions for resume: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve the name to a session ID — support numeric index from list
+        target_id = None
+        if name.isdigit():
+            idx = int(name)
+            candidates_map = getattr(self, "_resume_candidates_map", {})
+            candidates = candidates_map.get(session_key) if candidates_map else None
+            if candidates and 1 <= idx <= len(candidates):
+                target_id = candidates[idx - 1].get("id")
+        if not target_id:
+            target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"
                 "Use `/resume` with no arguments to see available sessions."
             )
 
+        # If the target session was split by compression, resolve to the latest leaf
+        leaf_node = tree.find_compression_leaf(target_id)
+        if leaf_node and leaf_node.id != target_id:
+            target_id = leaf_node.id
+
         # Check if already on that session
-        current_entry = self.session_store.get_or_create_session(source)
-        if current_entry.session_id == target_id:
+        # Skip if placeholder entry OR no cached agent (restart scenario where
+        # sessions.json has the mapping but no agent transcript is loaded yet).
+        _has_active_agent = (
+            session_key in self._running_agents
+            or (session_key in getattr(self, "_agent_cache", {}))
+        )
+        if not _is_placeholder_entry and _has_active_agent and current_entry.session_id == target_id:
             return f"📌 Already on session **{name}**."
 
         # Flush memories for current session before switching
-        try:
-            _flush_task = asyncio.create_task(
-                self._async_flush_memories(current_entry.session_id, session_key)
-            )
-            self._background_tasks.add(_flush_task)
-            _flush_task.add_done_callback(self._background_tasks.discard)
-        except Exception as e:
-            logger.debug("Memory flush on resume failed: %s", e)
+        # Skip memory flush for placeholder entries (no real session to flush)
+        if not _is_placeholder_entry:
+            try:
+                _flush_task = asyncio.create_task(
+                    self._async_flush_memories(current_entry.session_id, session_key)
+                )
+                self._background_tasks.add(_flush_task)
+                _flush_task.add_done_callback(self._background_tasks.discard)
+            except Exception as e:
+                logger.debug("Memory flush on resume failed: %s", e)
 
         # Clear any running agent for this session key
         self._release_running_agent_state(session_key)
+
+        # Evict cached agent so next message gets a fresh agent with correct session
+        _old_agent = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+        if _old_agent is not None:
+            self._cleanup_agent_resources(_old_agent)
+        self._evict_cached_agent(session_key)
 
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
@@ -6903,9 +7093,8 @@ class GatewayRunner:
         # Get the title for confirmation
         title = self._session_db.get_session_title(target_id) or name
 
-        # Count messages for context
-        history = self.session_store.load_transcript(target_id)
-        msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        # Get message count from the leaf node for consistency with list display
+        msg_count = leaf_node.message_count if leaf_node else 0
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
         return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."
@@ -9653,10 +9842,9 @@ class GatewayRunner:
                     "Session split detected: %s → %s (compression)",
                     session_id, agent.session_id,
                 )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
+                self.session_store.update_session_id_and_save(
+                    session_key, agent.session_id
+                )
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 

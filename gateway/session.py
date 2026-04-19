@@ -601,7 +601,49 @@ class SessionStore:
             except OSError as e:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
-    
+
+    def update_session_id_and_save(self, session_key: str, new_session_id: str) -> bool:
+        """Atomically update a session entry's session_id and persist to disk.
+
+        Thread-safe replacement for:
+            entry.session_id = new_id
+            self._save()
+        """
+        with self._lock:
+            entry = self._entries.get(session_key)
+            if entry:
+                entry.session_id = new_session_id
+                entry.updated_at = _now()
+                self._save()
+                return True
+            return False
+
+    def ensure_placeholder_entry(self, session_key: str, source) -> tuple:
+        """Create a placeholder entry if session_key doesn't exist in _entries.
+
+        Used after gateway restart when the session_key wasn't loaded from sessions.json.
+        Prevents get_or_create_session from creating a spurious new session.
+        Returns (entry, is_new_placeholder).
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                return self._entries[session_key], False
+            _now_ts = _now()
+            _placeholder = SessionEntry(
+                session_key=session_key,
+                session_id="",
+                created_at=_now_ts,
+                updated_at=_now_ts,
+                origin=source,
+                display_name=source.chat_name if hasattr(source, 'chat_name') else None,
+                platform=source.platform if hasattr(source, 'platform') else None,
+                chat_type=source.chat_type if hasattr(source, 'chat_type') else None,
+            )
+            self._entries[session_key] = _placeholder
+            self._save()
+            return _placeholder, True
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
@@ -762,6 +804,29 @@ class SessionStore:
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()
+                    # Release lock before DB call (DB calls must be outside self._lock)
+                    # Fix 1: Detect stale compressed session after crash restart
+                    if self._db is not None:
+                        try:
+                            # Query if this session has end_reason='compression'
+                            end_reason = self._db.get_session_end_reason(entry.session_id)
+                            if end_reason == "compression":
+                                # Follow compression chain to find latest leaf
+                                leaf = self._db._find_latest_leaf(entry.session_id)
+                                if leaf is not None:
+                                    old_session_id = entry.session_id
+                                    new_session_id = leaf["id"]
+                                    logger.warning(
+                                        "Stale compressed session detected: %s -> %s",
+                                        old_session_id,
+                                        new_session_id
+                                    )
+                                    # Lock already held (outer with self._lock at line 706)
+                                    entry.session_id = new_session_id
+                                    self._save()
+                        except Exception as e:
+                            # If anything fails, just return entry as-is
+                            logger.debug("Failed to detect stale compressed session: %s", e)
                     return entry
                 else:
                     # Session is being auto-reset.
@@ -798,6 +863,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "parent_session_id": db_end_session_id,  # Track parent for auto-reset sessions
             }
 
         # SQLite operations outside the lock
@@ -1036,6 +1102,10 @@ class SessionStore:
         generating a fresh session ID, re-uses ``target_session_id`` so the
         old transcript is loaded on the next message. If the target session was
         previously ended, re-open it so gateway resume semantics match the CLI.
+
+        Handles placeholder entries (created after gateway restart when the
+        session_key doesn't exist in _entries) by not ending the placeholder
+        session in SQLite.
         """
         db_end_session_id = None
         new_entry = None
@@ -1052,7 +1122,11 @@ class SessionStore:
             if old_entry.session_id == target_session_id:
                 return old_entry
 
-            db_end_session_id = old_entry.session_id
+            # Only end the old session if it's a real session (not a placeholder)
+            # Placeholder entries have empty session_id and are created during
+            # /resume after gateway restart to avoid spurious session creation
+            if old_entry.session_id:
+                db_end_session_id = old_entry.session_id
 
             now = _now()
             new_entry = SessionEntry(
@@ -1163,6 +1237,24 @@ class SessionStore:
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
+        # Fix 2: Check if session is compressed and follow the chain to find latest leaf
+        if self._db is not None:
+            try:
+                # Query end_reason for session_id
+                end_reason = self._db.get_session_end_reason(session_id)
+                if end_reason == "compression":
+                    leaf = self._db._find_latest_leaf(session_id)
+                    if leaf is not None:
+                        logger.warning(
+                            "Loading transcript from latest leaf in compression chain: %s -> %s",
+                            session_id,
+                            leaf["id"]
+                        )
+                        session_id = leaf["id"]
+            except Exception as e:
+                # Fall through to normal loading on any failure
+                logger.debug("Failed to follow compression chain: %s", e)
+
         db_messages = []
         # Try SQLite first
         if self._db:

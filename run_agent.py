@@ -2102,6 +2102,26 @@ class AIAgent:
         url = (base_url or self._base_url_lower).lower()
         return "api.openai.com" in url and "openrouter" not in url
 
+    def _resolved_api_call_timeout(self) -> float:
+        """Resolve the effective per-call request timeout in seconds.
+
+        Priority:
+          1. ``providers.<id>.models.<model>.timeout_seconds`` (per-model override)
+          2. ``providers.<id>.request_timeout_seconds`` (provider-wide)
+          3. ``HERMES_API_TIMEOUT`` env var (legacy escape hatch)
+          4. 1800.0s default
+
+        Used by OpenAI-wire chat completions (streaming and non-streaming) so
+        the per-provider config knob wins over the 1800s default.  Without this
+        helper, the hardcoded ``HERMES_API_TIMEOUT`` fallback would always be
+        passed as a per-call ``timeout=`` kwarg, overriding the client-level
+        timeout the AIAgent.__init__ path configured.
+        """
+        cfg = get_provider_request_timeout(self.provider, self.model)
+        if cfg is not None:
+            return cfg
+        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
@@ -5754,18 +5774,30 @@ class AIAgent:
         def _call_chat_completions():
             """Stream a chat completions response."""
             import httpx as _httpx
-            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
-            # Local providers (Ollama, llama.cpp, vLLM) can take minutes for
-            # prefill on large contexts before producing the first token.
-            # Auto-increase the httpx read timeout unless the user explicitly
-            # overrode HERMES_STREAM_READ_TIMEOUT.
-            if _stream_read_timeout == 120.0 and self.base_url and is_local_endpoint(self.base_url):
-                _stream_read_timeout = _base_timeout
-                logger.debug(
-                    "Local provider detected (%s) — stream read timeout raised to %.0fs",
-                    self.base_url, _stream_read_timeout,
-                )
+            # Per-provider / per-model request_timeout_seconds (from config.yaml)
+            # wins over the HERMES_API_TIMEOUT env default if the user set it.
+            _provider_timeout_cfg = get_provider_request_timeout(self.provider, self.model)
+            _base_timeout = (
+                _provider_timeout_cfg
+                if _provider_timeout_cfg is not None
+                else float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+            )
+            # Read timeout: config wins here too.  Otherwise use
+            # HERMES_STREAM_READ_TIMEOUT (default 120s) for cloud providers.
+            if _provider_timeout_cfg is not None:
+                _stream_read_timeout = _provider_timeout_cfg
+            else:
+                _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
+                # Local providers (Ollama, llama.cpp, vLLM) can take minutes for
+                # prefill on large contexts before producing the first token.
+                # Auto-increase the httpx read timeout unless the user explicitly
+                # overrode HERMES_STREAM_READ_TIMEOUT.
+                if _stream_read_timeout == 120.0 and self.base_url and is_local_endpoint(self.base_url):
+                    _stream_read_timeout = _base_timeout
+                    logger.debug(
+                        "Local provider detected (%s) — stream read timeout raised to %.0fs",
+                        self.base_url, _stream_read_timeout,
+                    )
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
@@ -7081,7 +7113,7 @@ class AIAgent:
         api_kwargs = {
             "model": self.model,
             "messages": sanitized_messages,
-            "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+            "timeout": self._resolved_api_call_timeout(),
         }
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model

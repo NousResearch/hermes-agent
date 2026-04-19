@@ -30,6 +30,18 @@ logger = logging.getLogger(__name__)
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 
 
+def _stamp_engine_metadata(engine, *, origin: str, path: Path | None) -> Optional["ContextEngine"]:
+    if engine is None:
+        return None
+    try:
+        engine._hermes_context_engine_origin = origin
+        if path is not None:
+            engine._hermes_context_engine_path = str(path.resolve())
+    except Exception:
+        pass
+    return engine
+
+
 def discover_context_engines() -> List[Tuple[str, str, bool]]:
     """Scan plugins/context_engine/ for available engines.
 
@@ -178,7 +190,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
         try:
             mod.register(collector)
             if collector.engine:
-                return collector.engine
+                return _stamp_engine_metadata(collector.engine, origin="repo-shipped", path=engine_dir)
         except Exception as e:
             logger.debug("register() failed for %s: %s", name, e)
 
@@ -189,7 +201,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
         if (isinstance(attr, type) and issubclass(attr, ContextEngine)
                 and attr is not ContextEngine):
             try:
-                return attr()
+                return _stamp_engine_metadata(attr(), origin="repo-shipped", path=engine_dir)
             except Exception:
                 pass
 

@@ -10,6 +10,16 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +60,26 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
 
     try:
         with open(filename, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            if fcntl:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            elif msvcrt:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                except OSError:
+                    pass
+            try:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.flush()
+            finally:
+                if fcntl:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                elif msvcrt:
+                    try:
+                        f.seek(0)
+                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                    except OSError:
+                        pass
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)

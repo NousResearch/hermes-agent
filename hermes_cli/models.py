@@ -2656,6 +2656,51 @@ def validate_requested_model(
                 ),
             }
 
+    # Native Anthropic provider: /v1/models requires x-api-key (or Bearer for
+    # OAuth) plus anthropic-version headers.  The generic OpenAI-style probe
+    # below uses plain Bearer auth and 401s against Anthropic, so dispatch to
+    # the native fetcher which handles both API keys and Claude-Code OAuth
+    # tokens.  (The api_mode=="anthropic_messages" branch below handles the
+    # Messages-API transport case separately.)
+    if normalized == "anthropic":
+        anthropic_models = _fetch_anthropic_models()
+        if anthropic_models is not None:
+            if requested_for_lookup in set(anthropic_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, anthropic_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested, anthropic_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            # Accept anyway — Anthropic sometimes gates newer/preview models
+            # (e.g. snapshot IDs, early-access releases) behind accounts
+            # even though they aren't listed on /v1/models.
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in Anthropic's /v1/models listing. "
+                    f"It may still work if you have early-access or snapshot IDs."
+                    f"{suggestion_text}"
+                ),
+            }
+        # _fetch_anthropic_models returned None — no token resolvable or
+        # network failure.  Fall through to the generic warning below.
+
     # Anthropic Messages API: many proxies don't implement /v1/models.
     # Try probing with correct auth; if it fails, accept with a warning.
     if api_mode == "anthropic_messages":

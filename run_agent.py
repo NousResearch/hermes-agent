@@ -8325,7 +8325,7 @@ class AIAgent:
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None
-                if self.quiet_mode and not self.tool_progress_callback:
+                if self._should_emit_quiet_tool_messages():
                     face = random.choice(KawaiiSpinner.get_waiting_faces())
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
@@ -8343,7 +8343,7 @@ class AIAgent:
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
                     if spinner:
                         spinner.stop(cute_msg)
-                    elif self.quiet_mode:
+                    elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
             elif self._memory_manager and self._memory_manager.has_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
@@ -11187,17 +11187,10 @@ class AIAgent:
                         self._last_content_tools_all_housekeeping = _all_housekeeping
                         if _all_housekeeping and self._has_stream_consumers():
                             self._mute_post_response = True
-                        elif self.quiet_mode and getattr(self, "platform", "") == "cli":
+                        elif self._should_emit_quiet_tool_messages():
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
-                                relayed = False
-                                if (
-                                    self.tool_progress_callback
-                                    and getattr(self, "platform", "") == "tui"
-                                ):
-                                    relayed = True
-                                if not relayed:
-                                    self._vprint(f"  ┊ 💬 {clean}")
+                                self._vprint(f"  ┊ 💬 {clean}")
                     
                     # Pop thinking-only prefill message(s) before appending
                     # (tool-call path — same rationale as the final-response path).

@@ -26,7 +26,7 @@ import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
-import { expandWhatsAppIdentifiers, matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -235,7 +235,6 @@ async function startSocket() {
             reason: 'allowlist_mismatch',
             chatId,
             senderId,
-            senderAliases: Array.from(expandWhatsAppIdentifiers(senderId, SESSION_DIR)),
           }));
         } catch {}
         continue;

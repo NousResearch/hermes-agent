@@ -1078,11 +1078,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 from agent.display import get_tool_emoji
                 emoji = get_tool_emoji(name)
                 label = preview or name
+                state = "completed" if event_type == "tool.completed" else "started"
+                # call_id pairs the started/completed events for the same
+                # invocation so the frontend can transition one chip instead
+                # of rendering two.  Stack-based match per tool name: push on
+                # started, pop on completed.  Same tool called twice gets two
+                # distinct call_ids → two chips (correct).
+                if state == "started":
+                    _tool_call_counter[0] += 1
+                    cid = f"t{_tool_call_counter[0]}-{name}"
+                    _tool_call_stack.setdefault(name, []).append(cid)
+                else:
+                    stack = _tool_call_stack.get(name) or []
+                    cid = stack.pop(0) if stack else f"t?-{name}"
                 _stream_q.put(("__tool_progress__", {
                     "tool": name,
                     "emoji": emoji,
                     "label": label,
-                    "state": "completed" if event_type == "tool.completed" else "started",
+                    "state": state,
+                    "call_id": cid,
                 }))
 
             # Wire the ui_* synthetic-tool emitter to push frontend render

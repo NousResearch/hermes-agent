@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: "Code Execution"
-description: "Sandboxed Python execution with RPC tool access — collapse multi-step workflows into a single turn"
+description: "Programmatic Python execution with RPC tool access — collapse multi-step workflows into a single turn"
 ---
 
 # Code Execution (Programmatic Tool Calling)
 
-The `execute_code` tool lets the agent write Python scripts that call Hermes tools programmatically, collapsing multi-step workflows into a single LLM turn. The script runs in a sandboxed child process on the agent host, communicating via Unix domain socket RPC.
+The `execute_code` tool lets the agent write Python scripts that call Hermes tools programmatically, collapsing multi-step workflows into a single LLM turn. The script runs in a child process on the agent host, communicating with Hermes over a Unix domain socket RPC.
 
 ## How It Works
 
@@ -27,7 +27,7 @@ for r in results["data"]["web"]:
 print(summary)
 ```
 
-**Available tools in sandbox:** `web_search`, `web_extract`, `read_file`, `write_file`, `search_files`, `patch`, `terminal` (foreground only).
+**Available tools inside scripts:** `web_search`, `web_extract`, `read_file`, `write_file`, `search_files`, `patch`, `terminal` (foreground only).
 
 ## When the Agent Uses This
 
@@ -126,6 +126,35 @@ report = {
 print(json.dumps(report, indent=2))
 ```
 
+## Execution Mode
+
+`execute_code` has two execution modes controlled by `code_execution.mode` in `~/.hermes/config.yaml`:
+
+| Mode | Working directory | Python interpreter |
+|------|-------------------|--------------------|
+| **`project`** (default) | The session's working directory (same as `terminal()`) | Active `VIRTUAL_ENV` / `CONDA_PREFIX` python, falling back to Hermes's own python |
+| `strict` | A temp staging directory isolated from the user's project | `sys.executable` (Hermes's own python) |
+
+**When to leave it on `project`:** you want `import pandas`, `from my_project import foo`, or relative paths like `open(".env")` to work the same way they do in `terminal()`. This is almost always what you want.
+
+**When to flip to `strict`:** you need maximum reproducibility — you want the same interpreter every session regardless of which venv the user activated, and you want scripts quarantined from the project tree (no risk of accidentally reading project files through a relative path).
+
+```yaml
+# ~/.hermes/config.yaml
+code_execution:
+  mode: project   # or "strict"
+```
+
+Fallback behavior in `project` mode: if `VIRTUAL_ENV` / `CONDA_PREFIX` is unset, broken, or points at a Python older than 3.8, the resolver falls back cleanly to `sys.executable` — it never leaves the agent without a working interpreter.
+
+Security-critical invariants are identical across both modes:
+
+- environment scrubbing (API keys, tokens, credentials stripped)
+- tool whitelist (scripts cannot call `execute_code` recursively, `delegate_task`, or MCP tools)
+- resource limits (timeout, stdout cap, tool-call cap)
+
+Switching mode changes where scripts run and which interpreter runs them, not what credentials they can see or which tools they can call.
+
 ## Resource Limits
 
 | Resource | Limit | Notes |
@@ -140,6 +169,7 @@ All limits are configurable via `config.yaml`:
 ```yaml
 # In ~/.hermes/config.yaml
 code_execution:
+  mode: project      # project (default) | strict
   timeout: 300       # Max seconds per script (default: 300)
   max_tool_calls: 50 # Max tool calls per execution (default: 50)
 ```
@@ -176,7 +206,7 @@ Environment variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTI
 
 ### Skill Environment Variable Passthrough
 
-When a skill declares `required_environment_variables` in its frontmatter, those variables are **automatically passed through** to both `execute_code` and `terminal` sandboxes after the skill is loaded. This lets skills use their declared API keys without weakening the security posture for arbitrary code.
+When a skill declares `required_environment_variables` in its frontmatter, those variables are **automatically passed through** to both `execute_code` and `terminal` child processes after the skill is loaded. This lets skills use their declared API keys without weakening the security posture for arbitrary code.
 
 For non-skill use cases, you can explicitly allowlist variables in `config.yaml`:
 
@@ -189,7 +219,7 @@ terminal:
 
 See the [Security guide](/docs/user-guide/security#environment-variable-passthrough) for full details.
 
-The script runs in a temporary directory that is cleaned up after execution. The child process runs in its own process group so it can be cleanly killed on timeout or interruption.
+Hermes always writes the script and the auto-generated `hermes_tools.py` RPC stub into a temp staging directory that is cleaned up after execution. In `strict` mode the script also *runs* there; in `project` mode it runs in the session's working directory (the staging directory stays on `PYTHONPATH` so imports still resolve). The child process runs in its own process group so it can be cleanly killed on timeout or interruption.
 
 ## execute_code vs terminal
 

@@ -987,6 +987,22 @@ class SessionDB:
 
         return sanitized.strip()
 
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        """Check if text contains CJK (Chinese, Japanese, Korean) characters."""
+        for ch in text:
+            cp = ord(ch)
+            if (0x4E00 <= cp <= 0x9FFF or    # CJK Unified Ideographs
+                0x3400 <= cp <= 0x4DBF or    # CJK Extension A
+                0x20000 <= cp <= 0x2A6DF or  # CJK Extension B
+                0x3000 <= cp <= 0x303F or    # CJK Symbols
+                0x3040 <= cp <= 0x309F or    # Hiragana
+                0x30A0 <= cp <= 0x30FF or    # Katakana
+                0xAC00 <= cp <= 0xD7AF):     # Hangul Syllables
+                return True
+        return False
+
     def search_messages(
         self,
         query: str,
@@ -1062,8 +1078,47 @@ class SessionDB:
                 cursor = self._conn.execute(sql, params)
             except sqlite3.OperationalError:
                 # FTS5 query syntax error despite sanitization — return empty
-                return []
-            matches = [dict(row) for row in cursor.fetchall()]
+                # unless query contains CJK (fall back to LIKE below)
+                if not self._contains_cjk(query):
+                    return []
+                matches = []
+            else:
+                matches = [dict(row) for row in cursor.fetchall()]
+
+        # LIKE fallback for CJK queries: FTS5 default tokenizer splits CJK
+        # characters individually, causing multi-character queries to fail.
+        if not matches and self._contains_cjk(query):
+            raw_query = query.strip('"').strip()
+            like_where = ["m.content LIKE ?"]
+            like_params: list = [f"%{raw_query}%"]
+            if source_filter is not None:
+                like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+                like_params.extend(source_filter)
+            if exclude_sources is not None:
+                like_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+                like_params.extend(exclude_sources)
+            if role_filter:
+                like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+                like_params.extend(role_filter)
+            like_sql = f"""
+                SELECT m.id, m.session_id, m.role,
+                       substr(m.content,
+                              max(1, instr(m.content, ?) - 40),
+                              120) AS snippet,
+                       m.content, m.timestamp, m.tool_name,
+                       s.source, s.model, s.started_at AS session_started
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE {' AND '.join(like_where)}
+                ORDER BY m.timestamp DESC
+                LIMIT ? OFFSET ?
+            """
+            like_params.extend([limit, offset])
+            # instr() parameter goes first in the bound list
+            like_params = [raw_query] + like_params
+            with self._lock:
+                like_cursor = self._conn.execute(like_sql, like_params)
+                matches = [dict(row) for row in like_cursor.fetchall()]
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

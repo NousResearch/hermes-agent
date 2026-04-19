@@ -2371,6 +2371,134 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_codeblock"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "确认已入库 ✓\n"
+            "文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n"
+            "**解码后的内容：**\n"
+            "```json\n"
+            '{"cron": "list"}\n'
+            "```\n"
+            "后续说明仍应保留。"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(
+            rows,
+            [
+                [
+                    {
+                        "tag": "md",
+                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
+                    }
+                ],
+                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
+                [{"tag": "md", "text": "后续说明仍应保留。"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\n```oops\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\n```oops\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_preserves_trailing_spaces_in_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\nline with two spaces  \n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\nline with two spaces  \n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_splits_multiple_fenced_code_blocks(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\nprint(1)\n```\nmiddle\n```json\n{}\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\nprint(1)\n```"}],
+                [{"tag": "md", "text": "middle"}],
+                [{"tag": "md", "text": "```json\n{}\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

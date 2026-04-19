@@ -110,7 +110,7 @@ Yes. Import the `AIAgent` class and use Hermes programmatically:
 ```python
 from run_agent import AIAgent
 
-agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
+agent = AIAgent(model="anthropic/claude-opus-4.7")
 response = agent.chat("Explain quantum computing briefly")
 ```
 
@@ -243,7 +243,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 hermes model
 
 # Set a valid model
-hermes config set HERMES_MODEL openrouter/nous/hermes-3-llama-3.1-70b
+hermes config set HERMES_MODEL anthropic/claude-opus-4.7
 
 # Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
@@ -781,7 +781,7 @@ hermes config show | head -20
 hermes model
 
 # Or test with a known-good model
-hermes chat -q "hello" --model anthropic/claude-sonnet-4.6
+hermes chat -q "hello" --model anthropic/claude-opus-4.7
 ```
 
 If using OpenRouter, make sure your API key has credits. A 400 from OpenRouter often means the model requires a paid plan or the model ID has a typo.

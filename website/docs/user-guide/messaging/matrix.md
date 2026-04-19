@@ -72,7 +72,12 @@ MATRIX_REQUIRE_MENTION=true
 MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
 MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
+MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
 ```
+
+:::tip Disabling reactions
+`MATRIX_REACTIONS=false` turns off the processing-lifecycle emoji reactions (👀/✅/❌) the bot posts on inbound messages. Useful for rooms where reaction events are noisy or aren't supported by all participating clients.
+:::
 
 :::note
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.

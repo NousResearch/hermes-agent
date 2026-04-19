@@ -201,6 +201,25 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
+    async def test_steer_bypasses_guard(self):
+        """/steer must bypass the Level-1 active-session guard so it reaches
+        the gateway runner's /steer handler and injects into the running
+        agent instead of being queued as user text for the next turn.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/steer also check auth.log"))
+
+        assert sk not in adapter._pending_messages, (
+            "/steer was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:steer" in r for r in adapter.sent_responses), (
+            "/steer response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
     async def test_help_bypasses_guard(self):
         """/help must bypass so it is not silently dropped as pending slash text."""
         adapter = _make_adapter()
@@ -247,6 +266,82 @@ class TestCommandBypassActiveSession:
         assert any("handled:queue" in r for r in adapter.sent_responses), (
             "/queue response was not sent back to the user"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: non-bypass-set commands (no dedicated Level-2 handler) also bypass
+# instead of interrupting + being discarded.  Regression for the Discord
+# ghost-slash-command bug where /model, /reasoning, /voice, /insights, /title,
+# /resume, /retry, /undo, /compress, /usage, /provider, /reload-mcp,
+# /sethome, /reset silently interrupted the running agent.
+# ---------------------------------------------------------------------------
+
+
+class TestAllResolvableCommandsBypassGuard:
+    """Every recognized slash command must bypass the Level-1 active-session
+    guard. Without this, commands the user fires mid-run interrupt the agent
+    AND get silently discarded by the slash-command safety net (zero-char
+    response)."""
+
+    @pytest.mark.parametrize(
+        "command_text,canonical",
+        [
+            ("/model claude-sonnet-4", "model"),
+            ("/model", "model"),
+            ("/reasoning high", "reasoning"),
+            ("/personality default", "personality"),
+            ("/voice on", "voice"),
+            ("/insights 7", "insights"),
+            ("/title my session", "title"),
+            ("/resume yesterday", "resume"),
+            ("/retry", "retry"),
+            ("/undo", "undo"),
+            ("/compress", "compress"),
+            ("/usage", "usage"),
+            ("/provider", "provider"),
+            ("/reload-mcp", "reload-mcp"),
+            ("/sethome", "sethome"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_command_bypasses_guard(self, command_text, canonical):
+        """Any resolvable slash command bypasses instead of being queued."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event(command_text))
+
+        assert sk not in adapter._pending_messages, (
+            f"{command_text} was queued as pending — it should bypass the guard"
+        )
+        assert len(adapter.sent_responses) > 0, (
+            f"{command_text} produced no response — it should be dispatched, "
+            "not silently discarded"
+        )
+
+    def test_should_bypass_returns_true_for_every_registered_command(self):
+        """Spot-check: the commands previously-broken on Discord all bypass."""
+        from hermes_cli.commands import should_bypass_active_session
+
+        for cmd in (
+            "model", "reasoning", "personality", "voice", "insights", "title",
+            "resume", "retry", "undo", "compress", "usage", "provider",
+            "reload-mcp", "sethome", "reset",
+        ):
+            assert should_bypass_active_session(cmd) is True, (
+                f"/{cmd} must bypass the active-session guard"
+            )
+
+    def test_should_bypass_returns_false_for_unknown(self):
+        """Unknown words don't bypass — they get queued as user text."""
+        from hermes_cli.commands import should_bypass_active_session
+
+        assert should_bypass_active_session("foobar") is False
+        assert should_bypass_active_session(None) is False
+        assert should_bypass_active_session("") is False
+        # A file path split on whitespace: '/path/to/file.py' -> 'path/to/file.py'
+        assert should_bypass_active_session("path/to/file.py") is False
 
 
 # ---------------------------------------------------------------------------

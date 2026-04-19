@@ -895,8 +895,8 @@ def run_doctor(args):
                 _model_count = len(_br_resp.get("modelSummaries", []))
                 print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'({_auth_var}, {_region}, {_model_count} models)', Colors.DIM)}           ")
             except ImportError:
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color('(boto3 not installed — pip install hermes-agent[bedrock])', Colors.DIM)}           ")
-                issues.append("Install boto3 for Bedrock: pip install hermes-agent[bedrock]")
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(boto3 not installed — {sys.executable} -m pip install boto3)', Colors.DIM)}           ")
+                issues.append(f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3")
             except Exception as _e:
                 _err_name = type(_e).__name__
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_err_name}: {_e})', Colors.DIM)}           ")

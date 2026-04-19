@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with seven providers:
+Convert text to speech with eight providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -24,6 +24,7 @@ Convert text to speech with seven providers:
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
+| **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
 | **NeuTTS** | Good | Free | None needed |
 
 ### Platform Delivery
@@ -40,7 +41,7 @@ Convert text to speech with seven providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "neutts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -65,6 +66,12 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+  xai:
+    voice_id: "eve"             # xAI TTS voice (see https://docs.x.ai/docs/api-reference#tts)
+    language: "en"              # ISO 639-1 code
+    sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
+    bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
+    # base_url: "https://api.x.ai/v1"   # Override via XAI_BASE_URL env var
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -82,6 +89,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
+- **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash

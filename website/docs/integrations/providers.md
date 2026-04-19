@@ -289,11 +289,97 @@ Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
 :::
 
-### xAI (Grok) Prompt Caching
+### xAI (Grok) — Responses API + Prompt Caching
+
+xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-1-fast-reasoning`.
 
 When using xAI as a provider (any base URL containing `x.ai`), Hermes automatically enables prompt caching by sending the `x-grok-conv-id` header with every API request. This routes requests to the same server within a conversation session, allowing xAI's infrastructure to reuse cached system prompts and conversation history.
 
 No configuration is needed — caching activates automatically when an xAI endpoint is detected and a session ID is available. This reduces latency and cost for multi-turn conversations.
+
+xAI also ships a dedicated TTS endpoint (`/v1/tts`). Select **xAI TTS** in `hermes tools` → Voice & TTS, or see the [Voice & TTS](../user-guide/features/tts.md#text-to-speech) page for config.
+
+### Ollama Cloud — Managed Ollama Models, OAuth + API Key
+
+[Ollama Cloud](https://ollama.com/cloud) hosts the same open-weight catalog as local Ollama but without the GPU requirement. Pick it in `hermes model` as **Ollama Cloud**, paste your API key from [ollama.com/settings/keys](https://ollama.com/settings/keys), and Hermes auto-discovers the available models.
+
+```bash
+hermes model
+# → pick "Ollama Cloud"
+# → paste your OLLAMA_API_KEY
+# → select from discovered models (gpt-oss:120b, glm-4.6:cloud, qwen3-coder:480b-cloud, etc.)
+```
+
+Or `config.yaml` directly:
+```yaml
+model:
+  provider: "ollama-cloud"
+  default: "gpt-oss:120b"
+```
+
+The model catalog is fetched dynamically from `ollama.com/v1/models` and cached for one hour. `model:tag` notation (e.g. `qwen3-coder:480b-cloud`) is preserved through normalization — don't use dashes.
+
+:::tip Ollama Cloud vs local Ollama
+Both speak the same OpenAI-compatible API. Cloud is a first-class provider (`--provider ollama-cloud`, `OLLAMA_API_KEY`); local Ollama is reached via the Custom Endpoint flow (base URL `http://localhost:11434/v1`, no key). Use cloud for large models you can't run locally; use local for privacy or offline work.
+:::
+
+### AWS Bedrock
+
+Anthropic Claude, Amazon Nova, DeepSeek v3.2, Meta Llama 4, and other models via AWS Bedrock. Uses the AWS SDK (`boto3`) credential chain — no API key, just standard AWS auth.
+
+```bash
+# Simplest — named profile in ~/.aws/credentials
+hermes chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
+
+# Or with explicit env vars
+AWS_PROFILE=myprofile AWS_REGION=us-east-1 hermes chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
+```
+
+Or permanently in `config.yaml`:
+```yaml
+model:
+  provider: "bedrock"
+  default: "us.anthropic.claude-sonnet-4-6"
+bedrock:
+  region: "us-east-1"          # or set AWS_REGION
+  # profile: "myprofile"       # or set AWS_PROFILE
+  # discovery: true            # auto-discover region from IAM
+  # guardrail:                 # optional Bedrock Guardrails
+  #   id: "your-guardrail-id"
+  #   version: "DRAFT"
+```
+
+Authentication uses the standard boto3 chain: explicit `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE` from `~/.aws/credentials`, IAM role on EC2/ECS/Lambda, IMDS, or SSO. No env var is required if you're already authenticated with the AWS CLI.
+
+Bedrock uses the **Converse API** under the hood — requests are translated to Bedrock's model-agnostic shape, so the same config works for Claude, Nova, DeepSeek, and Llama models. Set `BEDROCK_BASE_URL` only if you're calling a non-default regional endpoint.
+
+See the [AWS Bedrock guide](/docs/guides/aws-bedrock) for a walkthrough of IAM setup, region selection, and cross-region inference.
+
+### Qwen Portal (OAuth)
+
+Alibaba's Qwen Portal with browser-based OAuth login. Pick **Qwen OAuth (Portal)** in `hermes model`, sign in through the browser, and Hermes persists the refresh token.
+
+```bash
+hermes model
+# → pick "Qwen OAuth (Portal)"
+# → browser opens; sign in with your Alibaba account
+# → confirm — credentials are saved to ~/.hermes/auth.json
+
+hermes chat   # uses portal.qwen.ai/v1 endpoint
+```
+
+Or configure `config.yaml`:
+```yaml
+model:
+  provider: "qwen-oauth"
+  default: "qwen3-coder-plus"
+```
+
+Set `HERMES_QWEN_BASE_URL` only if the portal endpoint relocates (default: `https://portal.qwen.ai/v1`).
+
+:::tip Qwen OAuth vs DashScope (Alibaba)
+`qwen-oauth` uses the consumer-facing Qwen Portal with OAuth login — ideal for individual users. The `alibaba` provider uses DashScope's enterprise API with a `DASHSCOPE_API_KEY` — ideal for programmatic / production workloads. Both route to Qwen-family models but live at different endpoints.
+:::
 
 ### NVIDIA NIM
 
@@ -966,11 +1052,11 @@ custom_providers:
     # api_key omitted — Hermes uses "no-key-required" for keyless local servers
   - name: work
     base_url: https://gpu-server.internal.corp/v1
-    api_key: corp-api-key
+    key_env: CORP_API_KEY
     api_mode: chat_completions   # optional, auto-detected from URL
   - name: anthropic-proxy
     base_url: https://proxy.example.com/anthropic
-    api_key: proxy-key
+    key_env: ANTHROPIC_PROXY_KEY
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
@@ -1068,12 +1154,12 @@ fallback_model:
   provider: openrouter                    # required
   model: anthropic/claude-sonnet-4        # required
   # base_url: http://localhost:8000/v1    # optional, for custom endpoints
-  # api_key_env: MY_CUSTOM_KEY           # optional, env var name for custom endpoint API key
+  # key_env: MY_CUSTOM_KEY               # optional, env var name for custom endpoint API key
 ```
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
@@ -1092,7 +1178,7 @@ smart_model_routing:
     provider: openrouter
     model: google/gemini-2.5-flash
     # base_url: http://localhost:8000/v1  # optional custom endpoint
-    # api_key_env: MY_CUSTOM_KEY          # optional env var name for that endpoint's API key
+    # key_env: MY_CUSTOM_KEY              # optional env var name for that endpoint's API key
 ```
 
 How it works:

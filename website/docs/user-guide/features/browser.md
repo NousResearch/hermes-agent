@@ -111,16 +111,49 @@ When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox
 
 #### Persistent browser sessions
 
-By default, each Camofox session gets a random identity — cookies and logins don't survive across agent restarts. To enable persistent browser sessions:
+By default, each Camofox session gets a random identity — cookies and logins don't survive across agent restarts. To enable persistent browser sessions, add the following to `~/.hermes/config.yaml`:
 
 ```yaml
-# In ~/.hermes/config.yaml
 browser:
   camofox:
     managed_persistence: true
 ```
 
-When enabled, Hermes sends a stable profile-scoped `userId` to Camofox. The Camofox server automatically maps each `userId` to a dedicated persistent Firefox profile, so cookies, logins, and localStorage survive across restarts. Different Hermes profiles get different browser profiles (profile isolation).
+Then fully restart Hermes so the new config is picked up.
+
+:::warning Nested path matters
+Hermes reads `browser.camofox.managed_persistence`, **not** a top-level `managed_persistence`. A common mistake is writing:
+
+```yaml
+# ❌ Wrong — Hermes ignores this
+managed_persistence: true
+```
+
+If the flag is placed at the wrong path, Hermes silently falls back to a random ephemeral `userId` and your login state will be lost on every session.
+:::
+
+##### What Hermes does
+- Sends a deterministic profile-scoped `userId` to Camofox so the server can reuse the same Firefox profile across sessions.
+- Skips server-side context destruction on cleanup, so cookies and logins survive between agent tasks.
+- Scopes the `userId` to the active Hermes profile, so different Hermes profiles get different browser profiles (profile isolation).
+
+##### What Hermes does not do
+- It does not force persistence on the Camofox server. Hermes only sends a stable `userId`; the server must honor it by mapping that `userId` to a persistent Firefox profile directory.
+- If your Camofox server build treats every request as ephemeral (e.g. always calls `browser.newContext()` without loading a stored profile), Hermes cannot make those sessions persist. Make sure you are running a Camofox build that implements userId-based profile persistence.
+
+##### Verify it's working
+
+1. Start Hermes and your Camofox server.
+2. Open Google (or any login site) in a browser task and sign in manually.
+3. End the browser task normally.
+4. Start a new browser task.
+5. Open the same site again — you should still be signed in.
+
+If step 5 logs you out, the Camofox server isn't honoring the stable `userId`. Double-check your config path, confirm you fully restarted Hermes after editing `config.yaml`, and verify your Camofox server version supports persistent per-user profiles.
+
+##### Where state lives
+
+Hermes derives the stable `userId` from the profile-scoped directory `~/.hermes/browser_auth/camofox/` (or the equivalent under `$HERMES_HOME` for non-default profiles). The actual browser profile data lives on the Camofox server side, keyed by that `userId`. To fully reset a persistent profile, clear it on the Camofox server and remove the corresponding Hermes profile's state directory.
 
 #### VNC live view
 
@@ -129,6 +162,10 @@ When Camofox runs in headed mode (with a visible browser window), it exposes a V
 ### Local Chrome via CDP (`/browser connect`)
 
 Instead of a cloud provider, you can attach Hermes browser tools to your own running Chrome instance via the Chrome DevTools Protocol (CDP). This is useful when you want to see what the agent is doing in real-time, interact with pages that require your own cookies/sessions, or avoid cloud browser costs.
+
+:::note
+`/browser connect` is an **interactive-CLI slash command** — it is not dispatched by the gateway. If you try to run it inside a WebUI, Telegram, Discord, or other gateway chat, the message will be sent to the agent as plain text and the command will not execute. Start Hermes from the terminal (`hermes` or `hermes chat`) and issue `/browser connect` there.
+:::
 
 In the CLI, use:
 
@@ -142,14 +179,27 @@ In the CLI, use:
 If Chrome isn't already running with remote debugging, Hermes will attempt to auto-launch it with `--remote-debugging-port=9222`.
 
 :::tip
-To start Chrome manually with CDP enabled:
+To start Chrome manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if Chrome is already running with your normal profile:
+
 ```bash
 # Linux
-google-chrome --remote-debugging-port=9222
+google-chrome \
+  --remote-debugging-port=9222 \
+  --user-data-dir=$HOME/.hermes/chrome-debug \
+  --no-first-run \
+  --no-default-browser-check &
 
 # macOS
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.hermes/chrome-debug" \
+  --no-first-run \
+  --no-default-browser-check &
 ```
+
+Then launch the Hermes CLI and run `/browser connect`.
+
+**Why `--user-data-dir`?** Without it, launching Chrome while a regular Chrome instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh Chrome process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
 :::
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live Chrome instance instead of spinning up a cloud session.
@@ -276,6 +326,36 @@ Check the browser console for any JavaScript errors
 ```
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
+
+### `browser_cdp`
+
+Raw Chrome DevTools Protocol passthrough — the escape hatch for browser operations not covered by the other tools. Use for native dialog handling, iframe-scoped evaluation, cookie/network control, or any CDP verb the agent needs.
+
+**Only available when a CDP endpoint is reachable at session start** — meaning `/browser connect` has attached to a running Chrome, or `browser.cdp_url` is set in `config.yaml`. The default local agent-browser mode, Camofox, and cloud providers (Browserbase, Browser Use, Firecrawl) do not currently expose CDP to this tool — cloud providers have per-session CDP URLs but live-session routing is a follow-up.
+
+**CDP method reference:** https://chromedevtools.github.io/devtools-protocol/ — the agent can `web_extract` a specific method's page to look up parameters and return shape.
+
+Common patterns:
+
+```
+# List tabs (browser-level, no target_id)
+browser_cdp(method="Target.getTargets")
+
+# Handle a native JS dialog on a tab
+browser_cdp(method="Page.handleJavaScriptDialog",
+            params={"accept": true, "promptText": ""},
+            target_id="<tabId>")
+
+# Evaluate JS in a specific tab
+browser_cdp(method="Runtime.evaluate",
+            params={"expression": "document.title", "returnByValue": true},
+            target_id="<tabId>")
+
+# Get all cookies
+browser_cdp(method="Network.getAllCookies")
+```
+
+Browser-level methods (`Target.*`, `Browser.*`, `Storage.*`) omit `target_id`. Page-level methods (`Page.*`, `Runtime.*`, `DOM.*`, `Emulation.*`) require a `target_id` from `Target.getTargets`. Each call is independent — sessions do not persist between calls.
 
 ## Practical Examples
 

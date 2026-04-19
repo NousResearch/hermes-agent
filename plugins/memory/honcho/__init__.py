@@ -15,11 +15,34 @@ Config: Uses the existing Honcho config chain:
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import re
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def __getattr__(name: str):
+    """Lazily expose Honcho submodules as package attributes.
+
+    Broader pytest collection can resolve monkeypatch paths like
+    ``plugins.memory.honcho.client.HonchoClientConfig`` via package
+    attributes before the submodule has been imported. Mirror the parent
+    plugins.memory lazy-submodule behavior here so those dotted lookups stay
+    importable during collection-order changes.
+    """
+    py_candidate = _PACKAGE_DIR / f"{name}.py"
+    pkg_candidate = _PACKAGE_DIR / name
+    if py_candidate.exists() or (pkg_candidate.is_dir() and (pkg_candidate / "__init__.py").exists()):
+        module = importlib.import_module(f"{__name__}.{name}")
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error

@@ -4745,6 +4745,21 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        if self.provider == "gemini":
+            from agent.gemini_native_adapter import GeminiNativeClient
+
+            safe_kwargs = {
+                k: v for k, v in client_kwargs.items()
+                if k in {"api_key", "base_url", "default_headers", "timeout"}
+            }
+            client = GeminiNativeClient(**safe_kwargs)
+            logger.info(
+                "Gemini native client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         # Inject TCP keepalives so the kernel detects dead provider connections
         # instead of letting them sit silently in CLOSE-WAIT (#10324).  Without
         # this, a peer that drops mid-stream leaves the socket in a state where

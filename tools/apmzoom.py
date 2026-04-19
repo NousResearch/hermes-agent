@@ -44,6 +44,43 @@ from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
+
+def _attach_apmzoom_log_file() -> None:
+    """Route apmzoom logger to ~/.hermes/logs/apmzoom.log.
+
+    Tool handlers run in a ThreadPoolExecutor that doesn't inherit hermes'
+    main log config, so `logger.info(...)` calls from inside a handler
+    would otherwise vanish.  We attach a dedicated FileHandler once at
+    import time so every tool invocation leaves a trail (→ params, ←
+    result) that's easy to grep when a merchant reports a weird answer.
+    """
+    try:
+        home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+        logs_dir = home / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / "apmzoom.log"
+        # Avoid duplicate handlers on module re-import
+        if any(getattr(h, "_apmzoom_file", False) for h in logger.handlers):
+            return
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh._apmzoom_file = True  # marker for idempotence
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        fh.setLevel(logging.INFO)
+        logger.addHandler(fh)
+        logger.setLevel(logging.INFO)
+        # Don't double-print to parent (agent.log) — keep apmzoom.log as
+        # the single source of truth for this bridge.
+        logger.propagate = False
+    except Exception:
+        # Never let logging setup break tool registration.
+        pass
+
+
+_attach_apmzoom_log_file()
+
 # ---------------------------------------------------------------------------
 # Per-request merchant context
 # ---------------------------------------------------------------------------
@@ -62,6 +99,11 @@ logger = logging.getLogger(__name__)
 # `contextvars.copy_context().run(...)` in run_agent and revert to ContextVar.
 _current_merchant_id: str = ""
 _current_active_skill: str = ""
+
+# Sticky per-skill method override.  Populated on first successful fallback
+# (POST → GET) so subsequent calls skip the wasted 405 roundtrip.  In-process
+# only — reset on gateway restart, which is fine for this deployment.
+_METHOD_CACHE: Dict[str, str] = {}
 
 
 def set_merchant_id(merchant_id: str) -> None:
@@ -425,38 +467,58 @@ def _execute_skill(skill_name: str, params: Optional[Dict[str, Any]] = None,
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-    # Request body / query
-    body_bytes: Optional[bytes] = None
-    request_url = final_url
-    if api_method == "GET":
-        if params:
-            request_url = final_url + ("&" if "?" in final_url else "?") + _urlparse.urlencode(params)
-    else:
-        body_bytes = json.dumps(params, ensure_ascii=False).encode("utf-8")
+    # Upstream worker registers api_method="POST" for ~23 read-type endpoints
+    # (gds_m_*list/info, gds_u_*, auth_me, ids_captcha_img, …) that actually
+    # only accept GET.  Rather than edit each SKILL.md (skill-sync-worker.py
+    # would overwrite), auto-fallback here: cache the first successful method
+    # per skill to avoid paying 405 cost on every call.
+    effective_method = _METHOD_CACHE.get(skill_name, api_method)
 
-    # Fetch
-    req = _urlrequest.Request(request_url, data=body_bytes, headers=headers, method=api_method)
-    try:
-        with _urlrequest.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            # Truncate huge responses to keep the LLM context budget sane.
-            if len(raw) > 8000:
-                raw = raw[:8000] + "\n…[truncated for context budget]"
-            return raw
-    except _urlerror.HTTPError as e:
-        body = ""
+    def _do_fetch(method: str):
+        """Returns (raw, http_status, url).  raw is text on success, None on HTTP error."""
+        body_bytes: Optional[bytes] = None
+        req_url = final_url
+        if method == "GET":
+            if params:
+                req_url = final_url + ("&" if "?" in final_url else "?") + _urlparse.urlencode(params)
+        else:
+            body_bytes = json.dumps(params, ensure_ascii=False).encode("utf-8")
+        req = _urlrequest.Request(req_url, data=body_bytes, headers=headers, method=method)
         try:
-            body = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            pass
+            with _urlrequest.urlopen(req, timeout=30) as resp:
+                return resp.read().decode("utf-8", errors="replace"), 200, req_url
+        except _urlerror.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                pass
+            return body, e.code, req_url
+        except Exception as e:
+            return str(e)[:300], 0, req_url
+
+    raw, status, request_url = _do_fetch(effective_method)
+
+    # 405 + POST → retry with GET (and remember)
+    if status == 405 and effective_method == "POST":
+        logger.warning("[apmzoom] %s: POST→405, retrying with GET", skill_name)
+        raw, status, request_url = _do_fetch("GET")
+        if status == 200:
+            _METHOD_CACHE[skill_name] = "GET"
+            logger.info("[apmzoom] %s: cached method=GET (worker metadata override)", skill_name)
+
+    if status == 200:
+        if len(raw) > 8000:
+            raw = raw[:8000] + "\n…[truncated for context budget]"
+        return raw
+    if status == 0:
         return json.dumps({
-            "error": "http_error", "status": e.code, "skill": skill_name,
-            "url": request_url, "body": body,
+            "error": "request_failed", "skill": skill_name, "message": raw,
         }, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({
-            "error": "request_failed", "skill": skill_name, "message": str(e)[:300],
-        }, ensure_ascii=False)
+    return json.dumps({
+        "error": "http_error", "status": status, "skill": skill_name,
+        "url": request_url, "body": raw,
+    }, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -516,13 +578,11 @@ def _make_handler(skill_name: str):
         else:
             return json.dumps({"error": "bad_params", "message": "arguments must be an object"},
                               ensure_ascii=False)
-        import sys
-        print(f"[apmzoom] → {skill_name} mid={current_merchant_id() or '(none)'} "
-              f"params={json.dumps(params, ensure_ascii=False)[:300]}",
-              file=sys.stderr, flush=True)
+        logger.info("[apmzoom] → %s mid=%s params=%s",
+                    skill_name, current_merchant_id() or "(none)",
+                    json.dumps(params, ensure_ascii=False)[:300])
         out = _execute_skill(skill_name, params)
-        print(f"[apmzoom] ← {skill_name} result[:300]={out[:300]}",
-              file=sys.stderr, flush=True)
+        logger.info("[apmzoom] ← %s result=%s", skill_name, out[:300])
         return out
     return _handler
 

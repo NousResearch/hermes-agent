@@ -113,12 +113,12 @@ class TurnResult:
 
 
 def _to_mc_interpretation(interp: Interpretation) -> _mc.Interpretation:
-    """Bridge Pydantic Interpretation → mission_compiler's dataclass."""
+    """Bridge Pydantic Interpretation → mission_compiler's Pydantic model."""
     return _mc.Interpretation(
         intent=interp.intent,
         confidence=0.0,  # stub: classifier doesn't yet produce confidence
         raw_text=interp.raw_text,
-        metadata=dict(interp.metadata),
+        metadata=interp.metadata,
     )
 
 
@@ -259,18 +259,11 @@ def run_turn(
     rp_route = _RPRoute(target=mc_route.target, payload=mc_route.payload)
 
     # Adapt mission_compiler.MissionContract → routing_policy.MissionContract
+    # Both now Pydantic; use model_dump for a clean conversion.
     rp_mission = None
     if mission is not None:
         from agent.modules.routing_policy import MissionContract as _RPContract  # noqa: PLC0415
-        rp_mission = _RPContract(
-            mission_id=mission.mission_id,
-            intent=mission.intent,
-            target=mission.target,
-            priority=mission.priority,
-            context=mission.context,
-            payload=mission.payload,
-            mode=mission.mode,
-        )
+        rp_mission = _RPContract(**mission.model_dump())
 
     dispatch: Dispatch = apply_routing_policy(rp_route, rp_mission)
 

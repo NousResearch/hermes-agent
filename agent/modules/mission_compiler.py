@@ -12,8 +12,9 @@ Wire-up: task C§1.9 (EventEmitter instance injected by turn_handler)
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Optional
+
+from pydantic import BaseModel, Field
 
 from agent.modules.event_emitter import EventEmitter
 
@@ -22,37 +23,33 @@ from agent.modules.event_emitter import EventEmitter
 # Input types (lightweight stubs; replaced by typed imports in C§1.9)
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Interpretation:
+class Interpretation(BaseModel):
     """Output of IntentInterpreter (C§1.2)."""
     intent: str
     confidence: float
     raw_text: str
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass
-class ContextPackage:
+class ContextPackage(BaseModel):
     """Output of ContextAssembler (C§1.3)."""
     session_id: str
     user_id: str
     history_summary: str
-    kv: dict[str, Any] = field(default_factory=dict)
+    kv: dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass
-class Route:
+class Route(BaseModel):
     """Output of RouteClassifier (C§1.4) / RoutingPolicy (C§1.6)."""
     target: str  # 'direct'|'state-engine'|'openclaw'|'mcp-tool'|'clarify'|'approve'|'escalate'
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
 # Output types
 # ---------------------------------------------------------------------------
 
-@dataclass
-class MissionContract:
+class MissionContract(BaseModel):
     """
     Typed mission contract per @agrv/mission-contract.MissionContract.
     Fields aligned with Phase 2 §6 schema; wire-up task C§1.9 replaces this

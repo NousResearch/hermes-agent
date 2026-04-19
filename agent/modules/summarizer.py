@@ -13,9 +13,10 @@ Wire-up: task C§1.9 (EventEmitter instance injected by turn_handler)
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from pydantic import BaseModel, Field
 
 from agent.modules.event_emitter import EventEmitter
 
@@ -24,36 +25,33 @@ from agent.modules.event_emitter import EventEmitter
 # Input types (stubs; C§1.9 replaces with @agrv/mission-contract imports)
 # ---------------------------------------------------------------------------
 
-@dataclass
-class ResultPackage:
+class ResultPackage(BaseModel):
     """
     Upstream result bundle. Aligned with @agrv/mission-contract.ResultPackage
     (Phase 2 §6). Wire-up task C§1.9 replaces this stub.
     """
     mission_id: str
     success: bool
-    outputs: dict[str, Any] = field(default_factory=dict)
-    errors: list[str] = field(default_factory=list)
+    outputs: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
     duration_ms: Optional[int] = None
     sla_breach: bool = False
-    pending_approvals: list[str] = field(default_factory=list)
+    pending_approvals: list[str] = Field(default_factory=list)
 
 
-@dataclass
-class CompanyKPIs:
+class CompanyKPIs(BaseModel):
     """
     Optional company-wide KPI snapshot. Injected by Hermes context layer;
     absent when the Company Model hasn't been loaded yet (Phase B§2).
     """
-    kv: dict[str, Any] = field(default_factory=dict)
+    kv: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
 # Output types
 # ---------------------------------------------------------------------------
 
-@dataclass
-class ExecutiveSummary:
+class ExecutiveSummary(BaseModel):
     """
     Executive summary per @agrv/mission-contract.ExecutiveSummarySchema.
 
@@ -71,7 +69,7 @@ class ExecutiveSummary:
     sla_breach: bool
     pending_approvals: list[str]
     generated_at: str
-    kpi_deltas: dict[str, Any] = field(default_factory=dict)
+    kpi_deltas: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

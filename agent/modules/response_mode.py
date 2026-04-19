@@ -12,8 +12,9 @@ Wire-up: task C§1.9 (EventEmitter instance injected by turn_handler)
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
 
 from agent.modules.event_emitter import EventEmitter
 
@@ -22,21 +23,19 @@ from agent.modules.event_emitter import EventEmitter
 # Input types (stubs matching C§1.6 Dispatch)
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Dispatch:
+class Dispatch(BaseModel):
     """Routing-policy output (C§1.6)."""
     target: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass
-class UpstreamResult:
+class UpstreamResult(BaseModel):
     """
     Optional result from an upstream system (OpenClaw, MCP tool, state-engine).
     Present only after async completion; absent for synchronous/clarify paths.
     """
     success: bool
-    data: dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = Field(default_factory=dict)
     error: Optional[str] = None
 
 
@@ -55,8 +54,7 @@ ResponseMode = Literal[
 Tone = Literal["neutral", "executive", "technical", "conversational"]
 
 
-@dataclass
-class ResponseShape:
+class ResponseShape(BaseModel):
     """
     Descriptor consumed by the response renderer to format the final reply.
 
@@ -67,7 +65,7 @@ class ResponseShape:
     mode: ResponseMode
     tone: Tone
     template: Optional[str] = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

@@ -11,8 +11,9 @@ Wire-up: task C§1.9 (EventEmitter instance injected by turn_handler)
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
 
 from agent.modules.event_emitter import EventEmitter
 
@@ -21,15 +22,13 @@ from agent.modules.event_emitter import EventEmitter
 # Input types (stubs; see mission_compiler.py for canonical definitions)
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Route:
+class Route(BaseModel):
     """Classifier output (C§1.4). Passed in from the input pipeline."""
     target: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass
-class MissionContract:
+class MissionContract(BaseModel):
     """
     Compiler output (C§1.5). Present when a formal contract was assembled;
     None for clarify/approve/escalate routes.
@@ -58,8 +57,7 @@ DispatchTarget = Literal[
 ]
 
 
-@dataclass
-class Dispatch:
+class Dispatch(BaseModel):
     """
     Concrete dispatch descriptor.
 
@@ -67,7 +65,7 @@ class Dispatch:
     payload: forwarded payload (may include compiled MissionContract).
     """
     target: DispatchTarget
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

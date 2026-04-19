@@ -222,6 +222,27 @@ class TestNonStringContent:
             "api_mode": "codex_responses",
         }
 
+    def test_summary_prompt_uses_markdown_snapshot_and_dense_word_target(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "inspect run_agent.py"},
+            {"role": "assistant", "content": "reading file now"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert "SESSION_SNAPSHOT.md" in prompt
+        assert "```md" in prompt
+        assert "roughly 500 dense words" in prompt
+
 
 class TestSummaryFailureCooldown:
     def test_summary_failure_enters_cooldown_and_skips_retry(self):

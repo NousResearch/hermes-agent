@@ -546,6 +546,10 @@ def _get_platform_tools(
             ts_tools = set(resolve_toolset(ts_key))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
+        default_off = set(_DEFAULT_OFF_TOOLSETS)
+        if platform in default_off:
+            default_off.remove(platform)
+        enabled_toolsets -= default_off
 
     # Plugin toolsets: enabled by default unless explicitly disabled.
     # A plugin toolset is "known" for a platform once `hermes tools`

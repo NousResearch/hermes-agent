@@ -81,64 +81,85 @@ class TestSaveDisabledSkills:
 # ---------------------------------------------------------------------------
 
 class TestIsSkillDisabled:
-    @patch("hermes_cli.config.load_config")
-    def test_globally_disabled(self, mock_load):
-        mock_load.return_value = {"skills": {"disabled": ["bad-skill"]}}
+    @patch("agent.skill_utils.get_disabled_skill_names")
+    def test_globally_disabled(self, mock_disabled):
+        mock_disabled.return_value = {"bad-skill"}
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("bad-skill") is True
 
-    @patch("hermes_cli.config.load_config")
-    def test_globally_enabled(self, mock_load):
-        mock_load.return_value = {"skills": {"disabled": ["other"]}}
+    @patch("agent.skill_utils.get_disabled_skill_names")
+    def test_globally_enabled(self, mock_disabled):
+        mock_disabled.return_value = {"other"}
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("good-skill") is False
 
-    @patch("hermes_cli.config.load_config")
-    def test_platform_disabled(self, mock_load):
-        mock_load.return_value = {"skills": {
-            "disabled": [],
-            "platform_disabled": {"telegram": ["tg-skill"]}
-        }}
+    @patch("agent.skill_utils.get_disabled_skill_names")
+    def test_platform_disabled(self, mock_disabled):
+        def resolve(platform=None):
+            return {"tg-skill"} if platform == "telegram" else set()
+        mock_disabled.side_effect = resolve
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
 
-    @patch("hermes_cli.config.load_config")
-    def test_platform_enabled_overrides_global(self, mock_load):
-        mock_load.return_value = {"skills": {
-            "disabled": ["skill-a"],
-            "platform_disabled": {"telegram": []}
-        }}
+    @patch("agent.skill_utils.get_disabled_skill_names")
+    def test_platform_enabled_overrides_global(self, mock_disabled):
+        def resolve(platform=None):
+            # telegram has explicit empty list -> skill-a is NOT disabled for telegram
+            return set() if platform == "telegram" else {"skill-a"}
+        mock_disabled.side_effect = resolve
         from tools.skills_tool import _is_skill_disabled
-        # telegram has explicit empty list -> skill-a is NOT disabled for telegram
         assert _is_skill_disabled("skill-a", platform="telegram") is False
 
-    @patch("hermes_cli.config.load_config")
-    def test_platform_falls_back_to_global(self, mock_load):
-        mock_load.return_value = {"skills": {"disabled": ["skill-a"]}}
-        from tools.skills_tool import _is_skill_disabled
+    @patch("agent.skill_utils.get_disabled_skill_names")
+    def test_platform_falls_back_to_global(self, mock_disabled):
         # no platform_disabled for cli -> global
+        mock_disabled.return_value = {"skill-a"}
+        from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("skill-a", platform="cli") is True
 
-    @patch("hermes_cli.config.load_config")
-    def test_empty_config(self, mock_load):
-        mock_load.return_value = {}
+    @patch("agent.skill_utils.get_disabled_skill_names")
+    def test_empty_config(self, mock_disabled):
+        mock_disabled.return_value = set()
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("any-skill") is False
 
-    @patch("hermes_cli.config.load_config")
-    def test_exception_returns_false(self, mock_load):
-        mock_load.side_effect = Exception("config error")
+    @patch("agent.skill_utils.get_disabled_skill_names")
+    def test_exception_returns_false(self, mock_disabled):
+        mock_disabled.side_effect = Exception("config error")
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("any-skill") is False
 
-    @patch("hermes_cli.config.load_config")
+    @patch("agent.skill_utils.get_disabled_skill_names")
     @patch.dict("os.environ", {"HERMES_PLATFORM": "discord"})
-    def test_env_var_platform(self, mock_load):
-        mock_load.return_value = {"skills": {
-            "platform_disabled": {"discord": ["discord-skill"]}
-        }}
+    def test_env_var_platform(self, mock_disabled):
+        def resolve(platform=None):
+            # Implementation delegates to get_disabled_skill_names() which
+            # reads HERMES_PLATFORM itself; emulate that behaviour here.
+            import os
+            resolved = platform or os.getenv("HERMES_PLATFORM")
+            return {"discord-skill"} if resolved == "discord" else set()
+        mock_disabled.side_effect = resolve
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("discord-skill") is True
+
+    def test_session_platform_honored(self, tmp_path, monkeypatch):
+        """Regression for #13027: HERMES_SESSION_PLATFORM should flow into _is_skill_disabled."""
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  platform_disabled:\n"
+            "    discord:\n"
+            "      - blocked-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        from gateway.session_context import set_session_vars, clear_session_vars
+        from tools.skills_tool import _is_skill_disabled
+        tokens = set_session_vars(platform="discord")
+        try:
+            assert _is_skill_disabled("blocked-skill") is True
+        finally:
+            clear_session_vars(tokens)
 
 
 # ---------------------------------------------------------------------------

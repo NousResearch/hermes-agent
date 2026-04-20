@@ -1052,7 +1052,7 @@ copy_config_templates() {
     log_info "Setting up configuration files..."
 
     # Create ~/.hermes directory structure (config at top level, code in subdir)
-    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills,whatsapp/session}
+    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills}
 
     # Create .env at ~/.hermes/.env (top level, easy to find)
     if [ ! -f "$HERMES_HOME/.env" ]; then
@@ -1122,7 +1122,7 @@ install_node_deps() {
 
     if [ "$DISTRO" = "termux" ]; then
         log_info "Skipping automatic Node/browser dependency setup on Termux"
-        log_info "Browser automation and WhatsApp bridge are not part of the tested Termux install path yet."
+        log_info "Browser automation is not part of the tested Termux install path yet."
         log_info "If you want to experiment manually later, run: cd $INSTALL_DIR && npm install"
         return 0
     fi
@@ -1204,15 +1204,7 @@ install_node_deps() {
         log_success "TUI dependencies installed"
     fi
 
-    # Install WhatsApp bridge dependencies
-    if [ -f "$INSTALL_DIR/scripts/whatsapp-bridge/package.json" ]; then
-        log_info "Installing WhatsApp bridge dependencies..."
-        cd "$INSTALL_DIR/scripts/whatsapp-bridge"
-        npm install --silent 2>/dev/null || {
-            log_warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
-        }
-        log_success "WhatsApp bridge dependencies installed"
-    fi
+
 }
 
 run_setup_wizard() {

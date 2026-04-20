@@ -27,12 +27,10 @@ WORKDIR /opt/hermes
 # Copy only package manifests first so npm install + Playwright are cached
 # unless the lockfiles themselves change.
 COPY package.json package-lock.json ./
-COPY scripts/whatsapp-bridge/package.json scripts/whatsapp-bridge/package-lock.json scripts/whatsapp-bridge/
 COPY web/package.json web/package-lock.json web/
 
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
-    (cd scripts/whatsapp-bridge && npm install --prefer-offline --no-audit) && \
     (cd web && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 

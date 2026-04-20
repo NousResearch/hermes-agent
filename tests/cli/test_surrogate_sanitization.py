@@ -9,6 +9,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch
 
+from cli import _collapse_pasted_text_to_file
 from run_agent import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
@@ -334,3 +335,26 @@ class TestRunConversationSurrogateSanitization:
             if msg.get("role") == "user":
                 assert "\udce2" not in msg["content"], "Surrogate leaked into stored message"
                 assert "\ufffd" in msg["content"], "Replacement char not in stored message"
+
+
+class TestCollapsedPasteSurrogateSanitization:
+    """Regression: pasted text files must be UTF-8 writable even with surrogates."""
+
+    def test_collapsed_paste_file_sanitizes_surrogates_before_write(self, tmp_path):
+        dirty = "line1\nline2\nline3\nline4\nline5\udce2"
+
+        paste_file, placeholder, line_count = _collapse_pasted_text_to_file(
+            dirty,
+            tmp_path / "pastes",
+            7,
+            timestamp="123456",
+        )
+
+        assert paste_file.name == "paste_7_123456.txt"
+        assert line_count == 4
+        assert "5 lines" in placeholder
+
+        saved = paste_file.read_text(encoding="utf-8")
+        assert "\udce2" not in saved
+        assert "\ufffd" in saved
+        saved.encode("utf-8")

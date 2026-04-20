@@ -1384,6 +1384,25 @@ def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     return not pasted_text.strip()
 
 
+def _collapse_pasted_text_to_file(
+    pasted_text: str,
+    paste_dir: Path,
+    paste_index: int,
+    timestamp: str | None = None,
+) -> tuple[Path, str, int]:
+    """Sanitize pasted text, write it as UTF-8, and return the placeholder."""
+    from run_agent import _sanitize_surrogates
+
+    sanitized_text = _sanitize_surrogates(pasted_text)
+    paste_dir.mkdir(parents=True, exist_ok=True)
+    stamp = timestamp or datetime.now().strftime('%H%M%S')
+    paste_file = paste_dir / f"paste_{paste_index}_{stamp}.txt"
+    paste_file.write_text(sanitized_text, encoding="utf-8")
+    line_count = sanitized_text.count('\n')
+    placeholder = f"[Pasted text #{paste_index}: {line_count + 1} lines \u2192 {paste_file}]"
+    return paste_file, placeholder, line_count
+
+
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -9179,11 +9198,11 @@ class HermesCLI:
                 buf = event.current_buffer
                 if line_count >= 5 and not buf.text.strip().startswith('/'):
                     _paste_counter[0] += 1
-                    paste_dir = _hermes_home / "pastes"
-                    paste_dir.mkdir(parents=True, exist_ok=True)
-                    paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
-                    paste_file.write_text(pasted_text, encoding="utf-8")
-                    placeholder = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
+                    paste_file, placeholder, _ = _collapse_pasted_text_to_file(
+                        pasted_text,
+                        _hermes_home / "pastes",
+                        _paste_counter[0],
+                    )
                     prefix = ""
                     if buf.cursor_position > 0 and buf.text[buf.cursor_position - 1] != '\n':
                         prefix = "\n"
@@ -9317,14 +9336,14 @@ class HermesCLI:
             is_paste = chars_added > 1 or newlines_added >= 4
             if line_count >= 5 and is_paste and not text.startswith('/'):
                 _paste_counter[0] += 1
-                # Save to temp file
-                paste_dir = _hermes_home / "pastes"
-                paste_dir.mkdir(parents=True, exist_ok=True)
-                paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
-                paste_file.write_text(text, encoding="utf-8")
+                paste_file, placeholder, _ = _collapse_pasted_text_to_file(
+                    text,
+                    _hermes_home / "pastes",
+                    _paste_counter[0],
+                )
                 # Replace buffer with compact reference
                 _paste_just_collapsed[0] = True
-                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
+                buf.text = placeholder
                 buf.cursor_position = len(buf.text)
 
         input_area.buffer.on_text_changed += _on_text_changed

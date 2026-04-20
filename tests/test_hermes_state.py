@@ -365,6 +365,25 @@ class TestFTS5Search:
         assert isinstance(results[0]["context"], list)
         assert len(results[0]["context"]) > 0
 
+    def test_search_context_uses_session_neighbors_when_ids_are_interleaved(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+
+        db.append_message("s1", role="user", content="before needle")
+        db.append_message("s2", role="user", content="other session message")
+        db.append_message("s1", role="assistant", content="needle match")
+        db.append_message("s2", role="assistant", content="another other session message")
+        db.append_message("s1", role="user", content="after needle")
+
+        results = db.search_messages('"needle match"')
+        needle_result = next(r for r in results if r["session_id"] == "s1" and "needle match" in r["snippet"])
+
+        assert [msg["content"] for msg in needle_result["context"]] == [
+            "before needle",
+            "needle match",
+            "after needle",
+        ]
+
     def test_search_special_chars_do_not_crash(self, db):
         """FTS5 special characters in queries must not raise OperationalError."""
         db.create_session(session_id="s1", source="cli")

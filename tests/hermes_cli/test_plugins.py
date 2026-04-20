@@ -831,7 +831,8 @@ class TestPluginCommands:
 
     def test_get_plugin_context_engine_discovers_plugins_lazily(self, tmp_path, monkeypatch):
         """Context engine lookup should work before any explicit discover_plugins() call."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
         plugin_dir = plugins_dir / "engine-plugin"
         plugin_dir.mkdir(parents=True, exist_ok=True)
         (plugin_dir / "plugin.yaml").write_text(
@@ -856,7 +857,11 @@ class TestPluginCommands:
             "def register(ctx):\n"
             "    ctx.register_context_engine(StubEngine())\n"
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        # Opt-in: plugins are opt-in by default, so enable in config.yaml
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["engine-plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         import hermes_cli.plugins as plugins_mod
 

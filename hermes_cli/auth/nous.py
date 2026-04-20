@@ -65,6 +65,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from hermes_cli.auth.types import NousCredentials
 from hermes_cli.auth import (
     ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
@@ -540,7 +541,7 @@ def resolve_nous_runtime_credentials(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     force_mint: bool = False,
-) -> Dict[str, Any]:
+) -> NousCredentials:
     """
     Resolve Nous inference credentials for runtime use.
 

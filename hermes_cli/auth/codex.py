@@ -42,6 +42,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from hermes_cli.auth.types import CodexCredentials
 from hermes_cli.auth import (
     AUTH_LOCK_TIMEOUT_SECONDS,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -278,7 +279,7 @@ def resolve_codex_runtime_credentials(
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-) -> Dict[str, Any]:
+) -> CodexCredentials:
     """Resolve runtime credentials from Hermes's own Codex token store."""
     try:
         data = _read_codex_tokens()

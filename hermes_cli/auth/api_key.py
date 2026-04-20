@@ -55,6 +55,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
+from hermes_cli.auth.types import ApiKeyCredentials
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
     AuthError,
@@ -241,7 +242,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
-def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
+def resolve_api_key_provider_credentials(provider_id: str) -> ApiKeyCredentials:
     """Resolve API key and base URL for an API-key provider.
 
     Returns dict with: provider, api_key, base_url, source.

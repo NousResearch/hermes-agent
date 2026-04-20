@@ -38,6 +38,12 @@ import httpx
 import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path
+from hermes_cli.auth.types import (
+    ApiKeyCredentials,
+    CodexCredentials,
+    ExternalProcessCredentials,
+    NousCredentials,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -883,7 +889,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     return {"logged_in": False}
 
 
-def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
+def resolve_external_process_provider_credentials(provider_id: str) -> ExternalProcessCredentials:
     """Resolve runtime details for local subprocess-backed providers."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":

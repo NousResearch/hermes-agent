@@ -531,7 +531,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
-    """Send via Telegram Bot API (one-shot, no polling needed).
+    """Send via Telegram Bot API.
+
+    When the Hermes gateway is running with a connected TelegramAdapter for
+    this token, reuses the adapter's live Bot instance to avoid creating
+    a competing standalone Bot that would conflict with the gateway's
+    polling (get_updates) loop.
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
     so that bold, links, and headers render correctly.  If the message
@@ -539,8 +544,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot
         from telegram.constants import ParseMode
+
+        # Try to reuse the gateway's live Bot to avoid polling conflicts.
+        # Fall back to a standalone Bot when gateway is not running.
+        try:
+            from gateway.platforms.telegram import get_telegram_live_adapter
+            live = get_telegram_live_adapter(token)
+        except ImportError:
+            live = None
+
+        if live is not None and live._bot is not None:
+            bot = live._bot
+            logger.debug("Reusing live Telegram adapter Bot for send")
+        else:
+            from telegram import Bot
+            bot = Bot(token=token)
+            logger.debug("No live adapter found, using standalone Bot")
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.

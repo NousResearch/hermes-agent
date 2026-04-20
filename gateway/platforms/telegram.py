@@ -88,6 +88,18 @@ def check_telegram_requirements() -> bool:
     return TELEGRAM_AVAILABLE
 
 
+# Registry of live TelegramAdapter instances keyed by bot token.
+# Allows send_message_tool.py to reuse the gateway's connected Bot
+# instead of creating a competing standalone instance that would
+# conflict with polling (get_updates) on the same token.
+_LIVE_ADAPTERS: Dict[str, "TelegramAdapter"] = {}
+
+
+def get_telegram_live_adapter(token: str) -> Optional["TelegramAdapter"]:
+    """Return the live TelegramAdapter for a token, or None if not connected."""
+    return _LIVE_ADAPTERS.get(token)
+
+
 # Matches every character that MarkdownV2 requires to be backslash-escaped
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
@@ -767,6 +779,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             
             self._mark_connected()
+            _LIVE_ADAPTERS[self.config.token] = self
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
@@ -792,6 +805,7 @@ class TelegramAdapter(BasePlatformAdapter):
     
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        _LIVE_ADAPTERS.pop(self.config.token, None)
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()

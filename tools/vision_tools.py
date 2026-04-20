@@ -32,6 +32,8 @@ import base64
 import json
 import logging
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -402,6 +404,53 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
 
 
+def _is_timeout_like_error(exc: Exception) -> bool:
+    """Return True when an image LLM failure looks like a transient timeout."""
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    return any(marker in text for marker in ("timeout", "timed out", "readtimeout"))
+
+
+def _local_ocr_fallback(image_path: Path) -> Optional[str]:
+    """Best-effort OCR fallback for screenshot-like images when vision times out."""
+    tesseract = shutil.which("tesseract")
+    if not tesseract:
+        return None
+
+    for lang in ("eng+chi_sim", "eng"):
+        try:
+            completed = subprocess.run(
+                [tesseract, str(image_path), "stdout", "-l", lang, "--psm", "11"],
+                capture_output=True,
+                text=True,
+                timeout=25,
+                check=False,
+            )
+        except Exception as exc:
+            logger.debug("Local OCR fallback failed with lang=%s: %s", lang, exc)
+            continue
+
+        ocr_text = (completed.stdout or "").strip()
+        if not ocr_text:
+            logger.debug(
+                "Local OCR fallback produced no text with lang=%s: %s",
+                lang,
+                (completed.stderr or "").strip()[:300],
+            )
+            continue
+
+        if len(ocr_text) > 6000:
+            ocr_text = ocr_text[:6000].rstrip() + "\n...[truncated]"
+
+        return (
+            "Vision model timed out before completing image analysis. "
+            "Local OCR fallback extracted the following text as partial evidence; "
+            "it may miss layout, color, charts, and non-text visual details.\n\n"
+            f"{ocr_text}"
+        )
+
+    return None
+
+
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
@@ -625,6 +674,29 @@ async def vision_analyze_tool(
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
+
+        fallback_analysis = None
+        if (
+            temp_image_path
+            and temp_image_path.exists()
+            and _is_timeout_like_error(e)
+        ):
+            fallback_analysis = _local_ocr_fallback(temp_image_path)
+        if fallback_analysis:
+            result = {
+                "success": True,
+                "warning": error_msg,
+                "fallback": "local_ocr",
+                "analysis": fallback_analysis,
+            }
+
+            debug_call_data["success"] = True
+            debug_call_data["error"] = error_msg
+            debug_call_data["analysis_length"] = len(fallback_analysis)
+            _debug.log_call("vision_analyze_tool", debug_call_data)
+            _debug.save()
+
+            return json.dumps(result, indent=2, ensure_ascii=False)
         
         # Detect vision capability errors — give the model a clear message
         # so it can inform the user instead of a cryptic API error.

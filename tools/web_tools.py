@@ -40,11 +40,14 @@ Usage:
     crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
+import importlib
 import json
 import logging
 import os
 import re
 import asyncio
+import html as html_lib
+from urllib.parse import parse_qs, unquote, urlparse
 from typing import List, Dict, Any, Optional
 import httpx
 from firecrawl import Firecrawl
@@ -88,7 +91,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "duckduckgo"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -104,7 +107,7 @@ def _get_backend() -> str:
         if available:
             return backend
 
-    return "firecrawl"  # default (backward compat)
+    return "duckduckgo"
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -117,7 +120,375 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "duckduckgo":
+        return True
     return False
+
+
+_DUCKDUCKGO_HTML_SEARCH_URL = "https://html.duckduckgo.com/html/"
+_FALLBACK_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0; +https://github.com/muzzleishen/hermes-agent)",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _decode_duckduckgo_result_url(href: str) -> str:
+    """Resolve DuckDuckGo redirect/result URLs into the destination URL."""
+    if not href:
+        return ""
+    if href.startswith("//"):
+        href = f"https:{href}"
+    parsed = urlparse(href)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        if target:
+            return unquote(target)
+    return href
+
+
+def _strip_html_fragment(fragment: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", fragment or "")
+    text = html_lib.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _html_to_text(html_content: str) -> str:
+    cleaned = re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", html_content or "")
+    cleaned = re.sub(r"(?i)</(p|div|section|article|h1|h2|h3|h4|h5|h6|li|tr|td|th|blockquote|pre|br)>", "\n", cleaned)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html_lib.unescape(cleaned)
+    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _extract_html_title(html_content: str) -> str:
+    match = re.search(r"(?is)<title[^>]*>(.*?)</title>", html_content or "")
+    if match:
+        return _strip_html_fragment(match.group(1))
+    og_match = re.search(
+        r'(?is)<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']',
+        html_content or "",
+    )
+    if og_match:
+        return _strip_html_fragment(og_match.group(1))
+    return ""
+
+
+def _extract_with_trafilatura(html_content: str, url: str, format: Optional[str] = None) -> Optional[str]:
+    if not html_content or format == "html":
+        return None
+
+    output_format = "markdown" if format in (None, "markdown") else "txt"
+
+    try:
+        trafilatura = importlib.import_module("trafilatura")
+    except Exception:
+        return None
+
+    try:
+        extracted = trafilatura.extract(
+            html_content,
+            url=url,
+            output_format=output_format,
+        )
+    except TypeError:
+        try:
+            extracted = trafilatura.extract(html_content, output_format=output_format)
+        except Exception as exc:
+            logger.debug("Trafilatura fallback extract failed for %s: %s", url, exc)
+            return None
+    except Exception as exc:
+        logger.debug("Trafilatura extract failed for %s: %s", url, exc)
+        return None
+
+    if isinstance(extracted, str):
+        extracted = extracted.strip()
+    return extracted or None
+
+
+def _build_extract_excerpt(content: str, max_length: int = 280) -> str:
+    """Build a compact plain-text excerpt from extracted content."""
+    text = content or ""
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", text)
+    text = re.sub(r"(?m)^#+\s*", "", text)
+    text = re.sub(r"[`*_~>|]+", " ", text)
+    text = html_lib.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= max_length:
+        return text
+    clipped = text[:max_length].rsplit(" ", 1)[0].strip() or text[:max_length].strip()
+    return f"{clipped.rstrip()}..."
+
+
+def _assess_extract_quality(content: str) -> Dict[str, Any]:
+    """Return lightweight quality signals for extracted content."""
+    normalized = (content or "").strip()
+    content_length = len(normalized)
+    flags: List[str] = []
+    if content_length == 0:
+        flags.append("empty_content")
+    elif content_length < 20:
+        flags.append("thin_content")
+
+    if "empty_content" in flags:
+        status = "empty"
+    elif "thin_content" in flags:
+        status = "thin"
+    else:
+        status = "ok"
+
+    return {
+        "content_length": content_length,
+        "quality_flags": flags,
+        "quality_status": status,
+    }
+
+
+def _enrich_extract_result(result: Dict[str, Any], backend: str) -> Dict[str, Any]:
+    """Ensure extract results carry excerpt + stable metadata/quality signals."""
+    enriched = dict(result)
+    metadata = enriched.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    content_source = enriched.get("raw_content") or enriched.get("content") or ""
+    excerpt = enriched.get("excerpt") or _build_extract_excerpt(content_source)
+    quality = _assess_extract_quality(content_source)
+
+    metadata.setdefault("sourceURL", enriched.get("url", ""))
+    metadata.setdefault("extractor", backend)
+    metadata.setdefault("fallbackUsed", backend == "duckduckgo")
+    metadata.setdefault("contentLength", quality["content_length"])
+    metadata.setdefault("qualityFlags", quality["quality_flags"])
+    metadata.setdefault("qualityStatus", quality["quality_status"])
+
+    enriched["metadata"] = metadata
+    if excerpt:
+        enriched["excerpt"] = excerpt
+    return enriched
+
+
+def _duckduckgo_search(query: str, limit: int) -> dict:
+    """Zero-key HTML search fallback via DuckDuckGo."""
+    response = httpx.get(
+        _DUCKDUCKGO_HTML_SEARCH_URL,
+        params={"q": query},
+        headers=_FALLBACK_HEADERS,
+        follow_redirects=True,
+        timeout=20,
+    )
+    response.raise_for_status()
+    html_body = response.text
+
+    web_results = []
+    matches = list(
+        re.finditer(
+            r'(?is)<a[^>]+class=["\'][^"\']*result__a[^"\']*["\'][^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+            html_body,
+        )
+    )
+
+    for index, match in enumerate(matches[:max(limit, 1)]):
+        href, raw_title = match.groups()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(html_body)
+        chunk = html_body[start:end]
+        snippet_match = re.search(r'(?is)class=["\'][^"\']*result__snippet[^"\']*["\'][^>]*>(.*?)</', chunk)
+        snippet = _strip_html_fragment(snippet_match.group(1)) if snippet_match else ""
+        web_results.append(
+            {
+                "title": _strip_html_fragment(raw_title),
+                "url": _decode_duckduckgo_result_url(html_lib.unescape(href)),
+                "description": snippet,
+                "position": index + 1,
+            }
+        )
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+async def _direct_extract_urls(urls: List[str], format: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Zero-key fallback extractor using direct HTTP GET + lightweight HTML cleaning."""
+    results: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(headers=_FALLBACK_HEADERS, follow_redirects=True, timeout=20) as client:
+        for url in urls:
+            blocked = check_website_access(url)
+            if blocked:
+                results.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": blocked["message"],
+                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+                })
+                continue
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                final_url = str(response.url)
+                final_blocked = check_website_access(final_url)
+                if final_blocked:
+                    results.append({
+                        "url": final_url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": final_blocked["message"],
+                        "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
+                    })
+                    continue
+
+                content_type = response.headers.get("content-type", "")
+                body = response.text
+                title = _extract_html_title(body)
+                extractor = "raw_html" if format == "html" else "plain_text"
+                if format == "html":
+                    chosen_content = body
+                else:
+                    looks_like_html = "html" in content_type.lower() or "<html" in body[:1000].lower()
+                    if looks_like_html:
+                        trafilatura_content = _extract_with_trafilatura(body, final_url, format=format)
+                        if trafilatura_content:
+                            chosen_content = trafilatura_content
+                            extractor = "trafilatura"
+                        else:
+                            chosen_content = _html_to_text(body)
+                            extractor = "html_cleanup"
+                    else:
+                        chosen_content = body.strip()
+                        extractor = "plain_text"
+
+                results.append(_enrich_extract_result({
+                    "url": final_url,
+                    "title": title,
+                    "content": chosen_content,
+                    "raw_content": chosen_content,
+                    "metadata": {
+                        "sourceURL": final_url,
+                        "contentType": content_type,
+                        "extractor": extractor,
+                    },
+                }, backend="duckduckgo"))
+            except Exception as exc:
+                results.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": str(exc),
+                })
+    return results
+
+
+def _mark_extract_mode(
+    results: List[Dict[str, Any]],
+    *,
+    requested_mode: str,
+    extraction_mode: str,
+    dynamic_fallback_reason: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Attach stable mode/fallback metadata to extraction results."""
+    marked: List[Dict[str, Any]] = []
+    for result in results:
+        updated = dict(result)
+        metadata = updated.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["requestedMode"] = requested_mode
+        metadata["extractionMode"] = extraction_mode
+        if dynamic_fallback_reason:
+            metadata["dynamicFallbackUsed"] = True
+            metadata["dynamicFallbackReason"] = dynamic_fallback_reason
+        updated["metadata"] = metadata
+        marked.append(updated)
+    return marked
+
+
+def _normalize_attached_client_state_evidence(rendered: Dict[str, Any]) -> Dict[str, Optional[int]]:
+    """Extract safe, comparable client-state evidence from browser-rendered output."""
+    raw_evidence = rendered.get("evidence") if isinstance(rendered.get("evidence"), dict) else {}
+
+    def _int_or_none(value: Any) -> Optional[int]:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return {
+        "visibleCookieCount": _int_or_none(raw_evidence.get("visibleCookieCount")),
+        "localStorageCount": _int_or_none(raw_evidence.get("localStorageCount")),
+        "sessionStorageCount": _int_or_none(raw_evidence.get("sessionStorageCount")),
+    }
+
+
+_BROWSER_RENDER_MAX_ATTEMPTS = 3
+_BROWSER_RENDER_RETRY_DELAY_SECONDS = 0.5
+
+
+def _normalize_browser_render_observation(rendered: Dict[str, Any]) -> Dict[str, Any]:
+    """Return safe, observable browser-render metadata for rendered extraction."""
+
+    def _str_or_none(value: Any) -> Optional[str]:
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return None
+
+    observed_length = rendered.get("observedContentLength")
+    if not isinstance(observed_length, int) or isinstance(observed_length, bool):
+        observed_length = None
+
+    return {
+        "renderReadyState": _str_or_none(rendered.get("readyState")),
+        "renderContentScope": _str_or_none(rendered.get("contentScope")),
+        "renderObservedContentLength": observed_length,
+    }
+
+
+def _should_retry_browser_render(content: str, attempt: int) -> bool:
+    """Retry rendered extraction briefly when content still looks empty/thin."""
+    if attempt >= _BROWSER_RENDER_MAX_ATTEMPTS:
+        return False
+    quality = _assess_extract_quality(content or "")
+    return quality["quality_status"] in {"empty", "thin"}
+
+
+_DYNAMIC_EXTRACT_EVAL = r"""
+(() => {
+  const body = document.body;
+  const main = document.querySelector('main, article, [role="main"]');
+  const root = main || body;
+  const title = (document.title || '').trim();
+  const url = window.location.href;
+  const content = ((root && root.innerText) || (body && body.innerText) || '').trim();
+  const visibleCookieCount = (document.cookie || '')
+    .split(';')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .length;
+  const safeStorageLength = (storage) => {
+    try {
+      return storage ? storage.length : null;
+    } catch (_) {
+      return null;
+    }
+  };
+  const evidence = {
+    visibleCookieCount,
+    localStorageCount: safeStorageLength(window.localStorage),
+    sessionStorageCount: safeStorageLength(window.sessionStorage),
+  };
+  return JSON.stringify({
+    title,
+    url,
+    content,
+    readyState: document.readyState || '',
+    contentScope: main ? 'main' : (body ? 'body' : 'none'),
+    observedContentLength: content.length,
+    evidence,
+  });
+})()
+""".strip()
+
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -1118,6 +1489,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "duckduckgo":
+            response_data = _duckduckgo_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1162,12 +1542,247 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return tool_error(error_msg)
 
 
+async def _extract_urls_via_backend(urls: List[str], format: Optional[str], backend: str) -> List[Dict[str, Any]]:
+    """Dispatch extraction through the configured static backend."""
+    if backend == "parallel":
+        return await _parallel_extract(urls)
+    if backend == "exa":
+        return _exa_extract(urls)
+    if backend == "tavily":
+        logger.info("Tavily extract: %d URL(s)", len(urls))
+        raw = _tavily_request("extract", {
+            "urls": urls,
+            "include_images": False,
+        })
+        return _normalize_tavily_documents(raw, fallback_url=urls[0] if urls else "")
+    if backend == "duckduckgo":
+        return await _direct_extract_urls(urls, format)
+
+    formats: List[str] = []
+    if format == "markdown":
+        formats = ["markdown"]
+    elif format == "html":
+        formats = ["html"]
+    else:
+        formats = ["markdown", "html"]
+
+    results: List[Dict[str, Any]] = []
+    from tools.interrupt import is_interrupted
+    for url in urls:
+        if is_interrupted():
+            results.append({"url": url, "error": "Interrupted", "title": ""})
+            continue
+
+        blocked = check_website_access(url)
+        if blocked:
+            logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
+            results.append({
+                "url": url, "title": "", "content": "",
+                "error": blocked["message"],
+                "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+            })
+            continue
+
+        try:
+            logger.info("Scraping: %s", url)
+            try:
+                scrape_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _get_firecrawl_client().scrape,
+                        url=url,
+                        formats=formats,
+                    ),
+                    timeout=60,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Firecrawl scrape timed out for %s", url)
+                results.append({
+                    "url": url, "title": "", "content": "",
+                    "error": "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead.",
+                })
+                continue
+
+            scrape_payload = _extract_scrape_payload(scrape_result)
+            metadata = scrape_payload.get("metadata", {})
+            title = ""
+            content_markdown = scrape_payload.get("markdown")
+            content_html = scrape_payload.get("html")
+
+            if not isinstance(metadata, dict):
+                if hasattr(metadata, 'model_dump'):
+                    metadata = metadata.model_dump()
+                elif hasattr(metadata, '__dict__'):
+                    metadata = metadata.__dict__
+                else:
+                    metadata = {}
+
+            title = metadata.get("title", "")
+
+            final_url = metadata.get("sourceURL", url)
+            final_blocked = check_website_access(final_url)
+            if final_blocked:
+                logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
+                results.append({
+                    "url": final_url, "title": title, "content": "", "raw_content": "",
+                    "error": final_blocked["message"],
+                    "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
+                })
+                continue
+
+            chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
+
+            results.append({
+                "url": final_url,
+                "title": title,
+                "content": chosen_content,
+                "raw_content": chosen_content,
+                "metadata": metadata,
+            })
+
+        except Exception as scrape_err:
+            logger.debug("Scrape failed for %s: %s", url, scrape_err)
+            results.append({
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": str(scrape_err)
+            })
+
+    return results
+
+
+async def _browser_extract_urls(
+    urls: List[str],
+    format: Optional[str],
+    backend: str,
+    *,
+    requested_mode: str,
+) -> List[Dict[str, Any]]:
+    """Render pages in the browser stack, with optional attached/CDP session semantics."""
+    from tools.browser_tool import _browser_eval, _get_cdp_override, browser_navigate
+
+    requested_format = format or "markdown"
+    cdp_url = _get_cdp_override()
+    results: List[Dict[str, Any]] = []
+
+    if requested_mode == "attached" and not cdp_url:
+        fallback_results = await _extract_urls_via_backend(urls, requested_format, backend)
+        return _mark_extract_mode(
+            fallback_results,
+            requested_mode="attached",
+            extraction_mode="static",
+            dynamic_fallback_reason="cdp_not_configured",
+        )
+
+    for url in urls:
+        navigate_response = browser_navigate(url)
+        try:
+            navigate_data = json.loads(navigate_response)
+        except (TypeError, json.JSONDecodeError, ValueError):
+            navigate_data = {"success": False, "error": "Invalid browser navigate response"}
+
+        if not navigate_data.get("success"):
+            fallback_results = await _extract_urls_via_backend([url], requested_format, backend)
+            results.extend(_mark_extract_mode(
+                fallback_results,
+                requested_mode=requested_mode,
+                extraction_mode="static",
+                dynamic_fallback_reason="browser_navigate_failed",
+            ))
+            continue
+
+        eval_data: Dict[str, Any] = {"success": False, "error": "Browser eval not attempted"}
+        rendered: Dict[str, Any] = {}
+        content = ""
+        render_attempt_count = 0
+
+        for attempt in range(1, _BROWSER_RENDER_MAX_ATTEMPTS + 1):
+            render_attempt_count = attempt
+            eval_response = _browser_eval(_DYNAMIC_EXTRACT_EVAL)
+            try:
+                eval_data = json.loads(eval_response)
+            except (TypeError, json.JSONDecodeError, ValueError):
+                eval_data = {"success": False, "error": "Invalid browser eval response"}
+
+            rendered = eval_data.get("result") if isinstance(eval_data.get("result"), dict) else {}
+            content = (rendered.get("content") or "").strip()
+
+            if not eval_data.get("success"):
+                break
+            if not _should_retry_browser_render(content, attempt):
+                break
+            await asyncio.sleep(_BROWSER_RENDER_RETRY_DELAY_SECONDS * attempt)
+
+        final_url = rendered.get("url") or navigate_data.get("url") or url
+        title = (rendered.get("title") or navigate_data.get("title") or "").strip()
+
+        if not eval_data.get("success") or not content:
+            fallback_reason = "browser_eval_failed" if not eval_data.get("success") else "empty_rendered_content"
+            fallback_results = await _extract_urls_via_backend([url], requested_format, backend)
+            results.extend(_mark_extract_mode(
+                fallback_results,
+                requested_mode=requested_mode,
+                extraction_mode="static",
+                dynamic_fallback_reason=fallback_reason,
+            ))
+            continue
+
+        metadata = {
+            "sourceURL": final_url,
+            "extractor": "browser_attached" if requested_mode == "attached" else "browser_rendered",
+            "requestedMode": requested_mode,
+            "extractionMode": requested_mode,
+            "rendered": True,
+            "fallbackUsed": False,
+            "renderAttemptCount": render_attempt_count,
+            "renderWaitStrategy": "retry_on_empty_or_thin_content",
+        }
+        metadata.update({
+            key: value
+            for key, value in _normalize_browser_render_observation(rendered).items()
+            if value is not None
+        })
+        if requested_mode == "attached":
+            attached_evidence = _normalize_attached_client_state_evidence(rendered)
+            evidence_detected = any(
+                isinstance(value, int) and value > 0
+                for value in attached_evidence.values()
+            )
+            metadata["cdpAttached"] = True
+            metadata["cdpUrl"] = cdp_url
+            metadata["browserSessionReused"] = True
+            metadata["profileInherited"] = None
+            metadata["loginStateInherited"] = None
+            metadata["inheritanceVerification"] = (
+                "client_state_observed" if evidence_detected else "not_verified"
+            )
+            metadata["attachedClientStateEvidence"] = attached_evidence
+
+        rendered_result = _enrich_extract_result({
+            "url": final_url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": metadata,
+        }, backend="browser_rendered")
+        results.append(rendered_result)
+
+    return results
+
+
+async def _dynamic_extract_urls(urls: List[str], format: Optional[str], backend: str) -> List[Dict[str, Any]]:
+    """Render pages in the existing browser stack, then fall back to static extraction."""
+    return await _browser_extract_urls(urls, format, backend, requested_mode="dynamic")
+
+
 async def web_extract_tool(
     urls: List[str],
     format: str = None,
     use_llm_processing: bool = True,
     model: Optional[str] = None,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    mode: str = "static",
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
@@ -1209,7 +1824,8 @@ async def web_extract_tool(
             "format": format,
             "use_llm_processing": use_llm_processing,
             "model": model,
-            "min_length": min_length
+            "min_length": min_length,
+            "mode": mode,
         },
         "error": None,
         "pages_extracted": 0,
@@ -1235,132 +1851,34 @@ async def web_extract_tool(
             else:
                 safe_urls.append(url)
 
+        backend = _get_backend()
+        requested_mode = (mode or "static").strip().lower()
+        if requested_mode not in {"static", "dynamic", "attached"}:
+            return tool_error("Invalid web_extract mode. Expected 'static', 'dynamic', or 'attached'.")
+
         # Dispatch only safe URLs to the configured backend
         if not safe_urls:
             results = []
+        elif requested_mode in {"dynamic", "attached"}:
+            results = await _browser_extract_urls(
+                safe_urls,
+                format,
+                backend,
+                requested_mode=requested_mode,
+            )
         else:
-            backend = _get_backend()
-
-            if backend == "parallel":
-                results = await _parallel_extract(safe_urls)
-            elif backend == "exa":
-                results = _exa_extract(safe_urls)
-            elif backend == "tavily":
-                logger.info("Tavily extract: %d URL(s)", len(safe_urls))
-                raw = _tavily_request("extract", {
-                    "urls": safe_urls,
-                    "include_images": False,
-                })
-                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
-            else:
-                # ── Firecrawl extraction ──
-                # Determine requested formats for Firecrawl v2
-                formats: List[str] = []
-                if format == "markdown":
-                    formats = ["markdown"]
-                elif format == "html":
-                    formats = ["html"]
-                else:
-                    # Default: request markdown for LLM-readiness and include html as backup
-                    formats = ["markdown", "html"]
-
-                # Always use individual scraping for simplicity and reliability
-                # Batch scraping adds complexity without much benefit for small numbers of URLs
-                results: List[Dict[str, Any]] = []
-
-                from tools.interrupt import is_interrupted as _is_interrupted
-                for url in safe_urls:
-                    if _is_interrupted():
-                        results.append({"url": url, "error": "Interrupted", "title": ""})
-                        continue
-
-                    # Website policy check — block before fetching
-                    blocked = check_website_access(url)
-                    if blocked:
-                        logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
-                        results.append({
-                            "url": url, "title": "", "content": "",
-                            "error": blocked["message"],
-                            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
-                        })
-                        continue
-
-                    try:
-                        logger.info("Scraping: %s", url)
-                        # Run synchronous Firecrawl scrape in a thread with a
-                        # 60s timeout so a hung fetch doesn't block the session.
-                        try:
-                            scrape_result = await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    _get_firecrawl_client().scrape,
-                                    url=url,
-                                    formats=formats,
-                                ),
-                                timeout=60,
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning("Firecrawl scrape timed out for %s", url)
-                            results.append({
-                                "url": url, "title": "", "content": "",
-                                "error": "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead.",
-                            })
-                            continue
-
-                        scrape_payload = _extract_scrape_payload(scrape_result)
-                        metadata = scrape_payload.get("metadata", {})
-                        title = ""
-                        content_markdown = scrape_payload.get("markdown")
-                        content_html = scrape_payload.get("html")
-
-                        # Ensure metadata is a dict (not an object)
-                        if not isinstance(metadata, dict):
-                            if hasattr(metadata, 'model_dump'):
-                                metadata = metadata.model_dump()
-                            elif hasattr(metadata, '__dict__'):
-                                metadata = metadata.__dict__
-                            else:
-                                metadata = {}
-
-                        # Get title from metadata
-                        title = metadata.get("title", "")
-
-                        # Re-check final URL after redirect
-                        final_url = metadata.get("sourceURL", url)
-                        final_blocked = check_website_access(final_url)
-                        if final_blocked:
-                            logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
-                            results.append({
-                                "url": final_url, "title": title, "content": "", "raw_content": "",
-                                "error": final_blocked["message"],
-                                "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
-                            })
-                            continue
-
-                        # Choose content based on requested format
-                        chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
-
-                        results.append({
-                            "url": final_url,
-                            "title": title,
-                            "content": chosen_content,
-                            "raw_content": chosen_content,
-                            "metadata": metadata  # Now guaranteed to be a dict
-                        })
-
-                    except Exception as scrape_err:
-                        logger.debug("Scrape failed for %s: %s", url, scrape_err)
-                        results.append({
-                            "url": url,
-                            "title": "",
-                            "content": "",
-                            "raw_content": "",
-                            "error": str(scrape_err)
-                        })
+            results = await _extract_urls_via_backend(safe_urls, format, backend)
+            results = _mark_extract_mode(
+                results,
+                requested_mode=requested_mode,
+                extraction_mode="static",
+            )
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:
             results = ssrf_blocked + results
 
+        results = [_enrich_extract_result(result, backend=backend) for result in results]
         response = {"results": results}
         
         pages_extracted = len(response.get('results', []))
@@ -1447,14 +1965,16 @@ async def web_extract_tool(
                 content_length = len(result.get('raw_content', ''))
                 logger.info("%s (%d characters)", url, content_length)
         
-        # Trim output to minimal fields per entry: title, content, error
+        # Trim output to minimal useful fields per entry.
         trimmed_results = [
             {
                 "url": r.get("url", ""),
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
+                "excerpt": r.get("excerpt", ""),
+                "metadata": r.get("metadata", {}),
                 "error": r.get("error"),
-                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
+                **({"blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
             }
             for r in response.get("results", [])
         ]
@@ -1922,9 +2442,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "duckduckgo"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "duckduckgo"))
 
 
 def check_auxiliary_model() -> bool:
@@ -2071,6 +2591,12 @@ WEB_EXTRACT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "List of URLs to extract content from (max 5 URLs per call)",
                 "maxItems": 5
+            },
+            "mode": {
+                "type": "string",
+                "description": "Extraction mode: 'static' uses HTTP/provider extraction; 'dynamic' renders via the browser stack first; 'attached' prefers an existing CDP/browser session for profile/login-state reuse, then falls back to static extraction on failure.",
+                "enum": ["static", "dynamic", "attached"],
+                "default": "static"
             }
         },
         "required": ["urls"]
@@ -2092,7 +2618,10 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        "markdown",
+        mode=args.get("mode", "static"),
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     is_async=True,

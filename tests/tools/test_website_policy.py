@@ -399,6 +399,8 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
 async def test_web_extract_blocks_redirected_final_url(monkeypatch):
     from tools import web_tools
 
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
+
     # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
 

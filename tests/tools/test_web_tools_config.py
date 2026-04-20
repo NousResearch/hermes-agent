@@ -17,6 +17,20 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
 
+class _AsyncClientStub:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url):
+        return self._response
+
+
 class TestFirecrawlClientConfig:
     """Test suite for Firecrawl client initialization."""
 
@@ -383,11 +397,11 @@ class TestBackendSelection:
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
-    def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no config → 'firecrawl' (will fail at client init)."""
+    def test_fallback_no_keys_defaults_to_duckduckgo(self):
+        """No keys, no config → 'duckduckgo' fallback backend."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}):
-            assert _get_backend() == "firecrawl"
+            assert _get_backend() == "duckduckgo"
 
     def test_invalid_config_falls_through_to_fallback(self):
         """web.backend=invalid → ignored, uses key-based fallback."""
@@ -476,6 +490,472 @@ class TestWebSearchErrorHandling:
         assert "traceback" not in result
 
 
+class TestDuckDuckGoFallbackDispatch:
+    """Fallback dispatch tests when no provider backend is configured."""
+
+    def test_search_dispatches_to_duckduckgo(self):
+        import tools.web_tools
+
+        expected = {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "Duck Result",
+                        "url": "https://example.com",
+                        "description": "fallback result",
+                        "position": 1,
+                    }
+                ]
+            },
+        }
+
+        with patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools._duckduckgo_search", return_value=expected) as mock_search, \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(tools.web_tools.web_search_tool("fallback query", limit=2))
+
+        assert result == expected
+        mock_search.assert_called_once_with("fallback query", 2)
+
+    @pytest.mark.asyncio
+    async def test_extract_dispatches_to_direct_http_fallback(self):
+        import tools.web_tools
+
+        expected = [
+            {
+                "url": "https://example.com",
+                "title": "Example",
+                "content": "hello",
+                "raw_content": "hello",
+                "metadata": {"sourceURL": "https://example.com"},
+            }
+        ]
+
+        with patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools._direct_extract_urls", new=AsyncMock(return_value=expected)) as mock_extract, \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.check_website_access", return_value=None):
+            result = json.loads(await tools.web_tools.web_extract_tool(["https://example.com"], use_llm_processing=False))
+
+        assert result["results"][0]["url"] == "https://example.com"
+        assert result["results"][0]["content"] == "hello"
+        mock_extract.assert_awaited_once_with(["https://example.com"], None)
+
+    @pytest.mark.asyncio
+    async def test_direct_extract_prefers_trafilatura_when_available(self):
+        import tools.web_tools
+
+        html = """
+        <html>
+          <head><title>Example Article</title></head>
+          <body>
+            <article><h1>Headline</h1><p>Alpha beta gamma.</p></article>
+          </body>
+        </html>
+        """
+        response = MagicMock()
+        response.text = html
+        response.headers = {"content-type": "text/html; charset=utf-8"}
+        response.url = "https://example.com/article"
+        response.raise_for_status = MagicMock()
+
+        fake_trafilatura = types.SimpleNamespace(
+            extract=MagicMock(return_value="# Headline\n\nAlpha beta gamma.")
+        )
+
+        with patch.dict(sys.modules, {"trafilatura": fake_trafilatura}), \
+             patch("tools.web_tools.httpx.AsyncClient", return_value=_AsyncClientStub(response)), \
+             patch("tools.web_tools.check_website_access", return_value=None):
+            result = await tools.web_tools._direct_extract_urls(["https://example.com/article"], format="markdown")
+
+        assert result[0]["title"] == "Example Article"
+        assert result[0]["content"] == "# Headline\n\nAlpha beta gamma."
+        assert result[0]["raw_content"] == "# Headline\n\nAlpha beta gamma."
+        assert result[0]["excerpt"] == "Headline Alpha beta gamma."
+        assert result[0]["metadata"]["sourceURL"] == "https://example.com/article"
+        assert result[0]["metadata"]["contentType"] == "text/html; charset=utf-8"
+        assert result[0]["metadata"]["extractor"] == "trafilatura"
+        assert result[0]["metadata"]["fallbackUsed"] is True
+        assert result[0]["metadata"]["contentLength"] == len("# Headline\n\nAlpha beta gamma.")
+        assert result[0]["metadata"]["qualityStatus"] == "ok"
+        assert result[0]["metadata"]["qualityFlags"] == []
+        fake_trafilatura.extract.assert_called_once_with(
+            html,
+            url="https://example.com/article",
+            output_format="markdown",
+        )
+
+    @pytest.mark.asyncio
+    async def test_direct_extract_falls_back_to_html_cleanup_when_trafilatura_returns_none(self):
+        import tools.web_tools
+
+        html = """
+        <html>
+          <head><title>Example Article</title></head>
+          <body>
+            <article><h1>Headline</h1><p>Alpha beta gamma.</p></article>
+          </body>
+        </html>
+        """
+        response = MagicMock()
+        response.text = html
+        response.headers = {"content-type": "text/html; charset=utf-8"}
+        response.url = "https://example.com/article"
+        response.raise_for_status = MagicMock()
+
+        fake_trafilatura = types.SimpleNamespace(extract=MagicMock(return_value=None))
+
+        with patch.dict(sys.modules, {"trafilatura": fake_trafilatura}), \
+             patch("tools.web_tools.httpx.AsyncClient", return_value=_AsyncClientStub(response)), \
+             patch("tools.web_tools.check_website_access", return_value=None):
+            result = await tools.web_tools._direct_extract_urls(["https://example.com/article"], format="markdown")
+
+        assert "Headline" in result[0]["content"]
+        assert "Alpha beta gamma." in result[0]["content"]
+        assert result[0]["raw_content"] == result[0]["content"]
+        assert result[0]["metadata"]["extractor"] == "html_cleanup"
+        assert result[0]["metadata"]["qualityStatus"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_direct_extract_marks_thin_content(self):
+        import tools.web_tools
+
+        response = MagicMock()
+        response.text = "ok"
+        response.headers = {"content-type": "text/plain; charset=utf-8"}
+        response.url = "https://example.com/tiny"
+        response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools.httpx.AsyncClient", return_value=_AsyncClientStub(response)), \
+             patch("tools.web_tools.check_website_access", return_value=None):
+            result = await tools.web_tools._direct_extract_urls(["https://example.com/tiny"], format="markdown")
+
+        assert result[0]["content"] == "ok"
+        assert result[0]["excerpt"] == "ok"
+        assert result[0]["metadata"]["extractor"] == "plain_text"
+        assert result[0]["metadata"]["qualityStatus"] == "thin"
+        assert result[0]["metadata"]["qualityFlags"] == ["thin_content"]
+
+    @pytest.mark.asyncio
+    async def test_web_extract_output_keeps_excerpt_and_metadata(self):
+        import tools.web_tools
+
+        expected = [
+            {
+                "url": "https://example.com/article",
+                "title": "Example",
+                "content": "Body text",
+                "raw_content": "Body text",
+                "excerpt": "Body text",
+                "metadata": {
+                    "sourceURL": "https://example.com/article",
+                    "extractor": "trafilatura",
+                    "qualityStatus": "ok",
+                    "qualityFlags": [],
+                },
+            }
+        ]
+
+        with patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools._direct_extract_urls", new=AsyncMock(return_value=expected)), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.check_website_access", return_value=None):
+            result = json.loads(await tools.web_tools.web_extract_tool(["https://example.com/article"], use_llm_processing=False))
+
+        assert result["results"][0]["excerpt"] == "Body text"
+        assert result["results"][0]["metadata"]["extractor"] == "trafilatura"
+        assert result["results"][0]["metadata"]["qualityStatus"] == "ok"
+
+    def test_web_extract_schema_exposes_dynamic_mode(self):
+        from tools.web_tools import WEB_EXTRACT_SCHEMA
+
+        props = WEB_EXTRACT_SCHEMA["parameters"]["properties"]
+        assert "mode" in props
+        assert props["mode"]["enum"] == ["static", "dynamic", "attached"]
+        assert props["mode"]["default"] == "static"
+
+    @pytest.mark.asyncio
+    async def test_web_extract_dynamic_mode_uses_browser_rendering(self):
+        import tools.web_tools
+
+        with patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.check_website_access", return_value=None), \
+             patch("tools.browser_tool.browser_navigate", return_value=json.dumps({
+                 "success": True,
+                 "url": "https://example.com/app",
+                 "title": "Rendered App",
+             })) as mock_nav, \
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({
+                 "success": True,
+                 "result": {
+                     "title": "Rendered App",
+                     "content": "Loaded content from hydrated page",
+                 },
+             })) as mock_eval, \
+             patch("tools.web_tools._direct_extract_urls", new=AsyncMock(return_value=[])) as mock_static:
+            result = json.loads(await tools.web_tools.web_extract_tool(
+                ["https://example.com/app"],
+                mode="dynamic",
+                use_llm_processing=False,
+            ))
+
+        first = result["results"][0]
+        assert first["title"] == "Rendered App"
+        assert first["content"] == "Loaded content from hydrated page"
+        assert first["metadata"]["extractor"] == "browser_rendered"
+        assert first["metadata"]["requestedMode"] == "dynamic"
+        assert first["metadata"]["extractionMode"] == "dynamic"
+        assert mock_nav.call_args.args[0] == "https://example.com/app"
+        assert "document.body" in mock_eval.call_args.args[0]
+        mock_static.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_web_extract_dynamic_mode_retries_thin_rendered_content_before_accepting_result(self):
+        import tools.web_tools
+
+        with patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.check_website_access", return_value=None), \
+             patch("tools.browser_tool.browser_navigate", return_value=json.dumps({
+                 "success": True,
+                 "url": "https://example.com/app",
+                 "title": "Rendered App",
+             })), \
+             patch("tools.browser_tool._browser_eval", side_effect=[
+                 json.dumps({
+                     "success": True,
+                     "result": {
+                         "title": "Rendered App",
+                         "content": "Loading...",
+                         "readyState": "interactive",
+                         "contentScope": "body",
+                         "observedContentLength": 10,
+                     },
+                 }),
+                 json.dumps({
+                     "success": True,
+                     "result": {
+                         "title": "Rendered App",
+                         "content": "Loaded content from hydrated page after retry",
+                         "readyState": "complete",
+                         "contentScope": "main",
+                         "observedContentLength": 44,
+                     },
+                 }),
+             ]) as mock_eval, \
+             patch("tools.web_tools.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
+             patch("tools.web_tools._direct_extract_urls", new=AsyncMock(return_value=[])) as mock_static:
+            result = json.loads(await tools.web_tools.web_extract_tool(
+                ["https://example.com/app"],
+                mode="dynamic",
+                use_llm_processing=False,
+            ))
+
+        first = result["results"][0]
+        assert first["title"] == "Rendered App"
+        assert first["content"] == "Loaded content from hydrated page after retry"
+        assert first["metadata"]["extractor"] == "browser_rendered"
+        assert first["metadata"]["requestedMode"] == "dynamic"
+        assert first["metadata"]["extractionMode"] == "dynamic"
+        assert first["metadata"]["renderAttemptCount"] == 2
+        assert first["metadata"]["renderWaitStrategy"] == "retry_on_empty_or_thin_content"
+        assert first["metadata"]["renderReadyState"] == "complete"
+        assert first["metadata"]["renderContentScope"] == "main"
+        assert first["metadata"]["renderObservedContentLength"] == 44
+        assert mock_eval.call_count == 2
+        mock_sleep.assert_awaited_once()
+        mock_static.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_web_extract_dynamic_mode_falls_back_to_static_when_browser_eval_fails(self):
+        import tools.web_tools
+
+        static_expected = [
+            {
+                "url": "https://example.com/app",
+                "title": "Static Example",
+                "content": "Static fallback body",
+                "raw_content": "Static fallback body",
+                "excerpt": "Static fallback body",
+                "metadata": {
+                    "sourceURL": "https://example.com/app",
+                    "extractor": "html_cleanup",
+                    "qualityStatus": "ok",
+                    "qualityFlags": [],
+                },
+            }
+        ]
+
+        with patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.check_website_access", return_value=None), \
+             patch("tools.browser_tool.browser_navigate", return_value=json.dumps({
+                 "success": True,
+                 "url": "https://example.com/app",
+                 "title": "Rendered App",
+             })), \
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({
+                 "success": False,
+                 "error": "JavaScript evaluation is not supported by this browser backend.",
+             })), \
+             patch("tools.web_tools._direct_extract_urls", new=AsyncMock(return_value=static_expected)) as mock_static:
+            result = json.loads(await tools.web_tools.web_extract_tool(
+                ["https://example.com/app"],
+                mode="dynamic",
+                use_llm_processing=False,
+            ))
+
+        first = result["results"][0]
+        assert first["title"] == "Static Example"
+        assert first["content"] == "Static fallback body"
+        assert first["metadata"]["extractor"] == "html_cleanup"
+        assert first["metadata"]["requestedMode"] == "dynamic"
+        assert first["metadata"]["extractionMode"] == "static"
+        assert first["metadata"]["dynamicFallbackUsed"] is True
+        assert first["metadata"]["dynamicFallbackReason"] == "browser_eval_failed"
+        mock_static.assert_awaited_once_with(["https://example.com/app"], "markdown")
+
+    @pytest.mark.asyncio
+    async def test_web_extract_attached_mode_marks_profile_and_login_state_unverified_without_explicit_evidence(self):
+        import tools.web_tools
+
+        with patch.dict(os.environ, {"BROWSER_CDP_URL": "ws://127.0.0.1:9222/devtools/browser/test"}, clear=False), \
+             patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.check_website_access", return_value=None), \
+             patch("tools.browser_tool.browser_navigate", return_value=json.dumps({
+                 "success": True,
+                 "url": "https://example.com/dashboard",
+                 "title": "Attached Dashboard",
+             })) as mock_nav, \
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({
+                 "success": True,
+                 "result": {
+                     "url": "https://example.com/dashboard",
+                     "title": "Attached Dashboard",
+                     "content": "Logged-in rendered content from attached session",
+                     "evidence": {
+                         "visibleCookieCount": 0,
+                         "localStorageCount": 0,
+                         "sessionStorageCount": 0,
+                     },
+                 },
+             })) as mock_eval, \
+             patch("tools.web_tools._direct_extract_urls", new=AsyncMock(return_value=[])) as mock_static:
+            result = json.loads(await tools.web_tools.web_extract_tool(
+                ["https://example.com/dashboard"],
+                mode="attached",
+                use_llm_processing=False,
+            ))
+
+        first = result["results"][0]
+        assert first["title"] == "Attached Dashboard"
+        assert first["content"] == "Logged-in rendered content from attached session"
+        assert first["metadata"]["extractor"] == "browser_attached"
+        assert first["metadata"]["requestedMode"] == "attached"
+        assert first["metadata"]["extractionMode"] == "attached"
+        assert first["metadata"]["cdpAttached"] is True
+        assert first["metadata"]["cdpUrl"] == "ws://127.0.0.1:9222/devtools/browser/test"
+        assert first["metadata"]["browserSessionReused"] is True
+        assert first["metadata"]["profileInherited"] is None
+        assert first["metadata"]["loginStateInherited"] is None
+        assert first["metadata"]["inheritanceVerification"] == "not_verified"
+        assert first["metadata"]["attachedClientStateEvidence"] == {
+            "visibleCookieCount": 0,
+            "localStorageCount": 0,
+            "sessionStorageCount": 0,
+        }
+        assert mock_nav.call_args.args[0] == "https://example.com/dashboard"
+        assert "document.body" in mock_eval.call_args.args[0]
+        mock_static.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_web_extract_attached_mode_marks_client_state_observed_when_browser_evidence_exists(self):
+        import tools.web_tools
+
+        with patch.dict(os.environ, {"BROWSER_CDP_URL": "ws://127.0.0.1:9222/devtools/browser/test"}, clear=False), \
+             patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.check_website_access", return_value=None), \
+             patch("tools.browser_tool.browser_navigate", return_value=json.dumps({
+                 "success": True,
+                 "url": "https://example.com/dashboard",
+                 "title": "Attached Dashboard",
+             })), \
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({
+                 "success": True,
+                 "result": {
+                     "url": "https://example.com/dashboard",
+                     "title": "Attached Dashboard",
+                     "content": "Rendered content with browser state evidence",
+                     "evidence": {
+                         "visibleCookieCount": 2,
+                         "localStorageCount": 1,
+                         "sessionStorageCount": 0,
+                     },
+                 },
+             })), \
+             patch("tools.web_tools._direct_extract_urls", new=AsyncMock(return_value=[])):
+            result = json.loads(await tools.web_tools.web_extract_tool(
+                ["https://example.com/dashboard"],
+                mode="attached",
+                use_llm_processing=False,
+            ))
+
+        first = result["results"][0]
+        assert first["metadata"]["inheritanceVerification"] == "client_state_observed"
+        assert first["metadata"]["attachedClientStateEvidence"] == {
+            "visibleCookieCount": 2,
+            "localStorageCount": 1,
+            "sessionStorageCount": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_web_extract_attached_mode_falls_back_to_static_when_browser_navigate_fails(self):
+        import tools.web_tools
+
+        static_expected = [
+            {
+                "url": "https://example.com/dashboard",
+                "title": "Static Dashboard",
+                "content": "Static fallback body",
+                "raw_content": "Static fallback body",
+                "excerpt": "Static fallback body",
+                "metadata": {
+                    "sourceURL": "https://example.com/dashboard",
+                    "extractor": "html_cleanup",
+                    "qualityStatus": "ok",
+                    "qualityFlags": [],
+                },
+            }
+        ]
+
+        with patch.dict(os.environ, {"BROWSER_CDP_URL": "ws://127.0.0.1:9222/devtools/browser/test"}, clear=False), \
+             patch("tools.web_tools._get_backend", return_value="duckduckgo"), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
+             patch("tools.web_tools.check_website_access", return_value=None), \
+             patch("tools.browser_tool.browser_navigate", return_value=json.dumps({
+                 "success": False,
+                 "error": "Failed to attach to CDP session",
+             })), \
+             patch("tools.web_tools._direct_extract_urls", new=AsyncMock(return_value=static_expected)) as mock_static:
+            result = json.loads(await tools.web_tools.web_extract_tool(
+                ["https://example.com/dashboard"],
+                mode="attached",
+                use_llm_processing=False,
+            ))
+
+        first = result["results"][0]
+        assert first["title"] == "Static Dashboard"
+        assert first["metadata"]["requestedMode"] == "attached"
+        assert first["metadata"]["extractionMode"] == "static"
+        assert first["metadata"]["dynamicFallbackUsed"] is True
+        assert first["metadata"]["dynamicFallbackReason"] == "browser_navigate_failed"
+        mock_static.assert_awaited_once_with(["https://example.com/dashboard"], "markdown")
+
+
 class TestCheckWebApiKey:
     """Test suite for check_web_api_key() unified availability check."""
 
@@ -532,9 +1012,9 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_no_keys_returns_false(self):
+    def test_no_keys_returns_true_via_duckduckgo_fallback(self):
         from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+        assert check_web_api_key() is True
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {
@@ -564,6 +1044,16 @@ class TestCheckWebApiKey:
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is False
+
+    def test_configured_parallel_without_key_returns_false(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+
+    def test_configured_exa_without_key_returns_false(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
 
     def test_configured_firecrawl_backend_accepts_managed_gateway(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):

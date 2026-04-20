@@ -1541,6 +1541,7 @@ def select_provider_and_model(args=None):
     elif selected_provider in (
         "gemini",
         "deepseek",
+        "eurouter",
         "xai",
         "zai",
         "kimi-coding-cn",
@@ -6427,6 +6428,7 @@ For more help on a command:
         choices=[
             "auto",
             "openrouter",
+            "eurouter",
             "nous",
             "openai-codex",
             "copilot-acp",

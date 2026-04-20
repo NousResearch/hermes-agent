@@ -74,6 +74,17 @@ class TestOpenRouter:
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_claude_on_eurouter_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="eurouter",
+            base_url="https://api.eurouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True
+        assert native is False
+
 
 class TestThirdPartyAnthropicGateway:
     """Third-party gateways speaking the Anthropic protocol (MiniMax, Zhipu GLM, LiteLLM)."""

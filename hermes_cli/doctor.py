@@ -34,6 +34,7 @@ from hermes_constants import OPENROUTER_MODELS_URL
 
 _PROVIDER_ENV_HINTS = (
     "OPENROUTER_API_KEY",
+    "EUROUTER_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_TOKEN",
@@ -319,7 +320,7 @@ def run_doctor(args):
                     )
 
             # Warn if model is set to a provider-prefixed name on a provider that doesn't use them
-            if default_model and "/" in default_model and canonical_provider and canonical_provider not in ("openrouter", "custom", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "nous"):
+            if default_model and "/" in default_model and canonical_provider and canonical_provider not in ("openrouter", "eurouter", "custom", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "nous"):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
                     "(vendor-prefixed slugs belong to aggregators like openrouter)",
@@ -909,6 +910,7 @@ def run_doctor(args):
     # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
     # If supports_models_endpoint is False, we skip the health check and just show "configured"
     _apikey_providers = [
+        ("EUrouter",        ("EUROUTER_API_KEY",),                           "https://api.eurouter.ai/api/v1/models", "EUROUTER_BASE_URL", True),
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),

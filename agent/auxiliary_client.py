@@ -58,6 +58,8 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "eu-router": "eurouter",
+    "eur": "eurouter",
     "x-ai": "xai",
     "x.ai": "xai",
     "grok": "xai",
@@ -186,6 +188,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
     "ai-gateway": "google/gemini-3-flash",
+    "eurouter": "minimax-m2.5",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
@@ -2192,7 +2195,8 @@ def cleanup_stale_async_clients() -> None:
 
 def _is_openrouter_client(client: Any) -> bool:
     for obj in (client, getattr(client, "_client", None), getattr(client, "client", None)):
-        if obj and "openrouter" in str(getattr(obj, "base_url", "") or "").lower():
+        base_url = str(getattr(obj, "base_url", "") or "").lower()
+        if obj and ("openrouter" in base_url or "eurouter" in base_url):
             return True
     return False
 

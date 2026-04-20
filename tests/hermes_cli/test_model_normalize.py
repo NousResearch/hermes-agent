@@ -155,6 +155,10 @@ class TestAggregatorProviders:
         result = normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
         assert result == "anthropic/claude-sonnet-4.6"
 
+    def test_eurouter_prepends_vendor(self):
+        result = normalize_model_for_provider("claude-sonnet-4.6", "eurouter")
+        assert result == "anthropic/claude-sonnet-4.6"
+
     def test_nous_prepends_vendor(self):
         result = normalize_model_for_provider("gpt-5.4", "nous")
         assert result == "openai/gpt-5.4"
@@ -162,6 +166,9 @@ class TestAggregatorProviders:
     def test_vendor_already_present(self):
         result = normalize_model_for_provider("anthropic/claude-sonnet-4.6", "openrouter")
         assert result == "anthropic/claude-sonnet-4.6"
+
+    def test_eurouter_is_marked_as_aggregator(self):
+        assert "eurouter" in _AGGREGATOR_PROVIDERS
 
 
 class TestIssue6211NativeProviderPrefixNormalization:

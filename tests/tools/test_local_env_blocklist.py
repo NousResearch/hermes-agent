@@ -79,6 +79,7 @@ class TestProviderEnvBlocklist:
         registry_vars = {
             "ANTHROPIC_TOKEN": "ant-tok",
             "CLAUDE_CODE_OAUTH_TOKEN": "cc-tok",
+            "EUROUTER_API_KEY": "eur-key",
             "ZAI_API_KEY": "zai-key",
             "Z_AI_API_KEY": "z-ai-key",
             "GLM_API_KEY": "glm-key",

@@ -878,6 +878,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "EUROUTER_API_KEY": {
+        "description": "EUrouter API key for the EU-resident OpenAI-compatible gateway",
+        "prompt": "EUrouter API key",
+        "url": "https://api.eurouter.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "EUROUTER_BASE_URL": {
+        "description": "EUrouter base URL override",
+        "prompt": "EUrouter base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "GOOGLE_API_KEY": {
         "description": "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
         "prompt": "Google AI Studio API key",

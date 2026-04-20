@@ -13,6 +13,7 @@ model:
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
   #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
+  #   "eurouter"    - EUrouter EU-resident gateway (requires: EUROUTER_API_KEY)
   #   "nous"         - Nous Portal OAuth (requires: hermes login)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
@@ -348,6 +349,7 @@ compression:
 # Provider options:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
+#   "eurouter"   - Force EUrouter (requires EUROUTER_API_KEY)
 #   "nous"       - Force Nous Portal (requires: hermes login)
 #   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
 #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
@@ -777,7 +779,7 @@ delegation:
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
-  #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #                                           # Supported: openrouter, eurouter, nous, zai, kimi-coding, minimax
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

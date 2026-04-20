@@ -540,6 +540,23 @@ class TestInit:
             )
             assert a._use_prompt_caching is True
 
+    def test_prompt_caching_claude_eurouter(self):
+        """Claude model via EUrouter should enable prompt caching."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://api.eurouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._use_prompt_caching is True
+
     def test_prompt_caching_non_claude(self):
         """Non-Claude model should disable prompt caching."""
         with (
@@ -986,6 +1003,14 @@ class TestBuildApiKwargs:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
+
+    def test_reasoning_not_sent_for_eurouter_model(self, agent):
+        agent.base_url = "https://api.eurouter.ai/api/v1"
+        agent._base_url_lower = "https://api.eurouter.ai/api/v1"
+        agent.model = "qwen/qwen3.5-plus-02-15"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "reasoning" not in kwargs.get("extra_body", {})
 
     def test_reasoning_sent_for_nous_route(self, agent):
         agent.base_url = "https://inference-api.nousresearch.com/v1"

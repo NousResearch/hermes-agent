@@ -1229,7 +1229,7 @@ class AIAgent:
             # stream tool call arguments token-by-token, keeping the
             # connection alive.
             _effective_base = str(client_kwargs.get("base_url", "")).lower()
-            if "openrouter" in _effective_base and "claude" in (self.model or "").lower():
+            if self._is_openrouter_compatible_url(_effective_base) and "claude" in (self.model or "").lower():
                 headers = client_kwargs.get("default_headers") or {}
                 existing_beta = headers.get("x-anthropic-beta", "")
                 _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
@@ -2324,6 +2324,11 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
 
+    def _is_openrouter_compatible_url(self, base_url: Optional[str] = None) -> bool:
+        """Return True for OpenRouter-style chat-completions gateways."""
+        target = (base_url if base_url is not None else (self.base_url or "")).lower()
+        return "openrouter" in target or "eurouter" in target
+
     def _anthropic_prompt_cache_policy(
         self,
         *,
@@ -2357,7 +2362,7 @@ class AIAgent:
 
         base_lower = eff_base_url.lower()
         is_claude = "claude" in eff_model.lower()
-        is_openrouter = "openrouter" in base_lower
+        is_openrouter = self._is_openrouter_compatible_url(eff_base_url)
         is_anthropic_wire = eff_api_mode == "anthropic_messages"
         is_native_anthropic = (
             is_anthropic_wire
@@ -6357,7 +6362,7 @@ class AIAgent:
             return False
 
         # Skip for aggregator providers — they manage their own retry infra
-        if self._is_openrouter_url():
+        if self._is_openrouter_compatible_url():
             return False
         provider_lower = (self.provider or "").strip().lower()
         if provider_lower in ("nous", "nous-research"):
@@ -6893,7 +6898,7 @@ class AIAgent:
             # (the documented max output for qwen3-coder models) so the
             # model has adequate output budget for tool calls.
             api_kwargs.update(self._max_tokens_param(65536))
-        elif (self._is_openrouter_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
+        elif (self._is_openrouter_compatible_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
             # OpenRouter and Nous Portal translate requests to Anthropic's
             # Messages API, which requires max_tokens as a mandatory field.
             # When we omit it, the proxy picks a default that can be too
@@ -6993,6 +6998,13 @@ class AIAgent:
             return True
         if "ai-gateway.vercel.sh" in self._base_url_lower:
             return True
+        if "eurouter" in self._base_url_lower:
+            # EUrouter is OpenAI-compatible, but its current /chat/completions
+            # routes reject Hermes' default OpenRouter-style reasoning payload
+            # for many vendor-prefixed models (for example openai/*, qwen/*,
+            # anthropic/*). Until we have per-model capability detection for
+            # EUrouter, do not enable reasoning automatically.
+            return False
         if "models.github.ai" in self._base_url_lower or "api.githubcopilot.com" in self._base_url_lower:
             try:
                 from hermes_cli.models import github_model_reasoning_efforts
@@ -7000,7 +7012,7 @@ class AIAgent:
                 return bool(github_model_reasoning_efforts(self.model))
             except Exception:
                 return False
-        if "openrouter" not in self._base_url_lower:
+        if not self._is_openrouter_compatible_url():
             return False
         if "api.mistral.ai" in self._base_url_lower:
             return False

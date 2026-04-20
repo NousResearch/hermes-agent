@@ -263,6 +263,7 @@ def run_dump(args):
     lines.append("api_keys:")
     api_keys = [
         ("OPENROUTER_API_KEY", "openrouter"),
+        ("EUROUTER_API_KEY", "eurouter"),
         ("OPENAI_API_KEY", "openai"),
         ("ANTHROPIC_API_KEY", "anthropic"),
         ("ANTHROPIC_TOKEN", "anthropic_token"),

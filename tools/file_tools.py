@@ -612,13 +612,48 @@ def notify_other_tool_call(task_id: str = "default"):
             task_data["consecutive"] = 0
 
 
+def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
+    """Remove all dedup cache entries whose resolved path matches *filepath*.
+
+    Called after write_file and patch so that a subsequent read_file on
+    the same path always returns fresh content instead of a stale
+    "File unchanged" stub.  The dedup cache keys are tuples of
+    ``(resolved_path, offset, limit)``; we must evict **all** offset/limit
+    combinations for the written path because any cached range could now
+    be stale.
+
+    Must be called with ``_read_tracker_lock`` **not** held — acquires it
+    internally.
+    """
+    try:
+        resolved = str(_resolve_path(filepath))
+    except (OSError, ValueError):
+        return
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if task_data is None:
+            return
+        dedup = task_data.get("dedup")
+        if not dedup:
+            return
+        # Collect keys to remove (can't mutate dict during iteration).
+        stale_keys = [k for k in dedup if k[0] == resolved]
+        for k in stale_keys:
+            del dedup[k]
+
+
 def _update_read_timestamp(filepath: str, task_id: str) -> None:
     """Record the file's current modification time after a successful write.
 
     Called after write_file and patch so that consecutive edits by the
     same task don't trigger false staleness warnings — each write
     refreshes the stored timestamp to match the file's new state.
+
+    Also invalidates the dedup cache for the written path so that
+    subsequent reads return fresh content (fixes #13144).
     """
+    # Invalidate dedup first (before acquiring lock for timestamp update).
+    _invalidate_dedup_for_path(filepath, task_id)
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
         current_mtime = os.path.getmtime(resolved)

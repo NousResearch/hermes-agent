@@ -1174,7 +1174,7 @@ def _configure_simple_requirements(ts_key: str):
             else:
                 _print_warning("    Skipped")
         elif idx == 1:
-            base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
+            base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI; include /v1 if your provider expects it)").strip() or "https://api.openai.com/v1"
             key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
             api_key = _prompt(key_label, password=True)
             if api_key and api_key.strip():

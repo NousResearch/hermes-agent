@@ -213,10 +213,14 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """Build the directory path for a new skill, optionally under a category.
+
+    User-created skills go to _USER_SKILLS_DIR (configurable via
+    HERMES_USER_SKILLS_DIR env var), keeping them separate from bundled skills.
+    """
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return _USER_SKILLS_DIR / category / name
+    return _USER_SKILLS_DIR / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -354,10 +358,16 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
+    # Compute relative path from the appropriate skills root
+    try:
+        rel_path = str(skill_dir.relative_to(SKILLS_DIR))
+    except ValueError:
+        rel_path = str(skill_dir.relative_to(_USER_SKILLS_DIR))
+
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": rel_path,
         "skill_md": str(skill_md),
     }
     if category:

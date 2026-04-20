@@ -462,43 +462,63 @@ class BaseEnvironment(ABC):
         # was constructed with ``encoding="utf-8", errors="replace"`` on
         # ``Popen``) so binary or mis-encoded output is preserved with
         # U+FFFD substitution rather than clobbering the whole buffer.
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        _IS_WINDOWS = os.name == "nt"
 
-        def _drain():
-            fd = proc.stdout.fileno()
-            idle_after_exit = 0
-            try:
-                while True:
-                    try:
-                        ready, _, _ = select.select([fd], [], [], 0.1)
-                    except (ValueError, OSError):
-                        break  # fd already closed
-                    if ready:
+        if _IS_WINDOWS:
+            # Windows: select() does not support pipe file descriptors, so we
+            # use blocking reads in a dedicated thread.  If a grandchild keeps
+            # the pipe open after bash exits, we close stdout from the main
+            # thread to unblock the reader after a short grace period.
+            def _drain():
+                try:
+                    while True:
                         try:
-                            chunk = os.read(fd, 4096)
+                            chunk = proc.stdout.read(4096)
                         except (ValueError, OSError):
                             break
                         if not chunk:
-                            break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
-                        idle_after_exit = 0
-                    elif proc.poll() is not None:
-                        # bash is gone and the pipe was idle for ~100ms.  Give
-                        # it two more cycles to catch any buffered tail, then
-                        # stop — otherwise we wait forever on a grandchild pipe.
-                        idle_after_exit += 1
-                        if idle_after_exit >= 3:
                             break
-            finally:
-                # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
-                # this emits U+FFFD for any final incomplete sequence rather than
-                # raising.
-                try:
-                    tail = decoder.decode(b"", final=True)
-                    if tail:
-                        output_chunks.append(tail)
+                        output_chunks.append(chunk)
                 except Exception:
                     pass
+        else:
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+            def _drain():
+                fd = proc.stdout.fileno()
+                idle_after_exit = 0
+                try:
+                    while True:
+                        try:
+                            ready, _, _ = select.select([fd], [], [], 0.1)
+                        except (ValueError, OSError):
+                            break  # fd already closed
+                        if ready:
+                            try:
+                                chunk = os.read(fd, 4096)
+                            except (ValueError, OSError):
+                                break
+                            if not chunk:
+                                break  # true EOF — all writers closed
+                            output_chunks.append(decoder.decode(chunk))
+                            idle_after_exit = 0
+                        elif proc.poll() is not None:
+                            # bash is gone and the pipe was idle for ~100ms.  Give
+                            # it two more cycles to catch any buffered tail, then
+                            # stop — otherwise we wait forever on a grandchild pipe.
+                            idle_after_exit += 1
+                            if idle_after_exit >= 3:
+                                break
+                finally:
+                    # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
+                    # this emits U+FFFD for any final incomplete sequence rather than
+                    # raising.
+                    try:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            output_chunks.append(tail)
+                    except Exception:
+                        pass
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
@@ -608,7 +628,16 @@ class BaseEnvironment(ABC):
         # Drain thread now exits promptly after bash does (~300ms idle
         # check).  A short join is enough; a long one would be a bug since
         # it means the non-blocking loop itself stopped cooperating.
-        drain_thread.join(timeout=2)
+        if _IS_WINDOWS:
+            drain_thread.join(timeout=0.5)
+            if drain_thread.is_alive():
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+                drain_thread.join(timeout=1)
+        else:
+            drain_thread.join(timeout=2)
 
         try:
             proc.stdout.close()

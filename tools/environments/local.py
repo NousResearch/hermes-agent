@@ -153,10 +153,10 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
+    # Prefer Git Bash over WSL bash. On Windows, shutil.which("bash") often
+    # resolves to C:\Windows\System32\bash.exe (WSL), which runs commands in
+    # a Linux subsystem with different filesystem semantics and causes
+    # widespread tool failures (exit 126, missing commands, broken paths).
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -164,6 +164,11 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    # Only fall back to PATH-resolved bash if no Git Bash was found.
+    found = shutil.which("bash")
+    if found:
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
@@ -237,6 +242,16 @@ class LocalEnvironment(BaseEnvironment):
         override the temp root explicitly (for example via terminal.env or a
         custom TMPDIR), then fall back to the host process environment.
         """
+        # On Windows, Git Bash understands forward-slash paths but not Unix
+        # virtual paths like /tmp (which Python would see as C:\tmp).  Use the
+        # system temp dir with forward slashes so both Python and bash agree.
+        if _IS_WINDOWS:
+            for env_var in ("TMPDIR", "TMP", "TEMP"):
+                candidate = self.env.get(env_var) or os.environ.get(env_var)
+                if candidate:
+                    return candidate.replace("\\", "/").rstrip("/") or "/"
+            return tempfile.gettempdir().replace("\\", "/").rstrip("/") or "/"
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):

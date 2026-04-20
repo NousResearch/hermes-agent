@@ -6664,6 +6664,18 @@ class HermesCLI:
                 focus_topic=focus_topic or None,
             )
             self.conversation_history = compressed
+            # _compress_context ends the old session and creates a new child
+            # session on the agent (run_agent.py::_compress_context). Sync the
+            # CLI's session_id so /status, /resume, exit summary, and title
+            # generation all point at the live continuation session, not the
+            # ended parent. Without this, subsequent end_session() calls target
+            # the already-closed parent and the child is orphaned.
+            if (
+                getattr(self.agent, "session_id", None)
+                and self.agent.session_id != self.session_id
+            ):
+                self.session_id = self.agent.session_id
+                self._pending_title = None
             new_tokens = estimate_messages_tokens_rough(self.conversation_history)
             summary = summarize_manual_compression(
                 original_history,
@@ -8181,6 +8193,20 @@ class HermesCLI:
 
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
+
+            # If auto-compression fired mid-turn, the agent created a new
+            # continuation session and mutated self.agent.session_id. Sync
+            # the CLI's session_id so /status, /resume, title generation,
+            # and the exit summary all target the live child session rather
+            # than the ended parent. Mirrors the gateway's post-run sync
+            # (gateway/run.py around line 9983).
+            if (
+                self.agent
+                and getattr(self.agent, "session_id", None)
+                and self.agent.session_id != self.session_id
+            ):
+                self.session_id = self.agent.session_id
+                self._pending_title = None
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
@@ -10554,6 +10580,15 @@ def main(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,
                     )
+                    # Sync session_id if mid-run compression created a
+                    # continuation session. The exit line below reports
+                    # session_id to stderr for automation wrappers; without
+                    # this sync it would point at the ended parent.
+                    if (
+                        getattr(cli.agent, "session_id", None)
+                        and cli.agent.session_id != cli.session_id
+                    ):
+                        cli.session_id = cli.agent.session_id
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                     if response:
                         print(response)

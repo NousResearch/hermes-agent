@@ -356,6 +356,27 @@ class TestBuildSessionContextPrompt:
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
 
+    def test_non_thread_group_shows_user_id_when_available(self):
+        """Identity-sensitive lanes need the stable sender ID, not just display name."""
+        config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_group",
+            chat_name="Test Group",
+            chat_type="group",
+            user_id="ou_sender_123",
+            user_name="Jc",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Jc" in prompt
+        assert "**User ID:** ou_sender_123" in prompt
+
     def test_dm_thread_shows_user_not_multi(self):
         """DM threads are single-user and should show User, not multi-user note."""
         config = GatewayConfig(

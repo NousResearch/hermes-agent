@@ -1035,6 +1035,13 @@ def list_authenticated_providers(
         seen_slugs.add(_cp.slug.lower())
 
     # --- 3. User-defined endpoints from config ---
+    # Track (name, base_url) of what section 3 emits so section 4 can skip
+    # any overlapping ``custom_providers:`` entries.  Callers typically pass
+    # both (gateway/CLI invoke ``get_compatible_custom_providers()`` which
+    # merges ``providers:`` into the list) — without this, the same endpoint
+    # produces two picker rows: one bare-slug ("openrouter") from section 3
+    # and one "custom:openrouter" from section 4, both labelled identically.
+    _section3_emitted_pairs: set = set()
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
@@ -1088,6 +1095,12 @@ def list_authenticated_providers(
                 "api_url": api_url,
             })
             seen_slugs.add(ep_name.lower())
+            _pair = (
+                str(display_name).strip().lower(),
+                str(api_url).strip().rstrip("/").lower(),
+            )
+            if _pair[0] and _pair[1]:
+                _section3_emitted_pairs.add(_pair)
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1145,6 +1158,17 @@ def list_authenticated_providers(
 
         for slug, grp in groups.items():
             if slug.lower() in seen_slugs:
+                continue
+            # Skip if section 3 already emitted this endpoint under its
+            # ``providers:`` dict key — matches on (display_name, base_url),
+            # the tuple section 4 groups by.  Prevents two picker rows
+            # labelled identically when callers pass both ``user_providers``
+            # and a compatibility-merged ``custom_providers`` list.
+            _pair_key = (
+                str(grp["name"]).strip().lower(),
+                str(grp["api_url"]).strip().rstrip("/").lower(),
+            )
+            if _pair_key[0] and _pair_key[1] and _pair_key in _section3_emitted_pairs:
                 continue
             results.append({
                 "slug": slug,

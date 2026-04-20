@@ -852,20 +852,29 @@ class ArecordRecorder:
                 samples = np.frombuffer(data, dtype=np.int16)
                 rms = int(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
 
+                silence_triggered = False
                 with self._lock:
                     if not self._recording:
                         break
                     self._current_rms = rms
                     if rms > self._peak_rms:
                         self._peak_rms = rms
-                    self._run_silence_detection(rms)
+                    silence_triggered = self._check_silence(rms)
+
+                # Fire callback OUTSIDE the lock to prevent deadlock
+                # (stop() also acquires _lock)
+                if silence_triggered and self._on_silence_stop:
+                    self._on_silence_stop()
             except (OSError, ValueError):
                 break
 
-    def _run_silence_detection(self, rms: int) -> None:
-        """Silence detection logic (same algorithm as AudioRecorder)."""
+    def _check_silence(self, rms: int) -> bool:
+        """Silence detection logic. Returns True if silence threshold met.
+
+        Must be called while holding self._lock.
+        """
         if self._on_silence_stop is None:
-            return
+            return False
         now = time.monotonic()
         elapsed = now - self._start_time
 
@@ -896,13 +905,10 @@ class ArecordRecorder:
             elif self._silence_start == 0.0:
                 self._silence_start = now
             if self._silence_start > 0 and now - self._silence_start >= self._silence_duration:
-                cb = self._on_silence_stop
-                if cb:
-                    cb()
+                return True
         elif elapsed >= self._max_wait:
-            cb = self._on_silence_stop
-            if cb:
-                cb()
+            return True
+        return False
 
     def stop(self) -> Optional[str]:
         with self._lock:

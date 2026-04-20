@@ -114,20 +114,30 @@ def test_prefetch_non_blocking():
 
 
 def test_get_update_result_timeout():
-    """get_update_result() returns None when check hasn't completed within timeout."""
+    """get_update_result() returns None when check hasn't completed within timeout.
+
+    Race protection: a background update-check thread from an earlier
+    test, or from hermes_cli.main's own prefetch_update_check(), could
+    write to module-level ``_update_result`` during this test's
+    ``wait(0.1)``.  Observed on CI: a real git-fetch returned 4950
+    commits-behind mid-test, failing ``assert 4950 is None``.  Patching
+    ``check_for_updates`` for the duration of the test ensures any
+    in-flight thread writes ``None`` rather than a real fetch result.
+    """
     import hermes_cli.banner as banner
 
-    # Reset module state — don't set the event
-    banner._update_result = None
-    banner._update_check_done = threading.Event()
+    with patch.object(banner, "check_for_updates", return_value=None):
+        # Fresh Event so we hit the timeout branch deterministically.
+        banner._update_result = None
+        banner._update_check_done = threading.Event()
 
-    start = time.monotonic()
-    result = banner.get_update_result(timeout=0.1)
-    elapsed = time.monotonic() - start
+        start = time.monotonic()
+        result = banner.get_update_result(timeout=0.1)
+        elapsed = time.monotonic() - start
 
-    # Should have waited ~0.1s and returned None
-    assert result is None
-    assert elapsed < 0.5
+        # Should have waited ~0.1s and returned None
+        assert result is None
+        assert elapsed < 0.5
 
 
 def test_invalidate_update_cache_clears_all_profiles(tmp_path):

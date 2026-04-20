@@ -1,4 +1,4 @@
-"""disk-guardian plugin — auto-cleanup of ephemeral Hermes session files.
+"""disk-cleanup plugin — auto-cleanup of ephemeral Hermes session files.
 
 Wires three behaviours:
 
@@ -8,10 +8,10 @@ Wires three behaviours:
    compliance required.
 
 2. ``on_session_end`` hook — when any test files were auto-tracked
-   during the just-finished turn, runs :func:`disk_guardian.quick` and
-   logs a single line to ``$HERMES_HOME/disk-guardian/cleanup.log``.
+   during the just-finished turn, runs :func:`disk_cleanup.quick` and
+   logs a single line to ``$HERMES_HOME/disk-cleanup/cleanup.log``.
 
-3. ``/disk-guardian`` slash command — manual ``status``, ``dry-run``,
+3. ``/disk-cleanup`` slash command — manual ``status``, ``dry-run``,
    ``quick``, ``deep``, ``track``, ``forget``.
 
 Replaces PR #12212's skill-plus-script design: the agent no longer
@@ -27,7 +27,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from . import disk_guardian as dg
+from . import disk_cleanup as dg
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ def _on_session_end(
     try:
         summary = dg.quick()
     except Exception as exc:
-        logger.debug("disk-guardian quick cleanup failed: %s", exc)
+        logger.debug("disk-cleanup quick cleanup failed: %s", exc)
         return
 
     if summary["deleted"] or summary["empty_dirs"]:
@@ -193,7 +193,7 @@ def _on_session_end(
 # ---------------------------------------------------------------------------
 
 _HELP_TEXT = """\
-/disk-guardian — ephemeral-file cleanup
+/disk-cleanup — ephemeral-file cleanup
 
 Subcommands:
   status                     Per-category breakdown + top-10 largest
@@ -212,7 +212,7 @@ Test files are auto-tracked on write_file / terminal and auto-cleaned at session
 
 def _fmt_summary(summary: Dict[str, Any]) -> str:
     base = (
-        f"[disk-guardian] Cleaned {summary['deleted']} files + "
+        f"[disk-cleanup] Cleaned {summary['deleted']} files + "
         f"{summary['empty_dirs']} empty dirs, freed {dg.fmt_size(summary['freed'])}."
     )
     if summary.get("errors"):
@@ -268,14 +268,14 @@ def _handle_slash(raw_args: str) -> Optional[str]:
             for item in prompt_items:
                 lines.append(f"  [{item['category']}] {item['path']}")
             lines.append(
-                "\nRun `/disk-guardian forget <path>` to skip, or delete "
+                "\nRun `/disk-cleanup forget <path>` to skip, or delete "
                 "manually via terminal."
             )
         return "\n".join(lines)
 
     if sub == "track":
         if len(argv) < 3:
-            return "Usage: /disk-guardian track <path> <category>"
+            return "Usage: /disk-cleanup track <path> <category>"
         path_arg = argv[1]
         category = argv[2]
         if category not in dg.ALLOWED_CATEGORIES:
@@ -292,7 +292,7 @@ def _handle_slash(raw_args: str) -> Optional[str]:
 
     if sub == "forget":
         if len(argv) < 2:
-            return "Usage: /disk-guardian forget <path>"
+            return "Usage: /disk-cleanup forget <path>"
         n = dg.forget(argv[1])
         return (
             f"Removed {n} tracking entr{'y' if n == 1 else 'ies'} for {argv[1]}."
@@ -310,7 +310,7 @@ def register(ctx) -> None:
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_command(
-        "disk-guardian",
+        "disk-cleanup",
         handler=_handle_slash,
         description="Track and clean up ephemeral Hermes session files.",
     )

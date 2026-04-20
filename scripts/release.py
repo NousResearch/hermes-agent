@@ -150,7 +150,7 @@ AUTHOR_MAP = {
     "jack.47@gmail.com": "JackTheGit",
     "dalvidjr2022@gmail.com": "Jr-kenny",
     "m@statecraft.systems": "mbierling",
-    "balyan.sid@gmail.com": "balyansid",
+    "balyan.sid@gmail.com": "alt-glitch",
     "oluwadareab12@gmail.com": "bennytimz",
     "simon@simonmarcus.org": "simon-marcus",
     "xowiekk@gmail.com": "Xowiek",

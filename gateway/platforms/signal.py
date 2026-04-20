@@ -492,6 +492,8 @@ class SignalAdapter(BasePlatformAdapter):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
+            elif any(mt.startswith("application/") or mt.startswith("text/") for mt in media_types):
+                msg_type = MessageType.DOCUMENT
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)

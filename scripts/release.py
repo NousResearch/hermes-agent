@@ -137,6 +137,7 @@ AUTHOR_MAP = {
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
     "hcn518@gmail.com": "pedh",
+    "haileymarshall005@gmail.com": "haileymarshall",
     "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
     "shokatalishaikh95@gmail.com": "areu01or00",

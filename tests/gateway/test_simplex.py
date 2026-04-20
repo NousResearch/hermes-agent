@@ -1,5 +1,6 @@
 """Tests for SimpleX Chat platform adapter."""
 
+import asyncio
 import json
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -28,7 +29,18 @@ def _make_simplex_adapter(monkeypatch, ws_url="ws://127.0.0.1:5225", **extra):
     }
     adapter = SimplexAdapter(config)
     adapter.handle_message = AsyncMock()
+    # Text batching schedules handle_message via asyncio.create_task + sleep.
+    # Zero the delay so tests can flush with _flush_text_batches() instead of
+    # waiting on a wall-clock timer.
+    adapter._text_batch_delay = 0
     return adapter
+
+
+async def _flush_text_batches(adapter):
+    """Await any pending SimpleX text-batch flush tasks so handle_message fires."""
+    tasks = list(adapter._pending_text_batch_tasks.values())
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _make_chat_item(
@@ -295,6 +307,7 @@ class TestSimplexEventHandling:
         )
         event = _make_event("newChatItems", chatItems=[item])
         await adapter._handle_event(event)
+        await _flush_text_batches(adapter)
 
         adapter.handle_message.assert_awaited_once()
         msg_event = adapter.handle_message.call_args[0][0]
@@ -310,6 +323,7 @@ class TestSimplexEventHandling:
         item2 = _make_chat_item(text="Second", contact_id=43, contact_name="bob")
         event = _make_event("newChatItems", chatItems=[item1, item2])
         await adapter._handle_event(event)
+        await _flush_text_batches(adapter)
 
         assert adapter.handle_message.await_count == 2
 
@@ -359,6 +373,7 @@ class TestSimplexEventHandling:
         )
         event = _make_event("newChatItems", chatItems=[item])
         await adapter._handle_event(event)
+        await _flush_text_batches(adapter)
 
         adapter.handle_message.assert_awaited_once()
         msg_event = adapter.handle_message.call_args[0][0]
@@ -376,6 +391,7 @@ class TestSimplexEventHandling:
         )
         event = _make_event("newChatItems", chatItems=[item])
         await adapter._handle_event(event)
+        await _flush_text_batches(adapter)
 
         adapter.handle_message.assert_awaited_once()
 
@@ -421,6 +437,7 @@ class TestSimplexEventHandling:
         item = _make_chat_item(item_ts="2025-06-15T10:30:00Z")
         event = _make_event("newChatItems", chatItems=[item])
         await adapter._handle_event(event)
+        await _flush_text_batches(adapter)
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.timestamp.year == 2025
@@ -432,6 +449,7 @@ class TestSimplexEventHandling:
         item = _make_chat_item(item_ts="not-a-date")
         event = _make_event("newChatItems", chatItems=[item])
         await adapter._handle_event(event)
+        await _flush_text_batches(adapter)
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert isinstance(msg_event.timestamp, datetime)
@@ -506,6 +524,7 @@ class TestSimplexFileAttachments:
         )
         event = _make_event("newChatItems", chatItems=[item])
         await adapter._handle_event(event)
+        await _flush_text_batches(adapter)
 
         adapter.handle_message.assert_awaited_once()
         msg_event = adapter.handle_message.call_args[0][0]
@@ -654,7 +673,10 @@ class TestSimplexSend:
         assert result.success is True
 
         cmd = adapter._send_command.call_args[0][0]
-        assert cmd.startswith("/f @42 ")
+        # Uses /_send with JSON payload so chats can be addressed by numeric ID.
+        assert cmd.startswith("/_send @42 json ")
+        assert '"type": "image"' in cmd
+        assert '"text": "A photo"' in cmd
 
     @pytest.mark.asyncio
     async def test_send_image_group(self, monkeypatch, tmp_path):
@@ -669,7 +691,7 @@ class TestSimplexSend:
         assert result.success is True
 
         cmd = adapter._send_command.call_args[0][0]
-        assert "/f #99 " in cmd
+        assert cmd.startswith("/_send #99 json ")
         assert "#group:" not in cmd
 
     @pytest.mark.asyncio

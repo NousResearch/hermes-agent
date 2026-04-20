@@ -2206,80 +2206,6 @@ def _setup_mattermost():
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
 
 
-def _setup_whatsapp():
-    """Configure WhatsApp bridge."""
-    print_header("WhatsApp")
-    existing = get_env_value("WHATSAPP_ENABLED")
-    if existing:
-        print_info("WhatsApp: already enabled")
-        return
-
-    print_info("WhatsApp connects via a built-in bridge (Baileys).")
-    print_info("Requires Node.js. Run 'hermes whatsapp' for guided setup.")
-    print()
-    if prompt_yes_no("Enable WhatsApp now?", True):
-        save_env_value("WHATSAPP_ENABLED", "true")
-        print_success("WhatsApp enabled")
-        print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
-        print_info("or personal self-chat) and pair via QR code.")
-
-
-def _setup_weixin():
-    """Configure Weixin (personal WeChat) via iLink Bot API QR login."""
-    from hermes_cli.gateway import _setup_weixin as _gateway_setup_weixin
-    _gateway_setup_weixin()
-
-
-def _setup_signal():
-    """Configure Signal via gateway setup."""
-    from hermes_cli.gateway import _setup_signal as _gateway_setup_signal
-    _gateway_setup_signal()
-
-
-def _setup_email():
-    """Configure Email via gateway setup."""
-    from hermes_cli.gateway import _setup_email as _gateway_setup_email
-    _gateway_setup_email()
-
-
-def _setup_sms():
-    """Configure SMS (Twilio) via gateway setup."""
-    from hermes_cli.gateway import _setup_sms as _gateway_setup_sms
-    _gateway_setup_sms()
-
-
-def _setup_dingtalk():
-    """Configure DingTalk via gateway setup."""
-    from hermes_cli.gateway import _setup_dingtalk as _gateway_setup_dingtalk
-    _gateway_setup_dingtalk()
-
-
-def _setup_feishu():
-    """Configure Feishu / Lark via gateway setup."""
-    from hermes_cli.gateway import _setup_feishu as _gateway_setup_feishu
-    _gateway_setup_feishu()
-
-
-def _setup_yuanbao():
-    """Configure Yuanbao via gateway setup."""
-    from hermes_cli.gateway import _setup_yuanbao as _gateway_setup_yuanbao
-    _gateway_setup_yuanbao()
-
-
-def _setup_wecom():
-    """Configure WeCom (Enterprise WeChat) via gateway setup."""
-    from hermes_cli.gateway import _setup_wecom as _gateway_setup_wecom
-    _gateway_setup_wecom()
-
-
-def _setup_wecom_callback():
-    """Configure WeCom Callback (self-built app) via gateway setup."""
-    from hermes_cli.gateway import _setup_wecom_callback as _gw_setup
-    _gw_setup()
-
-
-
-
 def _setup_bluebubbles():
     """Configure BlueBubbles iMessage gateway."""
     print_header("BlueBubbles (iMessage)")
@@ -2397,47 +2323,26 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
-# Platform registry for the gateway checklist
-_GATEWAY_PLATFORMS = [
-    ("Telegram", "TELEGRAM_BOT_TOKEN", _setup_telegram),
-    ("Discord", "DISCORD_BOT_TOKEN", _setup_discord),
-    ("Slack", "SLACK_BOT_TOKEN", _setup_slack),
-    ("Signal", "SIGNAL_HTTP_URL", _setup_signal),
-    ("Email", "EMAIL_ADDRESS", _setup_email),
-    ("SMS (Twilio)", "TWILIO_ACCOUNT_SID", _setup_sms),
-    ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
-    ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
-    ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
-    ("DingTalk", "DINGTALK_CLIENT_ID", _setup_dingtalk),
-    ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
-    ("Yuanbao", "YUANBAO_APP_ID", _setup_yuanbao),
-    ("WeCom (Enterprise WeChat)", "WECOM_BOT_ID", _setup_wecom),
-    ("WeCom Callback (Self-Built App)", "WECOM_CALLBACK_CORP_ID", _setup_wecom_callback),
-    ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
-    ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
-    ("QQ Bot", "QQ_APP_ID", _setup_qqbot),
-    ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
-]
 
 
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
+    from hermes_cli.gateway import _all_platforms, _platform_status, _configure_platform
+
     print_header("Messaging Platforms")
     print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
     print_info("Toggle with Space, confirm with Enter.")
     print()
 
-    # Build checklist items, pre-selecting already-configured platforms
+    platforms = _all_platforms()
+
+    # Build checklist, pre-selecting already-configured platforms.
     items = []
     pre_selected = []
-    for i, (name, env_var, _func) in enumerate(_GATEWAY_PLATFORMS):
-        # Matrix has two possible env vars
-        is_configured = bool(get_env_value(env_var))
-        if name == "Matrix" and not is_configured:
-            is_configured = bool(get_env_value("MATRIX_PASSWORD"))
-        label = f"{name}  (configured)" if is_configured else name
-        items.append(label)
-        if is_configured:
+    for i, plat in enumerate(platforms):
+        status = _platform_status(plat)
+        items.append(f"{plat['emoji']} {plat['label']}  ({status})")
+        if status == "configured":
             pre_selected.append(i)
 
     selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
@@ -2447,8 +2352,7 @@ def setup_gateway(config: dict):
         return
 
     for idx in selected:
-        name, _env_var, setup_func = _GATEWAY_PLATFORMS[idx]
-        setup_func()
+        _configure_platform(platforms[idx])
 
     # ── Gateway Service Setup ──
     any_messaging = (
@@ -2738,13 +2642,14 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
-        platforms = [
-            _gateway_platform_short_label(label)
-            for label, env_var, _ in _GATEWAY_PLATFORMS
-            if get_env_value(env_var)
+        from hermes_cli.gateway import _all_platforms, _platform_status
+        configured = [
+            _gateway_platform_short_label(plat["label"])
+            for plat in _all_platforms()
+            if _platform_status(plat) == "configured"
         ]
-        if platforms:
-            return ", ".join(platforms)
+        if configured:
+            return ", ".join(configured)
         return None  # No platforms configured — section must run
 
     elif section_key == "tools":

@@ -163,11 +163,12 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
         "WEBHOOK_ENABLED": "",
     }
 
+    import hermes_cli.gateway as gateway_mod
+
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
-
-    import hermes_cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -201,11 +202,12 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
         "WEBHOOK_ENABLED": "",
     }
 
+    import hermes_cli.gateway as gateway_mod
+
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
-
-    import hermes_cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)

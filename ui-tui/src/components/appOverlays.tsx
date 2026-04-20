@@ -11,6 +11,9 @@ import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { ApprovalPrompt, ClarifyPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
+import { SwarmOverlay } from './swarmOverlay.js'
+
+import { SetupWizard } from '../app/setup/SetupWizard.js'
 
 export function PromptZone({
   cols,
@@ -76,13 +79,14 @@ export function FloatingOverlays({
   completions,
   onModelSelect,
   onPickerSelect,
+  onSetupComplete,
   pagerPageSize
-}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions' | 'onModelSelect' | 'onPickerSelect' | 'pagerPageSize'>) {
+}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions' | 'onModelSelect' | 'onPickerSelect' | 'onSetupComplete' | 'pagerPageSize'>) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || completions.length
+  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.setupWizard || overlay.swarm || completions.length
 
   if (!hasAny) {
     return null
@@ -112,6 +116,24 @@ export function FloatingOverlays({
             sessionId={ui.sid}
             t={ui.theme}
           />
+        </FloatBox>
+      )}
+
+      {overlay.setupWizard && (
+        <FloatBox color={ui.theme.color.bronze}>
+          <SetupWizard
+            cols={cols}
+            gw={gw}
+            onCancel={() => patchOverlayState({ setupWizard: false })}
+            onComplete={onSetupComplete}
+            t={ui.theme}
+          />
+        </FloatBox>
+      )}
+
+      {overlay.swarm && (
+        <FloatBox color={ui.theme.color.gold}>
+          <SwarmOverlay />
         </FloatBox>
       )}
 

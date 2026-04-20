@@ -239,7 +239,7 @@ function Chevron({
   )
 }
 
-function SubagentAccordion({
+export function SubagentAccordion({
   branch,
   expanded,
   item,

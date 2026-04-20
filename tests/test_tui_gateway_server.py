@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.continuation_engine import should_use_continuation_engine
+from agent.intent_preclassifier import preclassify_intent
 from tui_gateway import server
 
 
@@ -338,6 +340,12 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     assert resp["result"]["value"] == "new/model"
     assert resp["result"]["warning"] == "catalog unreachable"
     assert seen["args"] == ("sid", "session-key", "new/model")
+
+
+def test_routing_owner_promotes_swarm_to_native_surface():
+    assert server._routing_owner("swarm") == "native"
+    assert server._routing_owner("handoff") == "slash-live"
+    assert server._routing_owner("tools") == "native"
 
 
 def test_config_set_model_global_persists(monkeypatch):
@@ -958,6 +966,53 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     assert captured["prompt"] == "expanded prompt"
 
 
+def test_session_resume_reopens_persisted_history_into_a_fresh_runtime_session(monkeypatch):
+    reopened = []
+    captured = {}
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": "persisted-session"}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, sid):
+            reopened.append(sid)
+
+        def get_messages_as_conversation(self, _sid):
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "world"},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda _target: None)
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: types.SimpleNamespace(session_id=session_id, runtime_sid=sid))
+    monkeypatch.setattr(
+        server,
+        "_init_session",
+        lambda sid, key, agent, history, cols=80: captured.update(
+            {"sid": sid, "session_key": key, "history": history, "agent": agent, "cols": cols}
+        ),
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "persisted-session", "cols": 120}}
+    )
+
+    assert resp["result"]["resumed"] == "persisted-session"
+    assert resp["result"]["message_count"] == 2
+    assert reopened == ["persisted-session"]
+    assert captured["session_key"] == "persisted-session"
+    assert captured["sid"] != "persisted-session"
+    assert captured["agent"].session_id == "persisted-session"
+    assert captured["cols"] == 120
+
+
 def test_image_attach_appends_local_image(monkeypatch):
     fake_cli = types.ModuleType("cli")
     fake_cli._IMAGE_EXTENSIONS = {".png"}
@@ -989,7 +1044,7 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
 
 
 def test_routing_owner_lane_locks_authoritative_route_sets():
-    assert server._NATIVE_PRODUCT_COMMANDS == frozenset({"setup", "skills", "tools"})
+    assert server._NATIVE_PRODUCT_COMMANDS == frozenset({"setup", "skills", "swarm", "tools"})
     assert server._LIVE_SLASH_COMMANDS == frozenset({"handoff", "init-deep", "model", "provider", "ralph-loop", "start-work", "ulw-loop"})
     assert server._LEGACY_SLASH_WORKER_COMMANDS == frozenset({
         "agents",
@@ -1075,7 +1130,17 @@ def test_slash_worker_locks_legacy_only_execution(monkeypatch):
             raise AssertionError("expected non-legacy rejection")
 
 
-def test_slash_exec_work_command_submits_live_prompt(monkeypatch):
+@pytest.mark.parametrize(
+    ("command_text", "canonical", "raw_args"),
+    [
+        ("handoff request", "handoff", "request"),
+        ("init-deep investigate", "init-deep", "investigate"),
+        ("start-work ship it", "start-work", "ship it"),
+        ("ralph-loop close it", "ralph-loop", "close it"),
+        ("ulw-loop finish it", "ulw-loop", "finish it"),
+    ],
+)
+def test_slash_exec_work_command_submits_live_prompt(monkeypatch, command_text, canonical, raw_args):
     captured = {}
     session = _session()
     server._sessions["sid"] = session
@@ -1090,21 +1155,68 @@ def test_slash_exec_work_command_submits_live_prompt(monkeypatch):
         lambda canonical, raw_args, session_id, cwd: f"prepared::{canonical}::{raw_args}::{session_id}",
     )
 
-    resp = server.handle_request({"id": "1", "method": "slash.exec", "params": {"session_id": "sid", "command": "handoff request"}})
+    resp = server.handle_request({"id": "1", "method": "slash.exec", "params": {"session_id": "sid", "command": command_text}})
 
-    assert resp["result"]["output"] == "/handoff started"
-    assert captured["args"] == ("1", "sid", "session-key", "prepared::handoff::request::session-key")
+    assert resp["result"]["output"] == f"/{canonical} started"
+    assert captured["args"] == ("1", "sid", "session-key", f"prepared::{canonical}::{raw_args}::session-key")
 
 
+@pytest.mark.parametrize(
+    ("command_text", "expected_runtime_mode", "should_continue"),
+    [
+        ("handoff request", "default", False),
+        ("init-deep investigate", "default", False),
+        ("start-work ship it", "default", False),
+        ("ralph-loop close it", "ralph", True),
+        ("ulw-loop finish it", "ultrawork", True),
+    ],
+)
+def test_slash_exec_work_command_preserves_continuation_semantics(monkeypatch, command_text, expected_runtime_mode, should_continue):
+    captured = {}
+    session = _session()
+    server._sessions["sid"] = session
 
-def test_slash_exec_work_command_busy_is_deterministic(monkeypatch):
+    def _capture_submit(rid, sid, session, prepared):
+        captured["prepared"] = prepared
+        return {"result": {"status": "streaming"}}
+
+    monkeypatch.setattr(server, "_start_prompt_submit", _capture_submit)
+
+    resp = server.handle_request({"id": "1", "method": "slash.exec", "params": {"session_id": "sid", "command": command_text}})
+
+    prepared = captured["prepared"]
+    classification = preclassify_intent({"message": prepared.task_contract["task"], "task_contract": prepared.task_contract})
+
+    assert resp["result"]["output"] == f"/{prepared.command_name} started"
+    assert classification.inferred_runtime_mode == expected_runtime_mode
+    assert should_use_continuation_engine(classification.inferred_runtime_mode, {
+        "outcomeStatus": "interrupted",
+        "activeTodos": [{"id": "todo-1", "content": "Finish the delegated task", "status": "in_progress"}],
+    }) is should_continue
+    if prepared.command_name == "start-work":
+        assert "NAMED_WORKFLOW_JSON:" in prepared.agent_message
+    elif should_continue:
+        assert f'"runtime_mode": "{expected_runtime_mode}"' in prepared.agent_message
+
+
+@pytest.mark.parametrize(
+    "command_text",
+    [
+        "handoff request",
+        "init-deep investigate",
+        "start-work ship it",
+        "ralph-loop close it",
+        "ulw-loop finish it",
+    ],
+)
+def test_slash_exec_work_command_busy_is_deterministic(monkeypatch, command_text):
     server._sessions["sid"] = _session(running=True)
     monkeypatch.setattr(
         "hermes_cli.work_command_adapter.prepare_work_command",
         lambda canonical, raw_args, session_id, cwd: "prepared prompt",
     )
 
-    resp = server.handle_request({"id": "1", "method": "slash.exec", "params": {"session_id": "sid", "command": "start-work ship it"}})
+    resp = server.handle_request({"id": "1", "method": "slash.exec", "params": {"session_id": "sid", "command": command_text}})
 
     assert "error" in resp
     assert resp["error"]["code"] == 4009

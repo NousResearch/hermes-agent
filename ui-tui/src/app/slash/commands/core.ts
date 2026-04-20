@@ -4,7 +4,7 @@ import { nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
 import type { ConfigGetValueResponse, ConfigSetResponse, SessionUndoResponse } from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
-import { patchOverlayState } from '../../overlayStore.js'
+import { getOverlayState, patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
@@ -15,11 +15,11 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
 
   const mode = arg.trim().toLowerCase()
 
-  if (mode === 'on') {
+  if (mode === 'on' || mode === 'open') {
     return true
   }
 
-  if (mode === 'off') {
+  if (mode === 'off' || mode === 'close') {
     return false
   }
 
@@ -50,7 +50,8 @@ export const coreCommands: SlashCommand[] = [
         {
           rows: [
             ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
-            ['/fortune [random|daily]', 'show a random or daily local fortune']
+            ['/fortune [random|daily]', 'show a random or daily local fortune'],
+            ['/swarm [open|close|toggle]', 'toggle the active-turn swarm surface']
           ],
           title: 'TUI'
         },
@@ -151,6 +152,21 @@ export const coreCommands: SlashCommand[] = [
       patchUiState({ detailsMode: next })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
       transcript.sys(`details: ${next}`)
+    }
+  },
+
+  {
+    help: 'toggle active-turn swarm surface',
+    name: 'swarm',
+    run: (arg, ctx) => {
+      const next = flagFromArg(arg, getOverlayState().swarm)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /swarm [open|close|toggle]')
+      }
+
+      patchOverlayState({ swarm: next })
+      ctx.transcript.sys(`swarm surface ${next ? 'open' : 'closed'}`)
     }
   },
 

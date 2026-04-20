@@ -57,7 +57,9 @@ export interface OverlayState {
   pager: null | PagerState
   picker: boolean
   secret: null | SecretReq
+  setupWizard: boolean
   sudo: null | SudoReq
+  swarm: boolean
 }
 
 export interface PagerState {
@@ -257,8 +259,9 @@ export interface AppLayoutActions {
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   onModelSelect: (value: string) => void
+  onSetupComplete: (message: string) => void
   resumeById: (id: string) => void
-  setStickyPrompt: (value: string) => void
+  setStickyPrompt: StateSetter<string>
 }
 
 export interface AppLayoutComposerProps {
@@ -329,6 +332,7 @@ export interface AppOverlaysProps {
   onModelSelect: (value: string) => void
   onPickerSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
+  onSetupComplete: (message: string) => void
   onSudoSubmit: (pw: string) => void
   pagerPageSize: number
 }

@@ -68,7 +68,7 @@ _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45))
 _LIVE_WORK_COMMANDS = frozenset({"handoff", "init-deep", "start-work", "ralph-loop", "ulw-loop"})
-_NATIVE_PRODUCT_COMMANDS = frozenset({"setup", "skills", "tools"})
+_NATIVE_PRODUCT_COMMANDS = frozenset({"setup", "skills", "swarm", "tools"})
 _LIVE_SLASH_COMMANDS = frozenset({"model", "provider"}) | _LIVE_WORK_COMMANDS
 _LEGACY_SLASH_WORKER_COMMANDS = frozenset({
     "agents",

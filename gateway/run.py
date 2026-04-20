@@ -9189,30 +9189,29 @@ class GatewayRunner:
 
             # Signal emoji reactions: instead of text messages, react with emoji to user's message
             # This provides "/verbose new"-like feedback without creating separate bubbles.
-            if source.platform.value == "signal" and hasattr(source, 'signal_react_to') and source.signal_react_to:
+            if source.platform.value == "signal" and source.message_ref:
                 from agent.display import get_tool_emoji
                 emoji = get_tool_emoji(tool_name, default="⚙️")
-                react_info = source.signal_react_to
+                
+                ctx = source.message_ref.context or {}
+                target_author = ctx.get("author")
+                target_ts = ctx.get("timestamp_ms") or ctx.get("timestamp")
+                is_group = bool(source.message_ref.thread_id)
                 
                 # For group chats, signal-cli only needs groupId (no targetAuthor/targetTimestamp)
-                if source.chat_id.startswith("group:") and isinstance(react_info.get("group_id"), str):
+                if is_group:
                     asyncio.create_task(self.adapters[source.platform]._send_reaction(
                         chat_id=source.chat_id,
                         emoji=emoji,
-                        target_author=None,
-                        target_timestamp=None,
                     ))
-                else:
+                elif target_ts is not None and target_author:
                     # DM: need targetAuthor and targetTimestamp (ms) for signal-cli sendReaction
-                    target_ts = react_info.get("timestamp")
-                    target_author = react_info.get("author")
-                    if target_ts is not None and target_author:
-                        asyncio.create_task(self.adapters[source.platform]._send_reaction(
-                            chat_id=source.chat_id,
-                            emoji=emoji,
-                            target_author=target_author,
-                            target_timestamp=int(target_ts),
-                        ))
+                    asyncio.create_task(self.adapters[source.platform]._send_reaction(
+                        chat_id=source.chat_id,
+                        emoji=emoji,
+                        target_author=target_author,
+                        target_timestamp=int(target_ts),
+                    ))
                 return
 
             # "new" mode: only report when tool changes

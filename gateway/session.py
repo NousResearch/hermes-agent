@@ -63,6 +63,51 @@ from .config import (
 
 
 @dataclass
+class MessageRef:
+    """Opaque reference to a specific message in a conversation.
+
+    Provides a minimal cross-platform abstraction for pointing at a source
+    message — needed for emoji reactions, quotes, threaded replies, etc.
+    Each platform populates whatever fields are native to its protocol;
+    adapters that need platform-specific info can read the ``context`` blob.
+    """
+    platform: Platform
+    platform_message_id: str  # Platform-native message identifier
+    thread_id: Optional[str] = None  # e.g. Discord channel, Telegram topic, Slack channel
+    context: Dict[str, Any] = None  # Platform-specific extras (Signal: author, timestamp_ms)
+
+    @classmethod
+    def for_signal(
+        cls,
+        author: str,
+        timestamp_ms: int,
+        group_id: Optional[str] = None,
+    ) -> "MessageRef":
+        return cls(
+            platform=Platform.SIGNAL,
+            platform_message_id=group_id or author,
+            thread_id=group_id,
+            context={"author": author, "timestamp_ms": timestamp_ms},
+        )
+
+    @classmethod
+    def for_discord(cls, message_id: str, channel_id: Optional[str] = None) -> "MessageRef":
+        return cls(
+            platform=Platform.DISCORD,
+            platform_message_id=message_id,
+            thread_id=channel_id,
+        )
+
+    @classmethod
+    def for_telegram(cls, message_id: int, chat_id: str) -> "MessageRef":
+        return cls(
+            platform=Platform.TELEGRAM,
+            platform_message_id=str(message_id),
+            thread_id=chat_id,
+        )
+
+
+@dataclass
 class SessionSource:
     """
     Describes where a message originated from.
@@ -84,8 +129,9 @@ class SessionSource:
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
     
-    # Signal-specific metadata for emoji reactions on incoming messages.
-    signal_react_to: Optional[Dict[str, Any]] = None
+    # Cross-platform pointer to the source message. Used by emoji reactions,
+    # quote replies, and any operation that needs to target a specific message.
+    message_ref: Optional[MessageRef] = None
     
     @property
     def description(self) -> str:
@@ -119,6 +165,13 @@ class SessionSource:
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
         }
+        if self.message_ref:
+            d["message_ref"] = {
+                "platform": self.message_ref.platform.value,
+                "platform_message_id": self.message_ref.platform_message_id,
+                "thread_id": self.message_ref.thread_id,
+                "context": self.message_ref.context or {},
+            }
         if self.user_id_alt:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
@@ -127,6 +180,19 @@ class SessionSource:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
+        # Reconstruct MessageRef if present (backwards-compatible with old signal_react_to)
+        message_ref = None
+        mr_data = data.get("message_ref")
+        if mr_data:
+            context = mr_data.get("context", {})
+            thread_id = mr_data.get("thread_id")
+            platform = Platform(mr_data["platform"]) if isinstance(mr_data["platform"], str) else mr_data["platform"]
+            message_ref = MessageRef(
+                platform=platform,
+                platform_message_id=mr_data["platform_message_id"],
+                thread_id=thread_id or data.get("thread_id"),
+                context=context,
+            )
         return cls(
             platform=Platform(data["platform"]),
             chat_id=str(data["chat_id"]),
@@ -138,6 +204,7 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
+            message_ref=message_ref,
         )
     
 

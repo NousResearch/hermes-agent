@@ -38,6 +38,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
+from gateway.session import MessageRef
 
 logger = logging.getLogger(__name__)
 
@@ -478,6 +479,16 @@ class SignalAdapter(BasePlatformAdapter):
                 logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
                 return
 
+        # Parse timestamp from envelope data (milliseconds since epoch)
+        ts_ms = envelope_data.get("timestamp", 0)
+        if ts_ms:
+            try:
+                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            except (ValueError, OSError):
+                timestamp = datetime.now(tz=timezone.utc)
+        else:
+            timestamp = datetime.now(tz=timezone.utc)
+
         # Build chat info
         chat_id = sender if not is_group else f"group:{group_id}"
         chat_type = "group" if is_group else "dm"
@@ -512,7 +523,7 @@ class SignalAdapter(BasePlatformAdapter):
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
 
-        # Build session source
+         # Build session source
         source = self.build_source(
             chat_id=chat_id,
             chat_name=group_info.get("groupName") if group_info else sender_name,
@@ -521,12 +532,7 @@ class SignalAdapter(BasePlatformAdapter):
             user_name=sender_name or sender,
             user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None,
-            # Store signal-cli message targeting info for emoji reactions
-            signal_react_to={
-                "author": sender,
-                "timestamp": ts_ms,
-                "group_id": group_id if is_group else None,
-            },
+            message_ref=MessageRef.for_signal(sender, ts_ms, group_id),
         )
 
         # Determine message type from media
@@ -536,16 +542,6 @@ class SignalAdapter(BasePlatformAdapter):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
-
-        # Parse timestamp from envelope data (milliseconds since epoch)
-        ts_ms = envelope_data.get("timestamp", 0)
-        if ts_ms:
-            try:
-                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-            except (ValueError, OSError):
-                timestamp = datetime.now(tz=timezone.utc)
-        else:
-            timestamp = datetime.now(tz=timezone.utc)
 
         # Build and dispatch event
         event = MessageEvent(

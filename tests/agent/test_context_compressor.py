@@ -3439,3 +3439,145 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+# ── Progressive truncation & serialization budget ──────────────────────
+
+class TestBuildToolCallIndex:
+    """Tests for the shared _build_tool_call_index helper."""
+
+    def test_extracts_dict_tool_calls(self):
+        from agent.context_compressor import _build_tool_call_index
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}},
+                {"id": "c2", "function": {"name": "read_file", "arguments": '{"path":"a.py"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "file1\nfile2"},
+        ]
+        idx = _build_tool_call_index(messages)
+        assert idx["c1"] == ("terminal", '{"command":"ls"}')
+        assert idx["c2"] == ("read_file", '{"path":"a.py"}')
+        assert "c_missing" not in idx
+
+    def test_skips_non_assistant(self):
+        from agent.context_compressor import _build_tool_call_index
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        ]
+        assert _build_tool_call_index(messages) == {}
+
+    def test_empty_messages(self):
+        from agent.context_compressor import _build_tool_call_index
+        assert _build_tool_call_index([]) == {}
+
+
+class TestSerializeForSummaryProgressive:
+    """Tests for the refactored _serialize_for_summary with progressive truncation."""
+
+    @pytest.fixture()
+    def comp(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000):
+            return ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+    def _make_tool_pair(self, call_id, tool_name, args_json, result_content):
+        """Helper to create an assistant tool_call + tool result pair."""
+        return [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": call_id, "type": "function",
+                 "function": {"name": tool_name, "arguments": args_json}},
+            ]},
+            {"role": "tool", "tool_call_id": call_id, "content": result_content},
+        ]
+
+    def test_small_session_no_truncation(self, comp):
+        """Sessions under budget get full serialization for all turns."""
+        turns = [
+            {"role": "user", "content": "help me fix a bug"},
+            {"role": "assistant", "content": "I'll read the file first."},
+        ]
+        result = comp._serialize_for_summary(turns)
+        assert "help me fix a bug" in result
+        assert "read the file first" in result
+
+    def test_recent_turns_get_full_detail(self, comp):
+        """The most recent turns retain full content and tool args."""
+        turns = []
+        for i in range(4):
+            turns.append({"role": "user", "content": f"early user msg {i}"})
+            turns.append({"role": "assistant", "content": f"early assistant msg {i}"})
+
+        big_content = "RECENT_DETAIL_" + "x" * 2000
+        turns.append({"role": "user", "content": big_content})
+        turns.append({"role": "assistant", "content": "I will help with that."})
+
+        result = comp._serialize_for_summary(turns)
+        assert "RECENT_DETAIL_" in result
+
+    def test_earlier_tool_results_use_one_liner(self, comp):
+        """Tool results in the compact tier use _summarize_tool_result one-liners."""
+        turns = []
+        for i in range(8):
+            turns.extend(self._make_tool_pair(
+                f"c{i}", "terminal",
+                f'{{"command":"echo {i}"}}',
+                f'{{"exit_code":0,"stdout":"output {i}\\n"}}',
+            ))
+        turns.append({"role": "user", "content": "what happened?"})
+        turns.append({"role": "assistant", "content": "Here is the summary."})
+
+        result = comp._serialize_for_summary(turns)
+        assert "[terminal] ran `echo 0`" in result
+        assert "Here is the summary." in result
+
+    def test_budget_cap_trims_oldest_first(self, comp):
+        """When total exceeds _SERIALIZATION_BUDGET, oldest compact parts are dropped."""
+        from agent.context_compressor import _SERIALIZATION_BUDGET
+
+        turns = []
+        for i in range(200):
+            turns.append({"role": "user", "content": f"msg_{i}_" + "a" * 500})
+            turns.append({"role": "assistant", "content": f"reply_{i}_" + "b" * 500})
+
+        result = comp._serialize_for_summary(turns)
+
+        # Most recent messages must always be present
+        assert "reply_199_" in result
+        # Oldest compact-tier messages should be trimmed
+        assert "msg_0_" not in result
+
+    def test_empty_turns(self, comp):
+        """Empty turn list returns empty string."""
+        assert comp._serialize_for_summary([]) == ""
+
+    def test_single_turn(self, comp):
+        """Single turn gets full treatment (it's the only 'recent' turn)."""
+        result = comp._serialize_for_summary([{"role": "user", "content": "hello"}])
+        assert "[USER]: hello" in result
+
+    def test_compact_assistant_with_tool_calls_shows_signatures(self, comp):
+        """Compact tier assistant messages show tool call signatures only."""
+        turns = []
+        # First: an assistant with tool_calls (will land in compact tier)
+        turns.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "write_file", "arguments": '{"path":"a.py","content":"big content here"}'}},
+        ]})
+        turns.append({"role": "tool", "tool_call_id": "c1", "content": "ok"})
+        # 7 more early msgs to push the above into compact tier
+        for i in range(7):
+            turns.append({"role": "user", "content": f"do thing {i}"})
+        # Recent turns
+        turns.append({"role": "user", "content": "final question"})
+        turns.append({"role": "assistant", "content": "final answer"})
+
+        result = comp._serialize_for_summary(turns)
+        assert "write_file(" in result
+        assert "final answer" in result

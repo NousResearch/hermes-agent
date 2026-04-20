@@ -431,6 +431,21 @@ def _strip_image_parts_from_parts(parts: Any) -> Any:
             out.append(part)
     return out if had_image else None
 
+# Total character budget for the serialized summarizer input.
+# 80K chars ≈ 20K tokens — bounds compression API cost even for heavy
+# agentic sessions with hundreds of tool calls.  Without this cap,
+# _serialize_for_summary can emit 400K+ chars for a 100-message session,
+# feeding the auxiliary model 100K+ tokens to produce a 12K-token summary.
+_SERIALIZATION_BUDGET = 80_000
+
+# Per-message limits for the *compact* tier (earlier turns).
+# Recent turns keep the full _CONTENT_MAX / _TOOL_ARGS_MAX limits.
+_COMPACT_CONTENT_MAX = 500
+_COMPACT_USER_MAX = 300
+
+# Fraction of turns (from the end) that get full-detail serialization.
+_RECENT_TIER_RATIO = 0.30
+
 
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """Shrink long string values inside a tool-call arguments JSON blob while
@@ -706,6 +721,30 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         sv = str(v)[:40]
         first_arg += f" {k}={sv}"
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
+
+
+def _build_tool_call_index(messages: List[Dict[str, Any]]) -> Dict[str, tuple]:
+    """Map tool_call_id → (tool_name, arguments_json) from assistant messages.
+
+    Shared helper used by both the pruning pass and the summarizer
+    serialization, avoiding duplicate index-building code.
+    """
+    index: Dict[str, tuple] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                cid = tc.get("id", "")
+                fn = tc.get("function", {})
+                index[cid] = (fn.get("name", "unknown"), fn.get("arguments", ""))
+            else:
+                cid = getattr(tc, "id", "") or ""
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", "unknown") if fn else "unknown"
+                args_str = getattr(fn, "arguments", "") if fn else ""
+                index[cid] = (name, args_str)
+    return index
 
 
 class ContextCompressor(ContextEngine):
@@ -1348,20 +1387,7 @@ class ContextCompressor(ContextEngine):
         pruned = 0
 
         # Build index: tool_call_id -> (tool_name, arguments_json)
-        call_id_to_tool: Dict[str, tuple] = {}
-        for msg in result:
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        cid = tc.get("id", "")
-                        fn = tc.get("function", {})
-                        call_id_to_tool[cid] = (fn.get("name", "unknown"), fn.get("arguments", ""))
-                    else:
-                        cid = getattr(tc, "id", "") or ""
-                        fn = getattr(tc, "function", None)
-                        name = getattr(fn, "name", "unknown") if fn else "unknown"
-                        args_str = getattr(fn, "arguments", "") if fn else ""
-                        call_id_to_tool[cid] = (name, args_str)
+        call_id_to_tool = _build_tool_call_index(result)
 
         # Determine the prune boundary
         if protect_tail_tokens is not None and protect_tail_tokens > 0:
@@ -1507,73 +1533,165 @@ class ContextCompressor(ContextEngine):
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
 
-        Includes tool call arguments and result content (up to
-        ``_CONTENT_MAX`` chars per message) so the summarizer can preserve
-        specific details like file paths, commands, and outputs.
+        Uses **progressive truncation**: recent turns get full detail while
+        earlier turns are serialized in a compact format (one-liner tool
+        summaries, abbreviated content).  A total character budget
+        (``_SERIALIZATION_BUDGET``) caps the output so compression API cost
+        stays bounded even for sessions with hundreds of tool calls.
 
         All content is redacted before serialization to prevent secrets
         (API keys, tokens, passwords) from leaking into the summary that
         gets sent to the auxiliary model and persisted across compactions.
+
+        The two-tier approach preserves the information the summarizer needs
+        most — recent state, in-progress work, active decisions — while
+        giving it enough structural context about earlier work to write
+        accurate Completed Actions and Key Decisions sections.
         """
-        # Lazy import (matches title_generator.py) — agent_runtime_helpers
-        # pulls in heavy transitive imports we don't want at module load.
-        from agent.agent_runtime_helpers import strip_think_blocks
+        n = len(turns)
+        if n == 0:
+            return ""
 
-        parts = []
-        for msg in turns:
-            role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
-            content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
-            # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
-            # assistant content before it reaches the summarizer. Reasoning
-            # traces are transient scratch work — feeding them to the aux
-            # model wastes summarizer context and risks scratch-work
-            # conclusions being preserved as facts in the summary. The native
-            # ``reasoning`` message field is already excluded (only
-            # ``content`` is serialized); this closes the inline-tag path
-            # used when native thinking is disabled or the provider inlines
-            # traces into content.
-            if role == "assistant" and content:
-                content = strip_think_blocks(None, content)
+        # Split into compact (earlier) and full (recent) tiers.
+        recent_count = max(int(n * _RECENT_TIER_RATIO), 1)
+        split = n - recent_count
 
-            # Tool results: keep enough content for the summarizer
-            if role == "tool":
-                tool_id = msg.get("tool_call_id", "")
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
-                parts.append(f"[TOOL RESULT {tool_id}]: {content}")
-                continue
+        # Build tool_call_id → (name, args) index for compact-tier summaries.
+        call_index = _build_tool_call_index(turns)
 
-            # Assistant messages: include tool call names AND arguments
-            if role == "assistant":
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
-                tool_calls = msg.get("tool_calls", [])
-                if tool_calls:
-                    tc_parts = []
-                    for tc in tool_calls:
-                        if isinstance(tc, dict):
-                            fn = tc.get("function", {})
-                            name = fn.get("name", "?")
-                            args = redact_sensitive_text(fn.get("arguments", ""))
-                            # Truncate long arguments but keep enough for context
-                            if len(args) > self._TOOL_ARGS_MAX:
-                                args = args[:self._TOOL_ARGS_HEAD] + "..."
-                            tc_parts.append(f"  {name}({args})")
-                        else:
-                            fn = getattr(tc, "function", None)
-                            name = getattr(fn, "name", "?") if fn else "?"
-                            tc_parts.append(f"  {name}(...)")
-                    content += "\n[Tool calls:\n" + "\n".join(tc_parts) + "\n]"
-                parts.append(f"[ASSISTANT]: {content}")
-                continue
+        compact_parts: List[str] = []
+        full_parts: List[str] = []
 
-            # User and other roles
+        # ── Compact tier (earlier turns) ──────────────────────────────
+        for msg in turns[:split]:
+            compact_parts.append(self._serialize_msg_compact(msg, call_index))
+
+        # ── Full tier (recent turns) ──────────────────────────────────
+        for msg in turns[split:]:
+            full_parts.append(self._serialize_msg_full(msg))
+
+        # ── Apply total budget ────────────────────────────────────────
+        # Full-tier parts are never trimmed; only compact-tier parts are
+        # dropped from the front (oldest first) when over budget.
+        full_text = "\n\n".join(full_parts)
+        remaining = _SERIALIZATION_BUDGET - len(full_text)
+
+        if remaining > 0 and compact_parts:
+            # Drop oldest compact parts until within budget.
+            # Use index scan instead of repeated pop(0) for O(n) performance.
+            total_compact = sum(len(p) for p in compact_parts) + 2 * max(len(compact_parts) - 1, 0)
+            trim_idx = 0
+            while trim_idx < len(compact_parts) and total_compact > remaining:
+                total_compact -= len(compact_parts[trim_idx]) + 2
+                trim_idx += 1
+            compact_parts = compact_parts[trim_idx:]
+            if compact_parts:
+                return "\n\n".join(compact_parts) + "\n\n" + full_text
+        return full_text
+
+    def _serialize_msg_compact(
+        self, msg: Dict[str, Any], call_index: Dict[str, tuple],
+    ) -> str:
+        """Serialize a single message in compact form for the earlier tier.
+
+        Tool results become one-liner summaries via ``_summarize_tool_result``.
+        Assistant messages with tool calls become call-signature lists.
+        User/text messages are truncated aggressively.
+        """
+        role = msg.get("role", "unknown")
+        raw_content = msg.get("content") or ""
+        # Multimodal content blocks → extract text parts only
+        if isinstance(raw_content, list):
+            content = " ".join(
+                p.get("text", "") for p in raw_content if isinstance(p, dict)
+            )
+        else:
+            content = raw_content
+        content = redact_sensitive_text(content)
+        content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
+
+        if role == "tool":
+            tool_id = msg.get("tool_call_id", "")
+            tool_name, tool_args = call_index.get(tool_id, ("unknown", ""))
+            return _summarize_tool_result(tool_name, tool_args, content)
+
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls") or []
+            if tool_calls:
+                # Just the call signatures — tool name + brief first arg
+                sigs = []
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = fn.get("arguments", "")
+                        brief = args[:80] + "..." if len(args) > 80 else args
+                        sigs.append(f"{name}({brief})")
+                    else:
+                        fn = getattr(tc, "function", None)
+                        name = getattr(fn, "name", "?") if fn else "?"
+                        sigs.append(f"{name}(...)")
+                return f"[ASSISTANT]: {', '.join(sigs)}"
+            # Text-only assistant message
+            if len(content) > _COMPACT_CONTENT_MAX:
+                content = content[:_COMPACT_CONTENT_MAX] + "..."
+            return f"[ASSISTANT]: {content}"
+
+        # User and other roles
+        limit = _COMPACT_USER_MAX if role == "user" else _COMPACT_CONTENT_MAX
+        if len(content) > limit:
+            content = content[:limit] + "..."
+        return f"[{role.upper()}]: {content}"
+
+    def _serialize_msg_full(self, msg: Dict[str, Any]) -> str:
+        """Serialize a single message with full detail (current behavior).
+
+        Preserves up to ``_CONTENT_MAX`` chars per message body and
+        ``_TOOL_ARGS_MAX`` chars per tool-call argument string.
+        """
+        role = msg.get("role", "unknown")
+        raw_content = msg.get("content") or ""
+        # Multimodal content blocks → extract text parts only
+        if isinstance(raw_content, list):
+            content = " ".join(
+                p.get("text", "") for p in raw_content if isinstance(p, dict)
+            )
+        else:
+            content = raw_content
+        content = redact_sensitive_text(content)
+        content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
+
+        if role == "tool":
+            tool_id = msg.get("tool_call_id", "")
             if len(content) > self._CONTENT_MAX:
                 content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
-            parts.append(f"[{role.upper()}]: {content}")
+            return f"[TOOL RESULT {tool_id}]: {content}"
 
-        return "\n\n".join(parts)
+        if role == "assistant":
+            if len(content) > self._CONTENT_MAX:
+                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+            tool_calls = msg.get("tool_calls", [])
+            if tool_calls:
+                tc_parts = []
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = redact_sensitive_text(fn.get("arguments", ""))
+                        if len(args) > self._TOOL_ARGS_MAX:
+                            args = args[:self._TOOL_ARGS_HEAD] + "..."
+                        tc_parts.append(f"  {name}({args})")
+                    else:
+                        fn = getattr(tc, "function", None)
+                        name = getattr(fn, "name", "?") if fn else "?"
+                        tc_parts.append(f"  {name}(...)")
+                content += "\n[Tool calls:\n" + "\n".join(tc_parts) + "\n]"
+            return f"[ASSISTANT]: {content}"
+
+        # User and other roles
+        if len(content) > self._CONTENT_MAX:
+            content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+        return f"[{role.upper()}]: {content}"
 
     def _build_static_fallback_summary(
         self,

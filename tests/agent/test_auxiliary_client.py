@@ -650,6 +650,42 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
 
 
+def test_resolve_provider_client_gemini_openai_compat_keeps_real_api_key(monkeypatch):
+    """OpenAI-compatible Gemini endpoints must use the real API key directly.
+
+    Regression guard for the broken x-goog-api-key + api_key='not-used' shim
+    seen in installed Hermes builds (#12386). The local source should keep the
+    real key on the OpenAI client and avoid Gemini-native header swapping when
+    the configured base URL ends with /openai.
+    """
+    captured = {}
+
+    class DummyOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.api_key = kwargs.get("api_key")
+            self.base_url = kwargs.get("base_url")
+            self._default_headers = kwargs.get("default_headers")
+
+    monkeypatch.setattr("agent.auxiliary_client.OpenAI", DummyOpenAI)
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda provider: {
+            "api_key": "AIza-real-test-key",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        },
+    )
+
+    client, model = resolve_provider_client("gemini", model="gemini-2.5-flash")
+
+    assert model == "gemini-2.5-flash"
+    assert client.api_key == "AIza-real-test-key"
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert captured["api_key"] == "AIza-real-test-key"
+    assert captured["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert "default_headers" not in captured
+
+
 # ---------------------------------------------------------------------------
 # model="default" elimination (#7512)
 # ---------------------------------------------------------------------------

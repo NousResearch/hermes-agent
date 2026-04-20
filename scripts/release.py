@@ -297,6 +297,7 @@ AUTHOR_MAP = {
     "levantam.98.2324@gmail.com": "LVT382009",
     "zhurongcheng@rcrai.com": "heykb",
     "withapurpose37@gmail.com": "StefanIsMe",
+    "261797239+lumenradley@users.noreply.github.com": "lumenradley",
 }
 
 

@@ -5851,11 +5851,18 @@ class HermesCLI:
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import get_plugin_command_handler
+                import asyncio as _asyncio_plugin
+                import inspect as _inspect_plugin
                 plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
                 if plugin_handler:
                     user_args = cmd_original[len(base_cmd):].strip()
                     try:
                         result = plugin_handler(user_args)
+                        # Plugin handlers may be async def — detect and await them.
+                        # Without this, the raw coroutine object is printed and
+                        # RuntimeWarning: coroutine was never awaited is raised.
+                        if _inspect_plugin.isawaitable(result):
+                            result = _asyncio_plugin.run(result)
                         if result:
                             _cprint(str(result))
                     except Exception as e:

@@ -896,3 +896,92 @@ class TestPluginDispatchTool:
             result = ctx.dispatch_tool("fake", {})
 
         assert '"error"' in result
+
+
+# ---------------------------------------------------------------------------
+# Async plugin command handler tests (issue #12449)
+# ---------------------------------------------------------------------------
+
+class TestAsyncPluginCommandHandler:
+    """Test that async plugin command handlers are properly awaited."""
+
+    def test_sync_handler_returns_directly(self):
+        """A sync handler returns its value directly."""
+        from hermes_cli.plugins import PluginManager, PluginManifest
+
+        def sync_handler(args: str) -> str:
+            return f"Sync result: {args}"
+
+        mgr = PluginManager()
+        mgr._plugin_commands["sync-cmd"] = {
+            "handler": sync_handler,
+            "description": "Test sync command",
+            "plugin": "test",
+        }
+
+        handler = mgr._plugin_commands["sync-cmd"]["handler"]
+        result = handler("hello")
+        assert result == "Sync result: hello"
+
+    def test_async_handler_returns_coroutine(self):
+        """An async handler returns a coroutine (not the actual result)."""
+        import inspect
+        from hermes_cli.plugins import PluginManager, PluginManifest
+
+        async def async_handler(args: str) -> str:
+            return f"Async result: {args}"
+
+        mgr = PluginManager()
+        mgr._plugin_commands["async-cmd"] = {
+            "handler": async_handler,
+            "description": "Test async command",
+            "plugin": "test",
+        }
+
+        handler = mgr._plugin_commands["async-cmd"]["handler"]
+        result = handler("hello")
+        # Without awaiting, this is a coroutine object
+        assert inspect.isawaitable(result)
+        # Clean up the coroutine to avoid RuntimeWarning
+        result.close()
+
+    def test_async_handler_awaited_with_asyncio_run(self):
+        """asyncio.run() properly awaits an async handler."""
+        import asyncio
+        import inspect
+        from hermes_cli.plugins import PluginManager, PluginManifest
+
+        async def async_handler(args: str) -> str:
+            return f"Async result: {args}"
+
+        mgr = PluginManager()
+        mgr._plugin_commands["async-cmd"] = {
+            "handler": async_handler,
+            "description": "Test async command",
+            "plugin": "test",
+        }
+
+        handler = mgr._plugin_commands["async-cmd"]["handler"]
+        result = handler("hello")
+        # Simulate what the fix does
+        if inspect.isawaitable(result):
+            result = asyncio.run(result)
+        assert result == "Async result: hello"
+
+    def test_inspect_isawaitable_detects_coroutine(self):
+        """inspect.isawaitable correctly identifies coroutines."""
+        import inspect
+
+        async def my_async_func():
+            return "done"
+
+        coro = my_async_func()
+        assert inspect.isawaitable(coro)
+        # Clean up
+        coro.close()
+
+        def my_sync_func():
+            return "done"
+
+        result = my_sync_func()
+        assert not inspect.isawaitable(result)

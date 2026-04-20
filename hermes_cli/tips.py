@@ -245,7 +245,7 @@ TIPS = [
     "Three plugin types: general (tools/hooks), memory providers, and context engines.",
     "hermes plugins install owner/repo installs plugins directly from GitHub.",
     "8 external memory providers available: Honcho, OpenViking, Mem0, Hindsight, and more.",
-    "Plugin hooks include pre_tool_call, post_tool_call, pre_llm_call, post_llm_call, and transform_terminal_output for foreground terminal output canonicalization.",
+    "Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization.",
 
     # --- Miscellaneous ---
     "Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes.",

@@ -222,6 +222,9 @@ def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
     from hermes_cli.config import load_config, save_config
 
+    config = load_config()
+    current_provider = (config.get("memory") or {}).get("provider", "")
+
     providers = _get_available_providers()
 
     if not providers:
@@ -236,9 +239,16 @@ def cmd_setup(args) -> None:
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
     builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
 
-    config = load_config()
+    # Default to currently configured provider if set, otherwise Built-in only
+    default_idx = builtin_idx
+    if current_provider:
+        for i, (name, _, _) in enumerate(providers):
+            if name == current_provider:
+                default_idx = i
+                break
+
+    selected = _curses_select("Memory provider setup", items, default=default_idx)
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 

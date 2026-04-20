@@ -122,6 +122,38 @@ def test_fetch_ai_gateway_models_tags_free_models():
     assert by_id[second_id] == "free"
 
 
+def test_free_moonshot_model_auto_promoted_to_top_even_if_not_curated():
+    _reset_caches()
+    first_curated = AI_GATEWAY_MODELS[0][0]
+    unlisted_free_moonshot = "moonshotai/kimi-coder-free-preview"
+    payload = {
+        "data": [
+            {"id": first_curated, "pricing": {"input": "0.001", "output": "0.002"}},
+            {"id": unlisted_free_moonshot, "pricing": {"input": "0", "output": "0"}},
+        ]
+    }
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
+        result = fetch_ai_gateway_models(force_refresh=True)
+
+    assert result[0] == (unlisted_free_moonshot, "recommended")
+    assert any(mid == first_curated for mid, _ in result)
+
+
+def test_paid_moonshot_does_not_get_auto_promoted():
+    _reset_caches()
+    first_curated = AI_GATEWAY_MODELS[0][0]
+    payload = {
+        "data": [
+            {"id": first_curated, "pricing": {"input": "0.001", "output": "0.002"}},
+            {"id": "moonshotai/some-paid-variant", "pricing": {"input": "0.001", "output": "0.002"}},
+        ]
+    }
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
+        result = fetch_ai_gateway_models(force_refresh=True)
+
+    assert result[0][0] == first_curated
+
+
 def test_fetch_ai_gateway_models_falls_back_on_error():
     _reset_caches()
     with patch("urllib.request.urlopen", side_effect=OSError("network")):

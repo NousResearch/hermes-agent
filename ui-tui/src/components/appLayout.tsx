@@ -188,6 +188,7 @@ const ComposerPane = memo(function ComposerPane({
             busy={ui.busy}
             cols={composer.cols}
             cwdLabel={status.cwdLabel}
+            lastUserAt={status.lastUserAt}
             model={ui.info?.model?.split('/').pop() ?? ''}
             sessionStartedAt={status.sessionStartedAt}
             showCost={ui.showCost}

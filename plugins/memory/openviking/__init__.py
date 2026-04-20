@@ -129,6 +129,16 @@ class _VikingClient:
         except Exception:
             return False
 
+    def delete(self, path: str, **kwargs) -> dict:
+        resp = self._httpx.delete(
+            self._url(path),
+            headers=self._headers(),
+            timeout=_TIMEOUT,
+            **kwargs,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas
@@ -232,18 +242,74 @@ ADD_RESOURCE_SCHEMA = {
     "description": (
         "Add a URL or document to the OpenViking knowledge base. "
         "Supports web pages, GitHub repos, PDFs, markdown, code files. "
-        "The system automatically parses, indexes, and generates summaries."
+        "The system automatically parses, indexes, and generates summaries. "
+        "For local files, use file_path to upload first via temp_upload, "
+        "then add to the specified viking URI."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "url": {"type": "string", "description": "URL or path of the resource to add."},
+            "url": {"type": "string", "description": "Remote URL of the resource to add (HTTP(S), GitHub, etc.)."},
+            "file_path": {
+                "type": "string",
+                "description": (
+                    "Local file path to upload. The file is sent via temp_upload first, "
+                    "then added to the viking URI specified by 'to'. "
+                    "Use this for local markdown or document files."
+                ),
+            },
+            "to": {
+                "type": "string",
+                "description": (
+                    "Target viking URI for the resource "
+                    "(e.g., 'viking://resources/my_docs/'). "
+                    "If not specified, an auto-generated URI is used."
+                ),
+            },
+            "parent": {
+                "type": "string",
+                "description": (
+                    "Parent URI under which the resource will be stored. "
+                    "Cannot be used together with 'to'."
+                ),
+            },
             "reason": {
                 "type": "string",
                 "description": "Why this resource is relevant (improves search).",
             },
+            "wait": {
+                "type": "boolean",
+                "description": "Wait for async processing to complete before returning (default: False).",
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Timeout in seconds when wait=True.",
+            },
         },
-        "required": ["url"],
+    },
+}
+
+DELETE_RESOURCE_SCHEMA = {
+    "name": "viking_delete_resource",
+    "description": (
+        "Delete a resource (file or directory) from the OpenViking knowledge base. "
+        "Use viking:// URI to specify the target. "
+        "Set recursive=True to delete a directory and all its contents. "
+        "WARNING: this operation is irreversible."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "uri": {
+                "type": "string",
+                "description": "Viking URI of the resource to delete (e.g., 'viking://resources/my_docs/file.md').",
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "Delete directory and all its contents. Default: False.",
+            },
+        },
+        "required": ["uri"],
     },
 }
 
@@ -350,7 +416,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 f"Active. Endpoint: {self._endpoint}\n"
                 "Use viking_search to find information, viking_read for details "
                 "(abstract/overview/full), viking_browse to explore.\n"
-                "Use viking_remember to store facts, viking_add_resource to index URLs/docs."
+                "Use viking_remember to store facts, viking_add_resource to index local/remote files, viking_delete_resource to remove resources."
             )
         except Exception as e:
             logger.warning("OpenViking system_prompt_block failed: %s", e)
@@ -358,7 +424,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "# OpenViking Knowledge Base\n"
                 f"Active. Endpoint: {self._endpoint}\n"
                 "Use viking_search, viking_read, viking_browse, "
-                "viking_remember, viking_add_resource."
+                "viking_remember, viking_add_resource, viking_delete_resource."
             )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -495,7 +561,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         t.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
+        return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA, DELETE_RESOURCE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
@@ -512,6 +578,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return self._tool_remember(args)
             elif tool_name == "viking_add_resource":
                 return self._tool_add_resource(args)
+            elif tool_name == "viking_delete_resource":
+                return self._tool_delete_resource(args)
             return tool_error(f"Unknown tool: {tool_name}")
         except Exception as e:
             return tool_error(str(e))
@@ -648,20 +716,88 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def _tool_add_resource(self, args: dict) -> str:
         url = args.get("url", "")
-        if not url:
-            return tool_error("url is required")
+        file_path = args.get("file_path", "")
+        to_uri = args.get("to", "")
+        parent = args.get("parent", "")
+        reason = args.get("reason", "")
+        wait = args.get("wait", False)
+        timeout = args.get("timeout")
 
-        payload: Dict[str, Any] = {"path": url}
-        if args.get("reason"):
-            payload["reason"] = args["reason"]
+        if not url and not file_path:
+            return tool_error("url or file_path is required")
+
+        # Build the resources payload
+        payload: Dict[str, Any] = {}
+        if url:
+            payload["path"] = url
+        if to_uri:
+            payload["to"] = to_uri
+        if parent:
+            payload["parent"] = parent
+        if reason:
+            payload["reason"] = reason
+        if wait:
+            payload["wait"] = True
+        if timeout is not None:
+            payload["timeout"] = timeout
+
+        # Local file upload: need to temp_upload first
+        if file_path:
+            if not os.path.isfile(file_path):
+                return tool_error(f"file_path not found: {file_path}")
+
+            try:
+                with open(file_path, "rb") as f:
+                    file_content = f.read()
+
+                # Multipart upload via httpx directly (temp_upload is multipart/form-data)
+                httpx = self._client._httpx
+                headers = self._client._headers()
+                # temp_upload doesn't want Content-Type so httpx can set the boundary
+                headers.pop("Content-Type", None)
+
+                files = {"file": (os.path.basename(file_path), file_content)}
+                resp = httpx.post(
+                    f"{self._client._endpoint}/api/v1/resources/temp_upload",
+                    headers=headers,
+                    files=files,
+                    timeout=_TIMEOUT,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+                temp_file_id = result.get("result", {}).get("temp_file_id")
+                if not temp_file_id:
+                    return tool_error(f"temp_upload failed: {result}")
+                payload["temp_file_id"] = temp_file_id
+                # When using temp_file_id, path field is not needed
+                payload.pop("path", None)
+            except Exception as e:
+                return tool_error(f"temp_upload failed: {e}")
 
         resp = self._client.post("/api/v1/resources", payload)
         result = resp.get("result", {})
 
+        root_uri = result.get("root_uri", "") or result.get("uri", "")
         return json.dumps({
             "status": "added",
-            "root_uri": result.get("root_uri", ""),
+            "root_uri": root_uri,
             "message": "Resource queued for processing. Use viking_search after a moment to find it.",
+        }, ensure_ascii=False)
+
+    def _tool_delete_resource(self, args: dict) -> str:
+        uri = args.get("uri", "")
+        if not uri:
+            return tool_error("uri is required")
+
+        recursive = bool(args.get("recursive", False))
+
+        resp = self._client.delete("/api/v1/fs", params={"uri": uri, "recursive": recursive})
+        result = resp.get("result", {})
+
+        return json.dumps({
+            "status": "deleted",
+            "uri": result.get("uri", uri),
+            "message": "Resource deleted successfully.",
         }, ensure_ascii=False)
 
 

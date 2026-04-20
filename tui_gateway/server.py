@@ -12450,7 +12450,7 @@ def _list_repo_files(root: str) -> list[str]:
             creationflags=_creationflags,
         )
         if top_result.returncode == 0:
-            top = top_result.stdout.decode("utf-8", "replace").strip()
+            top = os.fsdecode(top_result.stdout).strip()
             list_result = subprocess.run(
                 [
                     "git",
@@ -12469,7 +12469,7 @@ def _list_repo_files(root: str) -> list[str]:
                 creationflags=_creationflags,
             )
             if list_result.returncode == 0:
-                for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
+                for p in os.fsdecode(list_result.stdout).split("\0"):
                     if not p:
                         continue
                     rel = os.path.relpath(os.path.join(top, p), root).replace(

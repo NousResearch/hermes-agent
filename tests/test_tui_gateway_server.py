@@ -17,6 +17,24 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
+def test_tui_repo_file_listing_round_trips_non_utf8_git_paths(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    bad_path = os.fsencode(repo) + b"/bad-\xff.txt"
+    fd = os.open(bad_path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, b"x")
+    finally:
+        os.close(fd)
+
+    with server._fuzzy_cache_lock:
+        server._fuzzy_cache.pop(str(repo), None)
+    files = server._list_repo_files(str(repo))
+
+    assert any(os.fsencode(path) == b"bad-\xff.txt" for path in files)
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -1660,11 +1660,14 @@ class SlashCommandCompleter(Completer):
                 continue
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd, encoding="utf-8", errors="replace",
+                    cmd,
+                    capture_output=True,
+                    text=False,
+                    timeout=2,
+                    cwd=cwd,
                 )
-                if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
-                    raw = proc.stdout.strip().split("\n")
+                raw = _decode_fs_lines(proc.stdout)
+                if proc.returncode == 0 and raw:
                     # Store relative paths
                     for p in raw[:5000]:
                         rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
@@ -2130,6 +2133,11 @@ class SlashCommandAutoSuggest(AutoSuggest):
         if self._history:
             return self._history.get_suggestion(buffer, document)
         return None
+
+
+def _decode_fs_lines(data: bytes) -> list[str]:
+    """Decode subprocess file listings using filesystem semantics."""
+    return [os.fsdecode(line) for line in data.splitlines() if line]
 
 
 def _file_size_label(path: str) -> str:

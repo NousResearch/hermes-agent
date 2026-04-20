@@ -259,6 +259,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "NIMBLE_API_KEY",
     )
 
     def setup_method(self):
@@ -324,6 +325,25 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_nimble(self):
+        """web.backend=nimble in config → 'nimble' regardless of other keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "nimble"}):
+            assert _get_backend() == "nimble"
+
+    def test_config_nimble_overrides_env_keys(self):
+        """web.backend=nimble in config → 'nimble' even if Firecrawl key set."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "nimble"}), \
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "nimble"
+
+    def test_config_nimble_case_insensitive(self):
+        """web.backend=Nimble (mixed case) → 'nimble'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "Nimble"}):
+            assert _get_backend() == "nimble"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -368,6 +388,27 @@ class TestBackendSelection:
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "PARALLEL_API_KEY": "par-test"}):
             # Parallel + no Firecrawl → parallel
             assert _get_backend() == "parallel"
+
+    def test_fallback_nimble_only_key(self):
+        """Only NIMBLE_API_KEY set → 'nimble'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"NIMBLE_API_KEY": "nim-test"}):
+            assert _get_backend() == "nimble"
+
+    def test_fallback_nimble_with_firecrawl_prefers_firecrawl(self):
+        """Nimble + Firecrawl, no config → 'firecrawl' (Nimble appended last)."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"NIMBLE_API_KEY": "nim-test", "FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "firecrawl"
+
+    def test_fallback_nimble_with_exa_prefers_exa(self):
+        """Nimble + Exa, no config → 'exa' (Nimble is the lowest-priority fallback)."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"NIMBLE_API_KEY": "nim-test", "EXA_API_KEY": "exa-test"}):
+            assert _get_backend() == "exa"
 
     def test_fallback_both_keys_defaults_to_firecrawl(self):
         """Both keys set, no config → 'firecrawl' (backward compat)."""
@@ -489,6 +530,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "NIMBLE_API_KEY",
     )
 
     def setup_method(self):
@@ -529,6 +571,11 @@ class TestCheckWebApiKey:
 
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_nimble_key_only(self):
+        with patch.dict(os.environ, {"NIMBLE_API_KEY": "nim-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 

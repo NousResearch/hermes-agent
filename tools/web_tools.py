@@ -88,7 +88,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "nimble"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +99,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("nimble", _has_env("NIMBLE_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,6 +118,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "nimble":
+        return _has_env("NIMBLE_API_KEY")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -187,6 +190,7 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "NIMBLE_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
     ]
@@ -279,6 +283,47 @@ def _get_async_parallel_client():
             )
         _async_parallel_client = AsyncParallel(api_key=api_key)
     return _async_parallel_client
+
+# ─── Nimble Client ───────────────────────────────────────────────────────────
+
+_nimble_client = None
+_async_nimble_client = None
+
+
+def _get_nimble_client():
+    """Get or create the Nimble sync client (lazy initialization).
+
+    Requires NIMBLE_API_KEY environment variable.
+    """
+    from nimble_python import Nimble
+    global _nimble_client
+    if _nimble_client is None:
+        api_key = os.getenv("NIMBLE_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "NIMBLE_API_KEY environment variable not set. "
+                "Get your API key at https://online.nimbleway.com"
+            )
+        _nimble_client = Nimble(api_key=api_key)
+    return _nimble_client
+
+
+def _get_async_nimble_client():
+    """Get or create the Nimble async client (lazy initialization).
+
+    Requires NIMBLE_API_KEY environment variable.
+    """
+    from nimble_python import AsyncNimble
+    global _async_nimble_client
+    if _async_nimble_client is None:
+        api_key = os.getenv("NIMBLE_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "NIMBLE_API_KEY environment variable not set. "
+                "Get your API key at https://online.nimbleway.com"
+            )
+        _async_nimble_client = AsyncNimble(api_key=api_key)
+    return _async_nimble_client
 
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
@@ -1032,6 +1077,162 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+# ─── Nimble Search & Extract Helpers ──────────────────────────────────────────
+
+_NIMBLE_BATCH_POLL_INTERVAL = 2.0
+_NIMBLE_BATCH_TIMEOUT = 300.0
+
+
+def _as_plain_dict(obj: Any) -> Dict[str, Any]:
+    """Return ``obj`` as a plain dict, converting SDK / Pydantic models."""
+    if isinstance(obj, dict):
+        return obj
+    plain = _to_plain_object(obj)
+    return plain if isinstance(plain, dict) else {}
+
+
+def _nimble_error_doc(url: str, error: str) -> Dict[str, Any]:
+    """Build the standard failed-extract record for a URL."""
+    return {
+        "url": url,
+        "title": "",
+        "content": "",
+        "error": error,
+        "metadata": {"sourceURL": url},
+    }
+
+
+def _nimble_search(query: str, limit: int = 5) -> dict:
+    """Search using the Nimble SDK and return results in the standard format."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    logger.info("Nimble search: '%s' (limit=%d)", query, limit)
+    response = _get_nimble_client().search(
+        query=query,
+        max_results=min(limit, 20),
+        search_depth="lite",
+    )
+    return _normalize_nimble_search_results(response)
+
+
+def _normalize_nimble_search_results(response: Any) -> dict:
+    """Normalize Nimble search response → {success, data: {web: [...]}}."""
+    plain = _as_plain_dict(response)
+    raw_results = plain.get("results") or (plain.get("data") or {}).get("results") or []
+
+    web_results: List[Dict[str, Any]] = []
+    for i, result in enumerate(raw_results):
+        result = _as_plain_dict(result)
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("description", "") or result.get("snippet", ""),
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _normalize_nimble_extract_result(result: Any, fallback_url: str = "") -> Dict[str, Any]:
+    """Normalize a Nimble extract or task-results payload to the shared shape.
+
+    Nimble returns ``{url, data: {markdown, html, plain_text, title, ...}, ...}``
+    for extract; per the playbook ``data.markdown`` is the clean body content.
+    """
+    plain = _as_plain_dict(result)
+    data = plain.get("data") if isinstance(plain.get("data"), dict) else {}
+    url = plain.get("url") or data.get("url") or fallback_url
+    title = data.get("title") or plain.get("title") or ""
+    content = data.get("markdown") or data.get("plain_text") or data.get("html") or ""
+    return {
+        "url": url,
+        "title": title,
+        "content": content,
+        "raw_content": content,
+        "metadata": {"sourceURL": url, "title": title},
+    }
+
+
+async def _nimble_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the Nimble SDK.
+
+    Tiered for cost/latency:
+      - len(urls) == 1 → single AsyncNimble.extract() call (no polling)
+      - len(urls) >= 2 → AsyncNimble.extract_batch() + poll batches.progress
+                         + fetch results via tasks.results
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [_nimble_error_doc(u, "Interrupted") for u in urls]
+    if not urls:
+        return []
+
+    client = _get_async_nimble_client()
+
+    if len(urls) == 1:
+        url = urls[0]
+        logger.info("Nimble extract (single): %s", url)
+        try:
+            resp = await client.extract(url=url, formats=["markdown"])
+            return [_normalize_nimble_extract_result(resp, fallback_url=url)]
+        except Exception as e:
+            logger.warning("Nimble extract failed for %s: %s", url, e)
+            return [_nimble_error_doc(url, str(e))]
+
+    logger.info("Nimble extract (batch): %d URL(s)", len(urls))
+    try:
+        batch_resp = await client.extract_batch(
+            inputs=[{"url": u} for u in urls],
+            shared_inputs={"formats": ["markdown"]},
+        )
+    except Exception as e:
+        logger.warning("Nimble extract_batch submit failed: %s", e)
+        return [_nimble_error_doc(u, str(e)) for u in urls]
+
+    batch = _as_plain_dict(batch_resp)
+    batch_id = batch.get("batch_id")
+    tasks = batch.get("tasks") or []
+
+    if not batch_id:
+        logger.error("Nimble extract_batch returned no batch_id")
+        return [_nimble_error_doc(u, "Nimble batch submission failed") for u in urls]
+
+    deadline = asyncio.get_event_loop().time() + _NIMBLE_BATCH_TIMEOUT
+    while True:
+        if is_interrupted():
+            return [_nimble_error_doc(u, "Interrupted") for u in urls]
+        try:
+            progress = await client.batches.progress(batch_id=batch_id)
+        except Exception as e:
+            logger.warning("Nimble batch progress poll failed: %s", e)
+            return [_nimble_error_doc(u, f"batch poll failed: {e}") for u in urls]
+
+        if _as_plain_dict(progress).get("completed"):
+            break
+        if asyncio.get_event_loop().time() > deadline:
+            logger.warning("Nimble batch %s timed out after %.0fs", batch_id, _NIMBLE_BATCH_TIMEOUT)
+            return [_nimble_error_doc(u, "Nimble batch timed out") for u in urls]
+        await asyncio.sleep(_NIMBLE_BATCH_POLL_INTERVAL)
+
+    async def _fetch_task(task: Any) -> Dict[str, Any]:
+        t = _as_plain_dict(task)
+        task_id = t.get("id")
+        url = (t.get("input") or {}).get("url", "") if isinstance(t.get("input"), dict) else ""
+        if t.get("state") == "error":
+            return _nimble_error_doc(url, t.get("error") or "extraction failed")
+        if not task_id:
+            return _nimble_error_doc(url, "missing task id")
+        try:
+            result = await client.tasks.results(task_id=task_id)
+            return _normalize_nimble_extract_result(result, fallback_url=url)
+        except Exception as e:
+            return _nimble_error_doc(url, f"task fetch failed: {e}")
+
+    return await asyncio.gather(*[_fetch_task(t) for t in tasks])
+
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -1111,6 +1312,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "include_images": False,
             })
             response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "nimble":
+            response_data = _nimble_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -1252,6 +1462,8 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "nimble":
+                results = await _nimble_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1922,9 +2134,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "nimble"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "nimble"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1959,6 +2171,8 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "nimble":
+            print("   Using Nimble API (https://nimbleway.com)")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
@@ -1971,7 +2185,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, NIMBLE_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

@@ -236,6 +236,15 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Nimble",
+                "badge": "paid",
+                "tag": "Web data: search and extract (single + batch)",
+                "web_backend": "nimble",
+                "env_vars": [
+                    {"key": "NIMBLE_API_KEY", "prompt": "Nimble API key", "url": "https://online.nimbleway.com"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",

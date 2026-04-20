@@ -334,8 +334,14 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
+        quoted_cwd = (
+            shlex.quote(self.cwd)
+            if self.cwd != "~" and not self.cwd.startswith("~/")
+            else self.cwd
+        )
         # Full capture: env vars, functions (filtered), aliases, shell options.
         bootstrap = (
+            f"cd {quoted_cwd} || exit 126\n"
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
             f"alias -p >> {self._snapshot_path}\n"
@@ -760,4 +766,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

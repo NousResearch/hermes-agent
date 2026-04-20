@@ -130,6 +130,29 @@ class TestEmbedStdinHeredoc:
 
 
 class TestInitSessionFailure:
+    def test_bootstrap_cds_into_configured_cwd_before_snapshot(self):
+        env = _TestableEnv(cwd="/tmp/project")
+
+        calls = []
+
+        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+            calls.append({"cmd": cmd, "login": login, "timeout": timeout})
+            return MagicMock()
+
+        def mock_wait_for_process(proc, timeout=None):
+            return {"output": f"\n{env._cwd_marker}/tmp/project{env._cwd_marker}\n"}
+
+        env._run_bash = mock_run_bash
+        env._wait_for_process = mock_wait_for_process
+
+        env.init_session()
+
+        assert len(calls) == 1
+        assert calls[0]["login"] is True
+        assert "cd /tmp/project || exit 126" in calls[0]["cmd"]
+        assert env.cwd == "/tmp/project"
+        assert env._snapshot_ready is True
+
     def test_snapshot_ready_false_on_failure(self):
         env = _TestableEnv()
 

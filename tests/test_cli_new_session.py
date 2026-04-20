@@ -71,6 +71,19 @@ class _FakeAgent:
             self.context_compressor.last_total_tokens = 0
             self.context_compressor.compression_count = 0
             self.context_compressor._context_probed = False
+        # Mirror real AIAgent: todo store is session-scoped and reset here.
+        self._todo_store = TodoStore()
+
+    def prepare_for_session_switch(
+        self, session_id, *, flushed_db_idx=0, session_start=None
+    ):
+        """Mirror the real AIAgent.prepare_for_session_switch()."""
+        self.session_id = session_id
+        if session_start is not None:
+            self.session_start = session_start
+        self.reset_session_state()
+        self._last_flushed_db_idx = flushed_db_idx
+        self._invalidate_system_prompt()
 
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):

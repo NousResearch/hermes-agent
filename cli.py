@@ -2745,19 +2745,11 @@ class HermesCLI(CLICommandHandlersMixin):
         self._resumed = False
 
         if self.agent:
-            self.agent.session_id = self.session_id
-            self.agent.session_start = self.session_start
-            self.agent.reset_session_state()
-            if hasattr(self.agent, "_last_flushed_db_idx"):
-                self.agent._last_flushed_db_idx = 0
-            if hasattr(self.agent, "_todo_store"):
-                try:
-                    from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
-                except Exception:
-                    pass
-            if hasattr(self.agent, "_invalidate_system_prompt"):
-                self.agent._invalidate_system_prompt()
+            self.agent.prepare_for_session_switch(
+                self.session_id,
+                flushed_db_idx=0,
+                session_start=self.session_start,
+            )
 
             if self._session_db:
                 try:

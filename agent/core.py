@@ -1154,7 +1154,41 @@ class AIAgent:
             self.context_compressor._context_probe_persistable = False
             # Iterative summary from previous session must not bleed into new one (#2635)
             self.context_compressor._previous_summary = None
-    
+
+        # Todo list: in-memory planning state is per-session; drop the previous
+        # session's items so a fresh session starts with an empty planner.
+        # Keeps the old layering violation from the CLI (which used to poke
+        # self.agent._todo_store directly) confined to the agent itself.
+        from tools.todo_tool import TodoStore
+        self._todo_store = TodoStore()
+
+    def prepare_for_session_switch(
+        self,
+        session_id: str,
+        *,
+        flushed_db_idx: int = 0,
+        session_start: Optional[datetime] = None,
+    ) -> None:
+        """Atomically re-point the agent at a different session.
+
+        Called by the CLI (on /new, /reset, /resume, etc.) to switch the
+        agent to another session without destroying the instance. Handles
+        session_id assignment, per-session state reset (token counters,
+        compressor, todo store), DB-flush-cursor alignment, and system-
+        prompt-cache invalidation so the next turn rebuilds with the new
+        session's context.
+
+        This is the public replacement for the CLI pattern that used to
+        reach into private attributes (``self.agent._todo_store``,
+        ``self.agent._last_flushed_db_idx``, ``self.agent._invalidate_system_prompt``).
+        """
+        self.session_id = session_id
+        if session_start is not None:
+            self.session_start = session_start
+        self.reset_session_state()
+        self._last_flushed_db_idx = flushed_db_idx
+        self._invalidate_system_prompt()
+
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
 

@@ -261,18 +261,10 @@ class CLICommandHandlersMixin:
     
             # Sync the agent if already initialised
             if self.agent:
-                self.agent.session_id = target_id
-                self.agent.reset_session_state()
-                if hasattr(self.agent, "_last_flushed_db_idx"):
-                    self.agent._last_flushed_db_idx = len(self.conversation_history)
-                if hasattr(self.agent, "_todo_store"):
-                    try:
-                        from tools.todo_tool import TodoStore
-                        self.agent._todo_store = TodoStore()
-                    except Exception:
-                        pass
-                if hasattr(self.agent, "_invalidate_system_prompt"):
-                    self.agent._invalidate_system_prompt()
+                self.agent.prepare_for_session_switch(
+                    target_id,
+                    flushed_db_idx=len(self.conversation_history),
+                )
     
             title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
             msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])

@@ -1381,6 +1381,178 @@ class TestListSessionsRich:
         assert "Line one Line two" in sessions[0]["preview"]
 
 
+class TestCompressionChainProjection:
+    """Tests for lineage-aware list_sessions_rich — compressed conversations
+    surface as their live continuation tip, not the dead parent root.
+    """
+
+    def _build_compression_chain(self, db, t0: float):
+        """Helper: builds root -> delegate -> compression-child -> tip chain.
+
+        Returns (root_id, delegate_id, mid_id, tip_id).
+        """
+        import time as _time
+        # Root that gets compressed
+        db.create_session("root1", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+        db.append_message("root1", "user", "help me refactor auth")
+
+        # Delegate subagent spawned while root1 was live (before it ended)
+        db.create_session("delegate1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=? WHERE id=?",
+            (t0 + 600, t0 + 650, "delegate1"),
+        )
+        db.append_message("delegate1", "user", "delegate task")
+
+        # root1 compressed at t0+1800
+        t_compress_root = t0 + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_root, "compression", "root1"),
+        )
+
+        # Continuation mid created 1s after parent ended
+        db.create_session("mid1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t_compress_root + 1, "mid1"),
+        )
+        db.append_message("mid1", "user", "continuing")
+
+        # mid1 also compressed
+        t_compress_mid = t_compress_root + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_mid, "compression", "mid1"),
+        )
+
+        # Tip — latest continuation
+        db.create_session("tip1", "cli", parent_session_id="mid1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t_compress_mid + 1, "tip1"),
+        )
+        db.append_message("tip1", "user", "latest message")
+
+        db._conn.commit()
+        return ("root1", "delegate1", "mid1", "tip1")
+
+    def test_get_compression_tip_walks_full_chain(self, db):
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        assert db.get_compression_tip("root1") == "tip1"
+        assert db.get_compression_tip("mid1") == "tip1"
+        assert db.get_compression_tip("tip1") == "tip1"
+
+    def test_get_compression_tip_returns_self_for_uncompressed(self, db):
+        db.create_session("solo", "cli")
+        assert db.get_compression_tip("solo") == "solo"
+
+    def test_get_compression_tip_skips_delegate_children(self, db):
+        """Delegate subagents have parent_session_id set but were created
+        BEFORE the parent ended. They must not be followed as compression
+        continuations — the started_at >= ended_at guard handles this.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        # delegate1 is a child of root1 but NOT a compression continuation.
+        # root1's tip must be tip1 (via mid1), not delegate1.
+        assert db.get_compression_tip("root1") == "tip1"
+
+    def test_list_surfaces_tip_for_compressed_root(self, db):
+        """The list must show the tip's id/message_count/preview in place of
+        the root row, so users can see and resume the live conversation.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        # Add an uncompressed root for comparison.
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids = [s["id"] for s in sessions]
+        # Only top-level conversations appear: tip1 (projected from root1) + solo.
+        # Delegate children, mid1, and the dead root1 must NOT be in the list.
+        assert "tip1" in ids
+        assert "solo" in ids
+        assert "root1" not in ids
+        assert "mid1" not in ids
+        assert "delegate1" not in ids
+
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        # The row surfaces the tip's identity but preserves the root's start
+        # timestamp for stable ordering and lineage tracking.
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["preview"].startswith("latest message")
+        assert tip_row["ended_at"] is None  # tip is still live
+        assert tip_row["end_reason"] is None
+
+    def test_list_without_projection_returns_raw_root(self, db):
+        """project_compression_tips=False returns the raw parent-NULL root
+        rows — useful for admin/debug UIs.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        sessions = db.list_sessions_rich(
+            source="cli", limit=20, project_compression_tips=False
+        )
+        ids = [s["id"] for s in sessions]
+        assert "root1" in ids
+        assert "tip1" not in ids
+
+        root_row = next(s for s in sessions if s["id"] == "root1")
+        assert root_row["end_reason"] == "compression"
+        assert "_lineage_root_id" not in root_row
+
+    def test_list_preserves_sort_by_started_at(self, db):
+        """Chronological ordering uses the ROOT's started_at (conversation
+        start), not the tip's. This keeps lineage entries stable in the list
+        even as new compressions push the tip forward in time.
+        """
+        import time as _time
+        t0 = _time.time() - 3600
+        self._build_compression_chain(db, t0)
+
+        # Create a newer standalone session that should sort above the lineage
+        # if we used tip.started_at, but below if we correctly use root.started_at.
+        t_between = t0 + 120  # between root1 and its compression
+        db.create_session("newer", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t_between, "newer"))
+        db.append_message("newer", "user", "newer session started after root1")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids_in_order = [s["id"] for s in sessions]
+        # 'newer' started AFTER root1 but BEFORE tip1's actual started_at.
+        # Correct ordering (by root started_at): newer > tip1's lineage entry.
+        assert ids_in_order.index("newer") < ids_in_order.index("tip1")
+
+    def test_list_handles_broken_chain_gracefully(self, db):
+        """A compression root with no child (e.g. DB corruption or a partial
+        end_session call that didn't finish creating the child) must not
+        crash the list — it should fall back to surfacing the root as-is.
+        """
+        import time as _time
+        t0 = _time.time() - 100
+        db.create_session("orphan", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "orphan"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 10, "compression", "orphan"),
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=10)
+        ids = [s["id"] for s in sessions]
+        assert "orphan" in ids
+        row = next(s for s in sessions if s["id"] == "orphan")
+        # No tip means no projection — row stays raw.
+        assert "_lineage_root_id" not in row
+        assert row["end_reason"] == "compression"
+
+
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)
 # =========================================================================

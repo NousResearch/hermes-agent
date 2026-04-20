@@ -7286,6 +7286,22 @@ class AIAgent:
         if self._is_qwen_portal():
             extra_body["vl_high_resolution_images"] = True
 
+        # Z.AI / GLM: enable incremental tool-call argument streaming.
+        # GLM models (4.6, 4.7, 5, 5.1) batch tool_call args in one chunk by
+        # default, producing 30+ second silence gaps that trip api.z.ai's
+        # 30s server-side idle timeout (vercel/ai#12949, opencode#15350).
+        # Setting tool_stream=true makes the model stream tool args
+        # incrementally, eliminating the silence gap.
+        # Docs: https://docs.z.ai/guides/capabilities/stream-tool
+        _provider_lower = (self.provider or "").lower()
+        _is_zai_endpoint = (
+            _provider_lower == "zai"
+            or "z.ai" in self._base_url_lower
+            or "bigmodel.cn" in self._base_url_lower
+        )
+        if _is_zai_endpoint and self.tools:
+            extra_body.setdefault("tool_stream", True)
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 

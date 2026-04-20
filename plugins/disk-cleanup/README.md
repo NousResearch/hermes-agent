@@ -1,4 +1,4 @@
-# disk-guardian
+# disk-cleanup
 
 Auto-tracks and cleans up ephemeral files created during Hermes Agent
 sessions — test scripts, temp outputs, cron logs, stale chrome profiles.
@@ -31,19 +31,19 @@ Deletion rules (same as the original PR):
 ## Slash command
 
 ```
-/disk-guardian status                     # breakdown + top-10 largest
-/disk-guardian dry-run                    # preview without deleting
-/disk-guardian quick                      # run safe cleanup now
-/disk-guardian deep                       # quick + list items needing prompt
-/disk-guardian track <path> <category>    # manual tracking
-/disk-guardian forget <path>              # stop tracking
+/disk-cleanup status                     # breakdown + top-10 largest
+/disk-cleanup dry-run                    # preview without deleting
+/disk-cleanup quick                      # run safe cleanup now
+/disk-cleanup deep                       # quick + list items needing prompt
+/disk-cleanup track <path> <category>    # manual tracking
+/disk-cleanup forget <path>              # stop tracking
 ```
 
 ## Safety
 
 - `is_safe_path()` rejects anything outside `HERMES_HOME` or `/tmp/hermes-*`
 - Windows mounts (`/mnt/c` etc.) are rejected
-- The state directory `$HERMES_HOME/disk-guardian/` is itself excluded
+- The state directory `$HERMES_HOME/disk-cleanup/` is itself excluded
 - `$HERMES_HOME/logs/`, `memories/`, `sessions/`, `skills/`, `plugins/`,
   and config files are never tracked
 - Backup/restore is scoped to `tracked.json` — the plugin never touches

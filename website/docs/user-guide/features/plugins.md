@@ -95,9 +95,12 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 
 | Source | Path | Use case |
 |--------|------|----------|
+| Bundled | `<repo>/plugins/` | Ships with Hermes — see [Built-in Plugins](/docs/user-guide/features/built-in-plugins) |
 | User | `~/.hermes/plugins/` | Personal plugins |
 | Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
+
+Later sources override earlier ones on name collision, so a user plugin with the same name as a bundled plugin replaces it. `HERMES_DISABLE_BUNDLED_PLUGINS=1` suppresses the bundled scan entirely.
 
 ## Available hooks
 

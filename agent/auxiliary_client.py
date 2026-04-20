@@ -155,7 +155,7 @@ def _fixed_temperature_for_model(
 
     # Public Moonshot API has a stricter contract for some models than the
     # Coding Plan endpoint — check it first so it wins on conflict.
-    if base_url and "api.moonshot.ai" in base_url.lower():
+    if base_url and ("api.moonshot.ai" in base_url.lower() or "api.moonshot.cn" in base_url.lower()):
         public = _KIMI_PUBLIC_API_OVERRIDES.get(bare)
         if public is not None:
             logger.debug(

@@ -448,6 +448,7 @@ export function useMainApp(gw: GatewayClient) {
     const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 
     const exitHandler = () => {
+      turnController.reset()
       patchUiState({ busy: false, sid: null, status: 'gateway exited' })
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
       sys('error: gateway exited')

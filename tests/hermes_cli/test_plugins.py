@@ -30,8 +30,19 @@ from hermes_cli.plugins import (
 
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
-                     manifest_extra: dict | None = None) -> Path:
-    """Create a minimal plugin directory with plugin.yaml + __init__.py."""
+                     manifest_extra: dict | None = None,
+                     auto_enable: bool = True) -> Path:
+    """Create a minimal plugin directory with plugin.yaml + __init__.py.
+
+    If *auto_enable* is True (default), also write the plugin's name into
+    ``<hermes_home>/config.yaml`` under ``plugins.enabled``. Plugins are
+    opt-in by default, so tests that expect the plugin to actually load
+    need this. Pass ``auto_enable=False`` for tests that exercise the
+    unenabled path.
+
+    *base* is expected to be ``<hermes_home>/plugins/``; we derive
+    ``<hermes_home>`` from it by walking one level up.
+    """
     plugin_dir = base / name
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,6 +54,31 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     (plugin_dir / "__init__.py").write_text(
         f"def register(ctx):\n    {register_body}\n"
     )
+
+    if auto_enable:
+        # Write/merge plugins.enabled in <HERMES_HOME>/config.yaml.
+        # Config is always read from HERMES_HOME (not from the project
+        # dir for project plugins), so that's where we opt in.
+        import os
+        hermes_home_str = os.environ.get("HERMES_HOME")
+        if hermes_home_str:
+            hermes_home = Path(hermes_home_str)
+        else:
+            hermes_home = base.parent
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        cfg_path = hermes_home / "config.yaml"
+        cfg: dict = {}
+        if cfg_path.exists():
+            try:
+                cfg = yaml.safe_load(cfg_path.read_text()) or {}
+            except Exception:
+                cfg = {}
+        plugins_cfg = cfg.setdefault("plugins", {})
+        enabled = plugins_cfg.setdefault("enabled", [])
+        if isinstance(enabled, list) and name not in enabled:
+            enabled.append(name)
+        cfg_path.write_text(yaml.safe_dump(cfg))
+
     return plugin_dir
 
 
@@ -102,7 +138,12 @@ class TestPluginDiscovery:
         mgr.discover_and_load()
         mgr.discover_and_load()  # second call should no-op
 
-        assert len(mgr._plugins) == 1
+        # Filter out bundled plugins — they're always discovered.
+        non_bundled = {
+            n: p for n, p in mgr._plugins.items()
+            if p.manifest.source != "bundled"
+        }
+        assert len(non_bundled) == 1
 
     def test_discover_skips_dir_without_manifest(self, tmp_path, monkeypatch):
         """Directories without plugin.yaml are silently skipped."""
@@ -113,7 +154,12 @@ class TestPluginDiscovery:
         mgr = PluginManager()
         mgr.discover_and_load()
 
-        assert len(mgr._plugins) == 0
+        # Filter out bundled plugins — they're always discovered.
+        non_bundled = {
+            n: p for n, p in mgr._plugins.items()
+            if p.manifest.source != "bundled"
+        }
+        assert len(non_bundled) == 0
 
     def test_entry_points_scanned(self, tmp_path, monkeypatch):
         """Entry-point based plugins are discovered (mocked)."""
@@ -152,7 +198,13 @@ class TestPluginLoading:
         plugin_dir = plugins_dir / "bad_plugin"
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "bad_plugin"}))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        # Explicitly enable so the loader tries to import it and hits the
+        # missing-init error.
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["bad_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -160,6 +212,8 @@ class TestPluginLoading:
         assert "bad_plugin" in mgr._plugins
         assert not mgr._plugins["bad_plugin"].enabled
         assert mgr._plugins["bad_plugin"].error is not None
+        # Should be the missing-init error, not "not enabled".
+        assert "not enabled" not in mgr._plugins["bad_plugin"].error
 
     def test_load_missing_register_fn(self, tmp_path, monkeypatch):
         """Plugin without register() function records an error."""
@@ -168,7 +222,12 @@ class TestPluginLoading:
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "no_reg"}))
         (plugin_dir / "__init__.py").write_text("# no register function\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        # Explicitly enable it so the loader actually tries to import.
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["no_reg"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -404,7 +463,11 @@ class TestPluginContext:
             '        handler=lambda args, **kw: "echo",\n'
             '    )\n'
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["tool_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -438,7 +501,11 @@ class TestPluginToolVisibility:
             '        handler=lambda args, **kw: "ok",\n'
             '    )\n'
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["vis_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -749,20 +816,24 @@ class TestPluginCommands:
     def test_commands_in_list_plugins_output(self, tmp_path, monkeypatch):
         """list_plugins() includes command count."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
+        # Set HERMES_HOME BEFORE _make_plugin_dir so auto-enable targets
+        # the right config.yaml.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
         _make_plugin_dir(
             plugins_dir, "cmd-plugin",
             register_body=(
                 'ctx.register_command("mycmd", lambda a: "ok", description="Test")'
             ),
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
 
         mgr = PluginManager()
         mgr.discover_and_load()
 
         info = mgr.list_plugins()
-        assert len(info) == 1
-        assert info[0]["commands"] == 1
+        # Filter out bundled plugins — they're always discovered.
+        cmd_info = [p for p in info if p["name"] == "cmd-plugin"]
+        assert len(cmd_info) == 1
+        assert cmd_info[0]["commands"] == 1
 
     def test_handler_receives_raw_args(self):
         """The handler is called with the raw argument string."""

@@ -827,7 +827,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 20,
+    "_config_version": 21,
 }
 
 # =============================================================================
@@ -2483,6 +2483,72 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
+
+    # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
+    # The loader now requires plugins to appear in ``plugins.enabled`` before
+    # loading. Existing installs had all discovered plugins loading by default
+    # (minus anything in ``plugins.disabled``). To avoid silently breaking
+    # those setups on upgrade, populate ``plugins.enabled`` with the set of
+    # currently-installed user plugins that aren't already disabled.
+    #
+    # Bundled plugins (shipped in the repo itself) are NOT grandfathered —
+    # they ship off for everyone, including existing users, so any user who
+    # wants one has to opt in explicitly.
+    if current_ver < 21:
+        config = read_raw_config()
+        plugins_cfg = config.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            plugins_cfg = {}
+        # Only migrate if the enabled allow-list hasn't been set yet.
+        if "enabled" not in plugins_cfg:
+            disabled = plugins_cfg.get("disabled", []) or []
+            if not isinstance(disabled, list):
+                disabled = []
+            disabled_set = set(disabled)
+
+            # Scan ``$HERMES_HOME/plugins/`` for currently installed user plugins.
+            grandfathered: List[str] = []
+            try:
+                from hermes_constants import get_hermes_home as _ghome
+                user_plugins_dir = _ghome() / "plugins"
+                if user_plugins_dir.is_dir():
+                    for child in sorted(user_plugins_dir.iterdir()):
+                        if not child.is_dir():
+                            continue
+                        manifest_file = child / "plugin.yaml"
+                        if not manifest_file.exists():
+                            manifest_file = child / "plugin.yml"
+                        if not manifest_file.exists():
+                            continue
+                        try:
+                            with open(manifest_file) as _mf:
+                                manifest = yaml.safe_load(_mf) or {}
+                        except Exception:
+                            manifest = {}
+                        name = manifest.get("name") or child.name
+                        if name in disabled_set:
+                            continue
+                        grandfathered.append(name)
+            except Exception:
+                grandfathered = []
+
+            plugins_cfg["enabled"] = grandfathered
+            config["plugins"] = plugins_cfg
+            save_config(config)
+            results["config_added"].append(
+                f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
+            )
+            if not quiet:
+                if grandfathered:
+                    print(
+                        f"  ✓ Plugins now opt-in: grandfathered "
+                        f"{len(grandfathered)} existing plugin(s) into plugins.enabled"
+                    )
+                else:
+                    print(
+                        "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
+                        "Use `hermes plugins enable <name>` to activate."
+                    )
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

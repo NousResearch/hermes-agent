@@ -7449,6 +7449,17 @@ Examples:
         action="store_true",
         help="Remove existing plugin and reinstall",
     )
+    _install_enable_group = plugins_install.add_mutually_exclusive_group()
+    _install_enable_group.add_argument(
+        "--enable",
+        action="store_true",
+        help="Auto-enable the plugin after install (skip confirmation prompt)",
+    )
+    _install_enable_group.add_argument(
+        "--no-enable",
+        action="store_true",
+        help="Install disabled (skip confirmation prompt); enable later with `hermes plugins enable <name>`",
+    )
 
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Pull latest changes for an installed plugin"

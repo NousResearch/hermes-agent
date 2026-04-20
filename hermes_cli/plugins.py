@@ -83,7 +83,12 @@ def _env_enabled(name: str) -> bool:
 
 
 def _get_disabled_plugins() -> set:
-    """Read the disabled plugins list from config.yaml."""
+    """Read the disabled plugins list from config.yaml.
+
+    Kept for backward compat and explicit deny-list semantics. A plugin
+    name in this set will never load, even if it appears in
+    ``plugins.enabled``.
+    """
     try:
         from hermes_cli.config import load_config
         config = load_config()
@@ -91,6 +96,36 @@ def _get_disabled_plugins() -> set:
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
+
+
+def _get_enabled_plugins() -> Optional[set]:
+    """Read the enabled-plugins allow-list from config.yaml.
+
+    Plugins are opt-in by default — only plugins whose name appears in
+    this set are loaded. Returns:
+
+    * ``None`` — the key is missing or malformed. Callers should treat
+      this as "nothing enabled yet" (the opt-in default); the first
+      ``migrate_config`` run populates the key with a grandfathered set
+      of currently-installed user plugins so existing setups don't
+      break on upgrade.
+    * ``set()`` — an empty list was explicitly set; nothing loads.
+    * ``set(...)`` — the concrete allow-list.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        plugins_cfg = config.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            return None
+        if "enabled" not in plugins_cfg:
+            return None
+        enabled = plugins_cfg.get("enabled")
+        if not isinstance(enabled, list):
+            return None
+        return set(enabled)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -431,17 +466,17 @@ class PluginManager:
         # 1. Bundled plugins (<repo>/plugins/<name>/)
         # Repo-shipped generic plugins live next to hermes_cli/.  Memory and
         # context_engine subdirs are handled by their own discovery paths, so
-        # skip those names here.
-        # Tests can set HERMES_DISABLE_BUNDLED_PLUGINS=1 to get a clean slate.
-        if not _env_enabled("HERMES_DISABLE_BUNDLED_PLUGINS"):
-            repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
-            manifests.extend(
-                self._scan_directory(
-                    repo_plugins,
-                    source="bundled",
-                    skip_names={"memory", "context_engine"},
-                )
+        # skip those names here.  Bundled plugins are discovered (so they
+        # show up in `hermes plugins`) but only loaded when added to
+        # `plugins.enabled` in config.yaml — opt-in like any other plugin.
+        repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+        manifests.extend(
+            self._scan_directory(
+                repo_plugins,
+                source="bundled",
+                skip_names={"memory", "context_engine"},
             )
+        )
 
         # 2. User plugins (~/.hermes/plugins/)
         user_dir = get_hermes_home() / "plugins"
@@ -460,15 +495,33 @@ class PluginManager:
         # take precedence over bundled, project plugins take precedence over
         # user.  Dedup here so we only load the final winner.
         disabled = _get_disabled_plugins()
+        enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.name] = manifest
         for manifest in winners.values():
+            # Explicit disable always wins.
             if manifest.name in disabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = "disabled via config"
                 self._plugins[manifest.name] = loaded
                 logger.debug("Skipping disabled plugin '%s'", manifest.name)
+                continue
+            # Opt-in gate: plugins must be in the enabled allow-list.
+            # If the allow-list is missing (None), treat as "nothing enabled"
+            # — users have to explicitly enable plugins to load them.
+            # Memory and context_engine providers are excluded from this gate
+            # since they have their own single-select config (memory.provider
+            # / context.engine), not the enabled list.
+            if enabled is None or manifest.name not in enabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "not enabled in config (run `hermes plugins enable {}` to activate)".format(
+                    manifest.name
+                )
+                self._plugins[manifest.name] = loaded
+                logger.debug(
+                    "Skipping '%s' (not in plugins.enabled)", manifest.name
+                )
                 continue
             self._load_plugin(manifest)
 

@@ -659,6 +659,28 @@ class TestCapabilityDetection:
 # ---------------------------------------------------------------------------
 
 class TestConfigAllowlist:
+    @pytest.fixture(autouse=True)
+    def _reset_tools_logger(self):
+        """Restore the ``tools`` logger level after cross-test pollution.
+
+        ``AIAgent(quiet_mode=True)`` globally sets ``tools`` and
+        ``tools.*`` children to ``ERROR`` (see run_agent.py quiet_mode
+        block).  xdist workers are persistent, so a streaming test on the
+        same worker will silence WARNING-level logs from
+        ``tools.discord_tool`` for every test that follows.  Reset here so
+        ``caplog`` can capture warnings regardless of worker history.
+        """
+        import logging as _logging
+        _prev_tools = _logging.getLogger("tools").level
+        _prev_dt = _logging.getLogger("tools.discord_tool").level
+        _logging.getLogger("tools").setLevel(_logging.NOTSET)
+        _logging.getLogger("tools.discord_tool").setLevel(_logging.NOTSET)
+        try:
+            yield
+        finally:
+            _logging.getLogger("tools").setLevel(_prev_tools)
+            _logging.getLogger("tools.discord_tool").setLevel(_prev_dt)
+
     def test_empty_string_returns_none(self, monkeypatch):
         """Empty config means no allowlist — all actions visible."""
         monkeypatch.setattr(

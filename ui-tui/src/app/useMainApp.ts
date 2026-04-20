@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
-import { fmtDuration, imageTokenMeta } from '../domain/messages.js'
+import { imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
@@ -284,25 +284,13 @@ export function useMainApp(gw: GatewayClient) {
     sys
   })
 
-  // Drive turnStartedAt from the busy edge and emit a one-shot "done in Xs"
-  // line on the idle edge. Covers agent turns and `!shell` alike — only
-  // suppresses when the block is under ~1s (too quick to matter).
   useEffect(() => {
-    if (ui.busy && turnStartedAt === null) {
-      setTurnStartedAt(Date.now())
-
-      return
-    }
-
-    if (!ui.busy && turnStartedAt !== null) {
-      const elapsed = Date.now() - turnStartedAt
+    if (ui.busy) {
+      setTurnStartedAt(prev => prev ?? Date.now())
+    } else {
       setTurnStartedAt(null)
-
-      if (elapsed >= 1000) {
-        sys(`done in ${fmtDuration(elapsed)}`)
-      }
     }
-  }, [sys, turnStartedAt, ui.busy])
+  }, [ui.busy])
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 

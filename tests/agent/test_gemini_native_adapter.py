@@ -85,6 +85,46 @@ def test_build_native_request_uses_original_function_name_for_tool_result():
     assert tool_response["name"] == "get_weather"
 
 
+def test_build_native_request_strips_json_schema_only_fields_from_tool_parameters():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "Hello"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_weather",
+                    "description": "Weather lookup",
+                    "parameters": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "city": {
+                                "type": "string",
+                                "$schema": "ignored",
+                                "description": "City name",
+                            }
+                        },
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        tool_choice=None,
+    )
+
+    params = request["tools"][0]["functionDeclarations"][0]["parameters"]
+    assert "$schema" not in params
+    assert "additionalProperties" not in params
+    assert params["type"] == "object"
+    assert params["properties"]["city"] == {
+        "type": "string",
+        "description": "City name",
+    }
+
+
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     from agent.gemini_native_adapter import translate_gemini_response
 

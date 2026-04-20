@@ -652,6 +652,42 @@ class TestBuildGeminiRequest:
         assert decls[0]["description"] == "foo"
         assert decls[0]["parameters"] == {"type": "object"}
 
+    def test_tools_strip_json_schema_only_fields_from_parameters(self):
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                {"type": "function", "function": {
+                    "name": "fn1",
+                    "description": "foo",
+                    "parameters": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "city": {
+                                "type": "string",
+                                "$schema": "ignored",
+                                "description": "City name",
+                                "additionalProperties": False,
+                            }
+                        },
+                        "required": ["city"],
+                    },
+                }},
+            ],
+        )
+        params = req["tools"][0]["functionDeclarations"][0]["parameters"]
+        assert "$schema" not in params
+        assert "additionalProperties" not in params
+        assert params["type"] == "object"
+        assert params["required"] == ["city"]
+        assert params["properties"]["city"] == {
+            "type": "string",
+            "description": "City name",
+        }
+
     def test_tool_choice_auto(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 

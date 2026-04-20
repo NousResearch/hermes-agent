@@ -27,6 +27,8 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
+from agent.gemini_schema import sanitize_gemini_tool_parameters
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -253,7 +255,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
             decl["description"] = description
         parameters = fn.get("parameters")
         if isinstance(parameters, dict):
-            decl["parameters"] = parameters
+            decl["parameters"] = sanitize_gemini_tool_parameters(parameters)
         declarations.append(decl)
     return [{"functionDeclarations": declarations}] if declarations else []
 

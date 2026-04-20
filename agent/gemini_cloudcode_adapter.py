@@ -39,6 +39,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent import google_oauth
+from agent.gemini_schema import sanitize_gemini_tool_parameters
 from agent.google_code_assist import (
     CODE_ASSIST_ENDPOINT,
     FREE_TIER_ID,
@@ -205,7 +206,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
             decl["description"] = str(fn["description"])
         params = fn.get("parameters")
         if isinstance(params, dict):
-            decl["parameters"] = params
+            decl["parameters"] = sanitize_gemini_tool_parameters(params)
         declarations.append(decl)
     if not declarations:
         return []

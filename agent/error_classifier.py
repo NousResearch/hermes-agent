@@ -112,6 +112,10 @@ _RATE_LIMIT_PATTERNS = [
     "please retry after",
     "resource_exhausted",
     "rate increased too quickly",  # Alibaba/DashScope throttling
+    # AWS Bedrock throttling
+    "throttlingexception",
+    "too many concurrent requests",
+    "servicequotaexceededexception",
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
@@ -171,6 +175,11 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     # Chinese error messages (some providers return these)
     "超过最大长度",
     "上下文长度",
+    # AWS Bedrock Converse API error patterns
+    "input is too long",
+    "max input token",
+    "input token",
+    "exceeds the maximum number of input tokens",
 ]
 
 # Model not found patterns
@@ -281,7 +290,7 @@ def classify_api_error(
     if isinstance(body, dict):
         _err_obj = body.get("error", {})
         if isinstance(_err_obj, dict):
-            _body_msg = (_err_obj.get("message") or "").lower()
+            _body_msg = str(_err_obj.get("message") or "").lower()
             # Parse metadata.raw for wrapped provider errors
             _metadata = _err_obj.get("metadata", {})
             if isinstance(_metadata, dict):
@@ -293,11 +302,11 @@ def classify_api_error(
                         if isinstance(_inner, dict):
                             _inner_err = _inner.get("error", {})
                             if isinstance(_inner_err, dict):
-                                _metadata_msg = (_inner_err.get("message") or "").lower()
+                                _metadata_msg = str(_inner_err.get("message") or "").lower()
                     except (json.JSONDecodeError, TypeError):
                         pass
         if not _body_msg:
-            _body_msg = (body.get("message") or "").lower()
+            _body_msg = str(body.get("message") or "").lower()
     # Combine all message sources for pattern matching
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
@@ -597,10 +606,10 @@ def _classify_400(
     if isinstance(body, dict):
         err_obj = body.get("error", {})
         if isinstance(err_obj, dict):
-            err_body_msg = (err_obj.get("message") or "").strip().lower()
+            err_body_msg = str(err_obj.get("message") or "").strip().lower()
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
-            err_body_msg = (body.get("message") or "").strip().lower()
+            err_body_msg = str(body.get("message") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
     is_large = approx_tokens > context_length * 0.4 or approx_tokens > 80000 or num_messages > 80
 

@@ -322,7 +322,7 @@ class TestFallbackTransportInit:
             seen_kwargs.append(kwargs.copy())
             return FakeTransport([], {})
 
-        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)

@@ -22,7 +22,7 @@ class TestGeminiProviderRegistry:
         assert pconfig.id == "gemini"
         assert pconfig.name == "Google AI Studio"
         assert pconfig.auth_type == "api_key"
-        assert pconfig.inference_base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert pconfig.inference_base_url == "https://generativelanguage.googleapis.com/v1beta"
 
     def test_gemini_env_vars(self):
         pconfig = PROVIDER_REGISTRY["gemini"]
@@ -99,7 +99,7 @@ class TestGeminiCredentials:
         creds = resolve_api_key_provider_credentials("gemini")
         assert creds["provider"] == "gemini"
         assert creds["api_key"] == "google-secret"
-        assert creds["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert creds["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
 
     def test_resolve_with_gemini_api_key(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
@@ -119,7 +119,7 @@ class TestGeminiCredentials:
         assert result["provider"] == "gemini"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "google-key"
-        assert result["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert result["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
 
 
 # ── Model Catalog ──
@@ -130,7 +130,7 @@ class TestGeminiModelCatalog:
         models = _PROVIDER_MODELS["gemini"]
         assert "gemini-2.5-pro" in models
         assert "gemini-2.5-flash" in models
-        assert "gemma-4-31b-it" in models
+        assert "gemma-4-31b-it" not in models
 
     def test_provider_models_has_3x(self):
         models = _PROVIDER_MODELS["gemini"]
@@ -178,10 +178,6 @@ class TestGeminiContextLength:
             ctx = get_model_context_length("gemma-4-31b-it", provider="gemini")
         assert ctx == 256000
 
-    def test_gemma_4_26b_context(self):
-        ctx = get_model_context_length("gemma-4-26b-it", provider="gemini")
-        assert ctx == 256000
-
     def test_gemini_3_context(self):
         ctx = get_model_context_length("gemini-3.1-pro-preview", provider="gemini")
         assert ctx == 1048576
@@ -197,19 +193,89 @@ class TestGeminiAgentInit:
         importlib.reload(run_agent)
 
     def test_gemini_agent_uses_chat_completions(self, monkeypatch):
-        """Gemini falls through to chat_completions — no special elif needed."""
+        """Gemini still reports chat_completions even though the transport is native."""
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-        with patch("run_agent.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
+            mock_client.return_value = MagicMock()
             from run_agent import AIAgent
             agent = AIAgent(
                 model="gemini-2.5-flash",
                 provider="gemini",
                 api_key="test-key",
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
             )
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini"
+
+    def test_gemini_agent_uses_native_client(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
+             patch("run_agent.OpenAI") as mock_openai, \
+             patch("run_agent.ContextCompressor") as mock_compressor:
+            mock_client.return_value = MagicMock()
+            mock_compressor.return_value = MagicMock(context_length=1048576, threshold_tokens=524288)
+            from run_agent import AIAgent
+            AIAgent(
+                model="gemini-2.5-flash",
+                provider="gemini",
+                api_key="AIzaSy_REAL_KEY",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+            )
+        assert mock_client.called
+        mock_openai.assert_not_called()
+
+    def test_gemini_custom_base_url_keeps_openai_client(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
+             patch("run_agent.OpenAI") as mock_openai, \
+             patch("run_agent.ContextCompressor") as mock_compressor:
+            mock_openai.return_value = MagicMock()
+            mock_compressor.return_value = MagicMock(context_length=128000, threshold_tokens=64000)
+            from run_agent import AIAgent
+            AIAgent(
+                model="gemini-2.5-flash",
+                provider="gemini",
+                api_key="AIzaSy_REAL_KEY",
+                base_url="https://proxy.example.com/v1",
+            )
+        mock_openai.assert_called_once()
+
+    def test_gemini_openai_compat_base_url_keeps_openai_client(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
+             patch("run_agent.OpenAI") as mock_openai, \
+             patch("run_agent.ContextCompressor") as mock_compressor:
+            mock_openai.return_value = MagicMock()
+            mock_compressor.return_value = MagicMock(context_length=1048576, threshold_tokens=524288)
+            from run_agent import AIAgent
+            AIAgent(
+                model="gemini-2.5-flash",
+                provider="gemini",
+                api_key="AIzaSy_REAL_KEY",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+        mock_openai.assert_called_once()
+
+    def test_gemini_resolve_provider_client_uses_native_client(self, monkeypatch):
+        """resolve_provider_client('gemini') should build GeminiNativeClient."""
+        monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            resolve_provider_client("gemini")
+        assert mock_client.called
+        mock_openai.assert_not_called()
+
+    def test_gemini_resolve_provider_client_keeps_openai_for_non_native_base_url(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_TEST_KEY")
+        monkeypatch.setenv("GEMINI_BASE_URL", "https://proxy.example.com/v1")
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            resolve_provider_client("gemini")
+        mock_openai.assert_called_once()
 
 
 # ── models.dev Integration ──
@@ -265,9 +331,32 @@ class TestGeminiModelsDev:
             result = list_agentic_models("gemini")
         assert "gemini-3-flash-preview" in result
         assert "gemini-2.5-pro" in result
-        assert "gemma-4-31b-it" in result
+        assert "gemma-4-31b-it" not in result
         # Filtered out:
         assert "gemini-embedding-001" not in result      # no tool_call
         assert "gemini-2.5-flash-preview-tts" not in result  # no tool_call
         assert "gemini-live-2.5-flash" not in result     # noise: live-
         assert "gemini-2.5-flash-preview-04-17" not in result  # noise: dated preview
+
+    def test_list_provider_models_hides_low_tpm_google_gemmas(self):
+        mock_data = {
+            "google": {
+                "models": {
+                    "gemini-2.5-pro": {},
+                    "gemma-4-31b-it": {},
+                    "gemma-3-27b-it": {},
+                    "gemini-1.5-pro": {},
+                    "gemini-2.0-flash": {},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+            from agent.models_dev import list_provider_models
+
+            result = list_provider_models("gemini")
+
+        assert "gemini-2.5-pro" in result
+        assert "gemma-4-31b-it" not in result
+        assert "gemma-3-27b-it" not in result
+        assert "gemini-1.5-pro" not in result
+        assert "gemini-2.0-flash" not in result

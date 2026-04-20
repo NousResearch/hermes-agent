@@ -116,6 +116,22 @@ class TestValidateToolset:
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
 
+    def test_mcp_alias_uses_live_registry(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="mcp_dynserver_ping",
+            toolset="mcp-dynserver",
+            schema=_make_schema("mcp_dynserver_ping", "Ping"),
+            handler=_dummy_handler,
+        )
+        reg.register_toolset_alias("dynserver", "mcp-dynserver")
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        assert validate_toolset("dynserver") is True
+        assert validate_toolset("mcp-dynserver") is True
+        assert "mcp_dynserver_ping" in resolve_toolset("dynserver")
+
 
 class TestGetToolsetInfo:
     def test_leaf(self):
@@ -150,6 +166,23 @@ class TestCreateCustomToolset:
             del TOOLSETS["_test_custom"]
 
 
+class TestRegistryOwnedToolsets:
+    def test_registry_membership_is_live(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="test_live_toolset_tool",
+            toolset="test-live-toolset",
+            schema=_make_schema("test_live_toolset_tool", "Live"),
+            handler=_dummy_handler,
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        assert validate_toolset("test-live-toolset") is True
+        assert get_toolset("test-live-toolset")["tools"] == ["test_live_toolset_tool"]
+        assert resolve_toolset("test-live-toolset") == ["test_live_toolset_tool"]
+
+
 class TestToolsetConsistency:
     """Verify structural integrity of the built-in TOOLSETS dict."""
 
@@ -165,12 +198,22 @@ class TestToolsetConsistency:
                 assert inc in TOOLSETS, f"{name} includes unknown toolset '{inc}'"
 
     def test_hermes_platforms_share_core_tools(self):
-        """All hermes-* platform toolsets should have the same tools."""
+        """All hermes-* platform toolsets share the same core tools.
+
+        Platform-specific additions (e.g. ``discord_server`` on
+        hermes-discord, gated on DISCORD_BOT_TOKEN) are allowed on top —
+        the invariant is that the core set is identical across platforms.
+        """
         platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
         tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
-        # All platform toolsets should be identical
-        for ts in tool_sets[1:]:
-            assert ts == tool_sets[0]
+        # All platforms must contain the shared core; platform-specific
+        # extras are OK (subset check, not equality).
+        core = set.intersection(*tool_sets)
+        for name, ts in zip(platforms, tool_sets):
+            assert core.issubset(ts), f"{name} is missing core tools: {core - ts}"
+        # Sanity: the shared core must be non-trivial (i.e. we didn't
+        # silently let a platform diverge so far that nothing is shared).
+        assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
 
 
 class TestPluginToolsets:

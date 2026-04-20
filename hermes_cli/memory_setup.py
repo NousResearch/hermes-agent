@@ -58,9 +58,11 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
-    from pathlib import Path as _Path
+    from plugins.memory import find_provider_dir
 
-    plugin_dir = _Path(__file__).parent.parent / "plugins" / "memory" / provider_name
+    plugin_dir = find_provider_dir(provider_name)
+    if not plugin_dir:
+        return
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
         return

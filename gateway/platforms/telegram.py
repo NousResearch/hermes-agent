@@ -496,6 +496,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] DM topic '%s' already exists in chat %s (will be mapped from incoming messages)",
                     self.name, name, chat_id,
                 )
+            elif "not a forum" in error_text or "forums_disabled" in error_text:
+                logger.warning(
+                    "[%s] Cannot create DM topic '%s' in chat %s: Topics mode is not enabled. "
+                    "The user must open the DM with this bot in Telegram, tap the bot name "
+                    "at the top, and enable 'Topics' in chat settings before topics can be created.",
+                    self.name, name, chat_id,
+                )
             else:
                 logger.warning(
                     "[%s] Failed to create DM topic '%s' in chat %s: %s",

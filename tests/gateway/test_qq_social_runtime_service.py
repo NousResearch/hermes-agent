@@ -23,12 +23,54 @@ def _make_source(
 
 
 def test_match_admin_qq_social_control_request_passes_expected_context():
+    from gateway.config import Platform
+    from gateway.qq_social_runtime_service import match_admin_platform_social_control_request
+    from gateway.social_control_request_platform_specs import SocialControlRequestPlatformSpec
+
+    source = _make_source()
+    matcher = MagicMock(return_value=({"action": "list_requests", "request_type": "friend"}, None))
+    request_spec = SocialControlRequestPlatformSpec(
+        platform=Platform.QQ_NAPCAT,
+        request_matcher=matcher,
+        looks_like_request_list_query=lambda body: True,
+        looks_like_policy_candidate=lambda body: False,
+        looks_like_policy_query=lambda body: False,
+        request_type_matcher=lambda body: "friend",
+        notify_target_resolver=lambda source, body: "qq_napcat:dm:179033731",
+    )
+
+    tool_args, error = match_admin_platform_social_control_request(
+        source=source,
+        body="看看待处理的好友申请",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        admin_only_message="admin only",
+        request_spec=request_spec,
+    )
+
+    assert error is None
+    assert tool_args == {"action": "list_requests", "request_type": "friend"}
+    matcher.assert_called_once_with(
+        source=source,
+        body="看看待处理的好友申请",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        admin_only_message="admin only",
+        looks_like_request_list_query=request_spec.looks_like_request_list_query,
+        looks_like_policy_candidate=request_spec.looks_like_policy_candidate,
+        looks_like_policy_query=request_spec.looks_like_policy_query,
+        request_type_matcher=request_spec.request_type_matcher,
+        notify_target_resolver=request_spec.notify_target_resolver,
+    )
+
+
+def test_match_admin_qq_social_control_request_uses_qq_request_spec():
     from gateway.qq_social_runtime_service import match_admin_qq_social_control_request
 
     source = _make_source()
 
     with patch(
-        "gateway.qq_social_runtime_service.match_qq_social_control_request",
+        "gateway.qq_social_runtime_service.match_admin_platform_social_control_request",
         return_value=({"action": "list_requests", "request_type": "friend"}, None),
     ) as matcher:
         tool_args, error = match_admin_qq_social_control_request(
@@ -41,18 +83,7 @@ def test_match_admin_qq_social_control_request_passes_expected_context():
 
     assert error is None
     assert tool_args == {"action": "list_requests", "request_type": "friend"}
-    matcher.assert_called_once_with(
-        source=source,
-        body="看看待处理的好友申请",
-        admin_ids_configured=True,
-        is_admin_user=True,
-        admin_only_message="admin only",
-        looks_like_request_list_query=matcher.call_args.kwargs["looks_like_request_list_query"],
-        looks_like_policy_candidate=matcher.call_args.kwargs["looks_like_policy_candidate"],
-        looks_like_policy_query=matcher.call_args.kwargs["looks_like_policy_query"],
-        request_type_matcher=matcher.call_args.kwargs["request_type_matcher"],
-        notify_target_resolver=matcher.call_args.kwargs["notify_target_resolver"],
-    )
+    assert matcher.call_args.kwargs["request_spec"].platform is Platform.QQ_NAPCAT
 
 
 def test_format_admin_qq_social_control_reply_for_empty_friend_requests():

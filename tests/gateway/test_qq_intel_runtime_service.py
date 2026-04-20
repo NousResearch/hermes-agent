@@ -23,12 +23,55 @@ def _make_source(
 
 
 def test_match_admin_qq_intel_control_request_passes_expected_context():
+    from gateway.intel_control_request_platform_specs import IntelControlRequestPlatformSpec
+    from gateway.qq_intel_runtime_service import match_admin_platform_intel_control_request
+
+    source = _make_source()
+    matcher = MagicMock(return_value=({"action": "pause_worker", "worker_name": "钢镚"}, None))
+    request_spec = IntelControlRequestPlatformSpec(
+        platform=Platform.QQ_NAPCAT,
+        request_matcher=matcher,
+        worker_name_extractor=lambda body, known_worker_names: "钢镚",
+        worker_context_checker=lambda body: True,
+        target_extractor=lambda current_source, body: "group:726109087",
+        hire_objective_extractor=lambda body, *, worker_name, target_group: "刺探情报",
+    )
+
+    tool_args, error = match_admin_platform_intel_control_request(
+        source=source,
+        body="让情报员钢镚暂停任务",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_joined_group_list_query=lambda body: False,
+        known_worker_names={"钢镚"},
+        report_target_resolver=lambda current_source, body, prefer_dm: "current_user_dm",
+        request_spec=request_spec,
+    )
+
+    assert error is None
+    assert tool_args == {"action": "pause_worker", "worker_name": "钢镚"}
+    matcher.assert_called_once_with(
+        source=source,
+        body="让情报员钢镚暂停任务",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        looks_like_joined_group_list_query=matcher.call_args.kwargs["looks_like_joined_group_list_query"],
+        extract_worker_name=request_spec.worker_name_extractor,
+        looks_like_worker_context=request_spec.worker_context_checker,
+        known_worker_names={"钢镚"},
+        target_extractor=request_spec.target_extractor,
+        report_target_resolver=matcher.call_args.kwargs["report_target_resolver"],
+        hire_objective_extractor=request_spec.hire_objective_extractor,
+    )
+
+
+def test_match_admin_qq_intel_control_request_uses_qq_request_spec():
     from gateway.qq_intel_runtime_service import match_admin_qq_intel_control_request
 
     source = _make_source()
 
     with patch(
-        "gateway.qq_intel_runtime_service.match_qq_intel_control_request",
+        "gateway.qq_intel_runtime_service.match_admin_platform_intel_control_request",
         return_value=({"action": "pause_worker", "worker_name": "钢镚"}, None),
     ) as matcher:
         tool_args, error = match_admin_qq_intel_control_request(
@@ -43,19 +86,7 @@ def test_match_admin_qq_intel_control_request_passes_expected_context():
 
     assert error is None
     assert tool_args == {"action": "pause_worker", "worker_name": "钢镚"}
-    matcher.assert_called_once_with(
-        source=source,
-        body="让情报员钢镚暂停任务",
-        admin_ids_configured=True,
-        is_admin_user=True,
-        looks_like_joined_group_list_query=matcher.call_args.kwargs["looks_like_joined_group_list_query"],
-        extract_worker_name=matcher.call_args.kwargs["extract_worker_name"],
-        looks_like_worker_context=matcher.call_args.kwargs["looks_like_worker_context"],
-        known_worker_names={"钢镚"},
-        target_extractor=matcher.call_args.kwargs["target_extractor"],
-        report_target_resolver=matcher.call_args.kwargs["report_target_resolver"],
-        hire_objective_extractor=matcher.call_args.kwargs["hire_objective_extractor"],
-    )
+    assert matcher.call_args.kwargs["request_spec"].platform is Platform.QQ_NAPCAT
 
 
 def test_format_admin_qq_intel_control_reply_for_joined_group_list():

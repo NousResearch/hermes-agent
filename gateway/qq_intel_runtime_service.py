@@ -5,13 +5,39 @@ from __future__ import annotations
 from typing import Any, Callable, Iterable
 
 from gateway.direct_tool_result_runtime_service import shortcut_tool_failure_text
-from gateway.group_target_intents import extract_qq_group_target
-from gateway.qq_intel_control_requests import (
-    extract_qq_oral_intel_hire_objective,
-    extract_qq_worker_name,
-    looks_like_qq_intel_worker_context,
-    match_qq_intel_control_request,
+from gateway.intel_control_request_platform_specs import (
+    IntelControlRequestPlatformSpec,
+    QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC,
 )
+
+
+def match_admin_platform_intel_control_request(
+    *,
+    source: Any,
+    body: str,
+    admin_ids_configured: bool,
+    is_admin_user: bool,
+    looks_like_joined_group_list_query,
+    known_worker_names: Iterable[str],
+    report_target_resolver,
+    request_spec: IntelControlRequestPlatformSpec,
+) -> tuple[dict[str, Any] | None, str | None]:
+    normalized_body = str(body or "").strip()
+    if source is None or not normalized_body:
+        return None, None
+    return request_spec.request_matcher(
+        source=source,
+        body=normalized_body,
+        admin_ids_configured=admin_ids_configured,
+        is_admin_user=is_admin_user,
+        looks_like_joined_group_list_query=looks_like_joined_group_list_query,
+        extract_worker_name=request_spec.worker_name_extractor,
+        looks_like_worker_context=request_spec.worker_context_checker,
+        known_worker_names=known_worker_names,
+        target_extractor=request_spec.target_extractor,
+        report_target_resolver=report_target_resolver,
+        hire_objective_extractor=request_spec.hire_objective_extractor,
+    )
 
 
 def match_admin_qq_intel_control_request(
@@ -24,21 +50,15 @@ def match_admin_qq_intel_control_request(
     known_worker_names: Iterable[str],
     report_target_resolver,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    normalized_body = str(body or "").strip()
-    if source is None or not normalized_body:
-        return None, None
-    return match_qq_intel_control_request(
+    return match_admin_platform_intel_control_request(
         source=source,
-        body=normalized_body,
+        body=body,
         admin_ids_configured=admin_ids_configured,
         is_admin_user=is_admin_user,
         looks_like_joined_group_list_query=looks_like_joined_group_list_query,
-        extract_worker_name=extract_qq_worker_name,
-        looks_like_worker_context=looks_like_qq_intel_worker_context,
         known_worker_names=known_worker_names,
-        target_extractor=extract_qq_group_target,
         report_target_resolver=report_target_resolver,
-        hire_objective_extractor=extract_qq_oral_intel_hire_objective,
+        request_spec=QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC,
     )
 
 

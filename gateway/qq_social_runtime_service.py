@@ -5,16 +5,36 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from gateway.direct_tool_result_runtime_service import shortcut_tool_failure_text
-from gateway.qq_intents import (
-    _looks_like_qq_social_policy_candidate,
-    _looks_like_qq_social_request_list_query,
+from gateway.social_control_request_platform_specs import (
+    QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC,
+    SocialControlRequestPlatformSpec,
 )
-from gateway.qq_social_control_requests import (
-    looks_like_qq_social_policy_query,
-    match_qq_social_control_request,
-    match_qq_social_request_type,
-    qq_social_policy_notify_target,
-)
+
+
+def match_admin_platform_social_control_request(
+    *,
+    source: Any,
+    body: str,
+    admin_ids_configured: bool,
+    is_admin_user: bool,
+    admin_only_message: str,
+    request_spec: SocialControlRequestPlatformSpec,
+) -> tuple[dict[str, Any] | None, str | None]:
+    normalized_body = str(body or "").strip()
+    if source is None or not normalized_body:
+        return None, None
+    return request_spec.request_matcher(
+        source=source,
+        body=normalized_body,
+        admin_ids_configured=admin_ids_configured,
+        is_admin_user=is_admin_user,
+        admin_only_message=admin_only_message,
+        looks_like_request_list_query=request_spec.looks_like_request_list_query,
+        looks_like_policy_candidate=request_spec.looks_like_policy_candidate,
+        looks_like_policy_query=request_spec.looks_like_policy_query,
+        request_type_matcher=request_spec.request_type_matcher,
+        notify_target_resolver=request_spec.notify_target_resolver,
+    )
 
 
 def match_admin_qq_social_control_request(
@@ -25,20 +45,13 @@ def match_admin_qq_social_control_request(
     is_admin_user: bool,
     admin_only_message: str,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    normalized_body = str(body or "").strip()
-    if source is None or not normalized_body:
-        return None, None
-    return match_qq_social_control_request(
+    return match_admin_platform_social_control_request(
         source=source,
-        body=normalized_body,
+        body=body,
         admin_ids_configured=admin_ids_configured,
         is_admin_user=is_admin_user,
         admin_only_message=admin_only_message,
-        looks_like_request_list_query=_looks_like_qq_social_request_list_query,
-        looks_like_policy_candidate=_looks_like_qq_social_policy_candidate,
-        looks_like_policy_query=looks_like_qq_social_policy_query,
-        request_type_matcher=match_qq_social_request_type,
-        notify_target_resolver=qq_social_policy_notify_target,
+        request_spec=QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC,
     )
 
 

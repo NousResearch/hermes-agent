@@ -6754,18 +6754,38 @@ class AIAgent:
                         len(_partial_text or ""),
                         result["error"],
                     )
-                _stub_msg = SimpleNamespace(
-                    role="assistant", content=_partial_text, tool_calls=None,
-                    reasoning_content=None,
-                )
-                return SimpleNamespace(
-                    id="partial-stream-stub",
-                    model=getattr(self, "model", "unknown"),
-                    choices=[SimpleNamespace(
-                        index=0, message=_stub_msg, finish_reason="stop",
-                    )],
-                    usage=None,
-                )
+                if self.api_mode == "anthropic_messages":
+                    # Anthropic validation expects response.content to be a
+                    # list of content blocks, not the OpenAI choices format.
+                    _content_blocks = []
+                    if _partial_text:
+                        _content_blocks.append(
+                            SimpleNamespace(type="text", text=_partial_text)
+                        )
+                    return SimpleNamespace(
+                        id="partial-stream-stub",
+                        type="message",
+                        role="assistant",
+                        model=getattr(self, "model", "unknown"),
+                        content=_content_blocks,
+                        stop_reason="end_turn",
+                        usage=SimpleNamespace(
+                            input_tokens=0, output_tokens=0,
+                        ),
+                    )
+                else:
+                    _stub_msg = SimpleNamespace(
+                        role="assistant", content=_partial_text, tool_calls=None,
+                        reasoning_content=None,
+                    )
+                    return SimpleNamespace(
+                        id="partial-stream-stub",
+                        model=getattr(self, "model", "unknown"),
+                        choices=[SimpleNamespace(
+                            index=0, message=_stub_msg, finish_reason="stop",
+                        )],
+                        usage=None,
+                    )
             raise result["error"]
         return result["response"]
 

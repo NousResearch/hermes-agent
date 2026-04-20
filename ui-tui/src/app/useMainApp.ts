@@ -306,15 +306,12 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    let timer: null | ReturnType<typeof setTimeout> = null
+    let timer: ReturnType<typeof setTimeout> | undefined
 
     const onResize = () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
+      clearTimeout(timer)
       timer = setTimeout(() => {
-        timer = null
+        timer = undefined
         void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
       }, 100)
     }
@@ -322,10 +319,7 @@ export function useMainApp(gw: GatewayClient) {
     stdout.on('resize', onResize)
 
     return () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
+      clearTimeout(timer)
       stdout.off('resize', onResize)
     }
   }, [rpc, stdout, ui.sid])

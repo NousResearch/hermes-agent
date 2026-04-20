@@ -202,6 +202,7 @@ class TestPluginHooks:
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
+        assert "transform_tool_result" in VALID_HOOKS
 
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""

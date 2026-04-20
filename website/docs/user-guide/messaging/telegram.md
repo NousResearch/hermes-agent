@@ -325,6 +325,16 @@ Each topic gets its own conversation session, history, and context — completel
 
 ### Configuration
 
+:::caution Prerequisites
+Before adding topics to your config, the user must **enable Topics mode** in the DM chat with the bot:
+
+1. Open your private chat with the Hermes bot in Telegram
+2. Tap the bot's name at the top to open chat info
+3. Enable **Topics** (the toggle to turn the chat into a forum)
+
+Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
+:::
+
 Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
 
 ```yaml

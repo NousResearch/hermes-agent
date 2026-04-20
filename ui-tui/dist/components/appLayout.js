@@ -1,0 +1,38 @@
+import { jsx as _jsx, Fragment as _Fragment, jsxs as _jsxs } from "react/jsx-runtime";
+import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink';
+import { useStore } from '@nanostores/react';
+import { memo } from 'react';
+import { $isBlocked } from '../app/overlayStore.js';
+import { $uiState } from '../app/uiStore.js';
+import { PLACEHOLDER } from '../content/placeholders.js';
+import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js';
+import { FloatingOverlays, PromptZone } from './appOverlays.js';
+import { Banner, Panel, SessionPanel } from './branding.js';
+import { MessageLine } from './messageLine.js';
+import { QueuedMessages } from './queuedMessages.js';
+import { TextInput } from './textInput.js';
+import { ToolTrail } from './thinking.js';
+const StreamingAssistant = memo(function StreamingAssistant({ busy, cols, compact, detailsMode, progress, t }) {
+    if (!progress.showProgressArea && !progress.showStreamingArea) {
+        return null;
+    }
+    return (_jsxs(_Fragment, { children: [progress.streamSegments.map((msg, i) => (_jsx(MessageLine, { cols: cols, compact: compact, detailsMode: detailsMode, msg: msg, t: t }, `seg:${i}`))), progress.showProgressArea && (_jsx(Box, { flexDirection: "column", marginBottom: progress.showStreamingArea ? 1 : 0, children: _jsx(ToolTrail, { activity: progress.activity, busy: busy, detailsMode: detailsMode, outcome: progress.outcome, reasoning: progress.reasoning, reasoningActive: progress.reasoningActive, reasoningStreaming: progress.reasoningStreaming, reasoningTokens: progress.reasoningTokens, subagents: progress.subagents, t: t, tools: progress.tools, toolTokens: progress.toolTokens, trail: progress.turnTrail }) })), progress.showStreamingArea && (_jsx(MessageLine, { cols: cols, compact: compact, detailsMode: detailsMode, isStreaming: true, msg: {
+                    role: 'assistant',
+                    text: progress.streaming,
+                    ...(progress.streamPendingTools.length && { tools: progress.streamPendingTools })
+                }, t: t })), !progress.showStreamingArea && !!progress.streamPendingTools.length && (_jsx(MessageLine, { cols: cols, compact: compact, detailsMode: detailsMode, msg: { kind: 'trail', role: 'system', text: '', tools: progress.streamPendingTools }, t: t }))] }));
+});
+const TranscriptPane = memo(function TranscriptPane({ actions, composer, progress, transcript }) {
+    const ui = useStore($uiState);
+    return (_jsxs(_Fragment, { children: [_jsx(ScrollBox, { flexDirection: "column", flexGrow: 1, flexShrink: 1, ref: transcript.scrollRef, stickyScroll: true, children: _jsxs(Box, { flexDirection: "column", paddingX: 1, children: [transcript.virtualHistory.topSpacer > 0 ? _jsx(Box, { height: transcript.virtualHistory.topSpacer }) : null, transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (_jsx(Box, { flexDirection: "column", ref: transcript.virtualHistory.measureRef(row.key), children: row.msg.kind === 'intro' ? (_jsxs(Box, { flexDirection: "column", paddingTop: 1, children: [_jsx(Banner, { t: ui.theme }), row.msg.info?.version && _jsx(SessionPanel, { info: row.msg.info, sid: ui.sid, t: ui.theme })] })) : row.msg.kind === 'panel' && row.msg.panelData ? (_jsx(Panel, { sections: row.msg.panelData.sections, t: ui.theme, title: row.msg.panelData.title })) : (_jsx(MessageLine, { cols: composer.cols, compact: ui.compact, detailsMode: ui.detailsMode, msg: row.msg, t: ui.theme })) }, row.key))), transcript.virtualHistory.bottomSpacer > 0 ? _jsx(Box, { height: transcript.virtualHistory.bottomSpacer }) : null, _jsx(StreamingAssistant, { busy: ui.busy, cols: composer.cols, compact: ui.compact, detailsMode: ui.detailsMode, progress: progress, t: ui.theme })] }) }), _jsx(NoSelect, { flexShrink: 0, marginLeft: 1, children: _jsx(TranscriptScrollbar, { scrollRef: transcript.scrollRef, t: ui.theme }) }), _jsx(StickyPromptTracker, { messages: transcript.historyItems, offsets: transcript.virtualHistory.offsets, onChange: actions.setStickyPrompt, scrollRef: transcript.scrollRef })] }));
+});
+const ComposerPane = memo(function ComposerPane({ actions, composer, status }) {
+    const ui = useStore($uiState);
+    const isBlocked = useStore($isBlocked);
+    const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!');
+    const pw = sh ? 2 : 3;
+    return (_jsxs(NoSelect, { flexDirection: "column", flexShrink: 0, fromLeftEdge: true, paddingX: 1, children: [_jsx(QueuedMessages, { cols: composer.cols, queued: composer.queuedDisplay, queueEditIdx: composer.queueEditIdx, t: ui.theme }), ui.bgTasks.size > 0 && (_jsxs(Text, { color: ui.theme.color.dim, children: [ui.bgTasks.size, " background ", ui.bgTasks.size === 1 ? 'task' : 'tasks', " running"] })), status.showStickyPrompt ? (_jsxs(Text, { color: ui.theme.color.dim, wrap: "truncate-end", children: [_jsx(Text, { color: ui.theme.color.label, children: "\u21B3 " }), status.stickyPrompt] })) : (_jsx(Text, { children: " " })), _jsxs(Box, { flexDirection: "column", position: "relative", children: [ui.statusBar && (_jsx(StatusRule, { bgCount: ui.bgTasks.size, busy: ui.busy, cols: composer.cols, cwdLabel: status.cwdLabel, model: ui.info?.model?.split('/').pop() ?? '', sessionStartedAt: status.sessionStartedAt, showCost: ui.showCost, status: ui.status, statusColor: status.statusColor, t: ui.theme, usage: ui.usage, voiceLabel: status.voiceLabel })), _jsx(FloatingOverlays, { cols: composer.cols, compIdx: composer.compIdx, completions: composer.completions, onModelSelect: actions.onModelSelect, onPickerSelect: actions.resumeById, pagerPageSize: composer.pagerPageSize })] }), !isBlocked && (_jsxs(Box, { flexDirection: "column", marginBottom: 1, children: [composer.inputBuf.map((line, i) => (_jsxs(Box, { children: [_jsx(Box, { width: 3, children: _jsx(Text, { color: ui.theme.color.dim, children: i === 0 ? `${ui.theme.brand.prompt} ` : '  ' }) }), _jsx(Text, { color: ui.theme.color.cornsilk, children: line || ' ' })] }, i))), _jsxs(Box, { position: "relative", children: [_jsx(Box, { width: pw, children: sh ? (_jsx(Text, { color: ui.theme.color.shellDollar, children: "$ " })) : (_jsx(Text, { bold: true, color: ui.theme.color.prompt, children: composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} ` })) }), _jsxs(Box, { flexGrow: 1, position: "relative", children: [_jsx(TextInput, { columns: Math.max(20, composer.cols - pw), onChange: composer.updateInput, onPaste: composer.handleTextPaste, onSubmit: composer.submit, placeholder: composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : '', value: composer.input }), _jsx(Box, { position: "absolute", right: 0, children: _jsx(GoodVibesHeart, { t: ui.theme, tick: status.goodVibesTick }) })] })] })] })), !composer.empty && !ui.sid && _jsxs(Text, { color: ui.theme.color.dim, children: ["\u2695 ", ui.status] })] }));
+});
+export const AppLayout = memo(function AppLayout({ actions, composer, mouseTracking, progress, status, transcript }) {
+    return (_jsx(AlternateScreen, { mouseTracking: mouseTracking, children: _jsxs(Box, { flexDirection: "column", flexGrow: 1, children: [_jsx(Box, { flexDirection: "row", flexGrow: 1, children: _jsx(TranscriptPane, { actions: actions, composer: composer, progress: progress, transcript: transcript }) }), _jsx(PromptZone, { cols: composer.cols, onApprovalChoice: actions.answerApproval, onClarifyAnswer: actions.answerClarify, onSecretSubmit: actions.answerSecret, onSudoSubmit: actions.answerSudo }), _jsx(ComposerPane, { actions: actions, composer: composer, status: status })] }) }));
+});

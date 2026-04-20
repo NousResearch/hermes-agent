@@ -28,6 +28,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+import httpx
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -1378,12 +1380,19 @@ class GatewayRunner:
         full 2-hour session timeout.
         """
         await asyncio.sleep(30)  # initial delay — let the gateway fully start
+        
+        # Get OpenViking endpoint from config (supports remote deployments)
+        _endpoint = os.environ.get("OPENVIKING_ENDPOINT", "http://127.0.0.1:1933")
+        _api_key = os.environ.get('OPENVIKING_API_KEY', '')
+        
         while self._running:
             try:
                 self.session_store._ensure_loaded()
                 now = datetime.now()
                 _committed_count = 0
                 
+                # Collect sessions to commit (avoid modifying dict during iteration)
+                _to_commit = []
                 for key, entry in list(self.session_store._entries.items()):
                     # Skip if already committed or flushed
                     if entry.memory_committed or entry.memory_flushed:
@@ -1391,47 +1400,38 @@ class GatewayRunner:
                     
                     # Check if session has been idle long enough
                     idle_time = (now - entry.updated_at).total_seconds()
-                    if idle_time < idle_seconds:
-                        continue
+                    if idle_time >= idle_seconds:
+                        _to_commit.append((entry, idle_time))
+                
+                if _to_commit:
+                    # Use async httpx client for non-blocking HTTP requests
+                    _headers = {}
+                    if _api_key:
+                        _headers['Authorization'] = f'Bearer {_api_key}'
                     
-                    # Commit the OpenViking session directly via API
-                    # This works even if the agent has been cleaned up from _running_agents
-                    try:
-                        import requests
-                        _endpoint = "http://127.0.0.1:1933"
-                        _api_key = None
-                        # Try to get API key from config
-                        config = getattr(self, 'config', None)
-                        if config:
-                            _api_key = getattr(config, 'openviking_api_key', None)
-                        if not _api_key:
-                            _api_key = os.environ.get('OPENVIKING_API_KEY', '')
-                        
-                        _headers = {}
-                        if _api_key:
-                            _headers['Authorization'] = f'Bearer {_api_key}'
-                        
-                        _resp = requests.post(
-                            f"{_endpoint}/api/v1/sessions/{entry.session_id}/commit",
-                            headers=_headers,
-                            timeout=10,
-                        )
-                        if _resp.status_code == 200:
-                            _committed_count += 1
-                            with self.session_store._lock:
-                                entry.memory_committed = True
-                                self.session_store._save()
-                            logger.info(
-                                "Idle commit: session %s committed after %.0fs idle",
-                                entry.session_id, idle_time,
-                            )
-                        else:
-                            logger.debug(
-                                "Idle commit failed for session %s: HTTP %d",
-                                entry.session_id, _resp.status_code,
-                            )
-                    except Exception as e:
-                        logger.debug("Idle commit failed for session %s: %s", entry.session_id, e)
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        for entry, idle_time in _to_commit:
+                            try:
+                                _resp = await client.post(
+                                    f"{_endpoint}/api/v1/sessions/{entry.session_id}/commit",
+                                    headers=_headers,
+                                )
+                                if _resp.status_code == 200:
+                                    _committed_count += 1
+                                    with self.session_store._lock:
+                                        entry.memory_committed = True
+                                        self.session_store._save()
+                                    logger.info(
+                                        "Idle commit: session %s committed after %.0fs idle",
+                                        entry.session_id, idle_time,
+                                    )
+                                else:
+                                    logger.debug(
+                                        "Idle commit failed for session %s: HTTP %d",
+                                        entry.session_id, _resp.status_code,
+                                    )
+                            except Exception as e:
+                                logger.debug("Idle commit failed for session %s: %s", entry.session_id, e)
                 
                 if _committed_count:
                     logger.info("Idle commit watcher: %d session(s) committed", _committed_count)

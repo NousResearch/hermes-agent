@@ -1308,6 +1308,19 @@ def get_model_context_length(
             if inferred:
                 effective_provider = inferred
 
+    # 5a. Copilot live /models API — max_prompt_tokens from the user's account.
+    # This catches account-specific models (e.g. claude-opus-4.6-1m) that
+    # don't exist in models.dev. For models that ARE in models.dev, this
+    # returns the provider-enforced limit which is what users can actually use.
+    if effective_provider in ("copilot", "copilot-acp", "github-copilot"):
+        try:
+            from hermes_cli.models import get_copilot_model_context
+            ctx = get_copilot_model_context(model, api_key=api_key)
+            if ctx:
+                return ctx
+        except Exception:
+            pass  # Fall through to models.dev
+
     if effective_provider == "nous":
         ctx = _resolve_nous_context_length(model)
         if ctx:

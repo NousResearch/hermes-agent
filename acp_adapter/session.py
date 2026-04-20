@@ -84,6 +84,30 @@ def _updated_at_sort_key(value: Any) -> float:
             return float("-inf")
 
 
+def _resolve_acp_toolsets(config: Dict[str, Any]) -> List[str]:
+    """Resolve the toolset list for ACP sessions.
+
+    Reads ``platform_toolsets.acp`` from the Hermes config when present.
+    This mirrors how other platforms (cli, discord, ...) get their toolset
+    lists, letting users expose MCP servers and additional toolsets to
+    editor integrations without modifying source.
+
+    Empty list or missing key falls back to ``["hermes-acp"]`` so existing
+    deployments keep working unchanged.
+    """
+    if not isinstance(config, dict):
+        return ["hermes-acp"]
+    platform_toolsets = config.get("platform_toolsets") or {}
+    if not isinstance(platform_toolsets, dict):
+        return ["hermes-acp"]
+    acp_toolsets = platform_toolsets.get("acp")
+    if not isinstance(acp_toolsets, list) or not acp_toolsets:
+        return ["hermes-acp"]
+    # Normalise to strings; YAML may produce non-string scalars for bare names.
+    normalised = [str(ts) for ts in acp_toolsets if ts is not None and str(ts).strip()]
+    return normalised or ["hermes-acp"]
+
+
 def _acp_stderr_print(*args, **kwargs) -> None:
     """Best-effort human-readable output sink for ACP stdio sessions.
 
@@ -537,9 +561,14 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
+        # ACP toolsets: honor platform_toolsets.acp when present so users can
+        # expose MCP servers and additional toolsets to editor integrations.
+        # Falls back to ["hermes-acp"] for backward compatibility.
+        enabled_toolsets = _resolve_acp_toolsets(config)
+
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": ["hermes-acp"],
+            "enabled_toolsets": enabled_toolsets,
             "quiet_mode": True,
             "session_id": session_id,
             "model": model or default_model,

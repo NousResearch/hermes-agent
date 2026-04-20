@@ -426,3 +426,123 @@ class TestPersistence:
 
         assert stdout_buf.getvalue() == ""
         assert stderr_buf.getvalue() == "ACP noise\n"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_acp_toolsets — platform_toolsets.acp config honoring
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAcpToolsets:
+    """platform_toolsets.acp should drive ACP enabled_toolsets, with safe
+    fallbacks to ["hermes-acp"] for backward compatibility."""
+
+    def test_missing_config_falls_back_to_hermes_acp(self):
+        from acp_adapter.session import _resolve_acp_toolsets
+        assert _resolve_acp_toolsets({}) == ["hermes-acp"]
+
+    def test_none_config_falls_back(self):
+        from acp_adapter.session import _resolve_acp_toolsets
+        assert _resolve_acp_toolsets(None) == ["hermes-acp"]  # type: ignore[arg-type]
+
+    def test_empty_list_falls_back(self):
+        from acp_adapter.session import _resolve_acp_toolsets
+        assert _resolve_acp_toolsets({"platform_toolsets": {"acp": []}}) == ["hermes-acp"]
+
+    def test_platform_toolsets_not_dict_falls_back(self):
+        from acp_adapter.session import _resolve_acp_toolsets
+        assert _resolve_acp_toolsets({"platform_toolsets": "nope"}) == ["hermes-acp"]
+
+    def test_acp_list_is_returned(self):
+        from acp_adapter.session import _resolve_acp_toolsets
+        config = {"platform_toolsets": {"acp": ["hermes-acp", "exa", "jcodemunch"]}}
+        assert _resolve_acp_toolsets(config) == ["hermes-acp", "exa", "jcodemunch"]
+
+    def test_non_string_entries_coerced_and_filtered(self):
+        from acp_adapter.session import _resolve_acp_toolsets
+        # e.g. YAML scalars parsed as int, plus None/empty strings
+        config = {"platform_toolsets": {"acp": ["hermes-acp", 12306, None, "", "exa"]}}
+        assert _resolve_acp_toolsets(config) == ["hermes-acp", "12306", "exa"]
+
+    def test_other_platform_entries_ignored(self):
+        from acp_adapter.session import _resolve_acp_toolsets
+        config = {"platform_toolsets": {"cli": ["hermes-cli"], "acp": ["hermes-acp", "exa"]}}
+        assert _resolve_acp_toolsets(config) == ["hermes-acp", "exa"]
+
+    def test_create_agent_uses_platform_toolsets_acp(self, tmp_path, monkeypatch):
+        """End-to-end: SessionManager._create_acp_agent wires platform_toolsets.acp
+        into the AIAgent's enabled_toolsets."""
+
+        captured_kwargs: dict = {}
+
+        def fake_agent(**kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), _print_fn=None)
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": "http://localhost:7878/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "custom", "default": "test-model"},
+                "platform_toolsets": {
+                    "acp": ["hermes-acp", "exa", "jcodemunch"],
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            manager.create_session(cwd="/work")
+
+        assert captured_kwargs.get("platform") == "acp"
+        assert captured_kwargs.get("enabled_toolsets") == [
+            "hermes-acp", "exa", "jcodemunch",
+        ]
+
+    def test_create_agent_falls_back_when_no_acp_config(self, tmp_path, monkeypatch):
+        captured_kwargs: dict = {}
+
+        def fake_agent(**kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), _print_fn=None)
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": "http://localhost:7878/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            }
+
+        # No platform_toolsets.acp in config — must fall back to ["hermes-acp"]
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "custom", "default": "test-model"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            manager.create_session(cwd="/work")
+
+        assert captured_kwargs.get("enabled_toolsets") == ["hermes-acp"]

@@ -1228,13 +1228,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"Select a provider:"
             )
 
-            thread_id = metadata.get("thread_id") if metadata else None
+            thread_id = self._metadata_thread_id(metadata)
             msg = await self._bot.send_message(
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard,
-                message_thread_id=int(thread_id) if thread_id else None,
+                message_thread_id=self._message_thread_id_for_send(thread_id),
                 **self._link_preview_kwargs(),
             )
 

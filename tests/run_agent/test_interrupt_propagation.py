@@ -33,6 +33,11 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         agent._active_children = []
         agent._active_children_lock = threading.Lock()
         agent.quiet_mode = True
+        # Attrs read by _compute_stale_timeout during _interruptible_api_call.
+        agent.provider = ""
+        agent.model = ""
+        agent._base_url = ""
+        agent._base_url_lower = ""
         return agent
 
     def test_parent_interrupt_sets_child_flag(self):

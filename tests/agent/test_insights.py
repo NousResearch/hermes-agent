@@ -520,9 +520,10 @@ class TestGatewayFormatting:
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "$" in text
+        # Cost and cache metrics are intentionally hidden (pricing was unreliable, see PR #11477).
         assert "Top Skills" in text
-        assert "Est. cost" in text
+        assert "$" not in text
+        assert "Est. cost" not in text
         assert "cache" not in text.lower()
 
     def test_gateway_format_shows_models(self, populated_db):

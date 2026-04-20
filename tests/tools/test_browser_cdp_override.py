@@ -46,6 +46,19 @@ class TestResolveCdpOverride:
         with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")):
             assert _resolve_cdp_override(HTTP_URL) == HTTP_URL
 
+    def test_falls_back_to_devtools_active_port_when_local_json_version_is_unavailable(self, monkeypatch, tmp_path):
+        import tools.browser_tool as browser_tool
+
+        active_port = tmp_path / "DevToolsActivePort"
+        active_port.write_text("9222\n/devtools/browser/local-abc\n", encoding="utf-8")
+
+        monkeypatch.setattr(browser_tool, "_devtools_activeport_candidates", lambda: (active_port,))
+
+        with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("404")):
+            resolved = browser_tool._resolve_cdp_override("http://127.0.0.1:9222")
+
+        assert resolved == "ws://127.0.0.1:9222/devtools/browser/local-abc"
+
     def test_normalizes_provider_returned_http_cdp_url_when_creating_session(self, monkeypatch):
         import tools.browser_tool as browser_tool
 
@@ -100,6 +113,13 @@ class TestGetCdpOverride:
 
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+
+    def test_requires_path_for_concrete_cdp_websocket_url(self):
+        from tools.browser_tool import _is_concrete_cdp_websocket_url
+
+        assert _is_concrete_cdp_websocket_url(WS_URL) is True
+        assert _is_concrete_cdp_websocket_url(f"ws://{HOST}:{PORT}") is False
+        assert _is_concrete_cdp_websocket_url(HTTP_URL) is False
 
     def test_uses_config_browser_cdp_url_when_env_missing(self, monkeypatch):
         import tools.browser_tool as browser_tool

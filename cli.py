@@ -6537,23 +6537,50 @@ class HermesCLI:
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
-            os.environ["BROWSER_CDP_URL"] = cdp_url
-            print()
-            print("🌐 Browser connected to live Chrome via CDP")
-            print(f"   Endpoint: {cdp_url}")
-            print()
-
-            # Inject context message so the model knows
-            if hasattr(self, '_pending_input'):
-                self._pending_input.put(
-                    "[System note: The user has connected your browser tools to their live Chrome browser "
-                    "via Chrome DevTools Protocol. Your browser_navigate, browser_snapshot, browser_click, "
-                    "and other browser tools now control their real browser — including any pages they have "
-                    "open, logged-in sessions, and cookies. They likely opened specific sites or logged into "
-                    "services before connecting. Please await their instruction before attempting to operate "
-                    "the browser. When you do act, be mindful that your actions affect their real browser — "
-                    "don't close tabs or navigate away from pages without asking.]"
+            resolved_cdp_url = ""
+            try:
+                from tools.browser_tool import (
+                    _is_concrete_cdp_websocket_url,
+                    _resolve_cdp_override,
                 )
+
+                resolved_cdp_url = _resolve_cdp_override(cdp_url)
+                _is_usable_endpoint = _is_concrete_cdp_websocket_url(resolved_cdp_url)
+            except Exception:
+                resolved_cdp_url = cdp_url
+                _is_usable_endpoint = False
+
+            print()
+            if _is_usable_endpoint:
+                os.environ["BROWSER_CDP_URL"] = resolved_cdp_url
+                print("🌐 Browser connected to live Chrome via CDP")
+                if resolved_cdp_url != cdp_url:
+                    print(f"   Requested: {cdp_url}")
+                print(f"   Endpoint: {resolved_cdp_url}")
+                print()
+
+                # Inject context message so the model knows
+                if hasattr(self, '_pending_input'):
+                    self._pending_input.put(
+                        "[System note: The user has connected your browser tools to their live Chrome browser "
+                        "via Chrome DevTools Protocol. Your browser_navigate, browser_snapshot, browser_click, "
+                        "and other browser tools now control their real browser — including any pages they have "
+                        "open, logged-in sessions, and cookies. They likely opened specific sites or logged into "
+                        "services before connecting. Please await their instruction before attempting to operate "
+                        "the browser. When you do act, be mindful that your actions affect their real browser — "
+                        "don't close tabs or navigate away from pages without asking.]"
+                    )
+            else:
+                os.environ.pop("BROWSER_CDP_URL", None)
+                print("   ⚠ Could not resolve a usable CDP WebSocket endpoint")
+                print(f"     Requested: {cdp_url}")
+                print("     Hermes now validates /browser connect using the same CDP resolution path as browser tools.")
+                if cdp_url == _DEFAULT_CDP:
+                    print("     If Chrome is using built-in remote debugging, keep it enabled and try again.")
+                    print("     If that still fails, launch Chrome with a dedicated --user-data-dir debug profile.")
+                else:
+                    print("     Pass a full ws://... endpoint or a discovery URL that serves /json/version.")
+                print()
 
         elif sub == "disconnect":
             if current:

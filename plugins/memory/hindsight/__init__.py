@@ -500,6 +500,48 @@ class HindsightMemoryProvider(MemoryProvider):
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
             self._mode = "local_embedded"
+
+        # For local_embedded mode, ensure the hindsight package (from hindsight-all)
+        # is installed. The setup wizard may silently fail to install it, and
+        # plugin.yaml only declares hindsight-client, so startup validation passes
+        # even when hindsight-all is missing — leading to a crash at runtime.
+        if self._mode == "local_embedded":
+            try:
+                import hindsight as _hindsight_check  # noqa: F401
+            except ImportError:
+                logger.warning("hindsight package not found (required for local_embedded mode), attempting to install hindsight-all...")
+                import shutil, subprocess, sys
+                uv_path = shutil.which("uv")
+                if uv_path:
+                    try:
+                        subprocess.run(
+                            [uv_path, "pip", "install", "--python", sys.executable,
+                             "--quiet", "hindsight-all"],
+                            check=True, timeout=180, capture_output=True,
+                        )
+                        logger.info("hindsight-all installed successfully")
+                    except subprocess.CalledProcessError as e:
+                        stderr_output = e.stderr.decode(errors="replace") if e.stderr else ""
+                        logger.error("Failed to install hindsight-all: %s. stderr: %s. "
+                                     "Run manually: uv pip install hindsight-all", e, stderr_output)
+                        raise RuntimeError(
+                            "hindsight-all is required for local_embedded mode but could not be installed. "
+                            "Run: uv pip install hindsight-all"
+                        ) from e
+                    except Exception as e:
+                        logger.error("Failed to install hindsight-all: %s. "
+                                     "Run manually: uv pip install hindsight-all", e)
+                        raise RuntimeError(
+                            "hindsight-all is required for local_embedded mode but could not be installed. "
+                            "Run: uv pip install hindsight-all"
+                        ) from e
+                else:
+                    logger.error("uv not found. Run: pip install hindsight-all")
+                    raise RuntimeError(
+                        "hindsight-all is required for local_embedded mode. "
+                        "Install uv or run: pip install hindsight-all"
+                    )
+
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in ("local_embedded", "local_external") else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)

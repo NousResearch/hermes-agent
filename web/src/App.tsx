@@ -1593,6 +1593,7 @@ function App() {
   const activeWorkspaceChatsCount = state.chats.filter((chat) => chat.workspaceId === state.activeWorkspaceId && !chat.archivedAt).length;
   const archivedCount = state.chats.filter((chat) => chat.workspaceId === state.activeWorkspaceId && chat.archivedAt).length;
 
+  const focusRailSnapshotRef = useRef<{ leftCollapsed: boolean; rightCollapsed: boolean } | null>(null);
   const desktopLeftCollapsed = layout.focusMode ? true : layout.leftCollapsed;
   const desktopRightCollapsed = layout.focusMode ? true : layout.rightCollapsed;
   const canSend = ((draft.trim().length > 0) || uploads.length > 0) && !isRecordingAudio && !pendingChatId;
@@ -1631,13 +1632,33 @@ function App() {
   }, [state.messages, state.activeChatId, pendingChatId]);
 
   const setFocusMode = (enabled: boolean) => {
-    setLayout((current) => ({
-      ...current,
-      focusMode: enabled,
-      leftCollapsed: enabled ? true : current.leftCollapsed,
-      rightCollapsed: enabled ? true : current.rightCollapsed,
-      mobilePanel: null,
-    }));
+    setLayout((current) => {
+      if (enabled) {
+        focusRailSnapshotRef.current = {
+          leftCollapsed: current.leftCollapsed,
+          rightCollapsed: current.rightCollapsed,
+        };
+
+        return {
+          ...current,
+          focusMode: true,
+          leftCollapsed: true,
+          rightCollapsed: true,
+          mobilePanel: null,
+        };
+      }
+
+      const restoredRails = focusRailSnapshotRef.current;
+      focusRailSnapshotRef.current = null;
+
+      return {
+        ...current,
+        focusMode: false,
+        leftCollapsed: restoredRails?.leftCollapsed ?? current.leftCollapsed,
+        rightCollapsed: restoredRails?.rightCollapsed ?? current.rightCollapsed,
+        mobilePanel: null,
+      };
+    });
   };
 
   const toggleLeftRail = () => setLayout((current) => ({ ...current, leftCollapsed: !current.leftCollapsed, mobilePanel: null }));
@@ -2203,8 +2224,57 @@ function App() {
 
   const workspaceCards = state.workspaces;
 
-  const desktopShell = (
-    <div className="relative mx-auto grid h-full max-w-[1600px] min-h-0 flex-1 gap-3 px-3 py-3 lg:grid-cols-[var(--left-rail-width)_minmax(0,1fr)_var(--right-rail-width)] lg:px-6 lg:py-6" style={{ '--left-rail-width': desktopLeftCollapsed ? '6.5rem' : '19rem', '--right-rail-width': desktopRightCollapsed ? '6.5rem' : '21.5rem' } as any}>
+  const desktopShell = layout.focusMode ? (
+    <div className="relative mx-auto grid h-full min-h-0 flex-1 gap-3 px-3 py-3 lg:grid-cols-1 lg:px-6 lg:py-6">
+      <section className="min-h-0 lg:col-span-full">
+        <ChatPane
+          activeWorkspace={activeWorkspace}
+          activeChat={activeChat}
+          chatMessages={chatMessages}
+          selectedModes={selectedModes}
+          onToggleMode={toggleMode}
+          draft={draft}
+          setDraft={setDraft}
+          uploads={uploads}
+          onRemoveUpload={(id) => setUploads((current) => current.filter((item) => item.id !== id))}
+          onSend={sendMessage}
+          onCopyMessage={handleCopyMessage}
+          onPromoteMessage={handlePromoteMessageToMemory}
+          onDeleteMessage={handleDeleteMessage}
+          onCopyLastReply={handleCopyLastReply}
+          onPinChat={handlePinChat}
+          onArchiveChat={activeChat?.archivedAt ? handleUnarchiveChat : handleArchiveChat}
+          onDeleteChat={handleDeleteChat}
+          onRenameChat={handleRenameChat}
+          onClearChat={handleClearChat}
+          onExportChat={handleExportChat}
+          isPending={Boolean(pendingChatId)}
+          showJumpToLatest={showJumpToLatest}
+          onJumpToLatest={scrollChatToBottom}
+          onDropFiles={handleFiles}
+          onPasteFiles={async (event) => {
+            const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith('image/') || file.type.startsWith('audio/'));
+            if (!files.length) return;
+            event.preventDefault();
+            await handleFiles(files);
+          }}
+          onToggleRecording={handleToggleAudioRecording}
+          isRecordingAudio={isRecordingAudio}
+          recordingSeconds={recordingSeconds}
+          recordingError={recordingError}
+          canSend={canSend}
+          imageInputRef={imageInputRef}
+          audioInputRef={audioInputRef}
+          scrollContainerRef={scrollRef}
+          onScroll={handleChatScroll}
+        />
+      </section>
+    </div>
+  ) : (
+    <div
+      className="relative mx-auto grid h-full max-w-[1600px] min-h-0 flex-1 gap-3 px-3 py-3 lg:grid-cols-[var(--left-rail-width)_minmax(0,1fr)_var(--right-rail-width)] lg:px-6 lg:py-6"
+      style={{ '--left-rail-width': desktopLeftCollapsed ? '6.5rem' : '19rem', '--right-rail-width': desktopRightCollapsed ? '6.5rem' : '21.5rem' } as any}
+    >
       <aside className="hidden min-h-0 lg:flex">
         <SidebarRail
           collapsed={desktopLeftCollapsed}

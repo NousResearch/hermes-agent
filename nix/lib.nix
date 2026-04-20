@@ -2,17 +2,23 @@
 { pkgs, npm-lockfile-fix }:
 {
   # Returns a buildNpmPackage-compatible attrs set that provides:
-  #   patchPhase          — strips trailing NUL newline from lockfile
+  #   patchPhase          — ensures lockfile has exactly one trailing newline
   #   nativeBuildInputs   — [ updateLockfileScript ] (list, prepend with ++ for more)
   #   passthru.devShellHook  — stamp-checked npm install + hash auto-update
   #   passthru.npmLockfile   — metadata for mkFixLockfiles
+  #
+  # NOTE: npmConfigHook runs `diff` between the source lockfile and the
+  # npm-deps cache lockfile. fetchNpmDeps preserves whatever trailing
+  # newlines the lockfile has. The patchPhase normalizes to exactly one
+  # trailing newline so both sides always match.
   #
   # Usage:
   #   npm = hermesNpmLib.mkNpmPassthru { folder = "ui-tui"; attr = "tui"; pname = "hermes-tui"; };
   #   pkgs.buildNpmPackage (npm // { ... } # or:
   #   pkgs.buildNpmPackage ({ ... } // npm)
   mkNpmPassthru =
-    { folder, # repo-relative folder with package.json, e.g. "ui-tui"
+    {
+      folder, # repo-relative folder with package.json, e.g. "ui-tui"
       attr, # flake package attr, e.g. "tui"
       pname, # e.g. "hermes-tui"
       nixFile ? "nix/${attr}.nix", # defaults to nix/<attr>.nix
@@ -20,7 +26,25 @@
     {
       patchPhase = ''
         runHook prePatch
-        sed -i -z 's/\n$//' package-lock.json
+        # Normalize trailing newlines so source and npm-deps always match,
+        # regardless of what fetchNpmDeps preserves.
+        sed -i -z 's/\n*$/\n/' package-lock.json
+
+        # Make npmConfigHook's byte-for-byte diff newline-agnostic by
+        # replacing its hardcoded /nix/store/.../diff with a wrapper that
+        # normalizes trailing newlines on both sides before comparing.
+        mkdir -p "$TMPDIR/bin"
+        cat > "$TMPDIR/bin/diff" << DIFFWRAP
+        #!/bin/sh
+        f1=\$(mktemp) && sed -z 's/\n*$/\n/' "\$1" > "\$f1"
+        f2=\$(mktemp) && sed -z 's/\n*$/\n/' "\$2" > "\$f2"
+        ${pkgs.diffutils}/bin/diff "\$f1" "\$f2" && rc=0 || rc=\$?
+        rm -f "\$f1" "\$f2"
+        exit \$rc
+        DIFFWRAP
+        chmod +x "$TMPDIR/bin/diff"
+        export PATH="$TMPDIR/bin:$PATH"
+
         runHook postPatch
       '';
 

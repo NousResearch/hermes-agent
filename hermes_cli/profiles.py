@@ -71,6 +71,29 @@ _CLONE_ALL_STRIP = [
     "processes.json",
 ]
 
+
+def _clone_all_copytree_ignore(source_dir: Path):
+    """Ignore ``profiles/`` at the root of *source_dir* only.
+
+    ``~/.hermes`` contains ``profiles/<name>/`` for sibling named profiles.
+    ``shutil.copytree`` would otherwise duplicate that entire tree inside the
+    new profile (recursive ``.../profiles/.../profiles/...``). Export already
+    excludes ``profiles`` via ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` — match that
+    behavior for ``--clone-all``.
+    """
+    source_resolved = source_dir.resolve()
+
+    def _ignore(directory: str, names: List[str]) -> List[str]:
+        try:
+            if Path(directory).resolve() == source_resolved:
+                return [n for n in names if n == "profiles"]
+        except (OSError, ValueError):
+            pass
+        return []
+
+    return _ignore
+
+
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
 # caches, binaries) that named profiles don't have.  We exclude those so the
@@ -424,8 +447,12 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile
-        shutil.copytree(source_dir, profile_dir)
+        # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
+        shutil.copytree(
+            source_dir,
+            profile_dir,
+            ignore=_clone_all_copytree_ignore(source_dir),
+        )
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)

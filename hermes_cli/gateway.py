@@ -3598,6 +3598,7 @@ def gateway_command(args):
             print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
             print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
             print()
+            print("For Windows logon auto-start, use scripts/setup_hermes_autostart.ps1.")
             print("To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell.")
             sys.exit(1)
         elif is_container():

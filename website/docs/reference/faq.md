@@ -432,9 +432,25 @@ If you want to try systemd anyway, make sure it's enabled:
 5. Verify: `systemctl is-system-running` should say "running" or "degraded"
 
 :::tip Auto-start on Windows boot
-For reliable auto-start, use Windows Task Scheduler to launch WSL + the gateway on login:
-1. Create a task that runs `wsl -d Ubuntu -- bash -lc 'hermes gateway run'`
-2. Set it to trigger on user logon
+For a more reliable Windows startup flow, use the official helper script from the repo:
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/setup_hermes_autostart.ps1 -OutFile $env:TEMP\setup_hermes_autostart.ps1
+& $env:TEMP\setup_hermes_autostart.ps1 -Distro Ubuntu
+```
+
+That creates a Scheduled Task which launches WSL at logon and runs `scripts/hermes_autostart.sh`, which starts and monitors the gateway.
+
+Useful flags:
+- `-Mode gateway` keeps it headless (default)
+- `-Mode webui` also starts the browser dashboard
+- `-RepoPath /path/to/hermes-agent` if your clone is not in `~/hermes-agent`
+
+If you want the shortest possible manual setup, you can still create a task that runs:
+
+```powershell
+wsl -d Ubuntu -- bash -lc 'hermes gateway run'
+```
 :::
 
 #### macOS: Node.js / ffmpeg / other tools not found by gateway

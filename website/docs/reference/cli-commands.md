@@ -176,7 +176,18 @@ Subcommands:
 | `setup` | Interactive messaging-platform setup. |
 
 :::tip WSL users
-Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
+Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable.
+
+For a persistent session, `tmux new -s hermes 'hermes gateway run'` still works.
+
+For automatic start on Windows logon, use the official helper script:
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/setup_hermes_autostart.ps1 -OutFile $env:TEMP\setup_hermes_autostart.ps1
+& $env:TEMP\setup_hermes_autostart.ps1 -Distro Ubuntu
+```
+
+See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
 :::
 
 ## `hermes setup`

@@ -7070,19 +7070,22 @@ class GatewayRunner:
                 sessions = self._session_db.list_sessions_rich(
                     source=user_source, limit=10
                 )
-                titled = [s for s in sessions if s.get("title")]
-                if not titled:
+                if not sessions:
                     return (
-                        "No named sessions found.\n"
-                        "Use `/title My Session` to name your current session, "
-                        "then `/resume My Session` to return to it later."
+                        "No sessions found.\n"
+                        "Start a conversation and it will appear here."
                     )
-                lines = ["📋 **Named Sessions**\n"]
-                for s in titled[:10]:
-                    title = s["title"]
+                lines = ["📋 **Recent Sessions**\n"]
+                for s in sessions[:10]:
+                    sid = s["id"]
+                    title = s.get("title")
                     preview = s.get("preview", "")[:40]
-                    preview_part = f" — _{preview}_" if preview else ""
-                    lines.append(f"• **{title}**{preview_part}")
+                    if title:
+                        preview_part = f" — _{preview}_" if preview else ""
+                        lines.append(f"• **{sid}** — {title}{preview_part}")
+                    else:
+                        preview_part = preview or "(no messages)"
+                        lines.append(f"• **{sid}** — _{preview_part}_")
                 lines.append("\nUsage: `/resume <session name>`")
                 return "\n".join(lines)
             except Exception as e:

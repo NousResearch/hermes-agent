@@ -423,6 +423,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("OLLAMA_API_KEY",),
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    "zenmux": ProviderConfig(
+        id="zenmux",
+        name="ZenMux",
+        auth_type="api_key",
+        inference_base_url="https://zenmux.ai/api/v1",
+        api_key_env_vars=("ZENMUX_API_KEY",),
+        base_url_env_var="ZENMUX_BASE_URL",
+    ),
     "bedrock": ProviderConfig(
         id="bedrock",
         name="AWS Bedrock",

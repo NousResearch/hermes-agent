@@ -252,7 +252,11 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
                 coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
 
             future = asyncio.run_coroutine_threadsafe(coro, loop)
-            result = future.result(timeout=30)
+            try:
+                result = future.result(timeout=30)
+            except TimeoutError:
+                future.cancel()
+                raise
             if result and not getattr(result, "success", True):
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
@@ -382,7 +386,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,
                     )
-                    send_result = future.result(timeout=60)
+                    try:
+                        send_result = future.result(timeout=60)
+                    except TimeoutError:
+                        future.cancel()
+                        raise
                     if send_result and not getattr(send_result, "success", True):
                         err = getattr(send_result, "error", "unknown")
                         logger.warning(

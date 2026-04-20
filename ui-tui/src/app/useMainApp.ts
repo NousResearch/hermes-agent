@@ -102,6 +102,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
+  const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
@@ -282,6 +283,14 @@ export function useMainApp(gw: GatewayClient) {
     setVoiceRecording,
     sys
   })
+
+  useEffect(() => {
+    if (ui.busy) {
+      setTurnStartedAt(prev => prev ?? Date.now())
+    } else {
+      setTurnStartedAt(null)
+    }
+  }, [ui.busy])
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
@@ -635,9 +644,21 @@ export function useMainApp(gw: GatewayClient) {
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,
+      turnStartedAt: ui.sid ? turnStartedAt : null,
       voiceLabel: voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
-    [cwd, gitBranch, goodVibesTick, sessionStartedAt, stickyPrompt, ui, voiceEnabled, voiceProcessing, voiceRecording]
+    [
+      cwd,
+      gitBranch,
+      goodVibesTick,
+      sessionStartedAt,
+      stickyPrompt,
+      turnStartedAt,
+      ui,
+      voiceEnabled,
+      voiceProcessing,
+      voiceRecording
+    ]
   )
 
   const appTranscript = useMemo(

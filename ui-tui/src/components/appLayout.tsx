@@ -194,6 +194,7 @@ const ComposerPane = memo(function ComposerPane({
             status={ui.status}
             statusColor={status.statusColor}
             t={ui.theme}
+            turnStartedAt={status.turnStartedAt}
             usage={ui.usage}
             voiceLabel={status.voiceLabel}
           />

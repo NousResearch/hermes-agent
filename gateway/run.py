@@ -2800,6 +2800,23 @@ class GatewayRunner:
 
             self._finalize_shutdown_agents(active_agents)
 
+            # Also shut down memory providers on idle cached agents.
+            # _finalize_shutdown_agents only handles agents that were
+            # mid-turn at drain time; the _agent_cache may still hold
+            # idle agents whose MemoryProviders never received
+            # on_session_end().
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock is not None and _cache is not None:
+                with _cache_lock:
+                    _idle_agents = list(_cache.values())
+                    _cache.clear()
+                for _entry in _idle_agents:
+                    _agent = (
+                        _entry[0] if isinstance(_entry, tuple) else _entry
+                    )
+                    self._cleanup_agent_resources(_agent)
+
             for platform, adapter in list(self.adapters.items()):
                 try:
                     await adapter.cancel_background_tasks()

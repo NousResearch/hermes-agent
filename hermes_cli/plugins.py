@@ -873,23 +873,31 @@ def get_pre_tool_call_block_message(
     return None
 
 
+def _ensure_plugins_discovered() -> PluginManager:
+    """Return the global manager after running idempotent plugin discovery."""
+    manager = get_plugin_manager()
+    manager.discover_and_load()
+    return manager
+
+
 def get_plugin_context_engine():
     """Return the plugin-registered context engine, or None."""
-    return get_plugin_manager()._context_engine
+    return _ensure_plugins_discovered()._context_engine
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
-    entry = get_plugin_manager()._plugin_commands.get(name)
+    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
 
 
 def get_plugin_commands() -> Dict[str, dict]:
     """Return the full plugin commands dict (name → {handler, description, plugin}).
 
-    Safe to call before discovery — returns an empty dict if no plugins loaded.
+    Triggers idempotent plugin discovery so callers can use plugin commands
+    before any explicit discover_plugins() call.
     """
-    return get_plugin_manager()._plugin_commands
+    return _ensure_plugins_discovered()._plugin_commands
 
 
 def get_plugin_toolsets() -> List[tuple]:

@@ -2003,7 +2003,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 
     from gateway.run import start_gateway
 
-    stop_hint = "Ctrl+Break or 'hermes gateway stop'" if _sys.platform == "win32" else "Ctrl+C"
+    stop_hint = "Ctrl+Break or 'hermes gateway stop'" if sys.platform == "win32" else "Ctrl+C"
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")

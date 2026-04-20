@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: nixbuild/nix-quick-install-action@63ca48f939ee3b8d835f4126562537df0fee5b91  # v30
+      - uses: ./.github/actions/nix-setup
 
       - name: Resolve head SHA
         id: sha

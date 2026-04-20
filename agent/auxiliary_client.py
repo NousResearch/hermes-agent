@@ -107,6 +107,7 @@ _FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
 # the standard chat API and third parties) are NOT clamped.
 # Source: https://platform.kimi.ai/docs/guide/kimi-k2-5-quickstart
 _KIMI_INSTANT_MODELS: frozenset = frozenset({
+    "kimi-k2.6",
     "kimi-k2.5",
     "kimi-k2-turbo-preview",
     "kimi-k2-0905-preview",

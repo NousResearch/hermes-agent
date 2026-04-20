@@ -32,7 +32,7 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("moonshotai/kimi-k2.5",            "recommended"),
+    ("moonshotai/kimi-k2.6",            "recommended"),
     ("anthropic/claude-opus-4.7",       ""),
     ("anthropic/claude-opus-4.6",       ""),
     ("anthropic/claude-sonnet-4.6",     ""),
@@ -81,7 +81,7 @@ def _codex_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
-        "moonshotai/kimi-k2.5",
+        "moonshotai/kimi-k2.6",
         "xiaomi/mimo-v2-pro",
         "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.6",
@@ -165,7 +165,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # (map to OpenRouter defaults — users get familiar picks on NIM)
         "qwen/qwen3.5-397b-a17b",
         "deepseek-ai/deepseek-v3.2",
-        "moonshotai/kimi-k2.5",
+        "moonshotai/kimi-k2.6",
         "minimaxai/minimax-m2.5",
         "z-ai/glm5",
         "openai/gpt-oss-120b",

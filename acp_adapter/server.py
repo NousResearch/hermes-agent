@@ -844,3 +844,13 @@ class HermesACPAgent(acp.Agent):
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])
+
+    # ---- Extension method handling --------------------------------------------
+
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle unknown ACP extension methods gracefully.
+
+        Returns an empty result so clients receive a valid JSON-RPC response
+        instead of a method_not_found error with noisy traceback.
+        """
+        return {}

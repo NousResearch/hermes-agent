@@ -702,6 +702,10 @@ class TestTelegramMenuCommands:
             "def register(ctx):\n"
             "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
         )
+        # Opt-in: plugins are opt-in by default, so enable in config.yaml
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - cmd-plugin\n"
+        )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         with patch.object(plugins_mod, "_plugin_manager", None):

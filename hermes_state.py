@@ -1955,10 +1955,10 @@ class SessionDB(_ObsidianMixin):
         signal_type: str,
         signal_value: float,
         signal_source: str,
-        context_id: str = None,
-        session_id: str = None,
-        message_text: str = None,
-        metadata: str = None,
+        context_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        message_text: Optional[str] = None,
+        metadata: Optional[str] = None,
     ) -> int:
         """Record an implicit quality signal from conversation patterns.
 

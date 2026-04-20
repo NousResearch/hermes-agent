@@ -16,7 +16,11 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from hermes_state import SessionDB
+    from tools.memory_tool import MemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +66,11 @@ def _build_entries_block(entries: List[str]) -> str:
 
 
 def curate_memory(
-    memory_store: Any,
+    memory_store: "MemoryStore",
     auxiliary_client: Any = None,
-    auxiliary_model: str = None,
-    session_db: Any = None,
-    session_id: str = None,
+    auxiliary_model: Optional[str] = None,
+    session_db: Optional["SessionDB"] = None,
+    session_id: Optional[str] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Run a curation pass on MEMORY.md and USER.md.
@@ -189,11 +193,11 @@ def curate_memory(
 
 
 def _promote_to_knowledge(
-    session_db: Any,
+    session_db: "SessionDB",
     title: str,
     content: str,
     reason: str,
-    session_id: str = None,
+    session_id: Optional[str] = None,
 ) -> None:
     """Add a curated memory entry to the knowledge_notes table."""
     now = time.time()
@@ -245,9 +249,9 @@ def _promote_to_wiki(title: str, content: str, reason: str) -> None:
 
 
 def run_post_session_curation(
-    memory_store: Any,
-    session_db: Any = None,
-    session_id: str = None,
+    memory_store: "MemoryStore",
+    session_db: Optional["SessionDB"] = None,
+    session_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Convenience wrapper: resolve auxiliary client and run curation.
 

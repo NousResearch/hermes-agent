@@ -21,7 +21,10 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from hermes_state import SessionDB
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,7 @@ _EFFORT_UPGRADE_PATTERNS = re.compile(
 class ImplicitSignalCollector:
     """Collects quality signals from conversation flow patterns."""
 
-    def __init__(self, db: Any):
+    def __init__(self, db: "SessionDB"):
         self._db = db
         self._last_routing_info: Optional[Dict] = None
         self._last_reasoning_effort: Optional[str] = None
@@ -65,7 +68,7 @@ class ImplicitSignalCollector:
         routed_model: str,
         routing_reason: str,
         message_text: str,
-        routing_decision_id: int = None,
+        routing_decision_id: Optional[int] = None,
     ) -> None:
         """Called when a model routing decision is made."""
         self._last_routing_info = {

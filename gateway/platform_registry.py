@@ -64,8 +64,19 @@ class PlatformEntry:
     # Hint shown when check_fn returns False.
     install_hint: str = ""
 
+    # Optional setup function for interactive configuration.
+    # Signature: () -> None (prompts user, saves env vars).
+    # If None, falls back to _setup_standard_platform (needs token_var + vars)
+    # or a generic "set these env vars" display.
+    setup_fn: Optional[Callable[[], None]] = None
+
     # "builtin" or "plugin"
     source: str = "plugin"
+
+    # Name of the plugin manifest that registered this entry (empty for
+    # built-ins).  Used by ``hermes gateway setup`` to auto-enable the
+    # owning plugin when the user configures its platform.
+    plugin_name: str = ""
 
     # ── Auth env var names (for _is_user_authorized integration) ──
     # E.g. "IRC_ALLOWED_USERS" — checked for comma-separated user IDs.

@@ -37,6 +37,7 @@ import importlib
 import importlib.metadata
 import importlib.util
 import logging
+import os
 import sys
 import types
 from dataclasses import dataclass, field
@@ -46,6 +47,19 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 from hermes_cli.config import cfg_get
+
+
+def get_bundled_plugins_dir() -> Path:
+    """Locate the bundled ``plugins/`` directory.
+
+    Honours ``HERMES_BUNDLED_PLUGINS`` (set by the Nix wrapper / packaged
+    installs) so read-only store paths are consulted first.  Falls back to
+    the in-repo path used during development.
+    """
+    env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
+    if env_override:
+        return Path(env_override)
+    return Path(__file__).resolve().parent.parent / "plugins"
 
 try:
     import yaml
@@ -456,12 +470,17 @@ class PluginContext:
         validate_config: Callable | None = None,
         required_env: list | None = None,
         install_hint: str = "",
+        **entry_kwargs: Any,
     ) -> None:
         """Register a gateway platform adapter.
 
         The adapter_factory receives a ``PlatformConfig`` and returns a
         ``BasePlatformAdapter`` subclass instance.  The gateway calls
         ``check_fn()`` before instantiation to verify dependencies.
+
+        Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
+        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
+        Unknown keys raise TypeError from the dataclass constructor.
 
         Example::
 
@@ -470,10 +489,13 @@ class PluginContext:
                 label="IRC",
                 adapter_factory=lambda cfg: IRCAdapter(cfg),
                 check_fn=lambda: True,
+                emoji="💬",
+                setup_fn=irc_interactive_setup,
             )
         """
         from gateway.platform_registry import platform_registry, PlatformEntry
 
+        entry_kwargs.setdefault("plugin_name", self.manifest.name)
         entry = PlatformEntry(
             name=name,
             label=label,
@@ -483,6 +505,7 @@ class PluginContext:
             required_env=required_env or [],
             install_hint=install_hint,
             source="plugin",
+            **entry_kwargs,
         )
         platform_registry.register(entry)
         self._manager._plugin_platform_names.add(name)
@@ -613,15 +636,18 @@ class PluginManager:
         #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
         #
         # ``memory/`` and ``context_engine/`` are skipped at the top level —
-        # they have their own discovery systems. Porting those to the
-        # category-namespace ``kind: exclusive`` model is a future PR.
-        repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+        # they have their own discovery systems. ``platforms/`` is a category
+        # holding platform adapters (scanned one level deeper below).
+        repo_plugins = get_bundled_plugins_dir()
         manifests.extend(
             self._scan_directory(
                 repo_plugins,
                 source="bundled",
-                skip_names={"memory", "context_engine"},
+                skip_names={"memory", "context_engine", "platforms"},
             )
+        )
+        manifests.extend(
+            self._scan_directory(repo_plugins / "platforms", source="bundled")
         )
 
         # 2. User plugins (~/.hermes/plugins/)

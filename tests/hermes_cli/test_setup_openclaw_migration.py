@@ -529,10 +529,16 @@ class TestGetSectionConfigSummary:
         assert result == "gpt-5"
 
     def test_gateway_matches_platform_registry(self):
-        """Every platform in _GATEWAY_PLATFORMS should be recognised by its
-        own env-var sentinel — i.e. the summary must not drift from the
+        """Every built-in platform should be recognised by its primary
+        env-var sentinel — i.e. the summary must not drift from the
         registry used by the setup checklist."""
-        for label, env_var, _fn in setup_mod._GATEWAY_PLATFORMS:
+        from hermes_cli.gateway import _PLATFORMS
+
+        for plat in _PLATFORMS:
+            label = plat["label"]
+            env_var = plat.get("token_var")
+            if not env_var:
+                continue
             def env_side(key, _target=env_var):
                 return "x" if key == _target else ""
             with patch.object(setup_mod, "get_env_value", side_effect=env_side):

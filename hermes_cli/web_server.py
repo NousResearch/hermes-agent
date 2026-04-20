@@ -3074,10 +3074,12 @@ def _discover_dashboard_plugins() -> list:
     plugins = []
     seen_names: set = set()
 
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    bundled_root = get_bundled_plugins_dir()
     search_dirs = [
         (get_hermes_home() / "plugins", "user"),
-        (PROJECT_ROOT / "plugins" / "memory", "bundled"),
-        (PROJECT_ROOT / "plugins", "bundled"),
+        (bundled_root / "memory", "bundled"),
+        (bundled_root, "bundled"),
     ]
     if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))

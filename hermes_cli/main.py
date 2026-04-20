@@ -2058,7 +2058,8 @@ def _model_flow_ai_gateway(config, current_model=""):
     api_key = get_env_value("AI_GATEWAY_API_KEY")
     if not api_key:
         print("No Vercel AI Gateway API key configured.")
-        print("Get one at: https://vercel.com/dashboard/ai-gateway")
+        print("Create API key here: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway&title=AI+Gateway")
+        print("Add a payment method to get $5 in free credits.")
         print()
         try:
             import getpass

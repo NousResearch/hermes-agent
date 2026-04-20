@@ -558,76 +558,88 @@ class HindsightMemoryProvider(MemoryProvider):
         # doesn't block the chat. Redirect stdout/stderr to a log file to
         # prevent rich startup output from spamming the terminal.
         if self._mode == "local_embedded":
-            def _start_daemon():
-                import traceback
-                log_dir = get_hermes_home() / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
-                log_path = log_dir / "hindsight-embed.log"
-                try:
-                    # Redirect the daemon manager's Rich console to our log file
-                    # instead of stderr. This avoids global fd redirects that
-                    # would capture output from other threads.
-                    import hindsight_embed.daemon_embed_manager as dem
-                    from rich.console import Console
-                    dem.console = Console(file=open(log_path, "a"), force_terminal=False)
+            # PostgreSQL's initdb refuses to run as root, which causes the
+            # embedded daemon to fail and retry endlessly (~3 min per cycle).
+            # Detect early and skip with a clear message instead of hanging.
+            _is_root = hasattr(os, 'geteuid') and os.geteuid() == 0
+            if _is_root:
+                logger.warning(
+                    "Hindsight local_embedded mode requires a non-root user "
+                    "(PostgreSQL initdb refuses to run as root). "
+                    "Skipping daemon startup. Either run hermes as a non-root user, "
+                    "or switch to cloud/local_external mode via 'hermes memory setup'."
+                )
+            else:
+                def _start_daemon():
+                    import traceback
+                    log_dir = get_hermes_home() / "logs"
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    log_path = log_dir / "hindsight-embed.log"
+                    try:
+                        # Redirect the daemon manager's Rich console to our log file
+                        # instead of stderr. This avoids global fd redirects that
+                        # would capture output from other threads.
+                        import hindsight_embed.daemon_embed_manager as dem
+                        from rich.console import Console
+                        dem.console = Console(file=open(log_path, "a"), force_terminal=False)
 
-                    client = self._get_client()
-                    profile = self._config.get("profile", "hermes")
+                        client = self._get_client()
+                        profile = self._config.get("profile", "hermes")
 
-                    # Update the profile .env to match our current config so
-                    # the daemon always starts with the right settings.
-                    # If the config changed and the daemon is running, stop it.
-                    from pathlib import Path as _Path
-                    profile_env = _Path.home() / ".hindsight" / "profiles" / f"{profile}.env"
-                    current_key = self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
-                    current_provider = self._config.get("llm_provider", "")
-                    current_model = self._config.get("llm_model", "")
-                    current_base_url = self._config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
-                    # Map openai_compatible/openrouter → openai for the daemon (OpenAI wire format)
-                    daemon_provider = "openai" if current_provider in ("openai_compatible", "openrouter") else current_provider
+                        # Update the profile .env to match our current config so
+                        # the daemon always starts with the right settings.
+                        # If the config changed and the daemon is running, stop it.
+                        from pathlib import Path as _Path
+                        profile_env = _Path.home() / ".hindsight" / "profiles" / f"{profile}.env"
+                        current_key = self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+                        current_provider = self._config.get("llm_provider", "")
+                        current_model = self._config.get("llm_model", "")
+                        current_base_url = self._config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+                        # Map openai_compatible/openrouter → openai for the daemon (OpenAI wire format)
+                        daemon_provider = "openai" if current_provider in ("openai_compatible", "openrouter") else current_provider
 
-                    # Read saved profile config
-                    saved = {}
-                    if profile_env.exists():
-                        for line in profile_env.read_text().splitlines():
-                            if "=" in line and not line.startswith("#"):
-                                k, v = line.split("=", 1)
-                                saved[k.strip()] = v.strip()
+                        # Read saved profile config
+                        saved = {}
+                        if profile_env.exists():
+                            for line in profile_env.read_text().splitlines():
+                                if "=" in line and not line.startswith("#"):
+                                    k, v = line.split("=", 1)
+                                    saved[k.strip()] = v.strip()
 
-                    config_changed = (
-                        saved.get("HINDSIGHT_API_LLM_PROVIDER") != daemon_provider or
-                        saved.get("HINDSIGHT_API_LLM_MODEL") != current_model or
-                        saved.get("HINDSIGHT_API_LLM_API_KEY") != current_key or
-                        saved.get("HINDSIGHT_API_LLM_BASE_URL", "") != current_base_url
-                    )
-
-                    if config_changed:
-                        # Write updated profile .env
-                        profile_env.parent.mkdir(parents=True, exist_ok=True)
-                        env_lines = (
-                            f"HINDSIGHT_API_LLM_PROVIDER={daemon_provider}\n"
-                            f"HINDSIGHT_API_LLM_API_KEY={current_key}\n"
-                            f"HINDSIGHT_API_LLM_MODEL={current_model}\n"
-                            f"HINDSIGHT_API_LOG_LEVEL=info\n"
+                        config_changed = (
+                            saved.get("HINDSIGHT_API_LLM_PROVIDER") != daemon_provider or
+                            saved.get("HINDSIGHT_API_LLM_MODEL") != current_model or
+                            saved.get("HINDSIGHT_API_LLM_API_KEY") != current_key or
+                            saved.get("HINDSIGHT_API_LLM_BASE_URL", "") != current_base_url
                         )
-                        if current_base_url:
-                            env_lines += f"HINDSIGHT_API_LLM_BASE_URL={current_base_url}\n"
-                        profile_env.write_text(env_lines)
-                        if client._manager.is_running(profile):
-                            with open(log_path, "a") as f:
-                                f.write("\n=== Config changed, restarting daemon ===\n")
-                            client._manager.stop(profile)
 
-                    client._ensure_started()
-                    with open(log_path, "a") as f:
-                        f.write("\n=== Daemon started successfully ===\n")
-                except Exception as e:
-                    with open(log_path, "a") as f:
-                        f.write(f"\n=== Daemon startup failed: {e} ===\n")
-                        traceback.print_exc(file=f)
+                        if config_changed:
+                            # Write updated profile .env
+                            profile_env.parent.mkdir(parents=True, exist_ok=True)
+                            env_lines = (
+                                f"HINDSIGHT_API_LLM_PROVIDER={daemon_provider}\n"
+                                f"HINDSIGHT_API_LLM_API_KEY={current_key}\n"
+                                f"HINDSIGHT_API_LLM_MODEL={current_model}\n"
+                                f"HINDSIGHT_API_LOG_LEVEL=info\n"
+                            )
+                            if current_base_url:
+                                env_lines += f"HINDSIGHT_API_LLM_BASE_URL={current_base_url}\n"
+                            profile_env.write_text(env_lines)
+                            if client._manager.is_running(profile):
+                                with open(log_path, "a") as f:
+                                    f.write("\n=== Config changed, restarting daemon ===\n")
+                                client._manager.stop(profile)
 
-            t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
-            t.start()
+                        client._ensure_started()
+                        with open(log_path, "a") as f:
+                            f.write("\n=== Daemon started successfully ===\n")
+                    except Exception as e:
+                        with open(log_path, "a") as f:
+                            f.write(f"\n=== Daemon startup failed: {e} ===\n")
+                            traceback.print_exc(file=f)
+
+                t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
+                t.start()
 
     def system_prompt_block(self) -> str:
         if self._memory_mode == "context":

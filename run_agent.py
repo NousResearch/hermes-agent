@@ -4953,7 +4953,16 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-        if "http_client" not in client_kwargs:
+        #
+        # NOTE: Skip custom HTTPTransport for openai-codex (chatgpt.com backend)
+        # as it triggers TLS handshake failures (Connection reset by peer).
+        # The custom socket_options in HTTPTransport are incompatible with
+        # chatgpt.com's TLS configuration. Use default transport instead.
+        is_codex_backend = (
+            self.provider == "openai-codex"
+            or str(client_kwargs.get("base_url", "")).lower().startswith("https://chatgpt.com/backend-api/codex")
+        )
+        if "http_client" not in client_kwargs and not is_codex_backend:
             keepalive_http = self._build_keepalive_http_client()
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http

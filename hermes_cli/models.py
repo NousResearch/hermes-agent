@@ -337,6 +337,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
+    "gmi": [
+        "zai-org/GLM-5.1-FP8",
+        "deepseek-ai/DeepSeek-V3.2",
+        "moonshotai/Kimi-K2.5",
+        "google/gemini-3.1-flash-lite-preview",
+        "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.4",
+    ],
     "opencode-zen": [
         "kimi-k2.5",
         "gpt-5.4-pro",

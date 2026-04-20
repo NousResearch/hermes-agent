@@ -540,3 +540,63 @@ class TestValidateCodexAutoCorrection:
         assert result["recognized"] is False
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
+
+
+# -- probe_api_models — Cloudflare UA mitigation --------------------------------
+
+class TestProbeApiModelsUserAgent:
+    """Probing custom /v1/models must send a Hermes User-Agent.
+
+    Some custom Claude proxies (e.g. ``packyapi.com``) sit behind Cloudflare with
+    Browser Integrity Check enabled. The default ``Python-urllib/3.x`` signature
+    is rejected with HTTP 403 ``error code: 1010``, which ``probe_api_models``
+    swallowed into ``{"models": None}``, surfacing to users as a misleading
+    "Could not reach the ... API to validate ..." error — even though the
+    endpoint is reachable and the listing exists.
+    """
+
+    def _make_mock_response(self, body: bytes):
+        from unittest.mock import MagicMock
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read = MagicMock(return_value=body)
+        return mock_resp
+
+    def test_probe_sends_hermes_user_agent(self):
+        from unittest.mock import patch
+
+        body = b'{"data":[{"id":"claude-opus-4.7"}]}'
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            result = probe_api_models("sk-test", "https://example.com/v1")
+
+        assert result["models"] == ["claude-opus-4.7"]
+        # The urlopen call receives a Request object as its first positional arg
+        req = mock_urlopen.call_args[0][0]
+        ua = req.get_header("User-agent")  # urllib title-cases header names
+        assert ua, "probe_api_models must send a User-Agent header"
+        assert ua.startswith("hermes-cli/"), (
+            f"User-Agent must advertise hermes-cli, got {ua!r}"
+        )
+        # Must not fall back to urllib's default — that's what Cloudflare 1010 blocks.
+        assert not ua.startswith("Python-urllib")
+
+    def test_probe_user_agent_sent_without_api_key(self):
+        """UA must be present even for endpoints that don't need auth."""
+        from unittest.mock import patch
+
+        body = b'{"data":[]}'
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            probe_api_models(None, "https://example.com/v1")
+
+        req = mock_urlopen.call_args[0][0]
+        ua = req.get_header("User-agent")
+        assert ua and ua.startswith("hermes-cli/")
+        # No Authorization was set, but UA must still be present.
+        assert req.get_header("Authorization") is None

@@ -535,6 +535,9 @@ class QQAdapter(BasePlatformAdapter):
                     quick_disconnect_count = 0
                 else:
                     backoff_idx += 1
+                    if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                        logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
+                        return
 
             except Exception as exc:
                 if not self._running:

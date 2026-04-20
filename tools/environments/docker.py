@@ -788,9 +788,17 @@ class DockerEnvironment(BaseEnvironment):
 
         # Explicit environment variables (docker_env config) — set at container
         # creation so they're available to all processes (including entrypoint).
+        # Note: docker_forward_env vars are also injected by _build_init_env_args()
+        # during init_session, but setting them here ensures they are part of the
+        # container's native environment (visible to non-bash processes and
+        # docker inspect).
         env_args = []
         for key in sorted(self._env):
             env_args.extend(["-e", f"{key}={self._env[key]}"])
+        for key in sorted(self._forward_env):
+            value = os.environ.get(key)
+            if value is not None:
+                env_args.extend(["-e", f"{key}={value}"])
 
         # Optional: run the container as the host user so files written into
         # bind-mounted dirs (/workspace, /root, docker_volumes entries) are

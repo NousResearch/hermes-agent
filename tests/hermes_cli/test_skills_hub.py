@@ -4,7 +4,6 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 
-from cli import ChatConsole
 from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
 
 
@@ -190,10 +189,13 @@ def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
         "identifier": "skills-sh/example/kubernetes",
     })()]
 
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
     with patch("tools.skills_hub.unified_search", return_value=results), \
          patch("tools.skills_hub.create_source_router", return_value={}), \
          patch("tools.skills_hub.GitHubAuth"):
-        handle_skills_slash("/skills search kubernetes", console=ChatConsole())
+        handle_skills_slash("/skills search kubernetes", console=console)
 
 
 def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_env):

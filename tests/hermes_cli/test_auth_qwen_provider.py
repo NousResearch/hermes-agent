@@ -8,6 +8,7 @@ resolve_qwen_runtime_credentials, get_qwen_auth_status.
 import json
 import os
 import stat
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -137,6 +138,10 @@ def test_save_qwen_cli_tokens_creates_parent(qwen_env):
     assert saved_path.parent.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows file permissions are not expressed as Unix mode bits",
+)
 def test_save_qwen_cli_tokens_permissions(qwen_env):
     tokens = _make_qwen_tokens()
     saved_path = _save_qwen_cli_tokens(tokens)

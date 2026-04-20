@@ -297,6 +297,9 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
 
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
+    # On Windows, cmd_update prefixes git with ``-c windows.appendAtomically=false``;
+    # these tests match plain ``["git", ...]``.  Pretend Linux so argv matches mocks.
+    monkeypatch.setattr(hermes_main.sys, "platform", "linux")
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)

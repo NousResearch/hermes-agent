@@ -6,7 +6,9 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import os
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
@@ -39,6 +41,11 @@ def _no_restart_verify_sleep(monkeypatch):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _plist_path_list_sep() -> str:
+    """PATH entry separator inside launchd plist (matches ``generate_launchd_plist``)."""
+    return ";" if sys.platform == "win32" else ":"
+
 
 def _make_run_side_effect(
     branch="main",
@@ -171,7 +178,8 @@ class TestLaunchdPlistPath:
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
                 detected = gateway_cli._detect_venv_dir()
                 venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
-                assert path_value.startswith(venv_bin + ":")
+                sep = _plist_path_list_sep()
+                assert path_value.startswith(venv_bin + sep)
                 break
         else:
             raise AssertionError("PATH key not found in plist")
@@ -184,27 +192,27 @@ class TestLaunchdPlistPath:
             if "<key>PATH</key>" in line.strip():
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
-                assert node_bin in path_value.split(":")
+                assert node_bin in path_value.split(_plist_path_list_sep())
                 break
         else:
             raise AssertionError("PATH key not found in plist")
 
     def test_plist_path_includes_current_env_path(self, monkeypatch):
-        monkeypatch.setenv("PATH", "/custom/bin:/usr/bin:/bin")
+        monkeypatch.setenv("PATH", os.pathsep.join(["/custom/bin", "/usr/bin", "/bin"]))
         plist = gateway_cli.generate_launchd_plist()
         assert "/custom/bin" in plist
 
     def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
         detected = gateway_cli._detect_venv_dir()
         venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
-        monkeypatch.setenv("PATH", f"{venv_bin}:/usr/bin:/bin")
+        monkeypatch.setenv("PATH", os.pathsep.join([venv_bin, "/usr/bin", "/bin"]))
         plist = gateway_cli.generate_launchd_plist()
         lines = plist.splitlines()
         for i, line in enumerate(lines):
             if "<key>PATH</key>" in line.strip():
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
-                parts = path_value.split(":")
+                parts = path_value.split(_plist_path_list_sep())
                 assert parts.count(venv_bin) == 1
                 break
         else:
@@ -216,10 +224,13 @@ class TestLaunchdPlistCurrentness:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
-        monkeypatch.setenv("PATH", "/custom/bin:/usr/bin:/bin")
+        monkeypatch.setenv("PATH", os.pathsep.join(["/custom/bin", "/usr/bin", "/bin"]))
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
 
-        monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]),
+        )
 
         assert gateway_cli.launchd_plist_is_current() is True
 

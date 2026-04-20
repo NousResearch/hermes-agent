@@ -7043,6 +7043,29 @@ For more help on a command:
     webhook_parser.set_defaults(func=cmd_webhook)
 
     # =========================================================================
+    # office command  —  launch the Hermes Digital Office web UI
+    # =========================================================================
+    try:
+        from hermes_office.launcher import add_subparser as _add_office_subparser
+
+        _add_office_subparser(subparsers)
+    except Exception as _office_exc:  # pragma: no cover - keep CLI usable
+        # We only register the office subcommand if the package imports cleanly;
+        # if not, surface the failure when the user actually tries `hermes office`.
+        def _missing_office(_args, _exc=_office_exc):
+            print(
+                f"[hermes office] unavailable: {_exc!r}\n"
+                "Install the office extra: pip install -e .[office]"
+            )
+            return 2
+
+        _office_parser = subparsers.add_parser(
+            "office",
+            help="Launch the Hermes Digital Office web UI",
+        )
+        _office_parser.set_defaults(func=_missing_office)
+
+    # =========================================================================
     # doctor command
     # =========================================================================
     doctor_parser = subparsers.add_parser(

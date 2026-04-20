@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,14 +27,14 @@ class TestAtomicJsonWrite:
         atomic_json_write(target, {"ok": True})
 
         assert target.exists()
-        assert json.loads(target.read_text())["ok"] is True
+        assert json.loads(target.read_text(encoding="utf-8"))["ok"] is True
 
     def test_overwrites_existing_file(self, tmp_path):
         target = tmp_path / "data.json"
         target.write_text('{"old": true}')
 
         atomic_json_write(target, {"new": True})
-        result = json.loads(target.read_text())
+        result = json.loads(target.read_text(encoding="utf-8"))
         assert result == {"new": True}
 
     def test_preserves_original_on_serialization_error(self, tmp_path):
@@ -46,7 +47,7 @@ class TestAtomicJsonWrite:
             atomic_json_write(target, {"bad": object()})
 
         # Original file should be untouched
-        result = json.loads(target.read_text())
+        result = json.loads(target.read_text(encoding="utf-8"))
         assert result == original
 
     def test_no_leftover_temp_files_on_success(self, tmp_path):
@@ -88,7 +89,7 @@ class TestAtomicJsonWrite:
         target = str(tmp_path / "string_path.json")
         atomic_json_write(target, {"string": True})
 
-        result = json.loads(Path(target).read_text())
+        result = json.loads(Path(target).read_text(encoding="utf-8"))
         assert result == {"string": True}
 
     def test_writes_list_data(self, tmp_path):
@@ -96,21 +97,21 @@ class TestAtomicJsonWrite:
         data = [1, "two", {"three": 3}]
         atomic_json_write(target, data)
 
-        result = json.loads(target.read_text())
+        result = json.loads(target.read_text(encoding="utf-8"))
         assert result == data
 
     def test_empty_list(self, tmp_path):
         target = tmp_path / "empty.json"
         atomic_json_write(target, [])
 
-        result = json.loads(target.read_text())
+        result = json.loads(target.read_text(encoding="utf-8"))
         assert result == []
 
     def test_custom_indent(self, tmp_path):
         target = tmp_path / "custom.json"
         atomic_json_write(target, {"a": 1}, indent=4)
 
-        text = target.read_text()
+        text = target.read_text(encoding="utf-8")
         assert '    "a"' in text  # 4-space indent
 
     def test_accepts_json_dump_default_hook(self, tmp_path):
@@ -133,6 +134,10 @@ class TestAtomicJsonWrite:
         assert result["emoji"] == "🎉"
         assert result["japanese"] == "日本語"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="concurrent os.replace() on the same path often raises PermissionError on Windows",
+    )
     def test_concurrent_writes_dont_corrupt(self, tmp_path):
         """Multiple rapid writes should each produce valid JSON."""
         import threading
@@ -154,6 +159,6 @@ class TestAtomicJsonWrite:
 
         assert not errors
         # File should contain valid JSON from one of the writers
-        result = json.loads(target.read_text())
+        result = json.loads(target.read_text(encoding="utf-8"))
         assert "writer" in result
         assert len(result["data"]) == 100

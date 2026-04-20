@@ -101,6 +101,7 @@ class TestPathCompletions:
 
     def test_home_expansion(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         (tmp_path / "testfile.md").touch()
 
         completions = list(SlashCommandCompleter._path_completions("~/test"))
@@ -155,12 +156,14 @@ class TestIntegration:
         completions = list(completer.get_completions(doc, event))
         assert completions == []
 
-    def test_absolute_path_triggers_completion(self, completer):
-        doc = Document("check /etc/hos", cursor_position=14)
+    def test_absolute_path_triggers_completion(self, completer, tmp_path):
+        (tmp_path / "hostsfile.txt").touch()
+        # Use POSIX separators so the token is path-like for ``_extract_path_word`` on Windows.
+        text = f"check {tmp_path.as_posix()}/hos"
+        doc = Document(text, cursor_position=len(text))
         event = MagicMock()
         completions = list(completer.get_completions(doc, event))
         names = _display_names(completions)
-        # /etc/hosts should exist on Linux
         assert any("host" in n.lower() for n in names)
 
 

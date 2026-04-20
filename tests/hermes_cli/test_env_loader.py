@@ -63,7 +63,12 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
 
-    sys.modules.pop("hermes_cli.main", None)
+    # Drop cached imports so module-level dotenv loading runs with this test's env.
+    for _mod in (
+        "hermes_cli.main",
+        "hermes_cli.env_loader",
+    ):
+        sys.modules.pop(_mod, None)
     importlib.import_module("hermes_cli.main")
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"

@@ -107,6 +107,7 @@ class TestGenerateBash:
         assert "start" in out
         assert "stop" in out
 
+    @pytest.mark.skipif(not shutil.which("bash"), reason="bash not on PATH (typical on Windows)")
     def test_valid_bash_syntax(self):
         """Script must pass `bash -n` syntax check."""
         out = generate_bash(_make_parser())

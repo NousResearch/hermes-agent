@@ -95,7 +95,7 @@ class TestScanWorkspaceState:
         (ws / "todo.json").write_text("{}")
         (ws / "sessions").mkdir()
         findings = claw_mod._scan_workspace_state(tmp_path)
-        descs = [desc for _, desc in findings]
+        descs = [desc.replace("\\", "/") for _, desc in findings]
         assert any("workspace/todo.json" in d for d in descs)
         assert any("workspace/sessions" in d for d in descs)
 
@@ -132,7 +132,7 @@ class TestArchiveDirectory:
         assert archive_path == tmp_path / ".openclaw.pre-migration"
         assert archive_path.is_dir()
         assert not source.exists()
-        assert (archive_path / "test.txt").read_text() == "data"
+        assert (archive_path / "test.txt").read_text(encoding="utf-8") == "data"
 
     def test_adds_timestamp_when_archive_exists(self, tmp_path):
         source = tmp_path / ".openclaw"

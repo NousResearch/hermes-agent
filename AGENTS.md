@@ -566,3 +566,34 @@ python -m pytest tests/ -q -n 4
 Worker count above 4 will surface test-ordering flakes that CI never sees.
 
 Always run the full suite before pushing changes.
+
+---
+
+## Learned User Preferences
+
+- User communicates in Chinese; respond in 中文 when the user writes in Chinese.
+- Always deliver fully-automated PowerShell setup scripts; minimize manual steps for the user.
+- Never require typing auth tokens — start local web UIs in no-auth mode (e.g. `HERMES_WEBUI_NO_AUTH=1`) so the page is usable on first load.
+- Prefer local Ollama models (gemma4 family) over cloud providers; treat the local stack as the default runtime.
+- Confirm full test suites pass (not subsets) before declaring a task done; iterate until all green.
+- Provide bilingual READMEs and quickstarts (English + 中文 sections side-by-side).
+- When researching alternatives, deliver a ranked comparison table tied to the user's stated criteria.
+- Aim for highest-quality output regardless of token cost; do deep research and back claims with numbers/sources.
+- Provide Windows PowerShell command examples (not bash-only) since the user runs Win32.
+- After any code/script change, run a smoke test (curl/HTTP probe or pytest) and report the verified result.
+
+## Learned Workspace Facts
+
+- Host is Windows 10 + PowerShell + Python 3.14.3 installed system-wide (no venv on PATH); always set `$env:PYTHONIOENCODING='utf-8'` (and often `$env:PYTHONUTF8='1'`) before running Hermes — default GBK terminal crashes on Unicode like `✓`.
+- Persistent `NO_PROXY=127.0.0.1,localhost,::1` is required: a system IE/WinHTTP proxy at `127.0.0.1:7890` hijacks loopback traffic and returns 502 to Python `httpx`/OpenAI SDK calls against `127.0.0.1:11434`.
+- Hermes refuses to start when the model context is < 64K. Ollama Modelfiles must set `PARAMETER num_ctx 65536` (or higher); also export `OLLAMA_CONTEXT_LENGTH=65536`.
+- Local LLM: Ollama on `http://127.0.0.1:11434/v1`. Smallest Gemma 4 is `gemma4:e2b` (~7.2 GB) wrapped as `gemma4-e2b-hermes` via `models/Modelfile.gemma4-e2b-hermes`; 26B variant at `models/Modelfile.gemma4-26b-hermes`.
+- `~/.hermes/config.yaml` is wired to the local stack: `model.provider: custom`, `base_url: http://127.0.0.1:11434/v1`, `default: gemma4-e2b-hermes`, `context_length: 65536`.
+- Two web UIs run concurrently on different ports: `hermes office` (digital office canvas, port **8765**, source under `hermes_office/`) and `hermes-webui` (monitoring dashboard, port **8643**, installed at `~/.hermes/hermes-webui`).
+- `hermes-webui` auth bypass: env `HERMES_WEBUI_NO_AUTH=1` disables the token gate; default `scripts/start_hermes_webui.ps1` enables it on loopback and forces auth back on when `-Lan` is used.
+- On Windows do NOT use `scripts/run_tests.sh`; use `python -m pytest tests/ -q -n 4` with `$env:PYTHONIOENCODING='utf-8'`. `tests/hermes_cli/test_gateway_service.py` is POSIX-only (systemctl/launchd/`os.getuid`) and skips on win32.
+- Windows test patterns: pass `encoding="utf-8"` to every `Path.read_text()`/`open()` (default GBK breaks on UTF-8 sources); split/join `PATH` with `os.pathsep`, never literal `:` (collides with `C:\` drive prefixes).
+- The `hermes_office/` module ships its own pytest suite at `hermes_office/tests/`; run `python -m pytest hermes_office/tests -q` (~66 tests, < 5 s). Frontend lives at `hermes_office/frontend/` (Vite + React + TS + Tailwind + Canvas2D); build with `npm install && npm run build`.
+- Useful repo scripts under `scripts/`: `setup_gemma4_e2b_ollama_hermes.ps1`, `setup_gemma4_26b_ollama_hermes.ps1`, `autoinstall-run-gemma4-26b.ps1`, `start_hermes_webui.ps1`, `stop_hermes_webui.ps1`, and `seed_software_company.py` (seeds 6 departments / 15 employees into the office API and runs a smoke test).
+- Kiro-style specs live under `.kiro/specs/<feature>/{requirements,design,tasks}.md` — see `.kiro/specs/digital-office-ui/` for the canonical layout.
+

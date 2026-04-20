@@ -72,7 +72,7 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "model-B"
@@ -95,7 +95,7 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "model-A"
@@ -118,7 +118,7 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "model-X"
@@ -142,7 +142,7 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model.get("api_mode") == "anthropic_messages"
@@ -169,7 +169,7 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert "api_mode" not in model, "Stale api_mode should be removed"

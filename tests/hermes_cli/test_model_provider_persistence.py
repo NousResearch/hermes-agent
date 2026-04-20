@@ -44,7 +44,7 @@ class TestSaveModelChoiceAlwaysDict:
         _save_model_choice("kimi-k2.5")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), (
             f"Expected model to be a dict after save, got {type(model)}: {model}"
@@ -61,7 +61,7 @@ class TestSaveModelChoiceAlwaysDict:
 
         _save_model_choice("new-model")
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "new-model"
@@ -92,7 +92,7 @@ class TestProviderPersistsAfterModelSave:
             _model_flow_api_key_provider(load_config(), "kimi-coding", "old-model")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "kimi-coding", (
@@ -140,7 +140,7 @@ class TestProviderPersistsAfterModelSave:
 
         import yaml
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "copilot"
@@ -203,7 +203,7 @@ class TestProviderPersistsAfterModelSave:
 
         import yaml
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "copilot-acp"
@@ -224,7 +224,7 @@ class TestProviderPersistsAfterModelSave:
             _model_flow_api_key_provider(load_config(), "opencode-go", "opencode-go/kimi-k2.5")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model.get("provider") == "opencode-go"
@@ -251,7 +251,7 @@ class TestProviderPersistsAfterModelSave:
             _model_flow_api_key_provider(load_config(), "opencode-go", "kimi-k2.5")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model.get("provider") == "opencode-go"

@@ -1,6 +1,7 @@
 """Tests for WSL detection and WSL-aware gateway behavior."""
 
 import io
+import shutil as std_shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -123,6 +124,16 @@ class TestWslSystemdOperational:
 
 class TestSupportsSystemdServicesWSL:
     """Test that supports_systemd_services() handles WSL correctly."""
+
+    @pytest.fixture(autouse=True)
+    def _fake_systemctl_on_path(self, monkeypatch):
+        """Windows hosts rarely have ``systemctl``; these tests only need it on PATH."""
+        def _which(cmd, *args, **kwargs):
+            if cmd == "systemctl":
+                return "/bin/systemctl"
+            return std_shutil.which(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(gateway.shutil, "which", _which)
 
     def test_wsl_with_systemd(self, monkeypatch):
         """WSL + working systemd → True."""

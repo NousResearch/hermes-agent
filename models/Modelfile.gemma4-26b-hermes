@@ -1,0 +1,7 @@
+# Hermes Agent 要求至少约 64K 上下文；按需可调大（受显存/内存限制）。
+# 使用: ollama create gemma4-26b-hermes -f models/Modelfile.gemma4-26b-hermes
+# 然后在 ~/.hermes/config.yaml 里把 model.default 改为 gemma4-26b-hermes
+
+FROM gemma4:26b
+
+PARAMETER num_ctx 65536

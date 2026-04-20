@@ -556,7 +556,7 @@ class TestProviderDiscovery:
         config_file.write_text("memory:\n  provider: ''\n")
         from hermes_cli.plugins_cmd import _save_memory_provider
         _save_memory_provider("honcho")
-        content = yaml.safe_load(config_file.read_text())
+        content = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert content["memory"]["provider"] == "honcho"
 
     def test_save_context_engine(self, tmp_path, monkeypatch):
@@ -566,7 +566,7 @@ class TestProviderDiscovery:
         config_file.write_text("context:\n  engine: compressor\n")
         from hermes_cli.plugins_cmd import _save_context_engine
         _save_context_engine("lcm")
-        content = yaml.safe_load(config_file.read_text())
+        content = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert content["context"]["engine"] == "lcm"
 
     def test_discover_memory_providers_empty(self):
@@ -598,7 +598,8 @@ class TestNoAutoActivation:
         # This tests the run_agent.py logic indirectly by checking that the
         # code path for default config doesn't call get_plugin_context_engine.
         import run_agent as ra_module
-        source = open(ra_module.__file__).read()
+        with open(ra_module.__file__, encoding="utf-8") as f:
+            source = f.read()
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source

@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    background: linear-gradient(180deg, #f8fafc 0%, #eff6ff 100%);
+    color: #0f172a;
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  *:focus-visible {
+    outline: 2px solid #38bdf8;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-2xl px-4 py-2 font-medium
+           transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-sky-500 text-white shadow-soft hover:bg-sky-600 active:translate-y-px;
+  }
+  .btn-ghost {
+    @apply btn bg-white/80 text-slate-800 hover:bg-white;
+  }
+  .btn-big {
+    @apply btn px-6 py-4 text-lg shadow-soft;
+  }
+  .card {
+    @apply bg-white rounded-2xl shadow-soft border border-slate-100;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1
+           text-xs font-medium text-slate-700;
+  }
+  .chip-removable {
+    @apply chip cursor-pointer hover:bg-rose-100 hover:text-rose-700;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

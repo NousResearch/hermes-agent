@@ -1,15 +1,25 @@
 """Tests for gateway service management helpers."""
 
 import os
-import pwd
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 import hermes_cli.gateway as gateway_cli
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
+
+# These tests call systemd/launchd helpers that use ``os.getuid()`` and POSIX
+# paths.  They are exercised on Linux/macOS CI; skip the whole module on Windows.
+if sys.platform == "win32":
+    pytest.skip(
+        "Gateway service tests target POSIX (systemctl/launchd, os.getuid).",
+        allow_module_level=True,
+    )
 
 
 class TestSystemdServiceRefresh:
@@ -836,7 +846,6 @@ class TestSystemServiceIdentityRootHandling:
         monkeypatch.setenv("USER", "root")
         monkeypatch.setenv("LOGNAME", "root")
 
-        import pytest
         with pytest.raises(ValueError, match="pass --run-as-user root to override"):
             gateway_cli._system_service_identity(run_as_user=None)
 
@@ -1014,6 +1023,8 @@ class TestProfileArg:
         assert "<string>mybot</string>" in plist
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
+        import pwd
+
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)
         machine_home = tmp_path / "machine-home"

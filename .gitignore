@@ -68,3 +68,9 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+
+# Per-machine Cursor hook state (continual-learning bookkeeping etc.)
+.cursor/hooks/state/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

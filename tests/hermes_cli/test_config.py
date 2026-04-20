@@ -93,7 +93,7 @@ class TestSaveAndLoadRoundtrip:
             assert reloaded["model"] == "test/custom-model"
             assert reloaded["agent"]["max_turns"] == 42
 
-            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert saved["agent"]["max_turns"] == 42
             assert "max_turns" not in saved
 
@@ -101,7 +101,7 @@ class TestSaveAndLoadRoundtrip:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             save_config({"model": "test/custom-model", "max_turns": 37})
 
-            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert saved["agent"]["max_turns"] == 37
             assert "max_turns" not in saved
 
@@ -159,7 +159,7 @@ class TestRemoveEnvValue:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "KEY_B": "value_b"}):
             result = remove_env_value("KEY_B")
             assert result is True
-            content = env_path.read_text()
+            content = env_path.read_text(encoding="utf-8")
             assert "KEY_B" not in content
             assert "KEY_A=value_a" in content
             assert "KEY_C=value_c" in content
@@ -178,7 +178,7 @@ class TestRemoveEnvValue:
             result = remove_env_value("MISSING_KEY")
             assert result is False
             # File should be untouched
-            assert env_path.read_text() == "OTHER_KEY=value\n"
+            assert env_path.read_text(encoding="utf-8") == "OTHER_KEY=value\n"
 
     def test_handles_missing_env_file(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "GHOST_KEY": "ghost"}):
@@ -248,7 +248,7 @@ class TestSaveConfigAtomicity:
 
             # Read raw YAML to verify it's valid and correct
             config_path = tmp_path / "config.yaml"
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77
@@ -329,7 +329,7 @@ class TestSanitizeEnvLines:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             save_env_value("MESSAGING_CWD", "/tmp")
 
-            content = env_file.read_text()
+            content = env_file.read_text(encoding="utf-8")
             lines = content.strip().split("\n")
 
             # Corrupted line should be split, new key added
@@ -349,7 +349,7 @@ class TestSanitizeEnvLines:
             assert fixes > 0
 
             # Verify file is now clean
-            content = env_file.read_text()
+            content = env_file.read_text(encoding="utf-8")
             assert "OPENROUTER_API_KEY=val\n" in content
             assert "FIRECRAWL_API_KEY=val2\n" in content
 

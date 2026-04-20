@@ -628,6 +628,8 @@ def _ensure_user_systemd_env() -> None:
     We detect the standard socket path and set the vars so all subsequent
     subprocess calls inherit them.
     """
+    if not hasattr(os, "getuid"):
+        return
     uid = os.getuid()
     if "XDG_RUNTIME_DIR" not in os.environ:
         runtime_dir = f"/run/user/{uid}"
@@ -1656,8 +1658,10 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    import os
-    return f"gui/{os.getuid()}"
+    """Return launchd domain path (``gui/<uid>``).  Used only on macOS; on Windows
+    unit tests may call plist helpers — ``os.getuid`` does not exist there."""
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    return f"gui/{uid}"
 
 
 def generate_launchd_plist() -> str:
@@ -1685,9 +1689,13 @@ def generate_launchd_plist() -> str:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
         if resolved_node_dir not in priority_dirs:
             priority_dirs.append(resolved_node_dir)
-    sane_path = ":".join(
-        dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
-    )
+    # Split the process PATH with the OS-native separator, then join plist
+    # entries.  On Windows ``:`` appears inside ``C:\...`` paths, so ``;`` is
+    # used between plist PATH segments when running on win32 (launchd plist
+    # generation is only exercised in tests there; macOS/Linux use ``:``).
+    path_tail = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    plist_sep = ";" if sys.platform == "win32" else ":"
+    sane_path = plist_sep.join(dict.fromkeys(priority_dirs + path_tail))
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [

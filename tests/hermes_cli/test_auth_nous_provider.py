@@ -402,13 +402,13 @@ class TestLoginNousSkipKeepsCurrent:
         _login_nous(args, PROVIDER_REGISTRY["nous"])
 
         # config.yaml model section must be unchanged
-        cfg_after = yaml.safe_load(config_path.read_text())
+        cfg_after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert cfg_after["model"]["provider"] == "openrouter"
         assert cfg_after["model"]["default"] == "anthropic/claude-opus-4.6"
         assert "base_url" not in cfg_after["model"]
 
         # auth.json: active_provider restored to openrouter, but Nous creds saved
-        auth_after = json.loads(auth_path.read_text())
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
         assert auth_after["active_provider"] == "openrouter"
         assert "nous" in auth_after["providers"]
         assert auth_after["providers"]["nous"]["access_token"] == "fake-nous-token"
@@ -434,11 +434,11 @@ class TestLoginNousSkipKeepsCurrent:
         )
         _login_nous(args, PROVIDER_REGISTRY["nous"])
 
-        cfg_after = yaml.safe_load(config_path.read_text())
+        cfg_after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert cfg_after["model"]["provider"] == "nous"
         assert cfg_after["model"]["default"] == "xiaomi/mimo-v2-pro"
 
-        auth_after = json.loads(auth_path.read_text())
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
         assert auth_after["active_provider"] == "nous"
 
     def test_skip_with_no_prior_active_provider_clears_it(self, tmp_path, monkeypatch):
@@ -465,7 +465,7 @@ class TestLoginNousSkipKeepsCurrent:
         _login_nous(args, PROVIDER_REGISTRY["nous"])
 
         auth_path = hermes_home / "auth.json"
-        auth_after = json.loads(auth_path.read_text())
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
         # active_provider should NOT be set to "nous" after Skip
         assert auth_after.get("active_provider") in (None, "")
         # But Nous creds are still saved

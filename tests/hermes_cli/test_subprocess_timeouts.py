@@ -16,7 +16,7 @@ _CLI_MODULES = [
 
 def _subprocess_run_calls(filepath: str) -> list[dict]:
     """Parse a Python file and return info about subprocess.run() calls."""
-    source = Path(filepath).read_text()
+    source = Path(filepath).read_text(encoding="utf-8")
     tree = ast.parse(source, filename=filepath)
     calls = []
     for node in ast.walk(tree):

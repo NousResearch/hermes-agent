@@ -1,6 +1,7 @@
 """Tests for Codex auth — tokens stored in Hermes auth store (~/.hermes/auth.json)."""
 
 import json
+import os
 import time
 import base64
 from pathlib import Path

@@ -460,14 +460,15 @@ def session_search(
 
         try:
             # Use _run_async() which properly manages event loops across
-            # CLI, gateway, and worker-thread contexts.  The previous
-            # pattern (asyncio.run() in a ThreadPoolExecutor) created a
-            # disposable event loop that conflicted with cached
-            # AsyncOpenAI/httpx clients bound to a different loop,
-            # causing deadlocks in gateway mode (#2681).
+            # CLI, gateway, and worker-thread contexts. Wrap the coroutine
+            # itself in asyncio.wait_for() so the 60s cap applies on every
+            # execution path, including the main-thread persistent-loop path
+            # where _run_async() does not use Future.result(timeout=...).
+            # Without this, session_search can hang for minutes if auxiliary
+            # summarization stalls or retries repeatedly.
             from model_tools import _run_async
-            results = _run_async(_summarize_all())
-        except concurrent.futures.TimeoutError:
+            results = _run_async(asyncio.wait_for(_summarize_all(), timeout=60))
+        except (concurrent.futures.TimeoutError, TimeoutError, asyncio.TimeoutError):
             logging.warning(
                 "Session summarization timed out after 60 seconds",
                 exc_info=True,

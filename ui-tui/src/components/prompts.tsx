@@ -126,7 +126,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
         <Box>
           <Text color={t.color.label}>{'> '}</Text>
-          <TextInput columns={Math.max(20, cols - 6)} allowClipboardHotkeys={isMac} onChange={setCustom} onSubmit={onAnswer} value={custom} />
+          <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
         </Box>
 
         <Text color={t.color.dim}>

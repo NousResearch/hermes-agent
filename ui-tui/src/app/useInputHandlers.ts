@@ -8,8 +8,6 @@ import type {
   VoiceRecordResponse
 } from '../gatewayTypes.js'
 
-import { writeClipboardText } from '../lib/clipboard.js'
-import { writeOsc52Clipboard } from '../lib/osc52.js'
 import { isAction, isMac } from '../lib/platform.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
@@ -30,19 +28,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
 
   const copySelection = () => {
+    // ink's copySelection() already calls setClipboard() which handles
+    // pbcopy (macOS), wl-copy/xclip (Linux), tmux, and OSC 52 fallback.
     const text = terminal.selection.copySelection()
 
-    if (!text) {
-      return
+    if (text) {
+      actions.sys(`copied ${text.length} chars`)
     }
-
-    void writeClipboardText(text).then(copied => {
-      if (!copied) {
-        writeOsc52Clipboard(text)
-      }
-    })
-
-    actions.sys(`copied ${text.length} chars`)
   }
 
   const clearSelection = () => {
@@ -259,34 +251,19 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const inputSel = getInputSelection()
 
       if (inputSel && inputSel.end > inputSel.start) {
-        const text = inputSel.value.slice(inputSel.start, inputSel.end)
-
-        void writeClipboardText(text).then(copied => {
-          if (!copied) {
-            writeOsc52Clipboard(text)
-          }
-        })
-
-        inputSel.clear()
-      }
-
-      return
-    }
-
-    if (isCtrl(key, ch, 'c')) {
-      if (!isMac && terminal.hasSelection) {
-        return copySelection()
-      }
-
-      const inputSel = getInputSelection()
-
-      if (!isMac && inputSel && inputSel.end > inputSel.start) {
-        writeOsc52Clipboard(inputSel.value.slice(inputSel.start, inputSel.end))
         inputSel.clear()
 
         return
       }
 
+      // On macOS, Cmd+C with no selection is a no-op (Ctrl+C below handles interrupt).
+      // On non-macOS, isAction uses Ctrl, so fall through to interrupt/clear/exit.
+      if (isMac) {
+        return
+      }
+    }
+
+    if (key.ctrl && ch.toLowerCase() === 'c') {
       if (live.busy && live.sid) {
         return turnController.interruptTurn({
           appendMessage: actions.appendMessage,

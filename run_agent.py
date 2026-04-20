@@ -371,6 +371,89 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
+def _chat_content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
+    """Convert chat-style multimodal content to Responses API input parts.
+
+    Input:  ``[{"type":"text"|"image_url", ...}]`` (native OpenAI Chat format)
+    Output: ``[{"type":"input_text"|"input_image", ...}]`` (Responses format)
+
+    Returns an empty list when ``content`` is not a list or contains no
+    recognized parts — callers fall back to the string path.
+    """
+    if not isinstance(content, list):
+        return []
+    converted: List[Dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                converted.append({"type": "input_text", "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text", "output_text"}:
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                converted.append({"type": "input_text", "text": text})
+            continue
+        if ptype in {"image_url", "input_image"}:
+            image_ref = part.get("image_url")
+            detail = part.get("detail")
+            if isinstance(image_ref, dict):
+                url = image_ref.get("url")
+                detail = image_ref.get("detail", detail)
+            else:
+                url = image_ref
+            if not isinstance(url, str) or not url:
+                continue
+            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+            if isinstance(detail, str) and detail.strip():
+                image_part["detail"] = detail.strip()
+            converted.append(image_part)
+    return converted
+
+
+def _summarize_user_message_for_log(content: Any) -> str:
+    """Return a short text summary of a user message for logging/trajectory.
+
+    Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
+    parts from the API server.  Logging, spinner previews, and trajectory
+    files all want a plain string — this helper extracts the first chunk of
+    text and notes any attached images.  Returns an empty string for empty
+    lists and ``str(content)`` for unexpected scalar types.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_bits: List[str] = []
+        image_count = 0
+        for part in content:
+            if isinstance(part, str):
+                if part:
+                    text_bits.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype in {"text", "input_text", "output_text"}:
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    text_bits.append(text)
+            elif ptype in {"image_url", "input_image"}:
+                image_count += 1
+        summary = " ".join(text_bits).strip()
+        if image_count:
+            note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
+            summary = f"{note} {summary}" if summary else note
+        return summary
+    try:
+        return str(content)
+    except Exception:
+        return ""
+
+
 def _sanitize_structure_surrogates(payload: Any) -> bool:
     """Replace surrogate code points in nested dict/list payloads in-place.
 
@@ -4274,7 +4357,14 @@ class AIAgent:
 
             if role in {"user", "assistant"}:
                 content = msg.get("content", "")
-                content_text = str(content) if content is not None else ""
+                if isinstance(content, list):
+                    content_parts = _chat_content_to_responses_parts(content)
+                    content_text = "".join(
+                        p.get("text", "") for p in content_parts if p.get("type") == "input_text"
+                    )
+                else:
+                    content_parts = []
+                    content_text = str(content) if content is not None else ""
 
                 if role == "assistant":
                     # Replay encrypted reasoning items from previous turns
@@ -4297,7 +4387,9 @@ class AIAgent:
                                     seen_item_ids.add(item_id)
                                 has_codex_reasoning = True
 
-                    if content_text.strip():
+                    if content_parts:
+                        items.append({"role": "assistant", "content": content_parts})
+                    elif content_text.strip():
                         items.append({"role": "assistant", "content": content_text})
                     elif has_codex_reasoning:
                         # The Responses API requires a following item after each
@@ -4350,7 +4442,12 @@ class AIAgent:
                             })
                     continue
 
-                items.append({"role": role, "content": content_text})
+                # Non-assistant (user) role: emit multimodal parts when present,
+                # otherwise fall back to the text payload.
+                if content_parts:
+                    items.append({"role": role, "content": content_parts})
+                else:
+                    items.append({"role": role, "content": content_text})
                 continue
 
             if role == "tool":
@@ -4450,6 +4547,46 @@ class AIAgent:
                 content = item.get("content", "")
                 if content is None:
                     content = ""
+                if isinstance(content, list):
+                    # Multimodal content from ``_chat_messages_to_responses_input``
+                    # is already in Responses format (``input_text`` / ``input_image``).
+                    # Validate each part and pass through.
+                    validated: List[Dict[str, Any]] = []
+                    for part_idx, part in enumerate(content):
+                        if isinstance(part, str):
+                            if part:
+                                validated.append({"type": "input_text", "text": part})
+                            continue
+                        if not isinstance(part, dict):
+                            raise ValueError(
+                                f"Codex Responses input[{idx}].content[{part_idx}] must be an object or string."
+                            )
+                        ptype = str(part.get("type") or "").strip().lower()
+                        if ptype in {"input_text", "text", "output_text"}:
+                            text = part.get("text", "")
+                            if not isinstance(text, str):
+                                text = str(text or "")
+                            validated.append({"type": "input_text", "text": text})
+                        elif ptype in {"input_image", "image_url"}:
+                            image_ref = part.get("image_url", "")
+                            detail = part.get("detail")
+                            if isinstance(image_ref, dict):
+                                url = image_ref.get("url", "")
+                                detail = image_ref.get("detail", detail)
+                            else:
+                                url = image_ref
+                            if not isinstance(url, str):
+                                url = str(url or "")
+                            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                            if isinstance(detail, str) and detail.strip():
+                                image_part["detail"] = detail.strip()
+                            validated.append(image_part)
+                        else:
+                            raise ValueError(
+                                f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
+                            )
+                    normalized.append({"role": role, "content": validated})
+                    continue
                 if not isinstance(content, str):
                     content = str(content)
 
@@ -9085,7 +9222,8 @@ class AIAgent:
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
-        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+        _preview_text = _summarize_user_message_for_log(user_message)
+        _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
         _msg_preview = _msg_preview.replace("\n", " ")
         logger.info(
             "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -9133,7 +9271,8 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            _print_preview = _summarize_user_message_for_log(user_message)
+            self._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -11999,8 +12138,9 @@ class AIAgent:
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
-        # Save trajectory if enabled
-        self._save_trajectory(messages, user_message, completed)
+        # Save trajectory if enabled.  ``user_message`` may be a multimodal
+        # list of parts; the trajectory format wants a plain string.
+        self._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
 
         # Clean up VM and browser for this task after conversation completes
         self._cleanup_task_resources(effective_task_id)

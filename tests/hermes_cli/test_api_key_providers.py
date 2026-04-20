@@ -552,6 +552,19 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("gmi")
         assert creds["base_url"] == "https://custom.gmi.example/v1"
 
+    def test_resolve_gmi_with_key(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-secret-key")
+        creds = resolve_api_key_provider_credentials("gmi")
+        assert creds["provider"] == "gmi"
+        assert creds["api_key"] == "gmi-secret-key"
+        assert creds["base_url"] == "https://api.gmi-serving.com/v1"
+
+    def test_resolve_gmi_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-key")
+        monkeypatch.setenv("GMI_BASE_URL", "https://custom.gmi.example/v1")
+        creds = resolve_api_key_provider_credentials("gmi")
+        assert creds["base_url"] == "https://custom.gmi.example/v1"
+
     def test_resolve_kilocode_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
         monkeypatch.setenv("KILOCODE_BASE_URL", "https://custom.kilo.example/v1")

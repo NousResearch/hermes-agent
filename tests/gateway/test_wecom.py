@@ -1,5 +1,6 @@
 """Tests for the WeCom platform adapter."""
 
+import asyncio
 import base64
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import ProcessingOutcome, SendResult
 
 
 class TestWeComRequirements:
@@ -67,6 +68,15 @@ class TestWeComAdapterInit:
         assert adapter._bot_id == "env-bot"
         assert adapter._secret == "env-secret"
         assert adapter._ws_url == "wss://env.example/ws"
+
+    def test_reads_stream_mode_from_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WECOM_STREAM_MODE", "typewriter")
+        monkeypatch.setenv("HERMES_STREAM_CURSOR", " <>")
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter._stream_mode == "typewriter"
+        assert adapter._stream_cursor == " <>"
 
 
 class TestWeComConnect:
@@ -456,6 +466,47 @@ class TestSend:
         assert "40001" in (result.error or "")
 
     @pytest.mark.asyncio
+    async def test_send_stream_cursor_uses_reply_stream_path(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-123"] = "req-1"
+        adapter._send_reply_stream = AsyncMock(return_value={"errcode": 0, "errmsg": "ok"})
+
+        result = await adapter.send("chat-123", "Hello WeCom ▉")
+
+        assert result.success is True
+        assert result.message_id == "wecom-stream:req-1"
+        args = adapter._send_reply_stream.await_args.args
+        kwargs = adapter._send_reply_stream.await_args.kwargs
+        assert args == ("req-1", "")
+        assert kwargs["finish"] is False
+        assert kwargs["stream_id"]
+        assert adapter._stream_message_state["wecom-stream:req-1"]["last_content"] == "Hello WeCom"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_typewriter_sends_full_accumulated_content(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_mode = "typewriter"
+        adapter._stream_message_state["wecom-stream:req-1"] = {
+            "reply_req_id": "req-1",
+            "stream_id": "stream-1",
+            "last_content": "Hello",
+            "started": "1",
+        }
+        adapter._send_reply_stream = AsyncMock(return_value={"errcode": 0, "errmsg": "ok"})
+
+        result = await adapter.edit_message("chat-123", "wecom-stream:req-1", "Hello world ▉")
+
+        assert result.success is True
+        args = adapter._send_reply_stream.await_args.args
+        kwargs = adapter._send_reply_stream.await_args.kwargs
+        assert args == ("req-1", "Hello world")
+        assert kwargs == {"finish": False, "stream_id": "stream-1"}
+
+    @pytest.mark.asyncio
     async def test_send_image_falls_back_to_text_for_remote_url(self):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -593,6 +644,96 @@ class TestInboundMessages:
 
         await adapter._on_message(payload)
         adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_on_message_loading_placeholder_skips_slash_commands(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._send_reply_stream = AsyncMock(return_value={"errcode": 0, "errmsg": "ok"})
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "group-1",
+                "chattype": "group",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "/help"},
+            },
+        }
+
+        await adapter._on_message(payload)
+        await asyncio.sleep(0)
+
+        adapter.handle_message.assert_awaited_once()
+        adapter._send_reply_stream.assert_not_awaited()
+        assert "wecom-stream:req-1" not in adapter._stream_message_state
+
+    @pytest.mark.asyncio
+    async def test_on_message_loading_placeholder_starts_for_regular_text(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._send_reply_stream = AsyncMock(return_value={"errcode": 0, "errmsg": "ok"})
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "group-1",
+                "chattype": "group",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "hello"},
+            },
+        }
+
+        await adapter._on_message(payload)
+        await asyncio.sleep(0)
+
+        adapter.handle_message.assert_awaited_once()
+        args = adapter._send_reply_stream.await_args.args
+        kwargs = adapter._send_reply_stream.await_args.kwargs
+        assert args == ("req-1", "")
+        assert kwargs["finish"] is False
+        state = adapter._stream_message_state["wecom-stream:req-1"]
+        assert state["reply_req_id"] == "req-1"
+        assert state["started"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_clears_empty_loading_placeholder(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._stream_message_state["wecom-stream:req-1"] = {
+            "reply_req_id": "req-1",
+            "stream_id": "stream-1",
+            "last_content": "",
+            "started": "1",
+        }
+        adapter._send_reply_stream = AsyncMock(return_value={"errcode": 0, "errmsg": "ok"})
+
+        await adapter.on_processing_complete(
+            SimpleNamespace(message_id="msg-1"),
+            ProcessingOutcome.SUCCESS,
+        )
+
+        args = adapter._send_reply_stream.await_args.args
+        kwargs = adapter._send_reply_stream.await_args.kwargs
+        assert args == ("req-1", "")
+        assert kwargs == {"finish": True, "stream_id": "stream-1"}
+        assert "wecom-stream:req-1" not in adapter._stream_message_state
 
 
 class TestWeComZombieSessionFix:
@@ -783,4 +924,3 @@ class TestWeComZombieSessionFix:
         adapter._send_request.assert_awaited_once()
         cmd = adapter._send_request.await_args.args[0]
         assert cmd == APP_CMD_SEND
-

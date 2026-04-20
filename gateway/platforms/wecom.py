@@ -63,6 +63,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_document_from_bytes,
     cache_image_from_bytes,
@@ -173,6 +174,9 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._stream_message_state: Dict[str, Dict[str, str]] = {}
+        self._stream_cursor = str(os.getenv("HERMES_STREAM_CURSOR", " ▉"))
+        self._stream_mode = str(os.getenv("HERMES_WECOM_STREAM_MODE", "loading")).strip().lower()
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -489,6 +493,7 @@ class WeComAdapter(BasePlatformAdapter):
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
         chat_id = str(body.get("chatid") or sender_id).strip()
+        msgtype = str(body.get("msgtype") or "").lower()
         if not chat_id:
             logger.debug("[%s] Missing chat id, skipping message", self.name)
             return
@@ -505,7 +510,8 @@ class WeComAdapter(BasePlatformAdapter):
         # Cache the inbound req_id after policy checks so proactive sends to
         # this chat can fall back to APP_CMD_RESPONSE (required for groups —
         # WeCom AI Bots cannot initiate APP_CMD_SEND in group chats).
-        self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
+        inbound_req_id = self._payload_req_id(payload)
+        self._remember_chat_req_id(chat_id, inbound_req_id)
 
         text, reply_text = self._extract_text(body)
         media_urls, media_types = await self._extract_media(body)
@@ -518,6 +524,26 @@ class WeComAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             logger.debug("[%s] Empty WeCom message skipped", self.name)
             return
+
+        if self._stream_mode == "loading" and inbound_req_id:
+            is_command = msgtype in {"text", "mixed"} and text.startswith("/")
+            if not is_command:
+                pre_stream_id = self._new_req_id("stream")
+                pre_msg_id = self._stream_message_id(inbound_req_id)
+                asyncio.create_task(
+                    self._send_reply_stream(
+                        inbound_req_id,
+                        "",
+                        finish=False,
+                        stream_id=pre_stream_id,
+                    )
+                )
+                self._stream_message_state[pre_msg_id] = {
+                    "reply_req_id": inbound_req_id,
+                    "stream_id": pre_stream_id,
+                    "last_content": "",
+                    "started": "1",
+                }
 
         source = self.build_source(
             chat_id=chat_id,
@@ -881,6 +907,24 @@ class WeComAdapter(BasePlatformAdapter):
             return None
         return self._reply_req_ids.get(normalized)
 
+    def _stream_message_id(self, reply_req_id: str) -> str:
+        return f"wecom-stream:{reply_req_id}"
+
+    def _strip_stream_cursor(self, text: str) -> tuple[str, bool]:
+        content = str(text or "")
+        candidates = []
+        if self._stream_cursor:
+            candidates.append(self._stream_cursor)
+        candidates.extend([" ▉", "▉"])
+        seen = set()
+        for cursor in candidates:
+            if not cursor or cursor in seen:
+                continue
+            seen.add(cursor)
+            if content.endswith(cursor):
+                return content[: -len(cursor)], True
+        return content, False
+
     # ------------------------------------------------------------------
     # Outbound messaging
     # ------------------------------------------------------------------
@@ -1202,6 +1246,33 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        content: str,
+        *,
+        finish: bool = True,
+        stream_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        # WeCom only ACKs the first aibot_respond_msg for a reply req id.
+        # Follow-up stream chunks must be fire-and-forget, or they time out
+        # and can trigger duplicate fallback sends.
+        await self._send_json(
+            {
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": reply_req_id},
+                "body": {
+                    "msgtype": "stream",
+                    "stream": {
+                        "id": stream_id or self._new_req_id("stream"),
+                        "finish": finish,
+                        "content": content[:self.MAX_MESSAGE_LENGTH],
+                    },
+                },
+            }
+        )
+        return {"errcode": 0, "errmsg": "ok"}
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1334,6 +1405,35 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
+                stripped_content, has_cursor = self._strip_stream_cursor(content)
+                if has_cursor:
+                    message_id = self._stream_message_id(reply_req_id)
+                    state = self._stream_message_state.get(message_id) or {}
+                    stream_id = state.get("stream_id") or self._new_req_id("stream")
+                    if self._stream_mode == "loading":
+                        if not state.get("started"):
+                            response = await self._send_reply_stream(
+                                reply_req_id,
+                                "",
+                                finish=False,
+                                stream_id=stream_id,
+                            )
+                        else:
+                            response = {"errcode": 0, "errmsg": "ok"}
+                    else:
+                        response = await self._send_reply_stream(
+                            reply_req_id,
+                            stripped_content,
+                            finish=False,
+                            stream_id=stream_id,
+                        )
+                    self._stream_message_state[message_id] = {
+                        "reply_req_id": reply_req_id,
+                        "stream_id": stream_id,
+                        "last_content": stripped_content,
+                        "started": "1",
+                    }
+                    return SendResult(success=True, message_id=message_id, raw_response=response)
                 response = await self._send_reply_markdown(reply_req_id, content)
             else:
                 response = await self._send_request(
@@ -1359,6 +1459,55 @@ class WeComAdapter(BasePlatformAdapter):
             message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
             raw_response=response,
         )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        del chat_id
+
+        state = self._stream_message_state.get(str(message_id or ""))
+        if not state:
+            return SendResult(success=False, error="Not supported")
+
+        reply_req_id = str(state.get("reply_req_id") or "").strip()
+        stream_id = str(state.get("stream_id") or "").strip() or self._new_req_id("stream")
+        current, has_cursor = self._strip_stream_cursor(content)
+        finish = not has_cursor
+
+        if self._stream_mode == "loading":
+            if not finish:
+                state["last_content"] = current
+                self._stream_message_state[str(message_id)] = state
+                return SendResult(success=True, message_id=message_id)
+            payload = current
+        else:
+            # WeCom stream updates replace the bubble content in full.
+            payload = current
+            if not payload and not finish:
+                return SendResult(success=True, message_id=message_id)
+
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                payload,
+                finish=finish,
+                stream_id=stream_id,
+            )
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout editing message in WeCom")
+        except Exception as exc:
+            logger.error("[%s] Edit failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+        state["stream_id"] = stream_id
+        state["last_content"] = current
+        self._stream_message_state[str(message_id)] = state
+        if finish:
+            self._stream_message_state.pop(str(message_id), None)
+        return SendResult(success=True, message_id=message_id, raw_response=response)
 
     async def send_image(
         self,
@@ -1452,6 +1601,42 @@ class WeComAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """WeCom does not expose typing indicators in this adapter."""
         del chat_id, metadata
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """Clear an unconsumed loading placeholder when processing finishes."""
+        if self._stream_mode != "loading" or outcome == ProcessingOutcome.CANCELLED:
+            return
+
+        message_id = str(getattr(event, "message_id", "") or "").strip()
+        if not message_id:
+            return
+
+        reply_req_id = self._reply_req_id_for_message(message_id)
+        if not reply_req_id:
+            return
+
+        stream_msg_id = self._stream_message_id(reply_req_id)
+        state = self._stream_message_state.get(stream_msg_id)
+        if not state:
+            return
+
+        if state.get("last_content") or not state.get("started"):
+            return
+
+        stream_id = state.get("stream_id")
+        try:
+            await self._send_reply_stream(
+                reply_req_id,
+                "",
+                finish=True,
+                stream_id=stream_id,
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to clear loading placeholder: %s", self.name, exc)
+        finally:
+            self._stream_message_state.pop(stream_msg_id, None)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return minimal chat info."""

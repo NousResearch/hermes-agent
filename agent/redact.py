@@ -93,6 +93,17 @@ _DB_CONNSTR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# JWT tokens: header.payload[.signature] — always start with "eyJ" (base64 for "{")
+# Matches 1-part (header only), 2-part (header.payload), and full 3-part JWTs.
+_JWT_RE = re.compile(
+    r"eyJ[A-Za-z0-9_-]{10,}"           # Header (always starts with eyJ)
+    r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"   # Optional payload and/or signature
+)
+
+# Discord user/role mentions: <@123456789012345678> or <@!123456789012345678>
+# Snowflake IDs are 17-20 digit integers that resolve to specific Discord accounts.
+_DISCORD_MENTION_RE = re.compile(r"<@!?(\d{17,20})>")
+
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
@@ -158,6 +169,12 @@ def redact_sensitive_text(text: str) -> str:
 
     # Database connection string passwords
     text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+
+    # JWT tokens (eyJ... — base64-encoded JSON headers)
+    text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
+
+    # Discord user/role mentions (<@snowflake_id>)
+    text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}***>", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     def _redact_phone(m):

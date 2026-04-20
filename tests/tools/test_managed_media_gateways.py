@@ -46,7 +46,10 @@ def _restore_tool_and_agent_modules():
 
 @pytest.fixture(autouse=True)
 def _enable_managed_nous_tools(monkeypatch):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    """Patch the source modules so managed_nous_tools_enabled() returns True
+    even after tool modules are dynamically reloaded."""
+    monkeypatch.setattr("hermes_cli.auth.get_nous_auth_status", lambda: {"logged_in": True})
+    monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda: False)
 
 
 def _install_fake_tools_package():

@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import subprocess
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
-from gateway.session import build_session_key
+from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -193,7 +194,7 @@ async def test_shutdown_notification_says_restarting_when_restart_requested():
 
     assert len(adapter.sent) == 1
     assert "restarting" in adapter.sent[0]
-    assert "/retry" in adapter.sent[0]
+    assert "resume" in adapter.sent[0]
 
 
 @pytest.mark.asyncio
@@ -242,3 +243,31 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
     # Should not raise
     await runner._notify_active_sessions_of_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
+    """Shutdown notifications should route from persisted origin, not reparsed keys."""
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+    source = make_restart_source(chat_id="!room123:example.org", chat_type="group")
+    source.platform = gateway_run.Platform.MATRIX
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="sess-1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+    }
+    runner.adapters = {gateway_run.Platform.MATRIX: adapter}
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.await_count == 1
+    assert adapter.send.await_args.args[0] == "!room123:example.org"

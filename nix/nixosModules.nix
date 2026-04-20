@@ -121,11 +121,19 @@
       # ── Provision apt packages (first boot only, cached in writable layer) ──
       # sudo: agent self-modification
       # nodejs/npm: writable node so npm i -g works (nix store copies are read-only)
-      # curl: needed for uv installer
+      #   Node 22 via NodeSource — Ubuntu 24.04 ships Node 18 which is EOL.
+      # curl: needed for uv installer + NodeSource setup
       if [ ! -f /var/lib/hermes-tools-provisioned ] && command -v apt-get >/dev/null 2>&1; then
         echo "First boot: provisioning agent tools..."
         apt-get update -qq
-        apt-get install -y -qq sudo nodejs npm curl
+        apt-get install -y -qq sudo curl ca-certificates gnupg
+        mkdir -p /etc/apt/keyrings
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+          | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+          > /etc/apt/sources.list.d/nodesource.list
+        apt-get update -qq
+        apt-get install -y -qq nodejs
         touch /var/lib/hermes-tools-provisioned
       fi
 
@@ -140,15 +148,14 @@
         su -s /bin/sh "$TARGET_USER" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
       fi
 
-      # Python 3.11 venv — gives the agent a writable Python with pip.
-      # Uses uv to install Python 3.11 (Ubuntu 24.04 ships 3.12).
+      # Python 3.12 venv — gives the agent a writable Python with pip.
       # --seed includes pip/setuptools so bare `pip install` works.
       _UV_BIN="$TARGET_HOME/.local/bin/uv"
       if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ]; then
         su -s /bin/sh "$TARGET_USER" -c "
           export PATH=\"\$HOME/.local/bin:\$PATH\"
-          uv python install 3.11
-          uv venv --python 3.11 --seed \"\$HOME/.venv\"
+          uv python install 3.12
+          uv venv --python 3.12 --seed \"\$HOME/.venv\"
         " || true
       fi
 
@@ -171,7 +178,7 @@
     # Package and entrypoint use stable symlinks (current-package, current-entrypoint)
     # so they can update without recreation. Env vars go through $HERMES_HOME/.env.
     containerIdentity = builtins.hashString "sha256" (builtins.toJSON {
-      schema = 3; # bump when identity inputs change
+      schema = 4; # bump when identity inputs change (4: Node 18→22 via NodeSource)
       image = cfg.container.image;
       extraVolumes = cfg.container.extraVolumes;
       extraOptions = cfg.container.extraOptions;

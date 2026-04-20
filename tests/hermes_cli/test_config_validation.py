@@ -13,7 +13,7 @@ class TestCustomProvidersValidation:
         issues = validate_config_structure({
             "custom_providers": {
                 "name": "Generativelanguage.googleapis.com",
-                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
                 "api_key": "xxx",
                 "model": "models/gemini-2.5-flash",
                 "rate_limit_delay": 2.0,

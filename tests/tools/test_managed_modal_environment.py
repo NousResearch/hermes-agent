@@ -296,7 +296,7 @@ def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
     modal_common = sys.modules["tools.environments.modal_utils"]
 
     calls = []
-    monotonic_values = iter([0.0, 12.5])
+    monotonic_values = iter([0.0, 0.0, 0.0, 12.5, 12.5])
 
     def fake_request(method, url, headers=None, json=None, timeout=None):
         calls.append((method, url, json, timeout))

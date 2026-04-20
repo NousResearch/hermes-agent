@@ -229,6 +229,14 @@ async function startSocket() {
 
       // Check allowlist for messages from others (resolve LID ↔ phone aliases)
       if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        try {
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'allowlist_mismatch',
+            chatId,
+            senderId,
+          }));
+        } catch {}
         continue;
       }
 

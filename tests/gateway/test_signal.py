@@ -42,15 +42,6 @@ def _stub_rpc(return_value):
 # Platform & Config
 # ---------------------------------------------------------------------------
 
-class TestSignalPlatformEnum:
-    def test_signal_enum_exists(self):
-        assert Platform.SIGNAL.value == "signal"
-
-    def test_signal_in_platform_list(self):
-        platforms = [p.value for p in Platform]
-        assert "signal" in platforms
-
-
 class TestSignalConfigLoading:
     def test_apply_env_overrides_signal(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
@@ -76,18 +67,6 @@ class TestSignalConfigLoading:
 
         assert Platform.SIGNAL not in config.platforms
 
-    def test_connected_platforms_includes_signal(self, monkeypatch):
-        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:8080")
-        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        connected = config.get_connected_platforms()
-        assert Platform.SIGNAL in connected
-
-
 # ---------------------------------------------------------------------------
 # Adapter Init & Helpers
 # ---------------------------------------------------------------------------
@@ -110,6 +89,29 @@ class TestSignalAdapterInit:
     def test_self_message_filtering(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         assert adapter._account_normalized == "+15551234567"
+
+
+class TestSignalConnectCleanup:
+    """Regression coverage for failed connect() cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_releases_lock_and_closes_client_on_healthcheck_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=503))
+        mock_client.aclose = AsyncMock()
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock") as mock_release:
+            result = await adapter.connect()
+
+        assert result is False
+        mock_client.aclose.assert_awaited_once()
+        mock_release.assert_called_once_with("signal-phone", "+15551234567")
+        assert adapter.client is None
+        assert adapter._platform_lock_identity is None
 
 
 class TestSignalHelpers:
@@ -362,15 +364,6 @@ class TestSignalAuthorization:
 # Send Message Tool
 # ---------------------------------------------------------------------------
 
-class TestSignalSendMessage:
-    def test_signal_in_platform_map(self):
-        """Signal should be in the send_message tool's platform map."""
-        from tools.send_message_tool import send_message_tool
-        # Just verify the import works and Signal is a valid platform
-        from gateway.config import Platform
-        assert Platform.SIGNAL.value == "signal"
-
-
 # ---------------------------------------------------------------------------
 # send_image_file method (#5105)
 # ---------------------------------------------------------------------------
@@ -466,6 +459,97 @@ class TestSignalSendImageFile:
 
         assert result.success is False
         assert "failed" in result.error.lower()
+
+
+class TestSignalRecipientResolution:
+    @pytest.mark.asyncio
+    async def test_send_prefers_cached_uuid_for_direct_messages(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._remember_recipient_identifiers("+15551230000", "68680952-6d86-45bc-85e0-1a4d186d53ee")
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {"timestamp": 1234567890}
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+15551230000", content="hello")
+
+        assert result.success is True
+        assert captured[0]["method"] == "send"
+        assert captured[0]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
+
+    @pytest.mark.asyncio
+    async def test_send_looks_up_uuid_via_list_contacts(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            if method == "listContacts":
+                return [{
+                    "recipient": "351935789098",
+                    "number": "+15551230000",
+                    "uuid": "68680952-6d86-45bc-85e0-1a4d186d53ee",
+                    "isRegistered": True,
+                }]
+            if method == "send":
+                return {"timestamp": 1234567890}
+            return None
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+15551230000", content="hello")
+
+        assert result.success is True
+        assert captured[0]["method"] == "listContacts"
+        assert captured[1]["method"] == "send"
+        assert captured[1]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_phone_when_no_uuid_found(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            if method == "listContacts":
+                return []
+            if method == "send":
+                return {"timestamp": 1234567890}
+            return None
+
+        adapter._rpc = mock_rpc
+
+        result = await adapter.send(chat_id="+15551230000", content="hello")
+
+        assert result.success is True
+        assert captured[1]["params"]["recipient"] == ["+15551230000"]
+
+    @pytest.mark.asyncio
+    async def test_send_typing_uses_cached_uuid(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._remember_recipient_identifiers("+15551230000", "68680952-6d86-45bc-85e0-1a4d186d53ee")
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        await adapter.send_typing("+15551230000")
+
+        assert captured[0]["method"] == "sendTyping"
+        assert captured[0]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
 
 
 # ---------------------------------------------------------------------------
@@ -770,3 +854,140 @@ class TestSignalStopTyping:
         await adapter.stop_typing("+155****4567")
 
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
+
+
+# ---------------------------------------------------------------------------
+# Typing-indicator backoff on repeated failures (Signal RPC spam fix)
+# ---------------------------------------------------------------------------
+
+class TestSignalTypingBackoff:
+    """When base.py's _keep_typing refresh loop calls send_typing every ~2s
+    and the recipient is unreachable (NETWORK_FAILURE), the adapter must:
+
+    - log WARNING only for the first failure (subsequent failures use DEBUG
+      via log_failures=False on the _rpc call)
+    - after 3 consecutive failures, skip the RPC entirely during an
+      exponential cooldown window instead of hammering signal-cli every 2s
+    - reset counters on a successful sendTyping
+    - reset counters when _stop_typing_indicator() is called for the chat
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_failure_logs_at_warning_subsequent_at_debug(
+        self, monkeypatch
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+        calls = []
+
+        async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
+            calls.append({"log_failures": log_failures})
+            return None  # simulate NETWORK_FAILURE
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.send_typing("+155****4567")
+        await adapter.send_typing("+155****4567")
+
+        assert len(calls) == 2
+        assert calls[0]["log_failures"] is True   # first failure — warn
+        assert calls[1]["log_failures"] is False  # subsequent — debug
+
+    @pytest.mark.asyncio
+    async def test_three_consecutive_failures_trigger_cooldown(
+        self, monkeypatch
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+        call_count = {"n": 0}
+
+        async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
+            call_count["n"] += 1
+            return None
+
+        adapter._rpc = _fake_rpc
+
+        # Three failures engage the cooldown.
+        await adapter.send_typing("+155****4567")
+        await adapter.send_typing("+155****4567")
+        await adapter.send_typing("+155****4567")
+        assert call_count["n"] == 3
+        assert "+155****4567" in adapter._typing_skip_until
+
+        # Fourth, fifth, ... calls during the cooldown window are short-
+        # circuited — the RPC is not issued at all.
+        await adapter.send_typing("+155****4567")
+        await adapter.send_typing("+155****4567")
+        assert call_count["n"] == 3
+
+    @pytest.mark.asyncio
+    async def test_cooldown_is_per_chat_not_global(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        call_log = []
+
+        async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
+            call_log.append(params.get("recipient") or params.get("groupId"))
+            return None
+
+        adapter._rpc = _fake_rpc
+
+        # Drive chat A into cooldown.
+        for _ in range(3):
+            await adapter.send_typing("+155****4567")
+        assert "+155****4567" in adapter._typing_skip_until
+
+        # Chat B is unaffected — still makes RPCs.
+        await adapter.send_typing("+155****9999")
+        await adapter.send_typing("+155****9999")
+        assert "+155****9999" not in adapter._typing_skip_until
+        # Chat A cooldown untouched
+        assert "+155****4567" in adapter._typing_skip_until
+
+    @pytest.mark.asyncio
+    async def test_success_resets_failure_counter_and_cooldown(
+        self, monkeypatch
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+        result_queue = [None, None, {"timestamp": 12345}]
+        call_log = []
+
+        async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
+            call_log.append(log_failures)
+            return result_queue.pop(0)
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.send_typing("+155****4567")   # fail 1 — warn
+        await adapter.send_typing("+155****4567")   # fail 2 — debug
+        await adapter.send_typing("+155****4567")   # success — reset
+
+        assert adapter._typing_failures.get("+155****4567", 0) == 0
+        assert "+155****4567" not in adapter._typing_skip_until
+
+        # Next failure after recovery logs at WARNING again (fresh counter).
+        async def _fail(method, params, rpc_id=None, *, log_failures=True):
+            call_log.append(log_failures)
+            return None
+
+        adapter._rpc = _fail
+        await adapter.send_typing("+155****4567")
+        assert call_log[-1] is True   # first failure in a fresh cycle
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_clears_backoff_state(
+        self, monkeypatch
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        async def _fail(method, params, rpc_id=None, *, log_failures=True):
+            return None
+
+        adapter._rpc = _fail
+
+        for _ in range(3):
+            await adapter.send_typing("+155****4567")
+        assert adapter._typing_failures.get("+155****4567") == 3
+        assert "+155****4567" in adapter._typing_skip_until
+
+        await adapter._stop_typing_indicator("+155****4567")
+
+        assert "+155****4567" not in adapter._typing_failures
+        assert "+155****4567" not in adapter._typing_skip_until

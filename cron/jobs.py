@@ -501,6 +501,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if schedule_changed:
             updated_schedule = updated["schedule"]
+            # The API may pass schedule as a raw string (e.g. "every 10m")
+            # instead of a pre-parsed dict.  Normalize it the same way
+            # create_job() does so downstream code can call .get() safely.
+            if isinstance(updated_schedule, str):
+                updated_schedule = parse_schedule(updated_schedule)
+                updated["schedule"] = updated_schedule
             updated["schedule_display"] = updates.get(
                 "schedule_display",
                 updated_schedule.get("display", updated.get("schedule_display")),

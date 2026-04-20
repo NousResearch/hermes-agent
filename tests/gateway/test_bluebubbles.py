@@ -20,11 +20,6 @@ def _make_adapter(monkeypatch, **extra):
     return BlueBubblesAdapter(cfg)
 
 
-class TestBlueBubblesPlatformEnum:
-    def test_bluebubbles_enum_exists(self):
-        assert Platform.BLUEBUBBLES.value == "bluebubbles"
-
-
 class TestBlueBubblesConfigLoading:
     def test_apply_env_overrides_bluebubbles(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -40,15 +35,6 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["server_url"] == "http://localhost:1234"
         assert bc.extra["password"] == "secret"
         assert bc.extra["webhook_port"] == 9999
-
-    def test_connected_platforms_includes_bluebubbles(self, monkeypatch):
-        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
-        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
-        from gateway.config import GatewayConfig, _apply_env_overrides
-
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        assert Platform.BLUEBUBBLES in config.get_connected_platforms()
 
     def test_home_channel_set_from_env(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -271,29 +257,6 @@ class TestBlueBubblesGuidResolution:
             adapter._resolve_chat_guid("")
         )
         assert result is None
-
-
-class TestBlueBubblesToolsetIntegration:
-    def test_toolset_exists(self):
-        from toolsets import TOOLSETS
-
-        assert "hermes-bluebubbles" in TOOLSETS
-
-    def test_toolset_in_gateway_composite(self):
-        from toolsets import TOOLSETS
-
-        gateway = TOOLSETS["hermes-gateway"]
-        assert "hermes-bluebubbles" in gateway["includes"]
-
-
-class TestBlueBubblesPromptHint:
-    def test_platform_hint_exists(self):
-        from agent.prompt_builder import PLATFORM_HINTS
-
-        assert "bluebubbles" in PLATFORM_HINTS
-        hint = PLATFORM_HINTS["bluebubbles"]
-        assert "iMessage" in hint
-        assert "plain text" in hint
 
 
 class TestBlueBubblesAttachmentDownload:

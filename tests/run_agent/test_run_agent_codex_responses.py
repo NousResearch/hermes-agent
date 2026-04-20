@@ -12,6 +12,15 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 import run_agent
 
 
+@pytest.fixture(autouse=True)
+def _no_codex_backoff(monkeypatch):
+    """Short-circuit retry backoff so Codex retry tests don't block on real
+    wall-clock waits (5s jittered_backoff base delay + tight time.sleep loop)."""
+    import time as _time
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+
+
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
         run_agent,
@@ -256,6 +265,23 @@ def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
         skip_memory=True,
     )
     assert agent.provider == "copilot-acp"
+    assert agent.api_mode == "chat_completions"
+
+
+def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5-mini",
+        base_url="https://api.githubcopilot.com",
+        provider="copilot",
+        api_key="gh-token",
+        api_mode="chat_completions",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "copilot"
     assert agent.api_mode == "chat_completions"
 
 
@@ -1249,13 +1275,17 @@ def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch
     ]
     items = agent._chat_messages_to_responses_input(messages)
 
-    reasoning_ids = [it["id"] for it in items if it.get("type") == "reasoning"]
-    # rs_aaa should appear only once (first occurrence kept)
-    assert reasoning_ids.count("rs_aaa") == 1
-    # rs_bbb and rs_ccc should each appear once
-    assert reasoning_ids.count("rs_bbb") == 1
-    assert reasoning_ids.count("rs_ccc") == 1
-    assert len(reasoning_ids) == 3
+    reasoning_items = [it for it in items if it.get("type") == "reasoning"]
+    # Dedup: rs_aaa appears in both turns but should only be emitted once.
+    # 3 unique items total: enc_1 (from rs_aaa), enc_2 (rs_bbb), enc_3 (rs_ccc).
+    assert len(reasoning_items) == 3
+    encrypted = [it["encrypted_content"] for it in reasoning_items]
+    assert encrypted.count("enc_1") == 1
+    assert "enc_2" in encrypted
+    assert "enc_3" in encrypted
+    # IDs must be stripped — with store=False the API 404s on id lookups.
+    for it in reasoning_items:
+        assert "id" not in it
 
 
 def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
@@ -1272,7 +1302,11 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     normalized = agent._preflight_codex_input_items(raw_input)
 
     reasoning_items = [it for it in normalized if it.get("type") == "reasoning"]
-    reasoning_ids = [it["id"] for it in reasoning_items]
-    assert reasoning_ids.count("rs_xyz") == 1
-    assert reasoning_ids.count("rs_zzz") == 1
+    # rs_xyz duplicate should be collapsed to one item; rs_zzz kept.
     assert len(reasoning_items) == 2
+    encrypted = [it["encrypted_content"] for it in reasoning_items]
+    assert encrypted.count("enc_a") == 1
+    assert "enc_b" in encrypted
+    # IDs must be stripped — with store=False the API 404s on id lookups.
+    for it in reasoning_items:
+        assert "id" not in it

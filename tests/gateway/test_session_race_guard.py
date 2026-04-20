@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
@@ -24,9 +24,17 @@ class _FakeAdapter:
 
     def __init__(self):
         self._pending_messages = {}
+        self._active_sessions = {}
+        self.interrupted_sessions = []
 
     async def send(self, chat_id, text, **kwargs):
         pass
+
+    async def interrupt_session_activity(self, session_key, chat_id):
+        self.interrupted_sessions.append((session_key, chat_id))
+        event = self._active_sessions.get(session_key)
+        if event is not None:
+            event.set()
 
 
 def _make_runner():
@@ -37,6 +45,7 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._voice_mode = {}
@@ -81,7 +90,7 @@ async def test_sentinel_placed_before_agent_setup():
     # Patch _handle_message_with_agent to capture state at entry
     sentinel_was_set = False
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, generation):
         nonlocal sentinel_was_set
         sentinel_was_set = runner._running_agents.get(qk) is _AGENT_PENDING_SENTINEL
         return "ok"
@@ -105,7 +114,7 @@ async def test_sentinel_cleaned_up_after_handler_returns():
     event = _make_event()
     session_key = build_session_key(event.source)
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, generation):
         return "ok"
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
@@ -127,7 +136,7 @@ async def test_sentinel_cleaned_up_on_exception():
     event = _make_event()
     session_key = build_session_key(event.source)
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, generation):
         raise RuntimeError("boom")
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
@@ -154,7 +163,7 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
 
     barrier = asyncio.Event()
 
-    async def slow_inner(self_inner, ev, src, qk):
+    async def slow_inner(self_inner, ev, src, qk, generation):
         # Simulate slow setup — wait until test tells us to proceed
         await barrier.wait()
         return "ok"
@@ -182,6 +191,80 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
         # Let first message complete
         barrier.set()
         await task1
+
+
+def test_merge_pending_message_event_merges_text_and_photo_followups():
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+
+    text_event = MessageEvent(
+        text="first follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    photo_event = MessageEvent(
+        text="see screenshot",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/test.png"],
+        media_types=["image/png"],
+    )
+
+    merge_pending_message_event(pending, session_key, text_event, merge_text=True)
+    merge_pending_message_event(pending, session_key, photo_event, merge_text=True)
+
+    merged = pending[session_key]
+    assert merged.message_type == MessageType.PHOTO
+    assert merged.text == "first follow-up\n\nsee screenshot"
+    assert merged.media_urls == ["/tmp/test.png"]
+    assert merged.media_types == ["image/png"]
+
+
+@pytest.mark.asyncio
+async def test_recent_telegram_text_followup_is_queued_without_interrupt():
+    runner = _make_runner()
+    event = _make_event(text="follow-up")
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    import time as _time
+    runner._running_agents_ts[session_key] = _time.time()
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    fake_agent.interrupt.assert_not_called()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    assert adapter._pending_messages[session_key].text == "follow-up"
+
+
+@pytest.mark.asyncio
+async def test_recent_telegram_followups_append_in_pending_queue():
+    runner = _make_runner()
+    first = _make_event(text="part one")
+    second = _make_event(text="part two")
+    session_key = build_session_key(first.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    import time as _time
+    runner._running_agents_ts[session_key] = _time.time()
+
+    await runner._handle_message(first)
+    await runner._handle_message(second)
+
+    fake_agent.interrupt.assert_not_called()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    assert adapter._pending_messages[session_key].text == "part one\npart two"
 
 
 # ------------------------------------------------------------------
@@ -214,6 +297,38 @@ async def test_command_messages_do_not_leave_sentinel():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_text", "handler_attr", "handler_result"),
+    [
+        ("/help", "_handle_help_command", "Help text"),
+        ("/commands", "_handle_commands_command", "Commands text"),
+        ("/update", "_handle_update_command", "Update text"),
+        ("/profile", "_handle_profile_command", "Profile text"),
+    ],
+)
+async def test_active_session_bypass_commands_dispatch_without_interrupt(
+    command_text,
+    handler_attr,
+    handler_result,
+):
+    """Gateway-handled bypass commands must return directly while an agent runs."""
+    runner = _make_runner()
+    event = _make_event(text=command_text)
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    setattr(runner, handler_attr, AsyncMock(return_value=handler_result))
+
+    result = await runner._handle_message(event)
+
+    assert result == handler_result
+    fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+
+
 # ------------------------------------------------------------------
 # Test 6: /stop during sentinel force-cleans and unlocks session
 # ------------------------------------------------------------------
@@ -227,7 +342,7 @@ async def test_stop_during_sentinel_force_cleans_session():
 
     barrier = asyncio.Event()
 
-    async def slow_inner(self_inner, ev, src, qk):
+    async def slow_inner(self_inner, ev, src, qk, generation):
         await barrier.wait()
         return "ok"
 
@@ -273,7 +388,9 @@ async def test_stop_hard_kills_running_agent():
 
     # Simulate a running (possibly hung) agent
     fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
     runner._running_agents[session_key] = fake_agent
+    runner.adapters[Platform.TELEGRAM]._active_sessions[session_key] = asyncio.Event()
 
     # Send /stop
     stop_event = _make_event(text="/stop")
@@ -286,6 +403,10 @@ async def test_stop_hard_kills_running_agent():
     assert session_key not in runner._running_agents, (
         "/stop must remove the agent from _running_agents so the session is unlocked"
     )
+    assert runner.adapters[Platform.TELEGRAM].interrupted_sessions == [
+        (session_key, "12345")
+    ]
+    assert runner.adapters[Platform.TELEGRAM]._active_sessions[session_key].is_set()
 
     # Must return a confirmation
     assert result is not None
@@ -305,6 +426,7 @@ async def test_stop_clears_pending_messages():
     )
 
     fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
     runner._running_agents[session_key] = fake_agent
     runner._pending_messages[session_key] = "some queued text"
 

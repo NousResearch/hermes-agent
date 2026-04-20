@@ -231,6 +231,59 @@ async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+    from gateway.session import SessionSource
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner.session_store._entries["agent:main:telegram:group:-100:42"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            thread_id="42",
+            user_id="user-42",
+            user_name="alice",
+        )
+    )
+
+    watcher = {
+        "session_id": "proc_test_internal",
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:group:-100:42",
+        "platform": "telegram",
+        "chat_id": "-100",
+        "thread_id": "42",
+        "notify_on_complete": True,
+    }
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.source.platform == Platform.TELEGRAM
+    assert event.source.chat_id == "-100"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id == "42"
+    assert event.source.user_id == "user-42"
+    assert event.source.user_name == "alice"
+
+
+@pytest.mark.asyncio
 async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
     """A non-internal event with user_id=None should be silently dropped."""
     import gateway.run as gateway_run

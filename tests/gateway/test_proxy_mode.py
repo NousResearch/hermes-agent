@@ -19,6 +19,7 @@ def _make_runner(proxy_url=None):
     runner.config = MagicMock()
     runner.config.streaming = StreamingConfig()
     runner._running_agents = {}
+    runner._session_run_generation = {}
     runner._session_model_overrides = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = None
@@ -160,10 +161,12 @@ class TestRunAgentProxyDispatch:
             source=source,
             session_id="test-session-123",
             session_key="test-key",
+            run_generation=7,
         )
 
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
+        assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
 
     @pytest.mark.asyncio
     async def test_run_agent_skips_proxy_when_not_configured(self, monkeypatch):
@@ -369,6 +372,40 @@ class TestRunAgentViaProxy:
         assert result["history_offset"] == 2  # len(history)
         assert "session_id" in result
         assert result["session_id"] == "sess-123"
+
+    @pytest.mark.asyncio
+    async def test_proxy_stale_generation_returns_empty_result(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+        runner._session_run_generation["test-key"] = 2
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"stale"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="sess-123",
+                        session_key="test-key",
+                        run_generation=1,
+                    )
+
+        assert result["final_response"] == ""
+        assert result["messages"] == []
+        assert result["api_calls"] == 0
 
     @pytest.mark.asyncio
     async def test_no_auth_header_without_key(self, monkeypatch):

@@ -14,12 +14,63 @@ Import chain (circular-import safe):
     run_agent.py, cli.py, batch_runner.py, etc.
 """
 
+import ast
+import importlib
 import json
 import logging
 import threading
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+def _is_registry_register_call(node: ast.AST) -> bool:
+    """Return True when *node* is a ``registry.register(...)`` call expression."""
+    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+        return False
+    func = node.value.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "register"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "registry"
+    )
+
+
+def _module_registers_tools(module_path: Path) -> bool:
+    """Return True when the module contains a top-level ``registry.register(...)`` call.
+
+    Only inspects module-body statements so that helper modules which happen
+    to call ``registry.register()`` inside a function are not picked up.
+    """
+    try:
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+    except (OSError, SyntaxError):
+        return False
+
+    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+
+
+def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
+    """Import built-in self-registering tool modules and return their module names."""
+    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    module_names = [
+        f"tools.{path.stem}"
+        for path in sorted(tools_path.glob("*.py"))
+        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
+        and _module_registers_tools(path)
+    ]
+
+    imported: List[str] = []
+    for mod_name in module_names:
+        try:
+            importlib.import_module(mod_name)
+            imported.append(mod_name)
+        except Exception as e:
+            logger.warning("Could not import tool module %s: %s", mod_name, e)
+    return imported
 
 
 class ToolEntry:
@@ -52,6 +103,7 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ToolEntry] = {}
         self._toolset_checks: Dict[str, Callable] = {}
+        self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
@@ -95,6 +147,27 @@ class ToolRegistry:
             entry.name for entry in self._snapshot_entries()
             if entry.toolset == toolset
         )
+
+    def register_toolset_alias(self, alias: str, toolset: str) -> None:
+        """Register an explicit alias for a canonical toolset name."""
+        with self._lock:
+            existing = self._toolset_aliases.get(alias)
+            if existing and existing != toolset:
+                logger.warning(
+                    "Toolset alias collision: '%s' (%s) overwritten by %s",
+                    alias, existing, toolset,
+                )
+            self._toolset_aliases[alias] = toolset
+
+    def get_registered_toolset_aliases(self) -> Dict[str, str]:
+        """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
+        with self._lock:
+            return dict(self._toolset_aliases)
+
+    def get_toolset_alias_target(self, alias: str) -> Optional[str]:
+        """Return the canonical toolset name for an alias, or None."""
+        with self._lock:
+            return self._toolset_aliases.get(alias)
 
     # ------------------------------------------------------------------
     # Registration
@@ -164,11 +237,18 @@ class ToolRegistry:
             entry = self._tools.pop(name, None)
             if entry is None:
                 return
-            # Drop the toolset check if this was the last tool in that toolset
-            if entry.toolset in self._toolset_checks and not any(
+            # Drop the toolset check and aliases if this was the last tool in
+            # that toolset.
+            toolset_still_exists = any(
                 e.toolset == entry.toolset for e in self._tools.values()
-            ):
+            )
+            if not toolset_still_exists:
                 self._toolset_checks.pop(entry.toolset, None)
+                self._toolset_aliases = {
+                    alias: target
+                    for alias, target in self._toolset_aliases.items()
+                    if target != entry.toolset
+                }
         logger.debug("Deregistered tool: %s", name)
 
     # ------------------------------------------------------------------

@@ -92,6 +92,25 @@ class TestCheckWatchPatterns:
         assert "disk full" in evt["output"]
         assert evt["session_id"] == "proc_test_watch"
 
+    def test_match_carries_session_key_and_watcher_routing_metadata(self, registry):
+        session = _make_session(watch_patterns=["ERROR"])
+        session.session_key = "agent:main:telegram:group:-100:42"
+        session.watcher_platform = "telegram"
+        session.watcher_chat_id = "-100"
+        session.watcher_user_id = "u123"
+        session.watcher_user_name = "alice"
+        session.watcher_thread_id = "42"
+
+        registry._check_watch_patterns(session, "ERROR: disk full\n")
+        evt = registry.completion_queue.get_nowait()
+
+        assert evt["session_key"] == "agent:main:telegram:group:-100:42"
+        assert evt["platform"] == "telegram"
+        assert evt["chat_id"] == "-100"
+        assert evt["user_id"] == "u123"
+        assert evt["user_name"] == "alice"
+        assert evt["thread_id"] == "42"
+
     def test_multiple_patterns(self, registry):
         """First matching pattern is reported."""
         session = _make_session(watch_patterns=["WARN", "ERROR"])

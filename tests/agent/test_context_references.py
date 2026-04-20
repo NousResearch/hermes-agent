@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -121,6 +122,31 @@ def test_expand_file_range_and_folder_listing(sample_repo: Path):
     assert "main.py" in result.message
     assert "helper.py" in result.message
     assert result.injected_tokens > 0
+    assert not result.warnings
+
+
+def test_folder_listing_falls_back_when_rg_is_blocked(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    real_run = subprocess.run
+
+    def blocked_rg(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, list) and cmd and cmd[0] == "rg":
+            raise PermissionError("rg blocked by policy")
+        return real_run(*args, **kwargs)
+
+    with patch("agent.context_references.subprocess.run", side_effect=blocked_rg):
+        result = preprocess_context_references(
+            "Review @folder:src/",
+            cwd=sample_repo,
+            context_length=100_000,
+        )
+
+    assert result.expanded
+    assert "src/" in result.message
+    assert "main.py" in result.message
+    assert "helper.py" in result.message
     assert not result.warnings
 
 

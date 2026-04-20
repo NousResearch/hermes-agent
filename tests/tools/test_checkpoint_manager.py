@@ -587,3 +587,112 @@ class TestSecurity:
         
         result = mgr.restore(str(work_dir), target_hash, file_path="subdir/test.txt")
         assert result["success"] is True
+
+
+# =========================================================================
+# GPG / global git config isolation
+# =========================================================================
+# Regression tests for the bug where users with ``commit.gpgsign = true``
+# in their global git config got a pinentry popup (or a failed commit)
+# every time the agent took a background snapshot.
+
+import os as _os
+
+
+class TestGpgAndGlobalConfigIsolation:
+    def test_git_env_isolates_global_and_system_config(self, tmp_path):
+        """_git_env must null out GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM so the
+        shadow repo does not inherit user-level gpgsign, hooks, aliases, etc."""
+        env = _git_env(tmp_path / "shadow", str(tmp_path))
+        assert env["GIT_CONFIG_GLOBAL"] == _os.devnull
+        assert env["GIT_CONFIG_SYSTEM"] == _os.devnull
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+
+    def test_init_sets_commit_gpgsign_false(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        shadow = _shadow_repo_path(str(work_dir))
+        _init_shadow_repo(shadow, str(work_dir))
+        # Inspect the shadow's own config directly — the settings must be
+        # written into the repo, not just inherited via env vars.
+        result = subprocess.run(
+            ["git", "config", "--file", str(shadow / "config"), "--get", "commit.gpgsign"],
+            capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == "false"
+
+    def test_init_sets_tag_gpgsign_false(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        shadow = _shadow_repo_path(str(work_dir))
+        _init_shadow_repo(shadow, str(work_dir))
+        result = subprocess.run(
+            ["git", "config", "--file", str(shadow / "config"), "--get", "tag.gpgSign"],
+            capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == "false"
+
+    def test_checkpoint_works_with_global_gpgsign_and_broken_gpg(
+        self, work_dir, checkpoint_base, monkeypatch, tmp_path
+    ):
+        """The real bug scenario: user has global commit.gpgsign=true but GPG
+        is broken or pinentry is unavailable.  Before the fix, every snapshot
+        either failed or spawned a pinentry window.  After the fix, snapshots
+        succeed without ever invoking GPG."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+
+        # Fake HOME with global gpgsign=true and a deliberately broken GPG
+        # binary.  If isolation fails, the commit will try to exec this
+        # nonexistent path and the checkpoint will fail.
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        (fake_home / ".gitconfig").write_text(
+            "[user]\n    email = real@user.com\n    name = Real User\n"
+            "[commit]\n    gpgsign = true\n"
+            "[tag]\n    gpgSign = true\n"
+            "[gpg]\n    program = /nonexistent/fake-gpg-binary\n"
+        )
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.delenv("GPG_TTY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)  # block GUI pinentry
+
+        mgr = CheckpointManager(enabled=True)
+        assert mgr.ensure_checkpoint(str(work_dir), reason="with-global-gpgsign") is True
+        assert len(mgr.list_checkpoints(str(work_dir))) == 1
+
+    def test_checkpoint_works_on_prefix_shadow_without_local_gpgsign(
+        self, work_dir, checkpoint_base, monkeypatch, tmp_path
+    ):
+        """Users with shadow repos created before the fix will not have
+        commit.gpgsign=false in their shadow's own config.  The inline
+        ``--no-gpg-sign`` flag on the commit call must cover them."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+
+        # Simulate a pre-fix shadow repo: init without commit.gpgsign=false
+        # in its own config.  _init_shadow_repo now writes it, so we must
+        # manually remove it to mimic the pre-fix state.
+        shadow = _shadow_repo_path(str(work_dir))
+        _init_shadow_repo(shadow, str(work_dir))
+        subprocess.run(
+            ["git", "config", "--file", str(shadow / "config"),
+             "--unset", "commit.gpgsign"],
+            capture_output=True, text=True, check=False,
+        )
+        subprocess.run(
+            ["git", "config", "--file", str(shadow / "config"),
+             "--unset", "tag.gpgSign"],
+            capture_output=True, text=True, check=False,
+        )
+
+        # And simulate hostile global config
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        (fake_home / ".gitconfig").write_text(
+            "[commit]\n    gpgsign = true\n"
+            "[gpg]\n    program = /nonexistent/fake-gpg-binary\n"
+        )
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.delenv("GPG_TTY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+
+        mgr = CheckpointManager(enabled=True)
+        assert mgr.ensure_checkpoint(str(work_dir), reason="prefix-shadow") is True
+        assert len(mgr.list_checkpoints(str(work_dir))) == 1

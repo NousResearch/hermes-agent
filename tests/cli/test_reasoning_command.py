@@ -473,6 +473,7 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent.verbose_logging = False
         agent.reasoning_callback = None
         agent.stream_delta_callback = None  # non-streaming by default
+        agent._stream_callback = None  # non-streaming by default
         return agent
 
     def test_single_think_block_extracted(self):
@@ -619,6 +620,7 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent = AIAgent.__new__(AIAgent)
         agent.reasoning_callback = None
         agent.stream_delta_callback = None
+        agent._stream_callback = None
         agent.verbose_logging = False
         return agent
 

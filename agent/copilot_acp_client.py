@@ -313,9 +313,25 @@ class CopilotACPClient:
             tools=tools,
             tool_choice=tool_choice,
         )
+        # Normalise timeout: run_agent.py may pass an httpx.Timeout object
+        # (used natively by the OpenAI SDK) rather than a plain float.
+        if timeout is None:
+            _effective_timeout = _DEFAULT_TIMEOUT_SECONDS
+        elif isinstance(timeout, (int, float)):
+            _effective_timeout = float(timeout)
+        else:
+            # httpx.Timeout or similar — pick the largest component so the
+            # subprocess has enough wall-clock time for the full response.
+            _candidates = [
+                getattr(timeout, attr, None)
+                for attr in ("read", "write", "connect", "pool", "timeout")
+            ]
+            _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
+            _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
+
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
-            timeout_seconds=float(timeout or _DEFAULT_TIMEOUT_SECONDS),
+            timeout_seconds=_effective_timeout,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)

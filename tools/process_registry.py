@@ -64,6 +64,17 @@ WATCH_WINDOW_SECONDS = 10       # Rolling window length
 WATCH_OVERLOAD_KILL_SECONDS = 45  # Sustained overload duration before disabling watch
 
 
+def format_uptime_short(seconds: int) -> str:
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    mins, secs = divmod(s, 60)
+    if mins < 60:
+        return f"{mins}m {secs}s"
+    hours, mins = divmod(mins, 60)
+    return f"{hours}h {mins}m"
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -191,9 +202,15 @@ class ProcessRegistry:
                     session._watch_disabled = True
                     self.completion_queue.put({
                         "session_id": session.id,
+                        "session_key": session.session_key,
                         "command": session.command,
                         "type": "watch_disabled",
                         "suppressed": session._watch_suppressed,
+                        "platform": session.watcher_platform,
+                        "chat_id": session.watcher_chat_id,
+                        "user_id": session.watcher_user_id,
+                        "user_name": session.watcher_user_name,
+                        "thread_id": session.watcher_thread_id,
                         "message": (
                             f"Watch patterns disabled for process {session.id} — "
                             f"too many matches ({session._watch_suppressed} suppressed). "
@@ -219,11 +236,17 @@ class ProcessRegistry:
 
         self.completion_queue.put({
             "session_id": session.id,
+            "session_key": session.session_key,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
             "output": output,
             "suppressed": suppressed,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "user_id": session.watcher_user_id,
+            "user_name": session.watcher_user_name,
+            "thread_id": session.watcher_thread_id,
         })
 
     @staticmethod
@@ -322,7 +345,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", command],
+                    [user_shell, "-lic", f"set +m; {command}"],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -363,7 +386,7 @@ class ProcessRegistry:
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            [user_shell, "-lic", command],
+            [user_shell, "-lic", f"set +m; {command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -958,12 +981,22 @@ class ProcessRegistry:
         ]
         for sid in expired:
             del self._finished[sid]
+            self._completion_consumed.discard(sid)
 
         # If still over limit, remove oldest finished
         total = len(self._running) + len(self._finished)
         if total >= MAX_PROCESSES and self._finished:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
+            self._completion_consumed.discard(oldest_id)
+
+        # Drop any _completion_consumed entries whose sessions are no longer
+        # tracked at all — belt-and-suspenders against module-lifetime growth
+        # on process-registry lookup paths that don't reach the dict prunes.
+        tracked = self._running.keys() | self._finished.keys()
+        stale = self._completion_consumed - tracked
+        if stale:
+            self._completion_consumed -= stale
 
     # ----- Checkpoint (crash recovery) -----
 

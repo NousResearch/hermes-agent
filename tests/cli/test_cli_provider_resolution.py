@@ -207,48 +207,11 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     shell.api_mode = "chat_completions"
     shell.base_url = "https://openrouter.ai/api/v1"
     shell.api_key = "sk-primary"
-    shell._smart_model_routing = {"enabled": False}
 
     result = shell._resolve_turn_agent_config("what time is it in tokyo?")
 
     assert result["model"] == "gpt-5"
     assert result["runtime"]["provider"] == "openrouter"
-    assert result["label"] is None
-
-
-def test_cli_turn_routing_uses_cheap_model_when_simple(monkeypatch):
-    cli = _import_cli()
-
-    def _runtime_resolve(**kwargs):
-        assert kwargs["requested"] == "zai"
-        return {
-            "provider": "zai",
-            "api_mode": "chat_completions",
-            "base_url": "https://open.z.ai/api/v1",
-            "api_key": "cheap-key",
-            "source": "env/config",
-        }
-
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
-
-    shell = cli.HermesCLI(model="anthropic/claude-sonnet-4", compact=True, max_turns=1)
-    shell.provider = "openrouter"
-    shell.api_mode = "chat_completions"
-    shell.base_url = "https://openrouter.ai/api/v1"
-    shell.api_key = "primary-key"
-    shell._smart_model_routing = {
-        "enabled": True,
-        "cheap_model": {"provider": "zai", "model": "glm-5-air"},
-        "max_simple_chars": 160,
-        "max_simple_words": 28,
-    }
-
-    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
-
-    assert result["model"] == "glm-5-air"
-    assert result["runtime"]["provider"] == "zai"
-    assert result["runtime"]["api_key"] == "cheap-key"
-    assert result["label"] is not None
 
 
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
@@ -308,7 +271,7 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
 
 def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "elevenlabs"},
@@ -333,21 +296,17 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
     monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None, **kw: "claude-opus-4-6")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_subscription_explainer_lines",
-        lambda: ["Nous subscription enables managed web tools."],
-    )
 
     hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
 
     out = capsys.readouterr().out
-    assert "Nous subscription enables managed web tools." in out
+    assert "Default model set to:" in out
     assert config["tts"]["provider"] == "elevenlabs"
     assert config["browser"]["cloud_provider"] == "browser-use"
 
 
-def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "edge"},
@@ -355,13 +314,13 @@ def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypat
 
     monkeypatch.setattr(
         "hermes_cli.auth.get_provider_auth_state",
-        lambda provider: {"access_token": "nous-token"},
+        lambda provider: {"access_token": "***"},
     )
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_nous_runtime_credentials",
         lambda *args, **kwargs: {
             "base_url": "https://inference.example.com/v1",
-            "api_key": "nous-key",
+            "api_key": "***",
         },
     )
     monkeypatch.setattr(
@@ -371,17 +330,12 @@ def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypat
     monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None, **kw: "claude-opus-4-6")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_subscription_explainer_lines",
-        lambda: ["Nous subscription enables managed web tools."],
-    )
-
     hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
 
     out = capsys.readouterr().out
-    assert "Nous subscription enables managed web tools." in out
-    assert "OpenAI TTS via your Nous subscription" in out
-    assert config["tts"]["provider"] == "openai"
+    # Tool Gateway prompt should be shown (input() raises OSError in pytest
+    # which is caught, so the prompt text appears but nothing is applied)
+    assert "Tool Gateway" in out
 
 
 def test_codex_provider_uses_config_model(monkeypatch):
@@ -578,7 +532,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     # After the probe detects a single model ("llm"), the flow asks
     # "Use this model? [Y/n]:" — confirm with Enter, then context length,
     # then display name.
-    answers = iter(["http://localhost:8000", "local-key", "", "", ""])
+    answers = iter(["http://localhost:8000", "local-key", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))
 

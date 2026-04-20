@@ -44,11 +44,18 @@ This guide walks you through the full setup process — from creating your DingT
 Install the required Python packages:
 
 ```bash
-pip install dingtalk-stream httpx
+pip install "hermes-agent[dingtalk]"
+```
+
+Or individually:
+
+```bash
+pip install dingtalk-stream httpx alibabacloud-dingtalk
 ```
 
 - `dingtalk-stream` — DingTalk's official SDK for Stream Mode (WebSocket-based real-time messaging)
 - `httpx` — async HTTP client used for sending replies via session webhooks
+- `alibabacloud-dingtalk` — DingTalk OpenAPI SDK for AI Cards, emoji reactions, and media downloads
 
 ## Step 1: Create a DingTalk App
 
@@ -93,7 +100,14 @@ Run the guided setup command:
 hermes gateway setup
 ```
 
-Select **DingTalk** when prompted, then paste your Client ID, Client Secret, and allowed user IDs when asked.
+Select **DingTalk** when prompted. The setup wizard can authorize via one of two paths:
+
+- **QR-code device flow (recommended).** Scan the QR that prints in your terminal with the DingTalk mobile app — your Client ID and Client Secret are returned automatically and written to `~/.hermes/.env`. No developer-console trip needed.
+- **Manual paste.** If you already have credentials (or QR scanning isn't convenient), paste your Client ID, Client Secret, and allowed user IDs when prompted.
+
+:::note openClaw branding disclosure
+Because DingTalk's `verification_uri_complete` is hardcoded to the openClaw identity at the API layer, the QR currently authorizes under an `openClaw` source string until Alibaba / DingTalk-Real-AI registers a Hermes-specific template server-side. This is purely how DingTalk presents the consent screen — the bot you create is fully yours and private to your tenant.
+:::
 
 ### Option B: Manual Configuration
 
@@ -132,6 +146,57 @@ The bot should connect to DingTalk's Stream Mode within a few seconds. Send it a
 :::tip
 You can run `hermes gateway` in the background or as a systemd service for persistent operation. See the deployment docs for details.
 :::
+
+## Features
+
+### AI Cards
+
+Hermes can reply using DingTalk AI Cards instead of plain markdown messages. Cards provide a richer, more structured display and support streaming updates as the agent generates its response.
+
+To enable AI Cards, configure a card template ID in `config.yaml`:
+
+```yaml
+platforms:
+  dingtalk:
+    enabled: true
+    extra:
+      card_template_id: "your-card-template-id"
+```
+
+You can find your card template ID in the DingTalk Developer Console under your app's AI Card settings. When AI Cards are enabled, all replies are sent as cards with streaming text updates.
+
+### Emoji Reactions
+
+Hermes automatically adds emoji reactions to your messages to show processing status:
+
+- 🤔Thinking — added when the bot starts processing your message
+- 🥳Done — added when the response is complete (replaces the Thinking reaction)
+
+These reactions work in both DMs and group chats.
+
+### Display Settings
+
+You can customize DingTalk's display behavior independently from other platforms:
+
+```yaml
+display:
+  platforms:
+    dingtalk:
+      show_reasoning: false   # Show model reasoning/thinking in replies
+      streaming: true         # Enable streaming responses (works with AI Cards)
+      tool_progress: all      # Show tool execution progress (all/new/off)
+      interim_assistant_messages: true  # Show intermediate commentary messages
+```
+
+To disable tool progress and intermediate messages for a cleaner experience:
+
+```yaml
+display:
+  platforms:
+    dingtalk:
+      tool_progress: off
+      interim_assistant_messages: false
+```
 
 ## Troubleshooting
 
@@ -186,7 +251,10 @@ For more information on securing your Hermes Agent deployment, see the [Security
 ## Notes
 
 - **Stream Mode**: No public URL, domain name, or webhook server needed. The connection is initiated from your machine via WebSocket, so it works behind NAT and firewalls.
+- **AI Cards**: Optionally reply with rich AI Cards instead of plain markdown. Configure via `card_template_id`.
+- **Emoji Reactions**: Automatic 🤔Thinking/🥳Done reactions for processing status.
 - **Markdown responses**: Replies are formatted in DingTalk's markdown format for rich text display.
+- **Media support**: Images and files in incoming messages are automatically resolved and can be processed by vision tools.
 - **Message deduplication**: The adapter deduplicates messages with a 5-minute window to prevent processing the same message twice.
 - **Auto-reconnection**: If the stream connection drops, the adapter automatically reconnects with exponential backoff.
 - **Message length limit**: Responses are capped at 20,000 characters per message. Longer responses are truncated.

@@ -42,7 +42,7 @@ The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. T
 
 ### Honcho
 
-AI-native cross-session user modeling with dialectic Q&A, semantic search, and persistent conclusions.
+AI-native cross-session user modeling with dialectic reasoning, session-scoped context injection, semantic search, and persistent conclusions. Base context now includes the session summary alongside user representation and peer cards, giving the agent awareness of what has already been discussed.
 
 | | |
 |---|---|
@@ -51,7 +51,15 @@ AI-native cross-session user modeling with dialectic Q&A, semantic search, and p
 | **Data storage** | Honcho Cloud or self-hosted |
 | **Cost** | Honcho pricing (cloud) / free (self-hosted) |
 
-**Tools:** `honcho_profile` (peer card), `honcho_search` (semantic search), `honcho_context` (LLM-synthesized), `honcho_conclude` (store facts)
+**Tools (5):** `honcho_profile` (read/update peer card), `honcho_search` (semantic search), `honcho_context` (session context — summary, representation, card, messages), `honcho_reasoning` (LLM-synthesized), `honcho_conclude` (create/delete conclusions)
+
+**Architecture:** Two-layer context injection — a base layer (session summary + representation + peer card, refreshed on `contextCadence`) plus a dialectic supplement (LLM reasoning, refreshed on `dialecticCadence`). The dialectic automatically selects cold-start prompts (general user facts) vs. warm prompts (session-scoped context) based on whether base context exists.
+
+**Three orthogonal config knobs** control cost and depth independently:
+
+- `contextCadence` — how often the base layer refreshes (API call frequency)
+- `dialecticCadence` — how often the dialectic LLM fires (LLM call frequency)
+- `dialecticDepth` — how many `.chat()` passes per dialectic invocation (1–3, depth of reasoning)
 
 **Setup Wizard:**
 ```bash
@@ -63,7 +71,7 @@ hermes memory setup        # select "honcho"
 **Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 <details>
-<summary>Key config options</summary>
+<summary>Full config reference</summary>
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -72,13 +80,21 @@ hermes memory setup        # select "honcho"
 | `peerName` | -- | User peer identity |
 | `aiPeer` | host key | AI peer identity (one per profile) |
 | `workspace` | host key | Shared workspace ID |
-| `recallMode` | `hybrid` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
-| `observation` | all on | Per-peer `observeMe`/`observeOthers` booleans |
-| `writeFrequency` | `async` | `async`, `turn`, `session`, or integer N |
-| `sessionStrategy` | `per-directory` | `per-directory`, `per-repo`, `per-session`, `global` |
-| `dialecticReasoningLevel` | `low` | `minimal`, `low`, `medium`, `high`, `max` |
-| `dialecticDynamic` | `true` | Auto-bump reasoning by query length |
+| `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Truncates at word boundaries |
+| `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
+| `dialecticCadence` | `2` | Minimum turns between `peer.chat()` LLM calls. Recommended 1–5. Only applies to `hybrid`/`context` modes |
+| `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped 1–3. Pass 0: cold/warm prompt, pass 1: self-audit, pass 2: reconciliation |
+| `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
+| `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
+| `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
+| `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
+| `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
+| `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
+| `saveMessages` | `true` | Whether to persist messages to Honcho API |
+| `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object |
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
+| `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
+| `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, `global` |
 
 </details>
 
@@ -124,23 +140,64 @@ hermes memory setup        # select "honcho"
 If you previously used `hermes honcho setup`, your config and all server-side data are intact. Just re-enable through the setup wizard again or manually set `memory.provider: honcho` to reactivate via the new system.
 :::
 
-**Multi-agent / Profiles:**
+**Multi-peer setup:**
 
-Each Hermes profile gets its own Honcho AI peer while sharing the same workspace -- all profiles see the same user representation, but each agent builds its own identity and observations.
+Honcho models conversations as peers exchanging messages — one user peer plus one AI peer per Hermes profile, all sharing a workspace. The workspace is the shared environment: the user peer is global across profiles, each AI peer is its own identity. Every AI peer builds an independent representation / card from its own observations, so a `coder` profile stays code-oriented while a `writer` profile stays editorial against the same user.
+
+The mapping:
+
+| Concept | What it is |
+|---------|-----------|
+| **Workspace** | Shared environment. All Hermes profiles under one workspace see the same user identity. |
+| **User peer** (`peerName`) | The human. Shared across profiles in the workspace. |
+| **AI peer** (`aiPeer`) | One per Hermes profile. Host key `hermes` → default; `hermes.<profile>` for others. |
+| **Observation** | Per-peer toggles controlling what Honcho models from whose messages. `directional` (default, all four on) or `unified` (single-observer pool). |
+
+### New profile, fresh Honcho peer
 
 ```bash
-hermes profile create coder --clone   # creates honcho peer "coder", inherits config from default
+hermes profile create coder --clone
 ```
 
-What `--clone` does: creates a `hermes.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The peer is eagerly created in Honcho so it exists before first message.
+`--clone` creates a `hermes.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message.
 
-For profiles created before Honcho was set up:
+### Existing profiles, backfill Honcho peers
 
 ```bash
-hermes honcho sync   # scans all profiles, creates host blocks for any missing ones
+hermes honcho sync
 ```
 
-This inherits settings from the default `hermes` host block and creates new AI peers for each profile. Idempotent -- skips profiles that already have a host block.
+Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `hermes` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block.
+
+### Per-profile observation
+
+Each host block can override the observation config independently. Example: a code-focused profile where the AI peer observes the user but doesn't self-model:
+
+```json
+"hermes.coder": {
+  "aiPeer": "coder",
+  "observation": {
+    "user": { "observeMe": true, "observeOthers": true },
+    "ai":   { "observeMe": false, "observeOthers": true }
+  }
+}
+```
+
+**Observation toggles (one set per peer):**
+
+| Toggle | Effect |
+|--------|--------|
+| `observeMe` | Honcho builds a representation of this peer from its own messages |
+| `observeOthers` | This peer observes the other peer's messages (feeds cross-peer reasoning) |
+
+Presets via `observationMode`:
+
+- **`"directional"`** (default) — all four flags on. Full mutual observation; enables cross-peer dialectic.
+- **`"unified"`** — user `observeMe: true`, AI `observeOthers: true`, rest false. Single-observer pool; AI models the user but not itself, user peer only self-models.
+
+Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — synced back at session init.
+
+See the [Honcho page](./honcho.md#observation-directional-vs-unified) for the full observation reference.
 
 <details>
 <summary>Full honcho.json example (multi-profile)</summary>
@@ -165,7 +222,10 @@ This inherits settings from the default `hermes` host block and creates new AI p
       },
       "dialecticReasoningLevel": "low",
       "dialecticDynamic": true,
+      "dialecticCadence": 2,
+      "dialecticDepth": 1,
       "dialecticMaxChars": 600,
+      "contextCadence": 1,
       "messageMaxChars": 25000,
       "saveMessages": true
     },
@@ -462,7 +522,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
-| **Honcho** | Cloud | Paid | 4 | `honcho-ai` | Dialectic user modeling |
+| **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Union
@@ -31,6 +32,31 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+def _preserve_file_mode(path: Path) -> "int | None":
+    """Capture the permission bits of *path* if it exists, else ``None``."""
+    try:
+        return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    except OSError:
+        return None
+
+
+def _restore_file_mode(path: Path, mode: "int | None") -> None:
+    """Re-apply *mode* to *path* after an atomic replace.
+
+    ``tempfile.mkstemp`` creates files with 0o600 (owner-only).  After
+    ``os.replace`` swaps the temp file into place the target inherits
+    those restrictive permissions, breaking Docker / NAS volume mounts
+    that rely on broader permissions set by the user.  Calling this
+    right after ``os.replace`` restores the original permissions.
+    """
+    if mode is None:
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,
@@ -54,6 +80,8 @@ def atomic_json_write(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    original_mode = _preserve_file_mode(path)
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -71,6 +99,7 @@ def atomic_json_write(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        _restore_file_mode(path, original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -106,6 +135,8 @@ def atomic_yaml_write(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    original_mode = _preserve_file_mode(path)
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -119,6 +150,7 @@ def atomic_yaml_write(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        _restore_file_mode(path, original_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.

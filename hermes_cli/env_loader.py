@@ -8,11 +8,40 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+# Env var name suffixes that indicate credential values.  These are the
+# only env vars whose values we sanitize on load — we must not silently
+# alter arbitrary user env vars, but credentials are known to require
+# pure ASCII (they become HTTP header values).
+_CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
+
+
+def _sanitize_loaded_credentials() -> None:
+    """Strip non-ASCII characters from credential env vars in os.environ.
+
+    Called after dotenv loads so the rest of the codebase never sees
+    non-ASCII API keys.  Only touches env vars whose names end with
+    known credential suffixes (``_API_KEY``, ``_TOKEN``, etc.).
+    """
+    for key, value in list(os.environ.items()):
+        if not any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES):
+            continue
+        try:
+            value.encode("ascii")
+        except UnicodeEncodeError:
+            os.environ[key] = value.encode("ascii", errors="ignore").decode("ascii")
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
         load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+    # Strip non-ASCII characters from credential env vars that were just
+    # loaded.  API keys must be pure ASCII since they're sent as HTTP
+    # header values (httpx encodes headers as ASCII).  Non-ASCII chars
+    # typically come from copy-pasting keys from PDFs or rich-text editors
+    # that substitute Unicode lookalike glyphs (e.g. ʋ U+028B for v).
+    _sanitize_loaded_credentials()
 
 
 def _sanitize_env_file_if_needed(path: Path) -> None:

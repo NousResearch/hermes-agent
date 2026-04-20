@@ -166,6 +166,7 @@ def curses_radiolist(
     selected: int = 0,
     *,
     cancel_returns: int | None = None,
+    description: str | None = None,
 ) -> int:
     """Curses single-select radio list. Returns the selected index.
 
@@ -174,12 +175,19 @@ def curses_radiolist(
         items: Display labels for each row.
         selected: Index that starts selected (pre-selected).
         cancel_returns: Returned on ESC/q. Defaults to the original *selected*.
+        description: Optional multi-line text shown between the title and
+            the item list.  Useful for context that should survive the
+            curses screen clear.
     """
     if cancel_returns is None:
         cancel_returns = selected
 
     if not sys.stdin.isatty():
         return cancel_returns
+
+    desc_lines: list[str] = []
+    if description:
+        desc_lines = description.splitlines()
 
     try:
         import curses
@@ -199,22 +207,35 @@ def curses_radiolist(
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
 
+                row = 0
+
                 # Header
                 try:
                     hattr = curses.A_BOLD
                     if curses.has_colors():
                         hattr |= curses.color_pair(2)
-                    stdscr.addnstr(0, 0, title, max_x - 1, hattr)
+                    stdscr.addnstr(row, 0, title, max_x - 1, hattr)
+                    row += 1
+
+                    # Description lines
+                    for dline in desc_lines:
+                        if row >= max_y - 1:
+                            break
+                        stdscr.addnstr(row, 0, dline, max_x - 1, curses.A_NORMAL)
+                        row += 1
+
                     stdscr.addnstr(
-                        1, 0,
+                        row, 0,
                         "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel",
                         max_x - 1, curses.A_DIM,
                     )
+                    row += 1
                 except curses.error:
                     pass
 
                 # Scrollable item list
-                visible_rows = max_y - 4
+                items_start = row + 1
+                visible_rows = max_y - items_start - 1
                 if cursor < scroll_offset:
                     scroll_offset = cursor
                 elif cursor >= scroll_offset + visible_rows:
@@ -223,7 +244,7 @@ def curses_radiolist(
                 for draw_i, i in enumerate(
                     range(scroll_offset, min(len(items), scroll_offset + visible_rows))
                 ):
-                    y = draw_i + 3
+                    y = draw_i + items_start
                     if y >= max_y - 1:
                         break
                     radio = "\u25cf" if i == selected else "\u25cb"

@@ -280,4 +280,9 @@ export const zh: Translations = {
   language: {
     switchTo: "切换到英文",
   },
+
+  theme: {
+    title: "主题",
+    switchTheme: "切换主题",
+  },
 };

@@ -152,6 +152,24 @@ class TestSkinManagement:
         init_skin_from_config({})
         assert get_active_skin_name() == "default"
 
+    def test_init_skin_from_null_display(self):
+        """display: null should fall back to default, not crash."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": None})
+        assert get_active_skin_name() == "default"
+
+    def test_init_skin_from_non_dict_display(self):
+        """display: <non-dict> should fall back to default."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": "invalid"})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": 42})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": []})
+        assert get_active_skin_name() == "default"
+
 
 class TestUserSkins:
     def test_load_user_skin_from_yaml(self, tmp_path, monkeypatch):

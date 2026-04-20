@@ -8,12 +8,8 @@
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
       };
 
-      hermesNpmLib = pkgs.callPackage ./lib.nix {
-        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
-      };
-
       hermesTui = pkgs.callPackage ./tui.nix {
-        inherit hermesNpmLib;
+        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
       };
 
       # Import bundled skills, excluding runtime caches
@@ -23,7 +19,7 @@
       };
 
       hermesWeb = pkgs.callPackage ./web.nix {
-        inherit hermesNpmLib;
+        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
       };
 
       runtimeDeps = with pkgs; [
@@ -115,10 +111,6 @@
 
         tui = hermesTui;
         web = hermesWeb;
-
-        fix-lockfiles = hermesNpmLib.mkFixLockfiles {
-          packages = [ hermesTui hermesWeb ];
-        };
       };
     };
 }

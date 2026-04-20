@@ -450,3 +450,23 @@ def test_get_unauthorized_dm_behavior_no_allowlist_returns_pair(monkeypatch):
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
     assert behavior == "pair"
+
+
+def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
+    """QQBOT is included in the allowlist-aware default (QQ_ALLOWED_USERS).
+
+    Regression guard: the initial #9337 fix omitted QQBOT from the env map
+    inside _get_unauthorized_dm_behavior, even though _is_user_authorized
+    mapped it to QQ_ALLOWED_USERS.  Without QQBOT here, a QQ operator with a
+    strict user allowlist would still get pairing codes sent to strangers.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("QQ_ALLOWED_USERS", "allowed-openid-1")
+
+    config = GatewayConfig(
+        platforms={Platform.QQBOT: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.QQBOT, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.QQBOT)
+    assert behavior == "ignore"

@@ -6716,18 +6716,19 @@ class AIAgent:
             # (the documented max output for qwen3-coder models) so the
             # model has adequate output budget for tool calls.
             api_kwargs.update(self._max_tokens_param(65536))
-        elif (self._is_openrouter_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
-            # OpenRouter and Nous Portal translate requests to Anthropic's
-            # Messages API, which requires max_tokens as a mandatory field.
-            # When we omit it, the proxy picks a default that can be too
-            # low — the model spends its output budget on thinking and has
-            # almost nothing left for the actual response (especially large
-            # tool calls like write_file).  Sending the model's real output
-            # limit ensures full capacity.
+        else:
+            # For any Anthropic-compatible model (Claude, MiniMax, etc.),
+            # always send max_tokens regardless of which proxy serves it.
+            # OpenRouter/Nous translate to Messages API (mandatory field),
+            # but other proxies (AWS Bedrock, NVIDIA, LiteLLM, corporate
+            # gateways) also need it — they default to 4096 output tokens,
+            # which easily exhausts on thinking + large tool calls.
             try:
-                from agent.anthropic_adapter import _get_anthropic_max_output
-                _model_output_limit = _get_anthropic_max_output(self.model)
-                api_kwargs["max_tokens"] = _model_output_limit
+                from agent.anthropic_adapter import _get_anthropic_max_output, _ANTHROPIC_OUTPUT_LIMITS
+                _model_lower = (self.model or "").lower().replace(".", "-")
+                if any(key in _model_lower for key in _ANTHROPIC_OUTPUT_LIMITS):
+                    _model_output_limit = _get_anthropic_max_output(self.model)
+                    api_kwargs["max_tokens"] = _model_output_limit
             except Exception:
                 pass  # fail open — let the proxy pick its default
 

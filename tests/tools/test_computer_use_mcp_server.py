@@ -95,6 +95,95 @@ class TestGetAppState:
         assert result["app_name"] == "文本编辑"
         assert result["bundle_id"] == "com.apple.TextEdit"
 
+    def test_get_app_state_by_app_session_id_keeps_localized_approved_session_working(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        adapter.approve_app_impl("TextEdit")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 777}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        first = adapter.get_app_state_impl(app_name="TextEdit")
+        second = adapter.get_app_state_impl(app_session_id=first["app_session_id"])
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert second["approval_required"] is False
+        assert second["approved"] is True
+        assert second["app_session_id"] == first["app_session_id"]
+        assert second["app_name"] == "文本编辑"
+
+    def test_get_app_state_by_app_session_id_revocation_marks_same_localized_session_unapproved(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        adapter.approve_app_impl("TextEdit")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 777}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        first = adapter.get_app_state_impl(app_name="TextEdit")
+        adapter.revoke_app_impl("TextEdit")
+        second = adapter.get_app_state_impl(app_session_id=first["app_session_id"])
+        typed = adapter.type_text_impl("uwu", app_session_id=first["app_session_id"])
+
+        assert first["success"] is True
+        assert second["success"] is False
+        assert second["approval_required"] is True
+        assert second["approved"] is False
+        assert second["app_session_id"] == first["app_session_id"]
+        assert len(adapter._APP_SESSIONS) == 1
+        assert typed["success"] is False
+        assert typed["approval_required"] is True
+        assert typed["app_session_id"] == first["app_session_id"]
+
+    def test_get_app_state_without_requested_app_persists_approved_identity_for_localized_frontmost_app(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        adapter.approve_app_impl("TextEdit")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 777}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        first = adapter.get_app_state_impl()
+        second = adapter.get_app_state_impl(app_session_id=first["app_session_id"])
+
+        assert first["success"] is True
+        assert first["approved"] is True
+        assert second["success"] is True
+        assert second["approved"] is True
+        assert second["app_session_id"] == first["app_session_id"]
+        assert second["app_name"] == "文本编辑"
+
     def test_get_app_state_does_not_inherit_approval_from_requested_app_when_frontmost_differs(self, monkeypatch, tmp_path):
         store_path = tmp_path / "ComputerUseAppApprovals.json"
         monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)

@@ -381,6 +381,16 @@ def _frontmost_is_approved(frontmost: dict[str, Any], requested_app: str | None 
     return any(_is_app_approved(candidate) for candidate in _frontmost_identity_candidates(frontmost))
 
 
+def _frontmost_approved_identity(frontmost: dict[str, Any], requested_app: str | None = None) -> str | None:
+    wanted = _normalize_app_name(requested_app)
+    if wanted and _is_app_approved(wanted) and _frontmost_matches_requested(wanted, frontmost):
+        return wanted
+    for candidate in _frontmost_identity_candidates(frontmost):
+        if _is_app_approved(candidate):
+            return candidate
+    return None
+
+
 def list_active_sessions_impl() -> dict[str, Any]:
     with _APP_SESSIONS_LOCK:
         active_sessions = _active_sessions()
@@ -602,10 +612,13 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
         session = _find_session(app_session_id=wanted_session_id)
         if not session or not session.get("active"):
             return _session_required_error("getting app state")
-        requested_app = _normalize_app_name(session.get("app_name"))
+        requested_app = _normalize_app_name(session.get("approval_name") or session.get("app_name"))
 
     if requested_app and not _is_app_approved(requested_app):
-        pending_session = _ensure_app_session(requested_app, active=False)
+        pending_session = session or _ensure_app_session(requested_app, active=False)
+        pending_session["approved"] = False
+        if requested_app:
+            pending_session["approval_name"] = requested_app
         return {
             "success": False,
             "approval_required": True,
@@ -638,10 +651,12 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
         return {"success": False, "error": screenshot["error"]}
 
     frontmost_app_name = _normalize_app_name(frontmost.get("app_name"))
+    approved_identity = _frontmost_approved_identity(frontmost, requested_app=requested_app)
     session = session or _ensure_app_session(frontmost_app_name or requested_app, active=True)
     session["active"] = True
     session["app_name"] = frontmost_app_name or requested_app or session.get("app_name", "desktop")
-    session["approved"] = _frontmost_is_approved(frontmost, requested_app=requested_app)
+    session["approval_name"] = approved_identity or requested_app or session.get("approval_name") or session["app_name"]
+    session["approved"] = approved_identity is not None
     session["bundle_id"] = str(frontmost.get("bundle_id") or "")
     session["process_id"] = frontmost.get("process_id")
     session["window_id"] = frontmost.get("window_id")

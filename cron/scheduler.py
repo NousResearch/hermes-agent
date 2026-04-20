@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -77,11 +78,13 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron import task_watchdog
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+BLOCKED_MARKER = "[BLOCKED]"
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
@@ -89,6 +92,73 @@ _hermes_home = get_hermes_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+def _parse_blocked_response(final_response: str) -> Optional[str]:
+    """Return blocker text when a cron response explicitly signals external blocking."""
+    text = (final_response or "").strip()
+    if not text:
+        return None
+
+    upper = text.upper()
+    if upper.startswith(BLOCKED_MARKER):
+        return text[len(BLOCKED_MARKER):].strip() or "Blocked pending user action."
+    if upper.startswith("BLOCKED:"):
+        return text.split(":", 1)[1].strip() or "Blocked pending user action."
+    return None
+
+
+def _get_cron_heartbeat_interval() -> float:
+    env_value = os.getenv("HERMES_CRON_HEARTBEAT_INTERVAL", "").strip()
+    if env_value:
+        try:
+            return max(1.0, float(env_value))
+        except Exception:
+            logger.warning("Invalid HERMES_CRON_HEARTBEAT_INTERVAL=%r; using config/default", env_value)
+    try:
+        cfg = load_config() or {}
+        configured = (cfg.get("cron", {}) or {}).get("heartbeat_interval_seconds")
+        if configured is not None:
+            return max(1.0, float(configured))
+    except Exception as exc:
+        logger.debug("Failed to load cron heartbeat interval from config: %s", exc)
+    return 300.0
+
+
+def _get_cron_timeout_warning_seconds() -> float:
+    env_value = os.getenv("HERMES_CRON_TIMEOUT_WARNING", "").strip()
+    if env_value:
+        try:
+            return max(0.0, float(env_value))
+        except Exception:
+            logger.warning("Invalid HERMES_CRON_TIMEOUT_WARNING=%r; using config/default", env_value)
+    try:
+        cfg = load_config() or {}
+        configured = (cfg.get("cron", {}) or {}).get("timeout_warning_seconds")
+        if configured is not None:
+            return max(0.0, float(configured))
+    except Exception as exc:
+        logger.debug("Failed to load cron timeout warning from config: %s", exc)
+    return 120.0
+
+
+def _format_activity_note(activity: dict | None) -> str:
+    if not isinstance(activity, dict) or not activity:
+        return "No activity details available yet."
+    last_desc = activity.get("last_activity_desc") or "unknown"
+    idle = activity.get("seconds_since_activity")
+    current_tool = activity.get("current_tool") or "none"
+    api_call_count = activity.get("api_call_count")
+    max_iterations = activity.get("max_iterations")
+    parts = [f"last activity: {last_desc}", f"current tool: {current_tool}"]
+    if idle is not None:
+        try:
+            parts.append(f"idle: {int(float(idle))}s")
+        except Exception:
+            parts.append(f"idle: {idle}")
+    if api_call_count is not None and max_iterations is not None:
+        parts.append(f"turns: {api_call_count}/{max_iterations}")
+    return "; ".join(parts)
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -643,8 +713,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "final response and the system handles the rest. "
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+        "[SILENT] suppresses delivery only when nothing new happened. "
         "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "findings normally, or say [SILENT] and nothing more. "
+        "BLOCKED: If you are truly blocked and need user action, start your "
+        "final response with \"[BLOCKED]\" followed by exactly what action the "
+        "user needs to take. You may also use \"BLOCKED:\". The blocker text "
+        "must clearly explain the required user action.]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
@@ -692,7 +767,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return "\n".join(parts)
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(job: dict, adapters=None, loop=None) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -738,6 +813,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prompt = _build_job_prompt(job, prerun_script=prerun_script)
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _task_id = _cron_session_id
+    _tasks_file = _hermes_home / "cron" / "task_heartbeat.json"
+    delivery_target = None
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -769,6 +847,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
             if delivery_target.get("thread_id") is not None:
                 os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+
+        task_watchdog.register_task(
+            path=_tasks_file,
+            task_id=_task_id,
+            job_id=job_id,
+            job_name=job_name,
+            session_id=_cron_session_id,
+            delivery_target=delivery_target,
+            started_at=_hermes_now().isoformat(),
+            last_progress_note="Cron job started",
+            last_activity_desc="job_started",
+            activity_summary={},
+        )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -896,6 +987,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # _touch_activity() on every tool call, API call, and stream delta).
         _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        _timeout_warning = _get_cron_timeout_warning_seconds()
+        _heartbeat_interval = _get_cron_heartbeat_interval()
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
@@ -904,6 +997,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _warning_sent = False
+        _last_heartbeat_sent = time.time()
         try:
             if _cron_inactivity_limit is None:
                 # Unlimited — just wait for the result.
@@ -919,12 +1014,48 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         break
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
+                    _act = None
                     if hasattr(agent, "get_activity_summary"):
                         try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            _candidate = agent.get_activity_summary()
+                            if isinstance(_candidate, dict):
+                                _act = _candidate
+                                _idle_secs = _act.get("seconds_since_activity", 0.0)
+                                task_watchdog.update_task_activity(
+                                    path=_tasks_file,
+                                    task_id=_task_id,
+                                    activity_summary=_act,
+                                    last_progress_note=_format_activity_note(_act),
+                                    last_activity_desc=_act.get("last_activity_desc"),
+                                )
                         except Exception:
                             pass
+
+                    _now = time.time()
+                    if delivery_target and (_now - _last_heartbeat_sent) >= _heartbeat_interval:
+                        _deliver_result(
+                            job,
+                            f"Still working on {job_name}. {_format_activity_note(_act)}",
+                            adapters=adapters,
+                            loop=loop,
+                        )
+                        _last_heartbeat_sent = _now
+
+                    if (
+                        delivery_target
+                        and not _warning_sent
+                        and _cron_inactivity_limit is not None
+                        and _timeout_warning > 0
+                        and _idle_secs >= max(0.0, _cron_inactivity_limit - _timeout_warning)
+                    ):
+                        _deliver_result(
+                            job,
+                            f"Warning: cron job '{job_name}' appears stalled. {_format_activity_note(_act)}",
+                            adapters=adapters,
+                            loop=loop,
+                        )
+                        _warning_sent = True
+
                     if _idle_secs >= _cron_inactivity_limit:
                         _inactivity_timeout = True
                         break
@@ -939,7 +1070,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _activity = {}
             if hasattr(agent, "get_activity_summary"):
                 try:
-                    _activity = agent.get_activity_summary()
+                    _candidate = agent.get_activity_summary()
+                    if isinstance(_candidate, dict):
+                        _activity = _candidate
                 except Exception:
                     pass
             _last_desc = _activity.get("last_activity_desc", "unknown")
@@ -957,6 +1090,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
             if hasattr(agent, "interrupt"):
                 agent.interrupt("Cron job timed out (inactivity)")
+            timeout_message = (
+                f"Blocked on {job_name}. Cron job timed out after {int(_secs_ago)}s idle "
+                f"(limit {int(_cron_inactivity_limit)}s). {_format_activity_note(_activity)}"
+            )
+            task_watchdog.mark_task_failed(
+                path=_tasks_file,
+                task_id=_task_id,
+                blocker_reason=timeout_message,
+                user_action_needed=timeout_message,
+                activity_summary=_activity,
+                last_progress_note=timeout_message,
+            )
+            if delivery_target:
+                _deliver_result(job, timeout_message, adapters=adapters, loop=loop)
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
@@ -967,9 +1114,40 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
+
+        blocked_reason = _parse_blocked_response(final_response)
+        latest_activity = {}
+        if hasattr(agent, "get_activity_summary"):
+            try:
+                _candidate = agent.get_activity_summary()
+                if isinstance(_candidate, dict):
+                    latest_activity = _candidate
+            except Exception:
+                pass
+
+        if blocked_reason:
+            blocked_message = f"Blocked on {job_name}. {blocked_reason}"
+            task_watchdog.mark_task_blocked(
+                path=_tasks_file,
+                task_id=_task_id,
+                blocker_reason=blocked_reason,
+                user_action_needed=blocked_reason,
+                activity_summary=latest_activity,
+                last_progress_note=blocked_message,
+            )
+            if delivery_target:
+                _deliver_result(job, blocked_message, adapters=adapters, loop=loop)
+            final_response = ""
+        else:
+            task_watchdog.mark_task_completed(
+                path=_tasks_file,
+                task_id=_task_id,
+                activity_summary=latest_activity,
+                last_progress_note="Cron job completed",
+            )
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
-        logged_response = final_response if final_response else "(No response generated)"
+        logged_response = result.get("final_response", "") or "(No response generated)"
         
         output = f"""# Cron Job: {job_name}
 
@@ -992,6 +1170,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        try:
+            task_watchdog.mark_task_failed(
+                path=_tasks_file,
+                task_id=_task_id,
+                blocker_reason=error_msg,
+                user_action_needed=error_msg,
+                activity_summary={},
+                last_progress_note=error_msg,
+            )
+        except Exception:
+            pass
         
         output = f"""# Cron Job: {job_name} (FAILED)
 
@@ -1083,7 +1272,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # One-shot jobs are left alone so they can retry on restart.
                 advance_next_run(job["id"])
 
-                success, output, final_response, error = run_job(job)
+                if adapters is None and loop is None:
+                    success, output, final_response, error = run_job(job)
+                else:
+                    success, output, final_response, error = run_job(job, adapters=adapters, loop=loop)
 
                 output_file = save_job_output(job["id"], output)
                 if verbose:

@@ -58,6 +58,7 @@ hermes config set   # Set individual config values
 hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
 hermes setup        # Run the full setup wizard (configures everything at once)
 hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
+hermes mcp serve    # Expose conversations as an MCP server for other agents
 hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
 ```
@@ -99,12 +100,60 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 | [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) | Procedural memory, Skills Hub, creating skills |
 | [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) | Persistent memory, user profiles, best practices |
 | [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Connect any MCP server for extended capabilities |
+| [MCP Server Mode](#mcp-server-mode) | Expose Hermes conversations as tools for other AI agents |
 | [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) | Scheduled tasks with platform delivery |
 | [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files) | Project context that shapes every conversation |
 | [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) | Project structure, agent loop, key classes |
 | [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) | Development setup, PR process, code style |
 | [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) | All commands and flags |
 | [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference |
+
+---
+
+## MCP Server Mode
+
+Hermes can act as an **MCP (Model Context Protocol) server**, exposing its messaging conversations as tools that other AI agents can use. This lets tools like Claude Code, Cursor, Codex, or any MCP-compatible client read, search, and send messages across all your connected platforms.
+
+```bash
+hermes mcp serve            # Start the MCP server (stdio transport)
+hermes mcp serve --verbose  # Start with debug logging
+```
+
+### Available Tools
+
+The MCP server exposes 10 tools that mirror a full messaging bridge:
+
+| Tool | Description |
+|------|-------------|
+| `conversations_list` | List active conversations across all platforms, with optional filtering by platform or search text |
+| `conversation_get` | Get detailed info about a specific conversation by session key |
+| `messages_read` | Read recent messages from a conversation (chronological, with role/content/timestamp) |
+| `attachments_fetch` | List non-text attachments (images, media files) for a specific message |
+| `events_poll` | Poll for new conversation events since a cursor position |
+| `events_wait` | Long-poll / block until the next event arrives (near-real-time) |
+| `messages_send` | Send a message to any connected platform (`telegram:123`, `discord:#general`, etc.) |
+| `channels_list` | List available messaging channels/targets you can send to |
+| `permissions_list_open` | List pending approval requests observed during the bridge session |
+| `permissions_respond` | Respond to a pending approval (`allow-once`, `allow-always`, `deny`) |
+
+### Client Configuration
+
+Add Hermes as an MCP server in your client's config. For example, in Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{
+    "mcpServers": {
+        "codeassist": {
+            "command": "hermes",
+            "args": ["mcp", "serve"]
+        }
+    }
+}
+```
+
+This works with any MCP client — Claude Code, Cursor, Windsurf, Codex, or custom agents built with the MCP SDK.
+
+> **Requires:** The `mcp` Python package. Install with: `pip install 'hermes-agent[mcp]'`
 
 ---
 

@@ -110,7 +110,7 @@ The largest optional category — covers the full ML pipeline from data curation
 | **llava** | Large Language and Vision Assistant — visual instruction tuning and image-based conversations combining CLIP vision with LLaMA language models. |
 | **modal** | Serverless GPU cloud platform for running ML workloads. On-demand GPU access without infrastructure management, ML model deployment as APIs, or batch jobs with automatic scaling. |
 | **nemo-curator** | GPU-accelerated data curation for LLM training. Fuzzy deduplication (16x faster), quality filtering (30+ heuristics), semantic dedup, PII redaction. Scales with RAPIDS. |
-| **peft-fine-tuning** | Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods. Train <1% of parameters with minimal accuracy loss for 7B–70B models on limited GPU memory. HuggingFace's official PEFT library. |
+| **peft-fine-tuning** | Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods. Train `<1%` of parameters with minimal accuracy loss for 7B–70B models on limited GPU memory. HuggingFace's official PEFT library. |
 | **pinecone** | Managed vector database for production AI. Auto-scaling, hybrid search (dense + sparse), metadata filtering, and low latency (under 100ms p95). |
 | **pytorch-fsdp** | Expert guidance for Fully Sharded Data Parallel training with PyTorch FSDP — parameter sharding, mixed precision, CPU offloading, FSDP2. |
 | **pytorch-lightning** | High-level PyTorch framework with Trainer class, automatic distributed training (DDP/FSDP/DeepSpeed), callbacks, and minimal boilerplate. |

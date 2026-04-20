@@ -209,6 +209,7 @@ AUTHOR_MAP = {
     "kagura.chen28@gmail.com": "kagura-agent",
     "1342088860@qq.com": "youngDoo",
     "kamil@gwozdz.me": "kamil-gwozdz",
+    "skmishra1991@gmail.com": "bugkill3r",
     "karamusti912@gmail.com": "MustafaKara7",
     "kira@ariaki.me": "kira-ariaki",
     "knopki@duck.com": "knopki",

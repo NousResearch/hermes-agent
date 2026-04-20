@@ -3571,11 +3571,32 @@ def show_config():
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
     
-    telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
-    discord_token = get_env_value('DISCORD_BOT_TOKEN')
-    
-    print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
-    print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+    platforms = {
+        "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
+        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
+        "WhatsApp": ("WHATSAPP_ENABLED", None),
+        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
+        "Slack": ("SLACK_BOT_TOKEN", None),
+        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
+        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "DingTalk": ("DINGTALK_CLIENT_ID", None),
+        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
+        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
+        "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
+        "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
+        "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
+    }
+
+    for name, (token_var, home_var) in platforms.items():
+        token = get_env_value(token_var)
+        has_token = bool(token)
+
+        home_channel = get_env_value(home_var) if home_var else ""
+        status = "configured" if has_token else color("not configured", Colors.DIM)
+        if has_token and home_channel:
+            status += color(f" (home: {home_channel})", Colors.DIM)
+
+        print(f"  {name:15s} {status}")
     
     # Skill config
     try:

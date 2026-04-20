@@ -40,6 +40,21 @@ def test_show_config_marks_placeholders(tmp_path, capsys):
     assert "hermes config set <key> <value>" in out
 
 
+def test_show_config_lists_feishu_platform_status(tmp_path, capsys):
+    env = {
+        "HERMES_HOME": str(tmp_path),
+        "FEISHU_APP_ID": "cli_test_app",
+        "FEISHU_HOME_CHANNEL": "oc_test_home",
+    }
+    with patch.dict(os.environ, env):
+        show_config()
+
+    out = capsys.readouterr().out
+    assert "Feishu" in out
+    assert "configured" in out
+    assert "oc_test_home" in out
+
+
 def test_setup_summary_marks_placeholders(tmp_path, capsys):
     with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
         _print_setup_summary({"tts": {"provider": "edge"}}, tmp_path)

@@ -7,8 +7,7 @@
     let
       hermes-agent = inputs.self.packages.${system}.default;
       hermes-tui = inputs.self.packages.${system}.tui;
-      hermes-web = inputs.self.packages.${system}.web;
-      packages = [ hermes-agent hermes-tui hermes-web ];
+      packages = [ hermes-agent hermes-tui ];
     in {
       devShells.default = pkgs.mkShell {
         inputsFrom = packages;

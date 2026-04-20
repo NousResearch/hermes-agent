@@ -16,6 +16,12 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
+from hermes_cli import __version__ as _HERMES_VERSION
+
+# Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
+# Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
+_HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
+
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
@@ -225,7 +231,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5.4-pro",
         "gpt-5.4",
         "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
         "gpt-5.2",
         "gpt-5.2-codex",
         "gpt-5.1",
@@ -1769,7 +1774,7 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):

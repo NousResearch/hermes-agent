@@ -1141,6 +1141,43 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+def _strip_markdown_syntax(text: str) -> str:
+    """Best-effort markdown marker removal for plain-text display."""
+    import re
+
+    plain = _rich_text_from_ansi(text or "").plain
+    plain = re.sub(r"^\s{0,3}(?:[-*_]\s*){3,}$", "", plain, flags=re.MULTILINE)
+    plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
+    # Preserve blockquotes, lists, and checkboxes because they carry structure.
+    plain = re.sub(r"(```+|~~~+)", "", plain)
+    plain = re.sub(r"`([^`]*)`", r"\1", plain)
+    plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
+    plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
+    plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
+    plain = re.sub(r"___([^_]+)___", r"\1", plain)
+    plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", plain)
+    plain = re.sub(r"__([^_]+)__", r"\1", plain)
+    plain = re.sub(r"\*([^*]+)\*", r"\1", plain)
+    plain = re.sub(r"_([^_]+)_", r"\1", plain)
+    plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
+    plain = re.sub(r"\n{3,}", "\n\n", plain)
+    return plain.strip("\n")
+
+
+def _render_final_assistant_content(text: str, mode: str = "render"):
+    """Render final assistant content as markdown, stripped text, or raw text."""
+    from rich.markdown import Markdown
+
+    normalized_mode = str(mode or "render").strip().lower()
+    if normalized_mode == "strip":
+        return _RichText(_strip_markdown_syntax(text))
+    if normalized_mode == "raw":
+        return _rich_text_from_ansi(text or "")
+
+    plain = _rich_text_from_ansi(text or "").plain
+    return Markdown(plain)
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -1718,9 +1755,29 @@ class HermesCLI:
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+        self.final_response_markdown = str(
+            CLI_CONFIG["display"].get("final_response_markdown", "strip")
+        ).strip().lower() or "strip"
+        if self.final_response_markdown not in {"render", "strip", "raw"}:
+            self.final_response_markdown = "strip"
 
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
+
+        # Submitted multiline user-message preview (display.user_message_preview in config.yaml)
+        _ump = CLI_CONFIG["display"].get("user_message_preview", {})
+        if not isinstance(_ump, dict):
+            _ump = {}
+        try:
+            _ump_first_lines = int(_ump.get("first_lines", 2))
+        except (TypeError, ValueError):
+            _ump_first_lines = 2
+        try:
+            _ump_last_lines = int(_ump.get("last_lines", 2))
+        except (TypeError, ValueError):
+            _ump_last_lines = 2
+        self.user_message_preview_first_lines = max(1, _ump_first_lines)
+        self.user_message_preview_last_lines = max(0, _ump_last_lines)
 
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
@@ -1864,6 +1921,10 @@ class HermesCLI:
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
         self._resumed = False
+        # Per-prompt elapsed timer — started at the beginning of each chat turn,
+        # frozen when the agent thread completes, displayed in the status bar.
+        self._prompt_start_time: Optional[float] = None  # time.time() when turn started
+        self._prompt_duration: float = 0.0  # frozen duration of last completed turn
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         try:
@@ -1962,6 +2023,44 @@ class HermesCLI:
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    @staticmethod
+    def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
+        """Format per-prompt elapsed time for the status bar.
+
+        Always returns a string — shows 0s on fresh start before first turn.
+        Keeps seconds visible at all scales so it increments smoothly:
+            59s → 1m → 1m 1s → ... → 1m 59s → 2m → 2m 1s → ...
+            59m 59s → 1h → 1h 0m 1s → ...
+            23h 59m 59s → 1d → 1d 0h 1m → ...
+
+        Emoji prefix: ⏱ when turn is live, ⏲ when frozen or fresh start.
+        Uses width-1 (no variation selector) glyphs so the status bar stays
+        aligned in monospace terminals.
+        """
+        if prompt_start_time is None and prompt_duration == 0.0:
+            return "⏲ 0s"
+        elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
+        elapsed = max(0.0, elapsed)
+
+        days = int(elapsed // 86400)
+        remaining = elapsed % 86400
+        hours = int(remaining // 3600)
+        remaining = remaining % 3600
+        minutes = int(remaining // 60)
+        seconds = int(remaining % 60)
+
+        if days > 0:
+            time_str = f"{days}d {hours}h {minutes}m"
+        elif hours > 0:
+            time_str = f"{hours}h {minutes}m {seconds}s" if seconds else f"{hours}h {minutes}m"
+        elif minutes > 0:
+            time_str = f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+        else:
+            time_str = f"{int(elapsed)}s"
+
+        emoji = "⏱" if live else "⏲"
+        return f"{emoji} {time_str}"
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -1980,6 +2079,11 @@ class HermesCLI:
             "model_name": model_name,
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
+            "prompt_elapsed": self._format_prompt_elapsed(
+                getattr(self, "_prompt_start_time", None),
+                getattr(self, "_prompt_duration", 0.0),
+                live=getattr(self, "_prompt_start_time", None) is not None,
+            ),
             "context_tokens": 0,
             "context_length": None,
             "context_percent": None,
@@ -2171,6 +2275,9 @@ class HermesCLI:
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
+            prompt_elapsed = snapshot.get("prompt_elapsed")
+            if prompt_elapsed:
+                parts.append(prompt_elapsed)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -2229,8 +2336,13 @@ class HermesCLI:
                         (bar_style, percent_label),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
                     ]
+                    # Position 7: per-prompt elapsed timer (live or frozen)
+                    prompt_elapsed = snapshot.get("prompt_elapsed")
+                    if prompt_elapsed:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", prompt_elapsed))
+                    frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -2448,6 +2560,61 @@ class HermesCLI:
         self._reasoning_preview_buf = buf.lstrip() if flush_text else buf
         if flush_text:
             self._emit_reasoning_preview(flush_text)
+
+    def _format_submitted_user_message_preview(self, user_input: str) -> str:
+        """Format the submitted user-message scrollback preview."""
+        lines = user_input.split("\n")
+        if len(lines) <= 1:
+            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]"
+
+        first_lines = int(getattr(self, "user_message_preview_first_lines", 2))
+        last_lines = int(getattr(self, "user_message_preview_last_lines", 2))
+        first_lines = max(1, first_lines)
+        last_lines = max(0, last_lines)
+        head = lines[:first_lines]
+        remaining_after_head = max(0, len(lines) - len(head))
+        tail_count = min(last_lines, remaining_after_head)
+        tail = lines[-tail_count:] if tail_count else []
+
+        hidden_middle_count = len(lines) - len(head) - len(tail)
+        if hidden_middle_count < 0:
+            hidden_middle_count = 0
+            tail = []
+
+        preview_lines = [
+            f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]"
+        ]
+        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
+
+        if hidden_middle_count > 0:
+            noun = "line" if hidden_middle_count == 1 else "lines"
+            preview_lines.append(f"[dim]... (+{hidden_middle_count} more {noun})[/]")
+
+        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
+        return "\n".join(preview_lines)
+
+    def _expand_paste_references(self, text: str | None) -> str:
+        """Expand [Pasted text #N -> file] placeholders into file contents."""
+        if not isinstance(text, str) or "[Pasted text #" not in text:
+            return text or ""
+        import re as _re
+
+        paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+
+        def _expand_ref(match):
+            path = Path(match.group(1))
+            return path.read_text(encoding="utf-8") if path.exists() else match.group(0)
+
+        return paste_ref_re.sub(_expand_ref, text)
+
+    def _print_user_message_preview(self, user_input: str) -> None:
+        """Render a user message using the normal chat scrollback style."""
+        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        text = str(user_input or "")
+        if "\n" in text:
+            ChatConsole().print(self._format_submitted_user_message_preview(text))
+        else:
+            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
@@ -2692,6 +2859,8 @@ class HermesCLI:
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
+            if self.final_response_markdown == "strip":
+                line = _strip_markdown_syntax(line)
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
 
     def _flush_stream(self) -> None:
@@ -2709,7 +2878,8 @@ class HermesCLI:
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_STREAM_PAD}{_tc}{self._stream_buf}{_RST}" if _tc else f"{_STREAM_PAD}{self._stream_buf}")
+            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
 
         # Close the response box
@@ -2770,6 +2940,39 @@ class HermesCLI:
             self._command_running = False
             self._command_status = ""
             self._invalidate(min_interval=0.0)
+
+    def _open_external_editor(self, buffer=None) -> bool:
+        """Open the active input buffer in an external editor."""
+        app = getattr(self, "_app", None)
+        if not app:
+            _cprint(f"{_DIM}External editor is only available inside the interactive CLI.{_RST}")
+            return False
+        if self._command_running:
+            _cprint(f"{_DIM}Wait for the current command to finish before opening the editor.{_RST}")
+            return False
+        if self._sudo_state or self._secret_state or self._approval_state or self._clarify_state:
+            _cprint(f"{_DIM}Finish the active prompt before opening the editor.{_RST}")
+            return False
+        target_buffer = buffer or getattr(app, "current_buffer", None)
+        if target_buffer is None:
+            _cprint(f"{_DIM}No active input buffer is available for the external editor.{_RST}")
+            return False
+        try:
+            existing_text = getattr(target_buffer, "text", "")
+            expanded_text = self._expand_paste_references(existing_text)
+            if expanded_text != existing_text and hasattr(target_buffer, "text"):
+                self._skip_paste_collapse = True
+                target_buffer.text = expanded_text
+                if hasattr(target_buffer, "cursor_position"):
+                    target_buffer.cursor_position = len(expanded_text)
+            # Set skip flag (again) so the text-change event fired when the
+            # editor closes does not re-collapse the returned content.
+            self._skip_paste_collapse = True
+            target_buffer.open_in_editor(validate_and_handle=False)
+            return True
+        except Exception as exc:
+            _cprint(f"{_DIM}Failed to open external editor: {exc}{_RST}")
+            return False
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -3948,6 +4151,7 @@ class HermesCLI:
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Draft editor: Ctrl+G{_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
         else:
@@ -6047,7 +6251,7 @@ class HermesCLI:
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_final_assistant_content(response, mode=self.final_response_markdown),
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -6172,7 +6376,7 @@ class HermesCLI:
                         _resp_color = "#4F6D4A"
 
                     ChatConsole().print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_final_assistant_content(response, mode=self.final_response_markdown),
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -8087,6 +8291,10 @@ class HermesCLI:
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP
             # exits the main thread and daemon threads are reaped automatically).
+            # Start per-prompt elapsed timer — frozen after the agent thread
+            # finishes; reset on the next turn.
+            self._prompt_start_time = time.time()
+            self._prompt_duration = 0.0
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
 
@@ -8163,6 +8371,12 @@ class HermesCLI:
                 # Normal completion: agent thread should be done already,
                 # but guard against edge cases.
                 agent_thread.join(timeout=30)
+
+            # Freeze per-prompt elapsed timer once the agent thread has
+            # exited (or been abandoned as a daemon after interrupt).
+            if self._prompt_start_time is not None:
+                self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
+                self._prompt_start_time = None
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
@@ -8297,7 +8511,7 @@ class HermesCLI:
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_final_assistant_content(response, mode=self.final_response_markdown),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -8863,6 +9077,16 @@ class HermesCLI:
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
+        @kb.add(
+            'c-g',
+            filter=Condition(
+                lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
+            ),
+        )
+        def handle_open_in_editor(event):
+            """Ctrl+G opens the current draft in an external editor."""
+            cli_ref._open_external_editor(event.current_buffer)
+
         @kb.add('tab', eager=True)
         def handle_tab(event):
             """Tab: accept completion, auto-suggestion, or start completions.
@@ -9314,6 +9538,7 @@ class HermesCLI:
         _prev_text_len = [0]
         _prev_newline_count = [0]
         _paste_just_collapsed = [False]
+        self._skip_paste_collapse = False
 
         def _on_text_changed(buf):
             """Detect large pastes and collapse them to a file reference.
@@ -9333,8 +9558,9 @@ class HermesCLI:
             text = buf.text
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
-            if _paste_just_collapsed[0]:
+            if _paste_just_collapsed[0] or self._skip_paste_collapse:
                 _paste_just_collapsed[0] = False
+                self._skip_paste_collapse = False
                 _prev_newline_count[0] = text.count('\n')
                 return
             line_count = text.count('\n')
@@ -9343,12 +9569,10 @@ class HermesCLI:
             is_paste = chars_added > 1 or newlines_added >= 4
             if line_count >= 5 and is_paste and not text.startswith('/'):
                 _paste_counter[0] += 1
-                # Save to temp file
                 paste_dir = _hermes_home / "pastes"
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
-                # Replace buffer with compact reference
                 _paste_just_collapsed[0] = True
                 buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                 buf.cursor_position = len(buf.text)
@@ -10070,45 +10294,9 @@ class HermesCLI:
                     _paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
                     if paste_refs:
-                        def _expand_ref(m):
-                            p = Path(m.group(1))
-                            return p.read_text(encoding="utf-8") if p.exists() else m.group(0)
-                        expanded = _paste_ref_re.sub(_expand_ref, user_input)
-                        total_lines = expanded.count('\n') + 1
-                        n_pastes = len(paste_refs)
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        print()
-                        ChatConsole().print(_user_bar)
-                        # Show any surrounding user text alongside the paste summary
-                        split_parts = _paste_ref_re.split(user_input)
-                        visible_user_text = " ".join(
-                            split_parts[i].strip() for i in range(0, len(split_parts), 2) if split_parts[i].strip()
-                        )
-                        if visible_user_text:
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(visible_user_text)}[/] "
-                                f"[dim]({n_pastes} pasted block{'s' if n_pastes > 1 else ''}, {total_lines} lines total)[/]"
-                            )
-                        else:
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
-                            )
-                        user_input = expanded
-                    else:
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        if '\n' in user_input:
-                            first_line = user_input.split('\n')[0]
-                            line_count = user_input.count('\n') + 1
-                            print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
-                                f"[dim](+{line_count - 1} lines)[/]"
-                            )
-                        else:
-                            print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                        user_input = self._expand_paste_references(user_input)
+                    print()
+                    self._print_user_message_preview(user_input)
                     
                     # Show image attachment count
                     if submit_images:

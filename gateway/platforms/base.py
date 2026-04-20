@@ -553,6 +553,39 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 
 
 # ---------------------------------------------------------------------------
+# Video cache utilities
+#
+# Same pattern as image/audio cache -- videos from platforms are downloaded
+# here so the agent can reference them by local file path.
+# ---------------------------------------------------------------------------
+
+VIDEO_CACHE_DIR = get_hermes_dir("cache/videos", "video_cache")
+
+SUPPORTED_VIDEO_TYPES = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+}
+
+
+def get_video_cache_dir() -> Path:
+    """Return the video cache directory, creating it if it doesn't exist."""
+    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return VIDEO_CACHE_DIR
+
+
+def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
+    """Save raw video bytes to the cache and return the absolute file path."""
+    cache_dir = get_video_cache_dir()
+    filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = cache_dir / filename
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
+# ---------------------------------------------------------------------------
 # Document cache utilities
 #
 # Same pattern as image/audio cache -- documents from platforms are downloaded

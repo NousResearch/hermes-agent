@@ -693,6 +693,10 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     - If it looks like a session ID (contains underscore + hex), try direct lookup first.
     - Otherwise, treat it as a title and use resolve_session_by_title (auto-latest).
     - Falls back to the other method if the first doesn't match.
+    - If the resolved session is a compression root, follow the chain forward
+      to the latest continuation. Users who remember the old root ID (e.g.
+      from an exit summary printed before the bug fix, or from notes) get
+      resumed at the live tip instead of a stale parent with no messages.
     """
     try:
         from hermes_state import SessionDB
@@ -701,14 +705,23 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 
         # Try as exact session ID first
         session = db.get_session(name_or_id)
+        resolved_id: Optional[str] = None
         if session:
-            db.close()
-            return session["id"]
+            resolved_id = session["id"]
+        else:
+            # Try as title (with auto-latest for lineage)
+            resolved_id = db.resolve_session_by_title(name_or_id)
 
-        # Try as title (with auto-latest for lineage)
-        session_id = db.resolve_session_by_title(name_or_id)
+        if resolved_id:
+            # Project forward through compression chain so resumes land on
+            # the live tip instead of a dead compressed parent.
+            try:
+                resolved_id = db.get_compression_tip(resolved_id) or resolved_id
+            except Exception:
+                pass
+
         db.close()
-        return session_id
+        return resolved_id
     except Exception:
         pass
     return None
@@ -7435,6 +7448,17 @@ Examples:
         "-f",
         action="store_true",
         help="Remove existing plugin and reinstall",
+    )
+    _install_enable_group = plugins_install.add_mutually_exclusive_group()
+    _install_enable_group.add_argument(
+        "--enable",
+        action="store_true",
+        help="Auto-enable the plugin after install (skip confirmation prompt)",
+    )
+    _install_enable_group.add_argument(
+        "--no-enable",
+        action="store_true",
+        help="Install disabled (skip confirmation prompt); enable later with `hermes plugins enable <name>`",
     )
 
     plugins_update = plugins_subparsers.add_parser(

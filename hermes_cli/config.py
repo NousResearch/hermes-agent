@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import logging
 import os
 import platform
 import re
@@ -24,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -565,9 +567,14 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "final_response_markdown": "strip",  # render | strip | raw
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
+            "first_lines": 2,
+            "last_lines": 2,
+        },
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
@@ -822,7 +829,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 20,
+    "_config_version": 21,
 }
 
 # =============================================================================
@@ -1845,12 +1852,53 @@ def _normalize_custom_provider_entry(
     if not isinstance(entry, dict):
         return None
 
+    # Accept camelCase aliases commonly used in hand-written configs.
+    _CAMEL_ALIASES: Dict[str, str] = {
+        "apiKey": "api_key",
+        "baseUrl": "base_url",
+        "apiMode": "api_mode",
+        "keyEnv": "key_env",
+        "defaultModel": "default_model",
+        "contextLength": "context_length",
+        "rateLimitDelay": "rate_limit_delay",
+    }
+    _KNOWN_KEYS = {
+        "name", "api", "url", "base_url", "api_key", "key_env",
+        "api_mode", "transport", "model", "default_model", "models",
+        "context_length", "rate_limit_delay",
+    }
+    for camel, snake in _CAMEL_ALIASES.items():
+        if camel in entry and snake not in entry:
+            logger.warning(
+                "providers.%s: camelCase key '%s' auto-mapped to '%s' "
+                "(use snake_case to avoid this warning)",
+                provider_key or "?", camel, snake,
+            )
+            entry[snake] = entry[camel]
+    unknown = set(entry.keys()) - _KNOWN_KEYS - set(_CAMEL_ALIASES.keys())
+    if unknown:
+        logger.warning(
+            "providers.%s: unknown config keys ignored: %s",
+            provider_key or "?", ", ".join(sorted(unknown)),
+        )
+
+    from urllib.parse import urlparse
+
     base_url = ""
-    for url_key in ("api", "url", "base_url"):
+    for url_key in ("base_url", "url", "api"):
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
-            base_url = raw_url.strip()
-            break
+            candidate = raw_url.strip()
+            parsed = urlparse(candidate)
+            if parsed.scheme and parsed.netloc:
+                base_url = candidate
+                break
+            else:
+                logger.warning(
+                    "providers.%s: '%s' value '%s' is not a valid URL "
+                    "(no scheme or host) — skipped",
+                    provider_key or "?", url_key, candidate,
+                )
     if not base_url:
         return None
 
@@ -2478,6 +2526,72 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
+
+    # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
+    # The loader now requires plugins to appear in ``plugins.enabled`` before
+    # loading. Existing installs had all discovered plugins loading by default
+    # (minus anything in ``plugins.disabled``). To avoid silently breaking
+    # those setups on upgrade, populate ``plugins.enabled`` with the set of
+    # currently-installed user plugins that aren't already disabled.
+    #
+    # Bundled plugins (shipped in the repo itself) are NOT grandfathered —
+    # they ship off for everyone, including existing users, so any user who
+    # wants one has to opt in explicitly.
+    if current_ver < 21:
+        config = read_raw_config()
+        plugins_cfg = config.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            plugins_cfg = {}
+        # Only migrate if the enabled allow-list hasn't been set yet.
+        if "enabled" not in plugins_cfg:
+            disabled = plugins_cfg.get("disabled", []) or []
+            if not isinstance(disabled, list):
+                disabled = []
+            disabled_set = set(disabled)
+
+            # Scan ``$HERMES_HOME/plugins/`` for currently installed user plugins.
+            grandfathered: List[str] = []
+            try:
+                from hermes_constants import get_hermes_home as _ghome
+                user_plugins_dir = _ghome() / "plugins"
+                if user_plugins_dir.is_dir():
+                    for child in sorted(user_plugins_dir.iterdir()):
+                        if not child.is_dir():
+                            continue
+                        manifest_file = child / "plugin.yaml"
+                        if not manifest_file.exists():
+                            manifest_file = child / "plugin.yml"
+                        if not manifest_file.exists():
+                            continue
+                        try:
+                            with open(manifest_file) as _mf:
+                                manifest = yaml.safe_load(_mf) or {}
+                        except Exception:
+                            manifest = {}
+                        name = manifest.get("name") or child.name
+                        if name in disabled_set:
+                            continue
+                        grandfathered.append(name)
+            except Exception:
+                grandfathered = []
+
+            plugins_cfg["enabled"] = grandfathered
+            config["plugins"] = plugins_cfg
+            save_config(config)
+            results["config_added"].append(
+                f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
+            )
+            if not quiet:
+                if grandfathered:
+                    print(
+                        f"  ✓ Plugins now opt-in: grandfathered "
+                        f"{len(grandfathered)} existing plugin(s) into plugins.enabled"
+                    )
+                else:
+                    print(
+                        "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
+                        "Use `hermes plugins enable <name>` to activate."
+                    )
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -3374,6 +3488,10 @@ def show_config():
     print(f"  Personality:  {display.get('personality', 'kawaii')}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+    ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
+    ump_first = ump.get('first_lines', 2)
+    ump_last = ump.get('last_lines', 2)
+    print(f"  User preview: first {ump_first} line(s), last {ump_last} line(s)")
 
     # Terminal
     print()

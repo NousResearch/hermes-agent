@@ -371,6 +371,89 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
+def _chat_content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
+    """Convert chat-style multimodal content to Responses API input parts.
+
+    Input:  ``[{"type":"text"|"image_url", ...}]`` (native OpenAI Chat format)
+    Output: ``[{"type":"input_text"|"input_image", ...}]`` (Responses format)
+
+    Returns an empty list when ``content`` is not a list or contains no
+    recognized parts — callers fall back to the string path.
+    """
+    if not isinstance(content, list):
+        return []
+    converted: List[Dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                converted.append({"type": "input_text", "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text", "output_text"}:
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                converted.append({"type": "input_text", "text": text})
+            continue
+        if ptype in {"image_url", "input_image"}:
+            image_ref = part.get("image_url")
+            detail = part.get("detail")
+            if isinstance(image_ref, dict):
+                url = image_ref.get("url")
+                detail = image_ref.get("detail", detail)
+            else:
+                url = image_ref
+            if not isinstance(url, str) or not url:
+                continue
+            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+            if isinstance(detail, str) and detail.strip():
+                image_part["detail"] = detail.strip()
+            converted.append(image_part)
+    return converted
+
+
+def _summarize_user_message_for_log(content: Any) -> str:
+    """Return a short text summary of a user message for logging/trajectory.
+
+    Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
+    parts from the API server.  Logging, spinner previews, and trajectory
+    files all want a plain string — this helper extracts the first chunk of
+    text and notes any attached images.  Returns an empty string for empty
+    lists and ``str(content)`` for unexpected scalar types.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_bits: List[str] = []
+        image_count = 0
+        for part in content:
+            if isinstance(part, str):
+                if part:
+                    text_bits.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype in {"text", "input_text", "output_text"}:
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    text_bits.append(text)
+            elif ptype in {"image_url", "input_image"}:
+                image_count += 1
+        summary = " ".join(text_bits).strip()
+        if image_count:
+            note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
+            summary = f"{note} {summary}" if summary else note
+        return summary
+    try:
+        return str(content)
+    except Exception:
+        return ""
+
+
 def _sanitize_structure_surrogates(payload: Any) -> bool:
     """Replace surrogate code points in nested dict/list payloads in-place.
 
@@ -470,6 +553,71 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
                 if _sanitize_structure_surrogates(value):
                     found = True
     return found
+
+
+def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
+    """Attempt to repair malformed tool_call argument JSON.
+
+    Models like GLM-5.1 via Ollama can produce truncated JSON, trailing
+    commas, Python ``None``, etc.  The API proxy rejects these with HTTP 400
+    "invalid tool call arguments".  This function applies common repairs;
+    if all fail it returns ``"{}"`` so the request succeeds (better than
+    crashing the session).  All repairs are logged at WARNING level.
+    """
+    raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
+
+    # Fast-path: empty / whitespace-only -> empty object
+    if not raw_stripped:
+        logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
+        return "{}"
+
+    # Python-literal None -> normalise to {}
+    if raw_stripped == "None":
+        logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
+        return "{}"
+
+    # Attempt common JSON repairs
+    fixed = raw_stripped
+    # 1. Strip trailing commas before } or ]
+    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    # 2. Close unclosed structures
+    open_curly = fixed.count('{') - fixed.count('}')
+    open_bracket = fixed.count('[') - fixed.count(']')
+    if open_curly > 0:
+        fixed += '}' * open_curly
+    if open_bracket > 0:
+        fixed += ']' * open_bracket
+    # 3. Remove excess closing braces/brackets (bounded to 50 iterations)
+    for _ in range(50):
+        try:
+            json.loads(fixed)
+            break
+        except json.JSONDecodeError:
+            if fixed.endswith('}') and fixed.count('}') > fixed.count('{'):
+                fixed = fixed[:-1]
+            elif fixed.endswith(']') and fixed.count(']') > fixed.count('['):
+                fixed = fixed[:-1]
+            else:
+                break
+
+    try:
+        json.loads(fixed)
+        logger.warning(
+            "Repaired malformed tool_call arguments for %s: %s → %s",
+            tool_name, raw_stripped[:80], fixed[:80],
+        )
+        return fixed
+    except json.JSONDecodeError:
+        pass
+
+    # Last resort: replace with empty object so the API request doesn't
+    # crash the entire session.
+    logger.warning(
+        "Unrepairable tool_call arguments for %s — "
+        "replaced with empty object (was: %s)",
+        tool_name, raw_stripped[:80],
+    )
+    return "{}"
 
 
 def _strip_non_ascii(text: str) -> str:
@@ -4274,7 +4422,14 @@ class AIAgent:
 
             if role in {"user", "assistant"}:
                 content = msg.get("content", "")
-                content_text = str(content) if content is not None else ""
+                if isinstance(content, list):
+                    content_parts = _chat_content_to_responses_parts(content)
+                    content_text = "".join(
+                        p.get("text", "") for p in content_parts if p.get("type") == "input_text"
+                    )
+                else:
+                    content_parts = []
+                    content_text = str(content) if content is not None else ""
 
                 if role == "assistant":
                     # Replay encrypted reasoning items from previous turns
@@ -4297,7 +4452,9 @@ class AIAgent:
                                     seen_item_ids.add(item_id)
                                 has_codex_reasoning = True
 
-                    if content_text.strip():
+                    if content_parts:
+                        items.append({"role": "assistant", "content": content_parts})
+                    elif content_text.strip():
                         items.append({"role": "assistant", "content": content_text})
                     elif has_codex_reasoning:
                         # The Responses API requires a following item after each
@@ -4350,7 +4507,12 @@ class AIAgent:
                             })
                     continue
 
-                items.append({"role": role, "content": content_text})
+                # Non-assistant (user) role: emit multimodal parts when present,
+                # otherwise fall back to the text payload.
+                if content_parts:
+                    items.append({"role": role, "content": content_parts})
+                else:
+                    items.append({"role": role, "content": content_text})
                 continue
 
             if role == "tool":
@@ -4450,6 +4612,46 @@ class AIAgent:
                 content = item.get("content", "")
                 if content is None:
                     content = ""
+                if isinstance(content, list):
+                    # Multimodal content from ``_chat_messages_to_responses_input``
+                    # is already in Responses format (``input_text`` / ``input_image``).
+                    # Validate each part and pass through.
+                    validated: List[Dict[str, Any]] = []
+                    for part_idx, part in enumerate(content):
+                        if isinstance(part, str):
+                            if part:
+                                validated.append({"type": "input_text", "text": part})
+                            continue
+                        if not isinstance(part, dict):
+                            raise ValueError(
+                                f"Codex Responses input[{idx}].content[{part_idx}] must be an object or string."
+                            )
+                        ptype = str(part.get("type") or "").strip().lower()
+                        if ptype in {"input_text", "text", "output_text"}:
+                            text = part.get("text", "")
+                            if not isinstance(text, str):
+                                text = str(text or "")
+                            validated.append({"type": "input_text", "text": text})
+                        elif ptype in {"input_image", "image_url"}:
+                            image_ref = part.get("image_url", "")
+                            detail = part.get("detail")
+                            if isinstance(image_ref, dict):
+                                url = image_ref.get("url", "")
+                                detail = image_ref.get("detail", detail)
+                            else:
+                                url = image_ref
+                            if not isinstance(url, str):
+                                url = str(url or "")
+                            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                            if isinstance(detail, str) and detail.strip():
+                                image_part["detail"] = detail.strip()
+                            validated.append(image_part)
+                        else:
+                            raise ValueError(
+                                f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
+                            )
+                    normalized.append({"role": role, "content": validated})
+                    continue
                 if not isinstance(content, str):
                     content = str(content)
 
@@ -8404,6 +8606,11 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            # ── Per-tool /steer drain ───────────────────────────────────
+            # Same as the sequential path: drain between each collected
+            # result so the steer lands as early as possible.
+            self._apply_pending_steer_to_tool_results(messages, 1)
+
         # ── Per-turn aggregate budget enforcement ─────────────────────────
         num_tools = len(parsed_calls)
         if num_tools > 0:
@@ -8767,6 +8974,12 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            # ── Per-tool /steer drain ───────────────────────────────────
+            # Drain pending steer BETWEEN individual tool calls so the
+            # injection lands as soon as a tool finishes — not after the
+            # entire batch.  The model sees it on the next API iteration.
+            self._apply_pending_steer_to_tool_results(messages, 1)
+
             if not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -9074,7 +9287,8 @@ class AIAgent:
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
-        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+        _preview_text = _summarize_user_message_for_log(user_message)
+        _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
         _msg_preview = _msg_preview.replace("\n", " ")
         logger.info(
             "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -9116,7 +9330,8 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            _print_preview = _summarize_user_message_for_log(user_message)
+            self._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -9506,7 +9721,10 @@ class AIAgent:
                                 ),
                             }}
                         except Exception:
-                            pass
+                            tc["function"]["arguments"] = _repair_tool_call_arguments(
+                                tc["function"]["arguments"],
+                                tc["function"].get("name", "?"),
+                            )
                     new_tcs.append(tc)
                 am["tool_calls"] = new_tcs
 
@@ -11580,10 +11798,12 @@ class AIAgent:
                     # should_compress(0) never fires.  (#2153)
                     _compressor = self.context_compressor
                     if _compressor.last_prompt_tokens > 0:
-                        _real_tokens = (
-                            _compressor.last_prompt_tokens
-                            + _compressor.last_completion_tokens
-                        )
+                        # Only use prompt_tokens — completion/reasoning
+                        # tokens don't consume context window space.
+                        # Thinking models (GLM-5.1, QwQ, DeepSeek R1)
+                        # inflate completion_tokens with reasoning,
+                        # causing premature compression.  (#12026)
+                        _real_tokens = _compressor.last_prompt_tokens
                     else:
                         _real_tokens = estimate_messages_tokens_rough(messages)
 
@@ -11982,8 +12202,9 @@ class AIAgent:
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
-        # Save trajectory if enabled
-        self._save_trajectory(messages, user_message, completed)
+        # Save trajectory if enabled.  ``user_message`` may be a multimodal
+        # list of parts; the trajectory format wants a plain string.
+        self._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
 
         # Clean up VM and browser for this task after conversation completes
         self._cleanup_task_resources(effective_task_id)

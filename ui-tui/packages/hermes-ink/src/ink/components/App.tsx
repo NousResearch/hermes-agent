@@ -617,6 +617,14 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
 
+      // Forward middle/right button presses to the DOM so components can
+      // react (e.g. right-click-to-paste on input fields). Middle/right
+      // don't participate in selection, multi-click, or hyperlink UX, so
+      // we just dispatch and exit without setting mouseCaptureTarget —
+      // the matching release (if any) falls through the release path and
+      // is ignored there because baseButton !== 0 && !sel.isDragging.
+      app.props.onMouseDownAt(col, row, baseButton)
+
       return
     }
 

@@ -14,6 +14,15 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger(__name__)
 
 
+def _resolve_path(path: str) -> Path:
+    """Resolve a path against TERMINAL_CWD (worktree root) when set, else CWD."""
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        base = os.environ.get("TERMINAL_CWD") or os.getcwd()
+        return (Path(base) / p).resolve()
+    return p.resolve()
+
+
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 # ---------------------------------------------------------------------------
@@ -99,7 +108,7 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = os.path.realpath(os.path.expanduser(filepath))
+        resolved = str(_resolve_path(filepath))
     except (OSError, ValueError):
         resolved = filepath
     for prefix in _SENSITIVE_PATH_PREFIXES:
@@ -291,7 +300,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        _resolved = Path(path).expanduser().resolve()
+        _resolved = _resolve_path(path)
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -527,7 +536,7 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     refreshes the stored timestamp to match the file's new state.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(_resolve_path(filepath))
         current_mtime = os.path.getmtime(resolved)
     except (OSError, ValueError):
         return
@@ -545,7 +554,7 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     or was never read.  Does not block — the write still proceeds.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(_resolve_path(filepath))
     except (OSError, ValueError):
         return None
     with _read_tracker_lock:

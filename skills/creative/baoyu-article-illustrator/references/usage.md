@@ -1,82 +1,50 @@
 # Usage
 
-## Command Syntax
+This skill is triggered by natural language in Hermes — no slash command or CLI flags.
 
-```bash
-# Auto-select type and style based on content
-/baoyu-article-illustrator path/to/article.md
+## Trigger Phrases
 
-# Specify type
-/baoyu-article-illustrator path/to/article.md --type infographic
-
-# Specify style
-/baoyu-article-illustrator path/to/article.md --style blueprint
-
-# Combine type and style
-/baoyu-article-illustrator path/to/article.md --type flowchart --style notion
-
-# Specify density
-/baoyu-article-illustrator path/to/article.md --density rich
-
-# Direct content input (paste mode)
-/baoyu-article-illustrator
-[paste content]
-```
-
-## Options
-
-| Option | Description |
-|--------|-------------|
-| `--type <name>` | Illustration type (see Type Gallery in SKILL.md) |
-| `--style <name>` | Visual style (see references/styles.md) |
-| `--preset <name>` | Shorthand for type + style combo (see [references/style-presets.md](references/style-presets.md)) |
-| `--density <level>` | Image count: minimal / balanced / rich |
+- "Illustrate this article" / "为文章配图"
+- "Add images to this post"
+- "Generate illustrations for [path/to/article.md]"
 
 ## Input Modes
 
-| Mode | Trigger | Output Directory |
-|------|---------|------------------|
-| File path | `path/to/article.md` | Use `default_output_dir` preference, or ask if not set |
-| Paste content | No path argument | `illustrations/{topic-slug}/` |
+| Mode | How to trigger | Output Directory |
+|------|----------------|------------------|
+| File path | Mention an article path (`path/to/article.md`) | `{article-dir}/imgs/` (default) |
+| Pasted content | Paste the article text in the conversation | `illustrations/{topic-slug}/` (cwd) |
 
-## Output Directory Options
+## Specifying Options in Natural Language
 
-| Value | Path |
-|-------|------|
-| `same-dir` | `{article-dir}/` |
-| `illustrations-subdir` | `{article-dir}/illustrations/` |
-| `independent` | `illustrations/{topic-slug}/` |
+The user can specify any of the following directly in their request. If not specified, the skill asks via the `clarify` tool.
 
-Configure in EXTEND.md: `default_output_dir: illustrations-subdir`
+| Option | Example phrasing |
+|--------|------------------|
+| Type | "as an infographic", "as a flowchart", "as scenes" |
+| Style | "in blueprint style", "use notion style", "用 watercolor 风格" |
+| Preset | "use the tech-explainer preset", "storytelling preset" |
+| Palette | "with macaron palette", "warm colors only" |
+| Density | "minimal images", "one per section", "rich illustrations" |
+| Language | "images in English" / "图片文字用中文" |
+| Output | "save images alongside the article" / "put them in `illustrations/`" |
 
 ## Examples
 
 **Technical article with data**:
-```bash
-/baoyu-article-illustrator api-design.md --type infographic --style blueprint
-```
+> 帮我为 api-design.md 配图，用 infographic + blueprint 风格
 
-**Same thing with preset**:
-```bash
-/baoyu-article-illustrator api-design.md --preset tech-explainer
-```
+**Preset shortcut**:
+> Illustrate api-design.md with the tech-explainer preset
 
 **Personal story**:
-```bash
-/baoyu-article-illustrator journey.md --preset storytelling
-```
+> Illustrate journey.md using the storytelling preset
 
-**Tutorial with steps**:
-```bash
-/baoyu-article-illustrator how-to-deploy.md --preset tutorial --density rich
-```
+**Tutorial with rich images**:
+> Generate illustrations for how-to-deploy.md — tutorial preset, rich density
 
-**Opinion article with poster style**:
-```bash
-/baoyu-article-illustrator opinion.md --preset opinion-piece
-```
+**Opinion article**:
+> Illustrate opinion.md with the opinion-piece preset
 
-**Preset with override**:
-```bash
-/baoyu-article-illustrator article.md --preset tech-explainer --style notion
-```
+**Preset with style override**:
+> Use the tech-explainer preset for article.md but swap the style for notion

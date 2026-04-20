@@ -225,7 +225,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5.4-pro",
         "gpt-5.4",
         "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
         "gpt-5.2",
         "gpt-5.2-codex",
         "gpt-5.1",

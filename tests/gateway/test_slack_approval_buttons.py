@@ -548,7 +548,9 @@ class TestSlackThreadContextWorkspaceIsolation:
         # Expire only T1's entry.
         ttl = adapter._THREAD_CACHE_TTL
         t1_entry = adapter._thread_context_cache["T1:Csame:1000.0"]
-        # Rebuild with a stale timestamp rather than mutate a frozen dataclass.
+        # Rebuild with a stale timestamp via ``dataclasses.replace`` instead
+        # of mutating ``t1_entry`` in place — keeps the test intent (new
+        # entry with an aged timestamp) explicit at the call site.
         import dataclasses
         adapter._thread_context_cache["T1:Csame:1000.0"] = dataclasses.replace(
             t1_entry, fetched_at=t1_entry.fetched_at - ttl - 10,

@@ -193,7 +193,7 @@ import time as _time
 from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -1528,6 +1528,8 @@ def select_provider_and_model(args=None):
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
+    elif selected_provider == "ai-gateway":
+        _model_flow_ai_gateway(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
@@ -1573,7 +1575,6 @@ def select_provider_and_model(args=None):
         "kilocode",
         "opencode-zen",
         "opencode-go",
-        "ai-gateway",
         "alibaba",
         "huggingface",
         "xiaomi",
@@ -2041,6 +2042,62 @@ def _model_flow_openrouter(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
+    else:
+        print("No change.")
+
+
+def _model_flow_ai_gateway(config, current_model=""):
+    """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value
+
+    api_key = get_env_value("AI_GATEWAY_API_KEY")
+    if not api_key:
+        print("No Vercel AI Gateway API key configured.")
+        print("Get one at: https://vercel.com/dashboard/ai-gateway")
+        print()
+        try:
+            import getpass
+
+            key = getpass.getpass("AI Gateway API key (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not key:
+            print("Cancelled.")
+            return
+        save_env_value("AI_GATEWAY_API_KEY", key)
+        print("API key saved.")
+        print()
+
+    from hermes_cli.models import ai_gateway_model_ids, get_pricing_for_provider
+
+    models_list = ai_gateway_model_ids(force_refresh=True)
+    pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
+
+    selected = _prompt_model_selection(
+        models_list, current_model=current_model, pricing=pricing
+    )
+    if selected:
+        _save_model_choice(selected)
+
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "ai-gateway"
+        model["base_url"] = AI_GATEWAY_BASE_URL
+        model["api_mode"] = "chat_completions"
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via Vercel AI Gateway)")
     else:
         print("No change.")
 

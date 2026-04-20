@@ -143,7 +143,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-5v-turbo",
         "glm-5-turbo",
         "glm-4.7",
+        "glm-4.6",
         "glm-4.5",
+        "glm-4.5-air",
         "glm-4.5-flash",
     ],
     "xai": [

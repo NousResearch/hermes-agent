@@ -6,7 +6,7 @@ from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
     is_nous_free_tier, partition_nous_models_by_tier,
-    check_nous_free_tier, _FREE_TIER_CACHE_TTL,
+    check_nous_free_tier, _FREE_TIER_CACHE_TTL, provider_model_ids,
 )
 import hermes_cli.models as _models_mod
 
@@ -114,6 +114,16 @@ class TestFindOpenrouterSlug:
 
 
 class TestDetectProviderForModel:
+    def test_zai_provider_catalog_includes_current_zai_models(self):
+        models = provider_model_ids("zai")
+        assert "glm-5.1" in models
+        assert "glm-5" in models
+        assert "glm-5-turbo" in models
+        assert "glm-4.7" in models
+        assert "glm-4.6" in models
+        assert "glm-4.5" in models
+        assert "glm-4.5-air" in models
+
     def test_anthropic_model_detected(self):
         """claude-opus-4-6 should resolve to anthropic provider."""
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):

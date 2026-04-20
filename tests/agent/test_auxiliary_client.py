@@ -696,27 +696,46 @@ class TestIsConnectionError:
         assert _is_connection_error(err) is False
 
 
-class TestKimiForCodingTemperature:
-    """Moonshot kimi-for-coding models require fixed temperatures.
+class TestKimiTemperatureOmitted:
+    """Kimi/Moonshot models should have temperature OMITTED from API kwargs.
 
-    k2.5 / k2-turbo-preview / k2-0905-preview → 0.6 (non-thinking lock).
-    k2-thinking / k2-thinking-turbo → 1.0 (thinking lock).
-    kimi-k2-instruct* and every other model preserve the caller's temperature.
+    The Kimi gateway selects the correct temperature server-side based on the
+    active mode (thinking → 1.0, non-thinking → 0.6).  Sending any temperature
+    value conflicts with gateway-managed defaults.
     """
 
-    def test_build_call_kwargs_forces_fixed_temperature(self):
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "kimi-for-coding",
+            "kimi-k2.5",
+            "kimi-k2.6",
+            "kimi-k2-turbo-preview",
+            "kimi-k2-0905-preview",
+            "kimi-k2-thinking",
+            "kimi-k2-thinking-turbo",
+            "kimi-k2-instruct",
+            "kimi-k2-instruct-0905",
+            "moonshotai/kimi-k2.5",
+            "moonshotai/Kimi-K2-Thinking",
+            "moonshotai/Kimi-K2-Instruct",
+        ],
+    )
+    def test_kimi_models_omit_temperature(self, model):
+        """No kimi model should have a temperature key in kwargs."""
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
             provider="kimi-coding",
-            model="kimi-for-coding",
+            model=model,
             messages=[{"role": "user", "content": "hello"}],
             temperature=0.3,
         )
 
-        assert kwargs["temperature"] == 0.6
+        assert "temperature" not in kwargs
 
-    def test_build_call_kwargs_injects_temperature_when_missing(self):
+    def test_kimi_for_coding_no_temperature_when_none(self):
+        """When caller passes temperature=None, still no temperature key."""
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -726,9 +745,9 @@ class TestKimiForCodingTemperature:
             temperature=None,
         )
 
-        assert kwargs["temperature"] == 0.6
+        assert "temperature" not in kwargs
 
-    def test_auto_routed_kimi_for_coding_sync_call_uses_fixed_temperature(self):
+    def test_sync_call_omits_temperature(self):
         client = MagicMock()
         client.base_url = "https://api.kimi.com/coding/v1"
         response = MagicMock()
@@ -750,10 +769,10 @@ class TestKimiForCodingTemperature:
         assert result is response
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["model"] == "kimi-for-coding"
-        assert kwargs["temperature"] == 0.6
+        assert "temperature" not in kwargs
 
     @pytest.mark.asyncio
-    async def test_auto_routed_kimi_for_coding_async_call_uses_fixed_temperature(self):
+    async def test_async_call_omits_temperature(self):
         client = MagicMock()
         client.base_url = "https://api.kimi.com/coding/v1"
         response = MagicMock()
@@ -775,52 +794,17 @@ class TestKimiForCodingTemperature:
         assert result is response
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["model"] == "kimi-for-coding"
-        assert kwargs["temperature"] == 0.6
-
-    @pytest.mark.parametrize(
-        "model,expected",
-        [
-            ("kimi-k2.5", 0.6),
-            ("kimi-k2-turbo-preview", 0.6),
-            ("kimi-k2-0905-preview", 0.6),
-            ("kimi-k2-thinking", 1.0),
-            ("kimi-k2-thinking-turbo", 1.0),
-            ("moonshotai/kimi-k2.5", 0.6),
-            ("moonshotai/Kimi-K2-Thinking", 1.0),
-        ],
-    )
-    def test_kimi_k2_family_temperature_override(self, model, expected):
-        """Moonshot kimi-k2.* models only accept fixed temperatures.
-
-        Non-thinking models → 0.6, thinking-mode models → 1.0.
-        """
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="kimi-coding",
-            model=model,
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=0.3,
-        )
-
-        assert kwargs["temperature"] == expected
+        assert "temperature" not in kwargs
 
     @pytest.mark.parametrize(
         "model",
         [
             "anthropic/claude-sonnet-4-6",
             "gpt-5.4",
-            # kimi-k2-instruct is the non-coding K2 family — temperature is
-            # variable (recommended 0.6 but not enforced).  Must not clamp.
-            "kimi-k2-instruct",
-            "moonshotai/Kimi-K2-Instruct",
-            "moonshotai/Kimi-K2-Instruct-0905",
-            "kimi-k2-instruct-0905",
-            # Hypothetical future kimi name not in the whitelist.
-            "kimi-k2-experimental",
+            "deepseek-chat",
         ],
     )
-    def test_non_restricted_model_preserves_temperature(self, model):
+    def test_non_kimi_models_preserve_temperature(self, model):
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -832,25 +816,16 @@ class TestKimiForCodingTemperature:
 
         assert kwargs["temperature"] == 0.3
 
-    # ── Endpoint-aware overrides: api.moonshot.ai vs api.kimi.com/coding ──
-    # The public Moonshot chat endpoint and the Coding Plan endpoint enforce
-    # different temperature contracts for the same model name.  `kimi-k2.5` on
-    # api.moonshot.ai rejects 0.6 with HTTP 400 "only 1 is allowed for this
-    # model", while the Coding Plan docs mandate 0.6.  Override must pick the
-    # right value per base_url.
-
     @pytest.mark.parametrize(
         "base_url",
         [
             "https://api.moonshot.ai/v1",
-            "https://api.moonshot.ai/v1/",
-            "https://API.MOONSHOT.AI/v1",
             "https://api.moonshot.cn/v1",
-            "https://api.moonshot.cn/v1/",
+            "https://api.kimi.com/coding/v1",
         ],
     )
-    def test_kimi_k2_5_public_api_forces_temperature_1(self, base_url):
-        """kimi-k2.5 on the public Moonshot API only accepts temperature=1."""
+    def test_kimi_k2_5_omits_temperature_regardless_of_endpoint(self, base_url):
+        """Temperature is omitted regardless of which Kimi endpoint is used."""
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -861,64 +836,7 @@ class TestKimiForCodingTemperature:
             base_url=base_url,
         )
 
-        assert kwargs["temperature"] == 1.0
-
-    def test_kimi_k2_5_coding_plan_keeps_temperature_0_6(self):
-        """kimi-k2.5 on api.kimi.com/coding keeps the Coding Plan's 0.6 lock."""
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="kimi-coding",
-            model="kimi-k2.5",
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=0.1,
-            base_url="https://api.kimi.com/coding/v1",
-        )
-
-        assert kwargs["temperature"] == 0.6
-
-    def test_kimi_k2_5_no_base_url_falls_back_to_coding_plan_lock(self):
-        """Without a base_url hint, the Coding Plan default (0.6) applies.
-
-        Preserves PR #12144 backward compatibility for callers that don't thread
-        the client's base_url through.
-        """
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="kimi-coding",
-            model="kimi-k2.5",
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=0.1,
-        )
-
-        assert kwargs["temperature"] == 0.6
-
-    @pytest.mark.parametrize(
-        "model,expected",
-        [
-            # Only kimi-k2.5 diverges on api.moonshot.ai; the rest keep the
-            # Coding Plan lock (empirically verified against Moonshot in April
-            # 2026: turbo-preview accepts 0.6, thinking-turbo accepts 1.0).
-            ("kimi-k2-turbo-preview", 0.6),
-            ("kimi-k2-0905-preview", 0.6),
-            ("kimi-k2-thinking", 1.0),
-            ("kimi-k2-thinking-turbo", 1.0),
-            ("moonshotai/kimi-k2-thinking-turbo", 1.0),
-        ],
-    )
-    def test_other_kimi_k2_family_unchanged_on_public_api(self, model, expected):
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="kimi-coding",
-            model=model,
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=0.1,
-            base_url="https://api.moonshot.ai/v1",
-        )
-
-        assert kwargs["temperature"] == expected
+        assert "temperature" not in kwargs
 
 
 # ---------------------------------------------------------------------------

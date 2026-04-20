@@ -47,12 +47,19 @@ def _effective_temperature_for_model(
     model: str,
     base_url: Optional[str] = None,
 ) -> Optional[float]:
-    """Return a fixed temperature for models with strict sampling contracts."""
+    """Return a fixed temperature for models with strict sampling contracts.
+
+    Returns ``None`` when the model manages temperature server-side (Kimi);
+    callers must omit the ``temperature`` kwarg entirely in that case.
+    """
     try:
-        from agent.auxiliary_client import _fixed_temperature_for_model
+        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
     except Exception:
         return None
-    return _fixed_temperature_for_model(model, base_url)
+    result = _fixed_temperature_for_model(model, base_url)
+    if result is OMIT_TEMPERATURE:
+        return None  # caller must omit temperature
+    return result
 
 
 

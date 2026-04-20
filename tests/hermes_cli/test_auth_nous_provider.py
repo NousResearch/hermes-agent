@@ -27,15 +27,23 @@ class TestResolveVerifyFallback:
         })
         assert result is True
 
-    def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path):
+    def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path, monkeypatch):
+        import ssl
         from hermes_cli.auth import _resolve_verify
 
         ca_file = tmp_path / "ca-bundle.pem"
         ca_file.write_text("fake cert")
+
+        # Avoid loading actual PEM — just verify the return type
+        mock_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        monkeypatch.setattr(ssl, "create_default_context", lambda **kw: mock_ctx)
+
         result = _resolve_verify(auth_state={
             "tls": {"insecure": False, "ca_bundle": str(ca_file)},
         })
-        assert result == str(ca_file)
+        assert isinstance(result, ssl.SSLContext), (
+            f"Expected ssl.SSLContext but got {type(result).__name__}: {result!r}"
+        )
 
     def test_missing_ssl_cert_file_env_falls_back(self, monkeypatch):
         from hermes_cli.auth import _resolve_verify
@@ -76,13 +84,21 @@ class TestResolveVerifyFallback:
         result = _resolve_verify(ca_bundle="/nonexistent/explicit-ca.pem")
         assert result is True
 
-    def test_explicit_ca_bundle_param_valid_is_returned(self, tmp_path):
+    def test_explicit_ca_bundle_param_valid_is_returned(self, tmp_path, monkeypatch):
+        import ssl
         from hermes_cli.auth import _resolve_verify
 
         ca_file = tmp_path / "explicit-ca.pem"
         ca_file.write_text("fake cert")
+
+        # Avoid loading actual PEM — just verify the return type
+        mock_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        monkeypatch.setattr(ssl, "create_default_context", lambda **kw: mock_ctx)
+
         result = _resolve_verify(ca_bundle=str(ca_file))
-        assert result == str(ca_file)
+        assert isinstance(result, ssl.SSLContext), (
+            f"Expected ssl.SSLContext but got {type(result).__name__}: {result!r}"
+        )
 
 
 def _setup_nous_auth(

@@ -850,6 +850,22 @@ class TestAdversarialEdgeCases:
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.model_not_found
 
+    def test_anthropic_out_of_extra_usage_is_billing(self):
+        """Anthropic's 2026-04-04 third-party enforcement returns HTTP 400
+        with body 'You're out of extra usage...' — must classify as billing
+        so the fallback chain engages with credential rotation.
+        """
+        msg = "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg}},
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.billing
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is True
+
     # ── Regression: dict-typed message field (Issue #11233) ──
 
     def test_pydantic_dict_message_no_crash(self):

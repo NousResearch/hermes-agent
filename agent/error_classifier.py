@@ -97,6 +97,7 @@ _BILLING_PATTERNS = [
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    "out of extra usage",          # Anthropic 2026-04-04 third-party enforcement
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)

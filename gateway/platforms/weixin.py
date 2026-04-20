@@ -1204,6 +1204,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
         self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
         self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        self._event_loop = asyncio.get_running_loop()
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1982,7 +1983,19 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
+    # Only reuse the live adapter's session when we're on the same event loop it
+    # was created on.  When the cron scheduler falls back to the standalone path,
+    # it runs send_weixin_direct inside asyncio.run() on a *fresh* loop; reusing
+    # a session from the gateway loop causes aiohttp's asyncio.timeout() to raise
+    # "Timeout context manager should be used inside a task".
+    _use_live = False
     if live_adapter is not None and send_session is not None and not send_session.closed:
+        try:
+            _adapter_loop = getattr(live_adapter, '_event_loop', None)
+            _use_live = (_adapter_loop is not None and _adapter_loop is asyncio.get_running_loop())
+        except RuntimeError:
+            pass
+    if _use_live:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

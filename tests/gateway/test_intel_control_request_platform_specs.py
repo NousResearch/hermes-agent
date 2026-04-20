@@ -3,6 +3,13 @@ from gateway.intel_control_request_platform_specs import (
     QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC,
     build_qq_intel_control_request_platform_spec,
 )
+from gateway.group_target_intents import extract_qq_group_target
+from gateway.qq_intel_control_requests import (
+    extract_qq_oral_intel_hire_objective,
+    extract_qq_worker_name,
+    looks_like_qq_intel_worker_context,
+    match_qq_intel_control_request,
+)
 
 
 def test_build_qq_intel_control_request_platform_spec_uses_overrides():
@@ -30,3 +37,11 @@ def test_build_qq_intel_control_request_platform_spec_uses_overrides():
 
 def test_default_qq_intel_control_request_platform_spec_is_qq():
     assert QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC.platform is Platform.QQ_NAPCAT
+    assert QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC.request_matcher is match_qq_intel_control_request
+    assert QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC.worker_name_extractor is extract_qq_worker_name
+    assert QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC.worker_context_checker is looks_like_qq_intel_worker_context
+    assert QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC.target_extractor is extract_qq_group_target
+    assert (
+        QQ_INTEL_CONTROL_REQUEST_PLATFORM_SPEC.hire_objective_extractor
+        is extract_qq_oral_intel_hire_objective
+    )

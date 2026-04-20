@@ -25,7 +25,7 @@ class SocialControlRequestPlatformSpec:
     looks_like_request_list_query: Callable[[str], bool]
     looks_like_policy_candidate: Callable[[str], bool]
     looks_like_policy_query: Callable[[str], bool]
-    request_type_matcher: Callable[[str], str]
+    request_type_matcher: Callable[[str], str | None]
     notify_target_resolver: Callable[[Any, str], str | None]
 
 
@@ -35,7 +35,7 @@ def build_qq_social_control_request_platform_spec(
     looks_like_request_list_query: Callable[[str], bool] | None = None,
     looks_like_policy_candidate: Callable[[str], bool] | None = None,
     looks_like_policy_query: Callable[[str], bool] | None = None,
-    request_type_matcher: Callable[[str], str] | None = None,
+    request_type_matcher: Callable[[str], str | None] | None = None,
     notify_target_resolver: Callable[[Any, str], str | None] | None = None,
 ) -> SocialControlRequestPlatformSpec:
     return SocialControlRequestPlatformSpec(

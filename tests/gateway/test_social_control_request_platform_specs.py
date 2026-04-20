@@ -3,6 +3,16 @@ from gateway.social_control_request_platform_specs import (
     QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC,
     build_qq_social_control_request_platform_spec,
 )
+from gateway.qq_intents import (
+    _looks_like_qq_social_policy_candidate,
+    _looks_like_qq_social_request_list_query,
+)
+from gateway.qq_social_control_requests import (
+    looks_like_qq_social_policy_query,
+    match_qq_social_control_request,
+    match_qq_social_request_type,
+    qq_social_policy_notify_target,
+)
 
 
 def test_build_qq_social_control_request_platform_spec_uses_overrides():
@@ -33,3 +43,15 @@ def test_build_qq_social_control_request_platform_spec_uses_overrides():
 
 def test_default_qq_social_control_request_platform_spec_is_qq():
     assert QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC.platform is Platform.QQ_NAPCAT
+    assert QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC.request_matcher is match_qq_social_control_request
+    assert (
+        QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC.looks_like_request_list_query
+        is _looks_like_qq_social_request_list_query
+    )
+    assert (
+        QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC.looks_like_policy_candidate
+        is _looks_like_qq_social_policy_candidate
+    )
+    assert QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC.looks_like_policy_query is looks_like_qq_social_policy_query
+    assert QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC.request_type_matcher is match_qq_social_request_type
+    assert QQ_SOCIAL_CONTROL_REQUEST_PLATFORM_SPEC.notify_target_resolver is qq_social_policy_notify_target

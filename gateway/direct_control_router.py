@@ -46,13 +46,13 @@ from gateway.group_runtime_status_runtime_service import (
 )
 from gateway.group_runtime_status_service import unique_report_targets as shared_unique_report_targets
 from gateway.group_target_intents import extract_recent_target_from_history
+from gateway.intel_worker_platform_specs import load_known_qq_intel_worker_names
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.qq_intel_runtime_service import (
     format_admin_qq_intel_control_reply as shared_format_admin_qq_intel_control_reply,
     match_admin_qq_intel_control_request as shared_match_admin_qq_intel_control_request,
     run_admin_qq_intel_control_shortcut,
 )
-from gateway.qq_intel_assignments import list_intel_workers
 from gateway.qq_social_runtime_service import (
     format_admin_qq_social_control_reply as shared_format_admin_qq_social_control_reply,
     match_admin_qq_social_control_request as shared_match_admin_qq_social_control_request,
@@ -261,20 +261,13 @@ class DirectControlRouter:
             configured_admin_user_ids_fn=self.owner._configured_admin_user_ids,
             is_admin_user_fn=self.owner._is_admin_user,
         )
-        source = context["source"]
-        body = context["body"]
-        known_worker_names = {
-            str(item.get("worker_name") or "").strip()
-            for item in list_intel_workers()
-            if isinstance(item, dict) and str(item.get("worker_name") or "").strip()
-        }
         return shared_match_admin_qq_intel_control_request(
-            source=source,
-            body=body,
+            source=context["source"],
+            body=context["body"],
             admin_ids_configured=context["admin_ids_configured"],
             is_admin_user=context["is_admin_user"],
             looks_like_joined_group_list_query=self.owner._looks_like_joined_group_list_query,
-            known_worker_names=known_worker_names,
+            known_worker_names=load_known_qq_intel_worker_names(),
             report_target_resolver=self._resolve_oral_report_delivery_target,
         )
 

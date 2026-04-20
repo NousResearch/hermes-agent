@@ -86,6 +86,17 @@ def test_match_admin_qq_intel_control_request_uses_qq_request_spec():
 
     assert error is None
     assert tool_args == {"action": "pause_worker", "worker_name": "钢镚"}
+    matcher.assert_called_once()
+    assert matcher.call_args.kwargs == {
+        "source": source,
+        "body": "让情报员钢镚暂停任务",
+        "admin_ids_configured": True,
+        "is_admin_user": True,
+        "looks_like_joined_group_list_query": matcher.call_args.kwargs["looks_like_joined_group_list_query"],
+        "known_worker_names": {"钢镚"},
+        "report_target_resolver": matcher.call_args.kwargs["report_target_resolver"],
+        "request_spec": matcher.call_args.kwargs["request_spec"],
+    }
     assert matcher.call_args.kwargs["request_spec"].platform is Platform.QQ_NAPCAT
 
 

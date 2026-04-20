@@ -83,6 +83,15 @@ def test_match_admin_qq_social_control_request_uses_qq_request_spec():
 
     assert error is None
     assert tool_args == {"action": "list_requests", "request_type": "friend"}
+    matcher.assert_called_once()
+    assert matcher.call_args.kwargs == {
+        "source": source,
+        "body": "看看待处理的好友申请",
+        "admin_ids_configured": True,
+        "is_admin_user": True,
+        "admin_only_message": "admin only",
+        "request_spec": matcher.call_args.kwargs["request_spec"],
+    }
     assert matcher.call_args.kwargs["request_spec"].platform is Platform.QQ_NAPCAT
 
 

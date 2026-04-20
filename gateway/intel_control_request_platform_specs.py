@@ -22,7 +22,7 @@ class IntelControlRequestPlatformSpec:
     worker_name_extractor: Callable[[str, Iterable[str]], str]
     worker_context_checker: Callable[[str], bool]
     target_extractor: Callable[[Any, str], str]
-    hire_objective_extractor: Callable[..., str]
+    hire_objective_extractor: Callable[..., str | None]
 
 
 def build_qq_intel_control_request_platform_spec(
@@ -31,7 +31,7 @@ def build_qq_intel_control_request_platform_spec(
     worker_name_extractor: Callable[[str, Iterable[str]], str] | None = None,
     worker_context_checker: Callable[[str], bool] | None = None,
     target_extractor: Callable[[Any, str], str] | None = None,
-    hire_objective_extractor: Callable[..., str] | None = None,
+    hire_objective_extractor: Callable[..., str | None] | None = None,
 ) -> IntelControlRequestPlatformSpec:
     return IntelControlRequestPlatformSpec(
         platform=Platform.QQ_NAPCAT,

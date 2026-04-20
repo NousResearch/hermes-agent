@@ -398,8 +398,8 @@ async def test_admin_dm_bot_alias_intel_phrase_falls_back_to_agent():
 
     with (
         patch(
-            "gateway.direct_control_router.list_intel_workers",
-            return_value=[{"worker_name": "马哥"}],
+            "gateway.direct_control_router.load_known_qq_intel_worker_names",
+            return_value={"马哥"},
         ),
         patch("tools.messaging_control_tool.messaging_control_tool") as control_mock,
     ):
@@ -418,8 +418,8 @@ async def test_admin_dm_verbose_known_worker_report_request_falls_back_to_agent(
 
     with (
         patch(
-            "gateway.direct_control_router.list_intel_workers",
-            return_value=[{"worker_name": "钢镚"}],
+            "gateway.direct_control_router.load_known_qq_intel_worker_names",
+            return_value={"钢镚"},
         ),
         patch("tools.messaging_control_tool.messaging_control_tool") as control_mock,
     ):
@@ -451,8 +451,8 @@ async def test_known_worker_name_does_not_steal_explicit_employee_route_when_mes
 
     with (
         patch(
-            "gateway.direct_control_router.list_intel_workers",
-            return_value=[{"worker_name": "铁柱"}],
+            "gateway.direct_control_router.load_known_qq_intel_worker_names",
+            return_value={"铁柱"},
         ),
         patch(
             "gateway.run.asyncio.create_task",
@@ -488,8 +488,8 @@ async def test_background_status_shortcut_does_not_steal_explicit_intel_status_q
 
     with (
         patch(
-            "gateway.direct_control_router.list_intel_workers",
-            return_value=[{"worker_name": "钢镚"}],
+            "gateway.direct_control_router.load_known_qq_intel_worker_names",
+            return_value={"钢镚"},
         ),
         patch(
             "tools.messaging_control_tool.messaging_control_tool",

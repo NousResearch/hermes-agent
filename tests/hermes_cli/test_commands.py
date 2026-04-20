@@ -108,6 +108,7 @@ class TestResolveCommand:
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
+        assert resolve_command("/start").name == "help"
         assert resolve_command("/bg").name == "background"
 
     def test_unknown_returns_none(self):

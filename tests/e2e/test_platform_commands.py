@@ -32,6 +32,15 @@ class TestSlashCommands:
         assert "/status" in response_text
 
     @pytest.mark.asyncio
+    async def test_start_alias_returns_command_list(self, adapter, platform):
+        send = await send_and_capture(adapter, "/start", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "/new" in response_text
+        assert "/status" in response_text
+
+    @pytest.mark.asyncio
     async def test_status_shows_session_info(self, adapter, platform):
         send = await send_and_capture(adapter, "/status", platform)
 

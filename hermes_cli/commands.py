@@ -151,7 +151,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
-    CommandDef("help", "Show available commands", "Info"),
+    CommandDef("help", "Show available commands", "Info", aliases=("start",)),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
@@ -354,6 +354,59 @@ def gateway_help_lines() -> list[str]:
     return lines
 
 
+_TELEGRAM_RU_DESCRIPTIONS: dict[str, str] = {
+    "new": "Новая сессия с чистой историей",
+    "retry": "Повторить последнее сообщение",
+    "undo": "Удалить последний обмен сообщениями",
+    "title": "Переименовать текущую сессию",
+    "branch": "Ответвить текущую сессию",
+    "compress": "Сжать контекст текущего диалога",
+    "rollback": "Показать или восстановить чекпоинт",
+    "snapshot": "Создать или восстановить снимок состояния",
+    "stop": "Остановить все фоновые процессы",
+    "approve": "Разрешить ожидающую опасную команду",
+    "deny": "Отклонить ожидающую опасную команду",
+    "background": "Запустить задачу в фоне",
+    "btw": "Короткий побочный вопрос без сохранения",
+    "agents": "Показать активных агентов и задачи",
+    "queue": "Поставить запрос в очередь на следующий ход",
+    "steer": "Вставить сообщение после следующего tool call",
+    "status": "Показать информацию о сессии",
+    "profile": "Показать активный профиль и домашнюю папку",
+    "sethome": "Сделать этот чат домашним каналом",
+    "resume": "Продолжить ранее названную сессию",
+    "model": "Сменить модель для этой сессии",
+    "provider": "Показать провайдеров и текущий выбор",
+    "gquota": "Показать квоту Google Gemini Code Assist",
+    "personality": "Выбрать готовую personality",
+    "verbose": "Переключить подробность показа tool progress",
+    "yolo": "Переключить YOLO-режим без подтверждений",
+    "reasoning": "Управлять уровнем reasoning",
+    "fast": "Переключить быстрый режим",
+    "skin": "Показать или сменить тему оформления",
+    "voice": "Управлять голосовым режимом",
+    "reload": "Перезагрузить .env в текущую сессию",
+    "reload-mcp": "Перезагрузить MCP-серверы из конфига",
+    "commands": "Показать список команд и навыков",
+    "help": "Показать доступные команды",
+    "restart": "Мягко перезапустить gateway",
+    "usage": "Показать расход токенов и лимиты",
+    "insights": "Показать аналитику использования",
+    "update": "Обновить Hermes Agent",
+    "debug": "Собрать debug-отчёт и ссылки",
+}
+
+
+def _telegram_description(cmd: CommandDef) -> str:
+    """Return Telegram-friendly command description.
+
+    Telegram menu text should be concise and localized for the user's primary
+    bot surface. For now we expose Russian descriptions for built-in commands;
+    skills/plugins keep their own descriptions.
+    """
+    return _TELEGRAM_RU_DESCRIPTIONS.get(cmd.name, cmd.description)
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
@@ -368,7 +421,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
             continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            result.append((tg_name, _telegram_description(cmd)))
     return result
 
 

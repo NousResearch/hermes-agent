@@ -113,6 +113,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        # Last thread where typing/status was shown per channel so completion
+        # cleanup can explicitly clear stale Slack assistant status.
+        self._typing_thread_by_chat: Dict[str, str] = {}
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -343,7 +346,6 @@ class SlackAdapter(BasePlatformAdapter):
 
         Displays "is thinking..." next to the bot name in a thread.
         Requires the assistant:write or chat:write scope.
-        Auto-clears when the bot sends a reply to the thread.
         """
         if not self._app:
             return
@@ -355,6 +357,8 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
+        self._typing_thread_by_chat[chat_id] = thread_ts
+
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -365,6 +369,37 @@ class SlackAdapter(BasePlatformAdapter):
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        """Explicitly clear Slack assistant thread status.
+
+        Slack docs say sending an empty string clears the status indicator.
+        We do this explicitly on completion to avoid stale "is thinking..."
+        UI when the final status update races with the reply send.
+        """
+        if not self._app:
+            return
+
+        thread_ts = None
+        if metadata:
+            thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
+        if not thread_ts:
+            thread_ts = self._typing_thread_by_chat.get(chat_id)
+        if not thread_ts:
+            return
+
+        try:
+            await self._get_client(chat_id).assistant_threads_setStatus(
+                channel_id=chat_id,
+                thread_ts=thread_ts,
+                status="",
+            )
+        except Exception as e:
+            logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+        finally:
+            cached_thread_ts = self._typing_thread_by_chat.get(chat_id)
+            if cached_thread_ts == thread_ts:
+                self._typing_thread_by_chat.pop(chat_id, None)
 
     def _resolve_thread_ts(
         self,

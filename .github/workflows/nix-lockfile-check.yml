@@ -2,14 +2,6 @@ name: Nix Lockfile Check
 
 on:
   pull_request:
-    paths:
-      - 'ui-tui/package.json'
-      - 'ui-tui/package-lock.json'
-      - 'web/package.json'
-      - 'web/package-lock.json'
-      - 'nix/tui.nix'
-      - 'nix/web.nix'
-      - 'nix/lib.nix'
   workflow_dispatch:
 
 permissions:

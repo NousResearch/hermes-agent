@@ -464,7 +464,104 @@ def test_build_api_kwargs_chatgpt_web_natural_language_clone_prefills_terminal_a
     assert "C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world" in rewritten_user
 
 
-def test_build_api_kwargs_chatgpt_web_terminal_without_prefilled_args_still_demands_guessed_tool_call(monkeypatch):
+def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_path_exists_check(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "In a fresh chat, check whether /tmp/hermes-web-soak/repo/.git exists and answer only yes or no. Do not reclone anything."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert '"command": "[ -e \'/tmp/hermes-web-soak/repo/.git\' ] && echo yes || echo no"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_top_processes(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Use terminal and show the top processes using the most memory. Answer briefly."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert '"command": "ps aux --sort=-%mem | head -n 10"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_combined_terminal_command_for_whoami_pwd_topproc(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": (
+                "Use terminal to run whoami, then use terminal to run pwd, then use terminal to show the top "
+                "processes using the most memory. Keep going automatically until the task is complete. "
+                "Final answer exactly as three lines: USER=<username> PWD=<path> TOPPROC=<first process>."
+            ),
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert '"command": "whoami && pwd && ps aux --sort=-%mem | head -n 2"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_cronjob_for_simple_schedule(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "cronjob", "description": "Manage cron jobs", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": "Create a cron job named disk-check every 1h to use terminal to run df -h and report disk usage.",
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: cronjob.' in rewritten_user
+    assert '"action": "create"' in rewritten_user
+    assert '"name": "disk-check"' in rewritten_user
+    assert '"schedule": "every 1h"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_cronjob_over_nested_terminal_phrase(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "cronjob", "description": "Manage cron jobs", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": "Create a cron job named hermes-live-soak-20260420 every 1h to use terminal to run date and report it. Answer only created.",
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: cronjob.' in rewritten_user
+    assert '"action": "create"' in rewritten_user
+    assert '"name": "hermes-live-soak-20260420"' in rewritten_user
+    assert '"prompt": "use terminal to run date and report it"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_terminal_clone_prefills_args(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [
         {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
@@ -484,9 +581,56 @@ def test_build_api_kwargs_chatgpt_web_terminal_without_prefilled_args_still_dema
     rewritten_user = kwargs["messages"][-1]["content"]
     assert kwargs["history_and_training_disabled"] is True
     assert 'The tool available for this turn is: terminal.' in rewritten_user
-    assert "You must infer the arguments yourself from the user's request and still emit a tool call now." in rewritten_user
-    assert "Do not leave the arguments object empty." in rewritten_user
-    assert '{"name": "terminal", "arguments": {"command": "git status"}}' in rewritten_user
+    assert 'Use these exact arguments for this turn:' in rewritten_user
+    assert '"command": "git clone --depth 1' in rewritten_user
+    assert "/tmp/hermes-soak" in rewritten_user
+
+
+def test_select_chatgpt_web_tools_picks_terminal_for_natural_language_clone_request(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {
+            "role": "user",
+            "content": (
+                "Clone the GitHub repository https://github.com/octocat/Hello-World.git with depth 1 into "
+                "C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world. "
+                "Keep going automatically until the clone is complete, then answer only with the exact repo path."
+            ),
+        },
+    ])
+
+    assert [tool["function"]["name"] for tool in selected] == ["terminal"]
+
+
+def test_build_api_kwargs_chatgpt_web_natural_language_clone_prefills_terminal_args(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": (
+                "Clone the GitHub repository https://github.com/octocat/Hello-World.git with depth 1 into "
+                "C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world. "
+                "Keep going automatically until the clone is complete, then answer only with the exact repo path."
+            ),
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert 'Use these exact arguments for this turn:' in rewritten_user
+    assert '"command": "git clone --depth 1' in rewritten_user
+    assert "C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world" in rewritten_user
 
 
 def test_wrap_chatgpt_web_response_synthesizes_terminal_call_for_whoami(monkeypatch):
@@ -1399,6 +1543,32 @@ def test_build_api_kwargs_chatgpt_web_uses_direct_multimodal_when_browser_availa
     assert content[1] == {"type": "input_image", "image_url": str(image_path)}
     assert kwargs["history_and_training_disabled"] is False
     assert "<tool_call>" not in kwargs["instructions"]
+
+def test_build_api_kwargs_chatgpt_web_uses_direct_multimodal_for_attached_image_when_browser_available(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATGPT_WEB_DEBUG_BASE", "http://127.0.0.1:9225")
+    agent = _build_agent(monkeypatch)
+    image_path = tmp_path / "red-square.png"
+    image_path.write_bytes(b"png")
+    agent.tools = [
+        {"type": "function", "function": {"name": "vision_analyze", "description": "Analyze images", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Answer only with the dominant color and shape."},
+                {"type": "input_image", "image_url": str(image_path)},
+            ],
+        },
+    ])
+
+    content = kwargs["messages"][-1]["content"]
+    assert isinstance(content, list)
+    assert kwargs["history_and_training_disabled"] is False
+    assert "<tool_call>" not in kwargs["instructions"]
+
 
 def test_build_api_kwargs_chatgpt_web_uses_direct_multimodal_for_attached_image_when_browser_available(monkeypatch, tmp_path):
     monkeypatch.setenv("CHATGPT_WEB_DEBUG_BASE", "http://127.0.0.1:9225")

@@ -238,22 +238,9 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 
 # Kimi Code (platform.kimi.ai) issues keys prefixed "sk-kimi-" that only work
 # on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
-# api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
-# KIMI_BASE_URL explicitly.
-KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
-
-
-def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """Return the correct Kimi base URL based on the API key prefix.
-
-    If the user has explicitly set KIMI_BASE_URL, that always wins.
-    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
-    """
-    if env_override:
-        return env_override
-    if api_key.startswith("sk-kimi-"):
-        return KIMI_CODE_BASE_URL
-    return default_url
+# api.moonshot.ai/v1 (the default).  The Kimi dual-endpoint router and
+# ``KIMI_CODE_BASE_URL`` constant live in ``hermes_cli/auth/api_key.py``
+# (F-C2 step 5) and are re-exported from the package root.
 
 
 def _gh_cli_candidates() -> list[str]:
@@ -295,109 +282,15 @@ def _try_gh_cli_token() -> Optional[str]:
     return None
 
 
-_PLACEHOLDER_SECRET_VALUES = {
-    "*",
-    "**",
-    "***",
-    "changeme",
-    "your_api_key",
-    "your-api-key",
-    "placeholder",
-    "example",
-    "dummy",
-    "null",
-    "none",
-}
-
-
-def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
-    """Return True when a configured secret looks usable, not empty/placeholder."""
-    if not isinstance(value, str):
-        return False
-    cleaned = value.strip()
-    if len(cleaned) < min_length:
-        return False
-    if cleaned.lower() in _PLACEHOLDER_SECRET_VALUES:
-        return False
-    return True
-
-
-def _resolve_api_key_provider_secret(
-    provider_id: str, pconfig: ProviderConfig
-) -> tuple[str, str]:
-    """Resolve an API-key provider's token and indicate where it came from."""
-    if provider_id == "copilot":
-        # Use the dedicated copilot auth module for proper token validation
-        try:
-            from hermes_cli.copilot_auth import resolve_copilot_token
-            token, source = resolve_copilot_token()
-            if token:
-                return token, source
-        except ValueError as exc:
-            logger.warning("Copilot token validation failed: %s", exc)
-        except Exception:
-            pass
-        return "", ""
-
-    for env_var in pconfig.api_key_env_vars:
-        val = os.getenv(env_var, "").strip()
-        if has_usable_secret(val):
-            return val, env_var
-
-    return "", ""
-
-
 # =============================================================================
-# Z.AI Endpoint Detection
+# API-key provider family (has_usable_secret, _resolve_api_key_provider_secret,
+# get_api_key_provider_status, resolve_api_key_provider_credentials,
+# detect_zai_endpoint, ZAI_ENDPOINTS, _PLACEHOLDER_SECRET_VALUES) extracted
+# to ``hermes_cli/auth/api_key.py`` (F-C2 step 5). Re-exported via
+# ``from .api_key import *`` at the bottom of this file so existing
+# callers (resolve_provider in __init__.py, tests, setup wizard,
+# doctor, status, model picker) keep working.
 # =============================================================================
-
-# Z.AI has separate billing for general vs coding plans, and global vs China
-# endpoints.  A key that works on one may return "Insufficient balance" on
-# another.  We probe at setup time and store the working endpoint.
-
-ZAI_ENDPOINTS = [
-    # (id, base_url, default_model, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        "glm-5",   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", "glm-5",   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  "glm-4.7", "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "China (Coding Plan)"),
-]
-
-
-def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
-    """Probe z.ai endpoints to find one that accepts this API key.
-
-    Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
-    first working endpoint, or None if all fail.
-    """
-    for ep_id, base_url, model, label in ZAI_ENDPOINTS:
-        try:
-            resp = httpx.post(
-                f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "stream": False,
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "ping"}],
-                },
-                timeout=timeout,
-            )
-            if resp.status_code == 200:
-                logger.debug("Z.AI endpoint probe: %s (%s) OK", ep_id, base_url)
-                return {
-                    "id": ep_id,
-                    "base_url": base_url,
-                    "model": model,
-                    "label": label,
-                }
-            logger.debug("Z.AI endpoint probe: %s returned %s", ep_id, resp.status_code)
-        except Exception as exc:
-            logger.debug("Z.AI endpoint probe: %s failed: %s", ep_id, exc)
-    return None
 
 
 # =============================================================================
@@ -944,37 +837,6 @@ def _resolve_verify(
 # The other status helpers (API-key, external-process) stay here because
 # they are shared across every non-OAuth provider family.
 
-def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
-        return {"configured": False}
-
-    api_key = ""
-    key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-
-    if provider_id == "kimi-coding":
-        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif env_url:
-        base_url = env_url
-    else:
-        base_url = pconfig.inference_base_url
-
-    return {
-        "configured": bool(api_key),
-        "provider": provider_id,
-        "name": pconfig.name,
-        "key_source": key_source,
-        "base_url": base_url,
-        "logged_in": bool(api_key),  # compat with OAuth status shape
-    }
-
-
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -1019,42 +881,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
     return {"logged_in": False}
-
-
-def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
-    """Resolve API key and base URL for an API-key provider.
-
-    Returns dict with: provider, api_key, base_url, source.
-    """
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
-        raise AuthError(
-            f"Provider '{provider_id}' is not an API-key provider.",
-            provider=provider_id,
-            code="invalid_provider",
-        )
-
-    api_key = ""
-    key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-
-    if provider_id == "kimi-coding":
-        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif env_url:
-        base_url = env_url.rstrip("/")
-    else:
-        base_url = pconfig.inference_base_url
-
-    return {
-        "provider": provider_id,
-        "api_key": api_key,
-        "base_url": base_url.rstrip("/"),
-        "source": key_source or "default",
-    }
 
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
@@ -1353,6 +1179,7 @@ def logout_command(args) -> None:
     else:
         print(f"No auth state found for {provider_name}.")
 
-# --- F-C2 steps 2 + 4: re-export extracted providers so legacy imports keep working.
+# --- F-C2 steps 2/4/5: re-export extracted providers so legacy imports keep working.
 from hermes_cli.auth.codex import *  # noqa: E402,F401,F403
 from hermes_cli.auth.nous import *  # noqa: E402,F401,F403
+from hermes_cli.auth.api_key import *  # noqa: E402,F401,F403

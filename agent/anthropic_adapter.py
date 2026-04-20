@@ -1525,3 +1525,42 @@ def normalize_anthropic_response(
         ),
         finish_reason,
     )
+
+
+def normalize_anthropic_response_v2(
+    response,
+    strip_tool_prefix: bool = False,
+) -> "NormalizedResponse":
+    """Normalize Anthropic response to NormalizedResponse.
+
+    Wraps the existing normalize_anthropic_response() and maps its output
+    to the shared transport types.  This allows incremental migration —
+    one call site at a time — without changing the original function.
+    """
+    from agent.transports.types import NormalizedResponse, build_tool_call
+
+    assistant_msg, finish_reason = normalize_anthropic_response(response, strip_tool_prefix)
+
+    tool_calls = None
+    if assistant_msg.tool_calls:
+        tool_calls = [
+            build_tool_call(
+                id=tc.id,
+                name=tc.function.name,
+                arguments=tc.function.arguments,
+            )
+            for tc in assistant_msg.tool_calls
+        ]
+
+    provider_data = {}
+    if getattr(assistant_msg, "reasoning_details", None):
+        provider_data["reasoning_details"] = assistant_msg.reasoning_details
+
+    return NormalizedResponse(
+        content=assistant_msg.content,
+        tool_calls=tool_calls,
+        finish_reason=finish_reason,
+        reasoning=getattr(assistant_msg, "reasoning", None),
+        usage=None,  # Anthropic usage is on the raw response, not the normaliser
+        provider_data=provider_data or None,
+    )

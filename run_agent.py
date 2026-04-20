@@ -10778,10 +10778,33 @@ class AIAgent:
                 if self.api_mode == "codex_responses":
                     assistant_message, finish_reason = self._normalize_codex_response(response)
                 elif self.api_mode == "anthropic_messages":
-                    from agent.anthropic_adapter import normalize_anthropic_response
-                    assistant_message, finish_reason = normalize_anthropic_response(
+                    from agent.anthropic_adapter import normalize_anthropic_response_v2
+                    _nr = normalize_anthropic_response_v2(
                         response, strip_tool_prefix=self._is_anthropic_oauth
                     )
+                    # Back-compat shim: downstream code expects SimpleNamespace with
+                    # .content, .tool_calls, .reasoning, .reasoning_content,
+                    # .reasoning_details attributes.  This shim makes the cost of the
+                    # old interface visible — it vanishes when the full transport
+                    # wiring lands (PR 3+).
+                    assistant_message = SimpleNamespace(
+                        content=_nr.content,
+                        tool_calls=[
+                            SimpleNamespace(
+                                id=tc.id,
+                                type="function",
+                                function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
+                            )
+                            for tc in (_nr.tool_calls or [])
+                        ] or None,
+                        reasoning=_nr.reasoning,
+                        reasoning_content=None,
+                        reasoning_details=(
+                            _nr.provider_data.get("reasoning_details")
+                            if _nr.provider_data else None
+                        ),
+                    )
+                    finish_reason = _nr.finish_reason
                 else:
                     assistant_message = response.choices[0].message
                 

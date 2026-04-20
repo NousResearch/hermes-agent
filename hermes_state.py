@@ -1365,7 +1365,7 @@ class SessionDB:
 
     # Valid state transitions for copilot jobs.
     _COPILOT_JOB_TRANSITIONS = {
-        "pending":   {"running", "failed"},
+        "pending":   {"running", "closed", "failed"},
         "running":   {"idle", "failed"},
         "idle":      {"running", "closed", "failed"},
         "closed":    set(),

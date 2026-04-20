@@ -1490,7 +1490,16 @@ class TestCopilotJobLifecycle:
             job_id="cj_1", repo_slug="repo", repo_path="/r"
         )
         with pytest.raises(ValueError, match="Invalid transition"):
-            db.transition_copilot_job("cj_1", "closed")
+            db.transition_copilot_job("cj_1", "idle")
+
+    def test_pending_to_closed(self, db):
+        """Pending jobs can be directly closed (e.g. stale pending reaper)."""
+        db.create_copilot_job(
+            job_id="cj_1", repo_slug="repo", repo_path="/r"
+        )
+        job = db.transition_copilot_job("cj_1", "closed", event_type="stale_pending")
+        assert job["state"] == "closed"
+        assert job["closed_at"] is not None
 
     def test_transition_nonexistent_job_raises(self, db):
         with pytest.raises(ValueError, match="not found"):

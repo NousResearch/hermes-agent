@@ -57,10 +57,12 @@ def _state_badge(state: str) -> str:
 
 
 def copilot_launch(args):
-    """Launch a new Copilot remote session for a repo."""
+    """Launch a new Copilot session for a repo."""
     prompt = getattr(args, "prompt", None) or ""
     repo = getattr(args, "repo", None)
     repo_path = getattr(args, "repo_path", None)
+    auto = getattr(args, "auto", True)
+    model = getattr(args, "model", None)
 
     # If no explicit repo, try the router
     if not repo:
@@ -115,18 +117,30 @@ def copilot_launch(args):
         print(f"Created copilot job: {job_id}")
         print(f"  Repo:   {repo}")
         print(f"  Path:   {repo_path}")
-        print(f"  State:  pending")
         print(f"  TTL:    {idle_ttl}s")
 
         if prompt:
             preview = prompt[:80] + ("..." if len(prompt) > 80 else "")
             print(f"  Prompt: {preview}")
 
-        print()
-        print("Next steps:")
-        print(f"  1. Start Copilot: copilot --remote --cwd {repo_path}")
-        print(f"  2. Update job:    hermes copilot activate {job_id} --session-id <id> --remote-name <name>")
-        print(f"  3. Attach:        hermes copilot show {job_id}  (shows attach command)")
+        if auto and prompt:
+            from copilot_jobs.launcher import launch_copilot
+            from copilot_jobs.models import RepoEntry as _RE
+
+            repo_entry = _RE(slug=repo, path=repo_path)
+            result = launch_copilot(
+                db, job_id, repo_entry, prompt,
+                model=model,
+                dry_run=getattr(args, "dry_run", False),
+            )
+            print(f"  State:  running (pid {result['pid']})")
+            print(f"\nCopilot is working. Monitor with:")
+            print(f"  hermes copilot show {job_id}")
+        else:
+            print(f"  State:  pending")
+            print(f"\nManual launch required:")
+            print(f"  1. Start: copilot -p '{prompt[:60]}...' --allow-all -s --cwd {repo_path}")
+            print(f"  2. Activate: hermes copilot activate {job_id} --session-id <id>")
 
     finally:
         db.close()
@@ -314,6 +328,37 @@ def copilot_close(args):
         db.close()
 
 
+def copilot_reap(args):
+    """Run the reaper: close dead processes and expired idle jobs."""
+    from copilot_jobs.reaper import reap
+
+    db = _get_db()
+    try:
+        result = reap(db, pending_max_age=getattr(args, "pending_max_age", 3600))
+        dead = result["dead_processes"]
+        expired = result["ttl_expired"]
+        stale = result["stale_pending"]
+
+        if not dead and not expired and not stale:
+            print("Reaper: nothing to do.")
+            return
+
+        if dead:
+            print(f"Reaped {len(dead)} dead process(es):")
+            for j in dead:
+                print(f"  {j['id']} ({j['repo_slug']}) pid {j.get('pid')} → idle")
+        if expired:
+            print(f"Closed {len(expired)} expired idle job(s):")
+            for j in expired:
+                print(f"  {j['id']} ({j['repo_slug']}) → closed")
+        if stale:
+            print(f"Closed {len(stale)} stale pending job(s):")
+            for j in stale:
+                print(f"  {j['id']} ({j['repo_slug']}) → closed")
+    finally:
+        db.close()
+
+
 def copilot_command(args):
     """Route copilot subcommands."""
     subcmd = getattr(args, "copilot_action", None)
@@ -329,6 +374,7 @@ def copilot_command(args):
         "takeover": copilot_takeover,
         "idle": copilot_idle,
         "close": copilot_close,
+        "reap": copilot_reap,
     }
 
     handler = handlers.get(subcmd)
@@ -336,7 +382,7 @@ def copilot_command(args):
         handler(args)
     else:
         print(f"Unknown copilot command: {subcmd}")
-        print("Usage: hermes copilot [launch|activate|list|show|takeover|idle|close]")
+        print("Usage: hermes copilot [launch|activate|list|show|takeover|idle|close|reap]")
         sys.exit(1)
 
 
@@ -370,10 +416,11 @@ def handle_copilot_slash(raw_command: str) -> None:
         elif subcmd == "launch":
             ns = SimpleNamespace(
                 prompt=" ".join(args_rest) if args_rest else "",
-                repo=None, repo_path=None,
+                repo=None, repo_path=None, auto=True, model=None,
+                dry_run=False,
                 signal_source="slash", signal_ref=None, idle_ttl=300,
             )
-            # Parse --repo and --repo-path flags from args
+            # Parse flags from args
             i = 0
             prompt_parts = []
             while i < len(args_rest):
@@ -386,6 +433,15 @@ def handle_copilot_slash(raw_command: str) -> None:
                 elif args_rest[i] == "--idle-ttl" and i + 1 < len(args_rest):
                     ns.idle_ttl = int(args_rest[i + 1])
                     i += 2
+                elif args_rest[i] == "--model" and i + 1 < len(args_rest):
+                    ns.model = args_rest[i + 1]
+                    i += 2
+                elif args_rest[i] == "--no-auto":
+                    ns.auto = False
+                    i += 1
+                elif args_rest[i] == "--dry-run":
+                    ns.dry_run = True
+                    i += 1
                 else:
                     prompt_parts.append(args_rest[i])
                     i += 1
@@ -428,17 +484,24 @@ def handle_copilot_slash(raw_command: str) -> None:
             ns = SimpleNamespace(job_id=args_rest[0])
             copilot_close(ns)
 
+        elif subcmd == "reap":
+            ns = SimpleNamespace(pending_max_age=3600)
+            copilot_reap(ns)
+
         else:
-            print("Usage: /copilot [launch|list|show|activate|takeover|idle|close]")
+            print("Usage: /copilot [launch|list|show|activate|takeover|idle|close|reap]")
             print()
             print("  /copilot list                        List all jobs")
-            print("  /copilot launch <prompt>             Route prompt to repo and create job")
-            print("  /copilot launch --repo <slug> <msg>  Create job for specific repo")
+            print("  /copilot launch <prompt>             Route prompt → repo, launch copilot")
+            print("  /copilot launch --no-auto <prompt>   Create job without auto-launching")
+            print("  /copilot launch --model <m> <prompt> Use specific model")
+            print("  /copilot launch --repo <slug> <msg>  Launch for specific repo")
             print("  /copilot show <job_id>               Show job details")
             print("  /copilot activate <id> --session-id <sid>  Record Copilot session")
             print("  /copilot takeover <job_id>           Transfer ownership to human")
             print("  /copilot idle <job_id>               Mark job as idle")
             print("  /copilot close <job_id>              Close a job")
+            print("  /copilot reap                        Clean up dead/expired jobs")
 
     except SystemExit:
         # copilot_* functions call sys.exit() on errors — catch it

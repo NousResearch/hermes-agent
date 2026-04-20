@@ -62,6 +62,53 @@ def test_build_api_kwargs_chatgpt_web_carries_thread_state(monkeypatch):
     assert "tools" not in kwargs
 
 
+def test_agent_init_prefers_runtime_chatgpt_web_state_over_pool(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return SimpleNamespace(
+                session_token="stale-session",
+                cookie_header="stale-cookie=1",
+                browser_cookies=[{"name": "stale", "value": "1"}],
+                user_agent="Mozilla/Stale",
+                device_id="stale-device",
+            )
+
+        def peek(self):
+            return self.select()
+
+        def entries(self):
+            return [self.select()]
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+
+    agent = run_agent.AIAgent(
+        model="gpt-5-thinking",
+        provider="chatgpt-web",
+        api_mode="chatgpt_web",
+        base_url=DEFAULT_WEB_BASE,
+        api_key="chatgpt-web-token",
+        chatgpt_web_session_token="runtime-session",
+        chatgpt_web_cookie_header="runtime-cookie=1",
+        chatgpt_web_browser_cookies=[{"name": "runtime", "value": "1"}],
+        chatgpt_web_user_agent="Mozilla/Runtime",
+        chatgpt_web_device_id="runtime-device",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent._chatgpt_web_session_token == "runtime-session"
+    assert agent._chatgpt_web_cookie_header == "runtime-cookie=1"
+    assert agent._chatgpt_web_browser_cookies == [{"name": "runtime", "value": "1"}]
+    assert agent._chatgpt_web_user_agent == "Mozilla/Runtime"
+    assert agent._chatgpt_web_device_id == "runtime-device"
+
+
 def test_build_api_kwargs_chatgpt_web_uses_latest_user_turn_for_tool_selection(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [
@@ -80,6 +127,18 @@ def test_build_api_kwargs_chatgpt_web_uses_latest_user_turn_for_tool_selection(m
     assert 'The tool available for this turn is: execute_code.' in rewritten_user
     assert '"name": "execute_code"' in rewritten_user
     assert '"code": "print(6*7)"' in rewritten_user
+
+
+def test_conversation_turn_preview_handles_multimodal_messages(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    preview = agent._conversation_turn_preview([
+        {"type": "text", "text": "Look at this local image."},
+        {"type": "input_image", "image_url": "C:/tmp/red-square.png"},
+    ])
+
+    assert "Look at this local image." in preview
+    assert "[image:C:/tmp/red-square.png]" in preview
 
 
 def test_select_chatgpt_web_tools_prefers_explicit_sequence(monkeypatch):
@@ -122,6 +181,20 @@ def test_select_chatgpt_web_tools_prefers_terminal_for_working_directory(monkeyp
 
     assert [tool["function"]["name"] for tool in selected] == ["terminal"]
 
+
+
+def test_select_chatgpt_web_tools_does_not_confuse_memory_usage_with_memory_tool(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "memory", "description": "Store memory", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": "What are the top processes on this machine by memory usage? Use terminal and answer with the top process name only."},
+    ])
+
+    assert [tool["function"]["name"] for tool in selected] == ["terminal"]
 
 
 def test_select_chatgpt_web_tools_skips_plain_greeting(monkeypatch):
@@ -170,6 +243,7 @@ def test_build_api_kwargs_chatgpt_web_includes_richer_hermes_intro(monkeypatch):
 
     assert "Hermes Agent web-model runtime" in kwargs["instructions"]
     assert "Skills are first-class Hermes artifacts" in kwargs["instructions"]
+    assert "Do not ask for permission to continue" in kwargs["instructions"]
 
 
 def test_chatgpt_web_build_skill_content_returns_reusable_template(monkeypatch):
@@ -222,7 +296,104 @@ def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_whoami(monkeypatch):
     assert "Do not answer the user yet." in rewritten_user
 
 
-def test_build_api_kwargs_chatgpt_web_terminal_without_prefilled_args_still_demands_guessed_tool_call(monkeypatch):
+def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_path_exists_check(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "In a fresh chat, check whether /tmp/hermes-web-soak/repo/.git exists and answer only yes or no. Do not reclone anything."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert '"command": "[ -e \'/tmp/hermes-web-soak/repo/.git\' ] && echo yes || echo no"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_top_processes(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Use terminal and show the top processes using the most memory. Answer briefly."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert '"command": "ps aux --sort=-%mem | head -n 10"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_combined_terminal_command_for_whoami_pwd_topproc(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": (
+                "Use terminal to run whoami, then use terminal to run pwd, then use terminal to show the top "
+                "processes using the most memory. Keep going automatically until the task is complete. "
+                "Final answer exactly as three lines: USER=<username> PWD=<path> TOPPROC=<first process>."
+            ),
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert '"command": "whoami && pwd && ps aux --sort=-%mem | head -n 2"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_cronjob_for_simple_schedule(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "cronjob", "description": "Manage cron jobs", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": "Create a cron job named disk-check every 1h to use terminal to run df -h and report disk usage.",
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: cronjob.' in rewritten_user
+    assert '"action": "create"' in rewritten_user
+    assert '"name": "disk-check"' in rewritten_user
+    assert '"schedule": "every 1h"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_cronjob_over_nested_terminal_phrase(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "cronjob", "description": "Manage cron jobs", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": "Create a cron job named hermes-live-soak-20260420 every 1h to use terminal to run date and report it. Answer only created.",
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: cronjob.' in rewritten_user
+    assert '"action": "create"' in rewritten_user
+    assert '"name": "hermes-live-soak-20260420"' in rewritten_user
+    assert '"prompt": "use terminal to run date and report it"' in rewritten_user
+
+
+def test_build_api_kwargs_chatgpt_web_terminal_clone_prefills_args(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [
         {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
@@ -242,9 +413,56 @@ def test_build_api_kwargs_chatgpt_web_terminal_without_prefilled_args_still_dema
     rewritten_user = kwargs["messages"][-1]["content"]
     assert kwargs["history_and_training_disabled"] is True
     assert 'The tool available for this turn is: terminal.' in rewritten_user
-    assert "You must infer the arguments yourself from the user's request and still emit a tool call now." in rewritten_user
-    assert "Do not leave the arguments object empty." in rewritten_user
-    assert '{"name": "terminal", "arguments": {"command": "git status"}}' in rewritten_user
+    assert 'Use these exact arguments for this turn:' in rewritten_user
+    assert '"command": "git clone --depth 1' in rewritten_user
+    assert "/tmp/hermes-soak" in rewritten_user
+
+
+def test_select_chatgpt_web_tools_picks_terminal_for_natural_language_clone_request(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {
+            "role": "user",
+            "content": (
+                "Clone the GitHub repository https://github.com/octocat/Hello-World.git with depth 1 into "
+                "C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world. "
+                "Keep going automatically until the clone is complete, then answer only with the exact repo path."
+            ),
+        },
+    ])
+
+    assert [tool["function"]["name"] for tool in selected] == ["terminal"]
+
+
+def test_build_api_kwargs_chatgpt_web_natural_language_clone_prefills_terminal_args(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": (
+                "Clone the GitHub repository https://github.com/octocat/Hello-World.git with depth 1 into "
+                "C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world. "
+                "Keep going automatically until the clone is complete, then answer only with the exact repo path."
+            ),
+        },
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert 'Use these exact arguments for this turn:' in rewritten_user
+    assert '"command": "git clone --depth 1' in rewritten_user
+    assert "C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world" in rewritten_user
 
 
 def test_wrap_chatgpt_web_response_synthesizes_terminal_call_for_whoami(monkeypatch):
@@ -268,6 +486,747 @@ def test_wrap_chatgpt_web_response_synthesizes_terminal_call_for_whoami(monkeypa
     assert tool_calls[0].function.name == "terminal"
     assert json.loads(tool_calls[0].function.arguments) == {"command": "whoami"}
     assert wrapped.choices[0].message.content == ""
+
+
+def test_wrap_chatgpt_web_response_infers_followup_tool_call_from_model_prose(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Use terminal and show the top processes using the most memory. Answer briefly."},
+    ])
+
+    wrapped = agent._wrap_chatgpt_web_response({
+        "content": "I can continue by checking the top processes if you want.",
+        "finish_reason": "stop",
+    })
+
+    tool_calls = wrapped.choices[0].message.tool_calls
+    assert tool_calls is not None
+    assert tool_calls[0].function.name == "terminal"
+    assert json.loads(tool_calls[0].function.arguments) == {"command": "ps aux --sort=-%mem | head -n 10"}
+    assert wrapped.choices[0].message.content == ""
+
+
+def test_select_chatgpt_web_tools_stops_after_terminal_output_already_contains_top_process(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": "What are the top processes on this machine by memory usage? Use terminal and answer with the top process name only."},
+        {
+            "role": "tool",
+            "tool_name": "terminal",
+            "content": json.dumps({
+                "output": (
+                    "your 131072x1 screen size is bogus. expect trouble\n"
+                    "USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
+                    "root         377  0.0  0.2 2256636 68428 ?       Sl   16:02   0:02 "
+                    "/snap/ubuntu-desktop-installer/1286/usr/bin/python3.10 -m subiquity.cmd.server"
+                ),
+                "exit_code": 0,
+                "error": None,
+            }),
+        },
+    ])
+
+    assert selected == []
+
+
+def test_repair_terminal_completion_response_uses_successful_tool_output_instead_of_permission_prompt(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    repaired = agent._chatgpt_web_repair_terminal_completion_response(
+        "What are the top processes on this machine by memory usage? Use terminal and answer with the top process name only.",
+        "Would you like me to try again later or assist you in another way?",
+        [
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "output": (
+                        "your 131072x1 screen size is bogus. expect trouble\n"
+                        "USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
+                        "root         377  0.0  0.2 2256636 68428 ?       Sl   16:02   0:02 "
+                        "/snap/ubuntu-desktop-installer/1286/usr/bin/python3.10 -m subiquity.cmd.server"
+                    ),
+                    "exit_code": 0,
+                    "error": None,
+                }),
+            },
+        ],
+    )
+
+    assert repaired == "python3.10"
+
+
+def test_repair_terminal_completion_response_formats_three_line_terminal_summary(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    repaired = agent._chatgpt_web_repair_terminal_completion_response(
+        (
+            "Use terminal to run whoami, then use terminal to run pwd, then use terminal to show the top "
+            "processes using the most memory. Keep going automatically until the task is complete. "
+            "Do not ask permission again. Final answer exactly as three lines: "
+            "USER=<username> PWD=<path> TOPPROC=<first process>."
+        ),
+        "I can continue by checking the top processes if you want.",
+        [
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "output": (
+                        "tdamre\n"
+                        "/mnt/c/Users/adyba/AppData/Local/Temp/hermes-termux-rebase\n"
+                        "your 131072x1 screen size is bogus. expect trouble\n"
+                        "USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
+                        "root         377  0.0  0.2 2256636 68428 ?       Sl   16:02   0:02 "
+                        "/snap/ubuntu-desktop-installer/1286/usr/bin/python3.10 -m subiquity.cmd.server"
+                    ),
+                    "exit_code": 0,
+                    "error": None,
+                }),
+            },
+        ],
+    )
+
+    assert repaired == (
+        "USER=tdamre\n"
+        "PWD=/mnt/c/Users/adyba/AppData/Local/Temp/hermes-termux-rebase\n"
+        "TOPPROC=python3.10"
+    )
+
+
+def test_repair_terminal_completion_response_uses_yes_no_for_path_exists(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    repaired = agent._chatgpt_web_repair_terminal_completion_response(
+        "In a fresh chat, check whether /tmp/hermes-web-soak/repo/.git exists and answer only yes or no. Do not reclone anything.",
+        "It seems that I cannot proceed with the requested tool at this moment.",
+        [
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "output": "yes\n",
+                    "exit_code": 0,
+                    "error": None,
+                }),
+            },
+        ],
+    )
+
+    assert repaired == "yes"
+
+
+def test_select_chatgpt_web_tools_stops_after_terminal_output_already_contains_whoami_result(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": "Try terminal tool and check whoami on it. Keep going automatically until the task is complete. Answer only the result."},
+        {
+            "role": "tool",
+            "tool_name": "terminal",
+            "content": json.dumps({
+                "output": "ubuntu\n",
+                "exit_code": 0,
+                "error": None,
+            }),
+        },
+    ])
+
+    assert selected == []
+
+
+def test_repair_terminal_completion_response_uses_whoami_output_for_result_mode(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    repaired = agent._chatgpt_web_repair_terminal_completion_response(
+        "Try terminal tool and check whoami on it. Keep going automatically until the task is complete. Answer only the result.",
+        "The system user is \"oai\".",
+        [
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "output": "ubuntu\n",
+                    "exit_code": 0,
+                    "error": None,
+                }),
+            },
+        ],
+    )
+
+    assert repaired == "ubuntu"
+
+
+def test_repair_terminal_completion_response_prefers_exact_repo_path_from_tool_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    repaired = agent._chatgpt_web_repair_terminal_completion_response(
+        (
+            "Clone the GitHub repository https://github.com/octocat/Hello-World.git with depth 1 into "
+            "/tmp/hermes-web-soak/hello-world. Keep going automatically until the clone is complete, "
+            "then answer only with the exact repo path."
+        ),
+        "/tm/hermes-web-soak/hello-world",
+        [
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "output": "Cloning into '/tmp/hermes-web-soak/hello-world'...\n",
+                    "exit_code": 0,
+                    "error": None,
+                }),
+            },
+        ],
+    )
+
+    assert repaired == "/tmp/hermes-web-soak/hello-world"
+
+
+def test_repair_answer_only_response_uses_verified_when_read_back_contains_marker(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    repaired = agent._chatgpt_web_repair_answer_only_response(
+        (
+            "Use read_file to inspect /tmp/hermes-web-soak/repo/README, then use patch to append the exact text "
+            "LIVE_PATCH_MARKER at the end of that file, then use read_file again to verify the marker is present. "
+            "Keep going automatically until the task is complete. Answer only verified."
+        ),
+        "There was an issue with tool usage, but I can proceed.",
+        [
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "content": "1|Hello World!\n2|LIVE_PATCH_MARKER\n",
+                    "truncated": False,
+                }),
+            },
+        ],
+    )
+
+    assert repaired == "verified"
+
+
+def test_chatgpt_web_tool_args_infers_patch_append_replace(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    args = agent._chatgpt_web_tool_args(
+        "patch",
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Use read_file to inspect /tmp/hermes-web-soak/repo/README, then use patch to append the exact text "
+                    "LIVE_PATCH_MARKER at the end of that file, then use read_file again to verify the marker is present. "
+                    "Keep going automatically until the task is complete. Answer only verified."
+                ),
+            },
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "content": "     1|Hello World!\n     2|\n",
+                    "truncated": False,
+                }),
+            },
+        ],
+    )
+
+    assert args == {
+        "mode": "replace",
+        "path": "/tmp/hermes-web-soak/repo/README",
+        "old_string": "Hello World!\n",
+        "new_string": "Hello World!\nLIVE_PATCH_MARKER\n",
+    }
+
+
+def test_chatgpt_web_tool_args_infers_browser_sequence_args(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    payload_messages = [
+        {
+            "role": "user",
+            "content": (
+                "Use terminal to get the current branch of /tmp/hermes-web-soak/hello-world, then use browser_navigate "
+                "and browser_vision to open https://en.wikipedia.org/wiki/OpenAI and read the visible page title from "
+                "the screenshot. Keep going automatically until the task is complete."
+            ),
+        },
+        {
+            "role": "tool",
+            "content": json.dumps({"output": "master\n", "exit_code": 0, "error": None}),
+        },
+    ]
+
+    navigate_args = agent._chatgpt_web_tool_args("browser_navigate", payload_messages)
+    vision_args = agent._chatgpt_web_tool_args("browser_vision", payload_messages)
+
+    assert navigate_args == {"url": "https://en.wikipedia.org/wiki/OpenAI"}
+    assert vision_args == {"question": "What is the visible page title text in the screenshot?"}
+
+
+def test_chatgpt_web_tool_args_infers_followup_terminal_verify_step(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    args = agent._chatgpt_web_tool_args(
+        "terminal",
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Use terminal to append the exact text LIVE_SOAK_MARKER to /tmp/hermes-web-soak/repo/README, "
+                    "then use terminal to verify the marker exists. Keep going automatically until the task is complete "
+                    "and answer only verified."
+                ),
+            },
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "output": "",
+                    "exit_code": 0,
+                    "error": None,
+                }),
+            },
+        ],
+    )
+
+    assert args == {
+        "command": "grep -Fqx -- 'LIVE_SOAK_MARKER' '/tmp/hermes-web-soak/repo/README' && echo verified || echo missing"
+    }
+
+
+def test_chatgpt_web_tool_args_infers_followup_terminal_branch_step(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    args = agent._chatgpt_web_tool_args(
+        "terminal",
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Use terminal to clone https://github.com/octocat/Hello-World.git with depth 1 into "
+                    "/tmp/hermes-web-soak/hello-world. After cloning, use terminal to print the current branch. "
+                    "Keep going automatically until the task is complete. Answer only the branch name."
+                ),
+            },
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "output": "Cloning into '/tmp/hermes-web-soak/hello-world'...\n",
+                    "exit_code": 0,
+                    "error": None,
+                }),
+            },
+        ],
+    )
+
+    assert args == {
+        "command": "git -C '/tmp/hermes-web-soak/hello-world' rev-parse --abbrev-ref HEAD"
+    }
+
+
+def test_chatgpt_web_tool_args_infers_create_then_list_for_cron_sequence(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    create_args = agent._chatgpt_web_tool_args(
+        "cronjob",
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Create a cron job named hermes-live-soak every 1h to use terminal to run date, "
+                    "then list jobs. Keep going automatically until the task is complete. "
+                    "Answer only created."
+                ),
+            },
+        ],
+    )
+
+    list_args = agent._chatgpt_web_tool_args(
+        "cronjob",
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Create a cron job named hermes-live-soak every 1h to use terminal to run date, "
+                    "then list jobs. Keep going automatically until the task is complete."
+                ),
+            },
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "success": True,
+                    "message": "Cron job hermes-live-soak created.",
+                }),
+            },
+        ],
+    )
+
+    assert create_args == {
+        "action": "create",
+        "name": "hermes-live-soak",
+        "schedule": "every 1h",
+        "prompt": "use terminal to run date",
+    }
+    assert list_args == {"action": "list"}
+
+
+def test_chatgpt_web_tool_args_infers_remove_for_cron_delete_request(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    args = agent._chatgpt_web_tool_args(
+        "cronjob",
+        [
+            {
+                "role": "user",
+                "content": "Remove the cron job named hermes-live-soak. Answer only removed.",
+            },
+        ],
+    )
+
+    assert args == {"action": "list"}
+
+
+def test_chatgpt_web_tool_args_infers_remove_job_id_after_cron_list(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    args = agent._chatgpt_web_tool_args(
+        "cronjob",
+        [
+            {
+                "role": "user",
+                "content": "Remove the cron job named hermes-live-soak. Keep going automatically until the task is complete.",
+            },
+            {
+                "role": "tool",
+                "content": json.dumps({
+                    "success": True,
+                    "count": 2,
+                    "jobs": [
+                        {"id": "job-1", "name": "other-job"},
+                        {"id": "job-2", "name": "hermes-live-soak"},
+                    ],
+                }),
+            },
+        ],
+    )
+
+    assert args == {"action": "remove", "job_id": "job-2"}
+
+
+def test_select_chatgpt_web_tools_routes_natural_multi_tool_sequence(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "browser_navigate", "description": "Navigate browser", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "browser_vision", "description": "Analyze browser screenshot", "parameters": {"type": "object"}}},
+    ]
+
+    user_content = (
+        "In a fresh chat, confirm whether /tmp/hermes-web-soak/hello-world exists, then check whether "
+        "LIVE_SOAK_MARKER exists in the repo README, then open https://en.wikipedia.org/wiki/OpenAI and "
+        "read the visible title from the screenshot. Keep going automatically until the task is complete."
+    )
+
+    selected_initial = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": user_content},
+    ])
+    selected_after_terminal = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": user_content},
+        {
+            "role": "tool",
+            "tool_name": "terminal",
+            "content": json.dumps({"output": "yes\n", "exit_code": 0, "error": None}),
+        },
+    ])
+    selected_after_search = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": user_content},
+        {
+            "role": "tool",
+            "tool_name": "terminal",
+            "content": json.dumps({"output": "yes\n", "exit_code": 0, "error": None}),
+        },
+        {
+            "role": "tool",
+            "tool_name": "search_files",
+            "content": json.dumps({"matches": [{"path": "/tmp/hermes-web-soak/hello-world/README"}], "total_count": 1}),
+        },
+    ])
+    selected_after_navigate = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": user_content},
+        {
+            "role": "tool",
+            "tool_name": "terminal",
+            "content": json.dumps({"output": "yes\n", "exit_code": 0, "error": None}),
+        },
+        {
+            "role": "tool",
+            "tool_name": "search_files",
+            "content": json.dumps({"matches": [{"path": "/tmp/hermes-web-soak/hello-world/README"}], "total_count": 1}),
+        },
+        {
+            "role": "tool",
+            "tool_name": "browser_navigate",
+            "content": json.dumps({"success": True, "url": "https://en.wikipedia.org/wiki/OpenAI", "title": "OpenAI"}),
+        },
+    ])
+
+    assert [tool["function"]["name"] for tool in selected_initial] == ["terminal"]
+    assert [tool["function"]["name"] for tool in selected_after_terminal] == ["search_files"]
+    assert [tool["function"]["name"] for tool in selected_after_search] == ["browser_navigate"]
+    assert [tool["function"]["name"] for tool in selected_after_navigate] == ["browser_vision"]
+
+
+def test_select_chatgpt_web_tools_does_not_treat_patch_or_terminal_as_forced_patch(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "patch", "description": "Patch files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {
+            "role": "user",
+            "content": (
+                "Inspect /tmp/hermes-web-soak/hello-world/README, then append the exact text LIVE_SOAK_MARKER "
+                "to the end of that file using patch or terminal, then verify the marker is present. "
+                "Keep going automatically until the task is complete. Answer only verified."
+            ),
+        },
+    ])
+
+    assert [tool["function"]["name"] for tool in selected] == ["read_file"]
+
+
+def test_select_chatgpt_web_tools_routes_patch_followup_to_terminal_verify(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "patch", "description": "Patch files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {
+            "role": "user",
+            "content": (
+                "Inspect /tmp/hermes-web-soak/hello-world/README, then append the exact text LIVE_SOAK_MARKER "
+                "to the end of that file using patch or terminal, then verify the marker is present. "
+                "Keep going automatically until the task is complete. Answer only verified."
+            ),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "patch",
+                        "arguments": "{\"mode\":\"patch\",\"path\":\"/tmp/hermes-web-soak/hello-world/README\",\"patch\":\"\\nLIVE_SOAK_MARKER\"}",
+                    }
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": json.dumps({"success": True}),
+        },
+    ])
+
+    assert [tool["function"]["name"] for tool in selected] == ["terminal"]
+
+
+def test_chatgpt_web_tool_args_infers_initial_terminal_branch_step_for_repo_path(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    args = agent._chatgpt_web_tool_args(
+        "terminal",
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Use terminal to get the current branch of /tmp/hermes-web-soak/hello-world, then use browser_navigate "
+                    "and browser_vision to open https://en.wikipedia.org/wiki/OpenAI and read the visible page title from "
+                    "the screenshot. Keep going automatically until the task is complete and do not ask for permission "
+                    "again. Answer exactly these three lines and nothing else: BRANCH=<branch>, TITLE=<title>, STATUS=ready."
+                ),
+            },
+        ],
+    )
+
+    assert args == {
+        "command": "git -C '/tmp/hermes-web-soak/hello-world' rev-parse --abbrev-ref HEAD"
+    }
+
+
+def test_wrap_chatgpt_web_response_infers_followup_tool_call_from_saved_turn_context(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+    agent._chatgpt_web_selected_tool_names = ["terminal"]
+    agent._chatgpt_web_selected_tool_payload_messages = [
+        {
+            "role": "user",
+            "content": (
+                "Use terminal to append the exact text LIVE_SOAK_MARKER to /tmp/hermes-web-soak/repo/README, "
+                "then use terminal to verify the marker exists. Keep going automatically until the task is complete "
+                "and answer only verified."
+            ),
+        },
+        {
+            "role": "tool",
+            "content": json.dumps({
+                "output": "",
+                "exit_code": 0,
+                "error": None,
+            }),
+        },
+    ]
+
+    wrapped = agent._wrap_chatgpt_web_response({
+        "content": "I can continue by verifying the marker now if you want.",
+        "finish_reason": "stop",
+    })
+
+    tool_calls = wrapped.choices[0].message.tool_calls
+    assert tool_calls is not None
+    assert tool_calls[0].function.name == "terminal"
+    assert json.loads(tool_calls[0].function.arguments) == {
+        "command": "grep -Fqx -- 'LIVE_SOAK_MARKER' '/tmp/hermes-web-soak/repo/README' && echo verified || echo missing"
+    }
+    assert wrapped.choices[0].message.content == ""
+
+
+def test_wrap_chatgpt_web_response_infers_followup_tool_call_from_clone_refusal(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+    agent._chatgpt_web_selected_tool_names = ["terminal"]
+    agent._chatgpt_web_selected_tool_payload_messages = [
+        {
+            "role": "user",
+            "content": (
+                "Use terminal to clone https://github.com/octocat/Hello-World.git with depth 1 into "
+                "/tmp/hermes-web-soak/hello-world. After cloning, use terminal to print the current branch. "
+                "Keep going automatically until the task is complete. Answer only the branch name."
+            ),
+        },
+        {
+            "role": "tool",
+            "content": json.dumps({
+                "output": "Cloning into '/tmp/hermes-web-soak/hello-world'...\n",
+                "exit_code": 0,
+                "error": None,
+            }),
+        },
+    ]
+
+    wrapped = agent._wrap_chatgpt_web_response({
+        "content": "It seems there is a technical issue preventing the use of the terminal. Would you like me to assist with another solution?",
+        "finish_reason": "stop",
+    })
+
+    tool_calls = wrapped.choices[0].message.tool_calls
+    assert tool_calls is not None
+    assert tool_calls[0].function.name == "terminal"
+    assert json.loads(tool_calls[0].function.arguments) == {
+        "command": "git -C '/tmp/hermes-web-soak/hello-world' rev-parse --abbrev-ref HEAD"
+    }
+    assert wrapped.choices[0].message.content == ""
+
+
+def test_wrap_chatgpt_web_response_synthesizes_natural_language_clone_refusal(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": (
+                "Clone the GitHub repository https://github.com/octocat/Hello-World.git with depth 1 into "
+                "C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world. "
+                "Keep going automatically until the clone is complete, then answer only with the exact repo path."
+            ),
+        },
+    ])
+
+    wrapped = agent._wrap_chatgpt_web_response({
+        "content": "seems I cannot retrieve the exact tool or resources I need to proceed. Would you like me to attempt another approach?",
+        "finish_reason": "stop",
+    })
+
+    tool_calls = wrapped.choices[0].message.tool_calls
+    assert tool_calls is not None
+    assert tool_calls[0].function.name == "terminal"
+    assert json.loads(tool_calls[0].function.arguments) == {
+        "command": (
+            "git clone --depth 1 'https://github.com/octocat/Hello-World.git' "
+            "'C:/Users/adyba/AppData/Local/Temp/hermes-live-soak-20260420-b/workspace/octocat-hello-world'"
+        )
+    }
+    assert wrapped.choices[0].message.content == ""
+
+
+def test_wrap_chatgpt_web_response_infers_followup_tool_call_from_terminal_unavailable_phrase(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+    agent._chatgpt_web_selected_tool_names = ["terminal"]
+    agent._chatgpt_web_selected_tool_payload_messages = [
+        {
+            "role": "user",
+            "content": (
+                "Use terminal to get the current branch of /tmp/hermes-web-soak/hello-world, then use browser_navigate "
+                "and browser_vision to open https://en.wikipedia.org/wiki/OpenAI and read the visible page title from "
+                "the screenshot. Keep going automatically until the task is complete and do not ask for permission again. "
+                "Answer exactly these three lines and nothing else: BRANCH=<branch>, TITLE=<title>, STATUS=ready."
+            ),
+        },
+    ]
+
+    wrapped = agent._wrap_chatgpt_web_response({
+        "content": "It seems that the terminal tool is currently unavailable. Please let me know if you would like me to try an alternative approach.",
+        "finish_reason": "stop",
+    })
+
+    tool_calls = wrapped.choices[0].message.tool_calls
+    assert tool_calls is not None
+    assert tool_calls[0].function.name == "terminal"
+    assert json.loads(tool_calls[0].function.arguments) == {
+        "command": "git -C '/tmp/hermes-web-soak/hello-world' rev-parse --abbrev-ref HEAD"
+    }
+    assert wrapped.choices[0].message.content == ""
+
+
+def test_chatgpt_web_response_signals_pending_tool_work_detects_reapproval_language(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    assert agent._chatgpt_web_response_signals_pending_tool_work(
+        "I can continue by checking the top processes if you want."
+    )
+    assert agent._chatgpt_web_response_signals_pending_tool_work(
+        "Would you like me to continue by reading the next file?"
+    )
+    assert agent._chatgpt_web_response_signals_pending_tool_work(
+        "It seems there is a technical issue preventing the use of the terminal. Would you like me to assist with another solution?"
+    )
+    assert agent._chatgpt_web_response_signals_pending_tool_work(
+        "It seems that the terminal tool is currently unavailable. Please let me know if you would like me to try an alternative approach."
+    )
+    assert agent._chatgpt_web_response_signals_pending_tool_work(
+        "It seems there is an issue with tool usage at the moment. Let me address that and proceed with the correct steps."
+    )
 
 
 def test_build_api_kwargs_chatgpt_web_prefers_memory_for_remember_requests(monkeypatch):
@@ -414,6 +1373,32 @@ def test_build_api_kwargs_chatgpt_web_uses_direct_multimodal_when_browser_availa
     assert content[0]["type"] == "text"
     assert "attached image" in content[0]["text"]
     assert content[1] == {"type": "input_image", "image_url": str(image_path)}
+    assert kwargs["history_and_training_disabled"] is False
+    assert "<tool_call>" not in kwargs["instructions"]
+
+
+def test_build_api_kwargs_chatgpt_web_uses_direct_multimodal_for_attached_image_when_browser_available(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATGPT_WEB_DEBUG_BASE", "http://127.0.0.1:9225")
+    agent = _build_agent(monkeypatch)
+    image_path = tmp_path / "red-square.png"
+    image_path.write_bytes(b"png")
+    agent.tools = [
+        {"type": "function", "function": {"name": "vision_analyze", "description": "Analyze images", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Answer only with the dominant color and shape."},
+                {"type": "input_image", "image_url": str(image_path)},
+            ],
+        },
+    ])
+
+    content = kwargs["messages"][-1]["content"]
+    assert isinstance(content, list)
     assert kwargs["history_and_training_disabled"] is False
     assert "<tool_call>" not in kwargs["instructions"]
 
@@ -967,6 +1952,100 @@ def test_wrap_chatgpt_web_response_forces_selected_tool_when_model_refuses(monke
     assert message.tool_calls[0].function.arguments == '{"pattern": "stream_chatgpt_web_completion", "target": "content", "path": "hermes_cli/chatgpt_web.py"}'
     assert agent._chatgpt_web_forced_tool_call is None
 
+
+def test_wrap_chatgpt_web_response_salvages_malformed_browser_vision_tool_call(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "browser_navigate", "description": "Navigate browser", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "browser_vision", "description": "Analyze browser screenshot", "parameters": {"type": "object"}}},
+    ]
+    agent._chatgpt_web_selected_tool_names = ["browser_navigate", "browser_vision"]
+    agent._chatgpt_web_selected_tool_payload_messages = [
+        {
+            "role": "user",
+            "content": (
+                "Use terminal to get the current branch of /tmp/hermes-web-soak/hello-world, then use browser_navigate "
+                "and browser_vision to open https://en.wikipedia.org/wiki/OpenAI and read the visible page title from "
+                "the screenshot. Keep going automatically until the task is complete."
+            ),
+        },
+        {
+            "role": "tool",
+            "content": json.dumps({
+                "success": True,
+                "url": "https://en.wikipedia.org/wiki/OpenAI",
+                "title": "OpenAI - Wikipedia",
+                "snapshot": "- heading \"OpenAI\" [ref=e8]",
+            }),
+        },
+    ]
+
+    response = agent._wrap_chatgpt_web_response({
+        "content": (
+            "<tool_call>\n"
+            "{\"name\": \"browser_vision\", \"arguments\": {\"screenshot\": \"- heading \\\"OpenAI\\\"\\n- main\\n- link\\\"}} \n"
+            "</tool_call>"
+        ),
+        "message_id": "msg_tool_browser_vision",
+        "model": "gpt-5-thinking",
+        "finish_reason": "stop",
+    })
+
+    message = response.choices[0].message
+    assert message.content == ""
+    assert message.tool_calls is not None
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0].function.name == "browser_vision"
+    assert json.loads(message.tool_calls[0].function.arguments) == {
+        "question": "What is the visible page title text in the screenshot?"
+    }
+
+
+def test_wrap_chatgpt_web_response_normalizes_browser_vision_placeholder_args(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "browser_navigate", "description": "Navigate browser", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "browser_vision", "description": "Analyze browser screenshot", "parameters": {"type": "object"}}},
+    ]
+    agent._chatgpt_web_selected_tool_names = ["browser_navigate", "browser_vision"]
+    agent._chatgpt_web_selected_tool_payload_messages = [
+        {
+            "role": "user",
+            "content": (
+                "Use terminal to get the current branch of /tmp/hermes-web-soak/hello-world, then use browser_navigate "
+                "and browser_vision to open https://en.wikipedia.org/wiki/OpenAI and read the visible page title from "
+                "the screenshot. Keep going automatically until the task is complete."
+            ),
+        },
+        {
+            "role": "tool",
+            "content": json.dumps({
+                "success": True,
+                "url": "https://en.wikipedia.org/wiki/OpenAI",
+                "title": "OpenAI - Wikipedia",
+                "snapshot": "- heading \"OpenAI\" [ref=e8]",
+            }),
+        },
+    ]
+
+    response = agent._wrap_chatgpt_web_response({
+        "content": (
+            "<tool_call>\n"
+            "{\"name\":\"browser_vision\",\"arguments\":{\"screenshot\":true}}\n"
+            "</tool_call>"
+        ),
+        "message_id": "msg_tool_browser_vision_norm",
+        "model": "gpt-5-thinking",
+        "finish_reason": "stop",
+    })
+
+    message = response.choices[0].message
+    assert message.tool_calls is not None
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0].function.name == "browser_vision"
+    assert json.loads(message.tool_calls[0].function.arguments) == {
+        "question": "What is the visible page title text in the screenshot?"
+    }
 
 
 def test_interruptible_api_call_chatgpt_web_returns_openai_like_response(monkeypatch):
@@ -1558,6 +2637,226 @@ def test_run_conversation_chatgpt_web_repairs_yes_no_path_answer_from_search(mon
     result = agent.run_conversation("Use Hermes tools to grep run_agent.py for _chatgpt_web_tool_args. Answer only yes/no and one matching path.")
 
     assert result["final_response"] == "yes\nrun_agent.py"
+
+
+@pytest.mark.parametrize("model", ["gpt-5-4-thinking"])
+def test_run_conversation_chatgpt_web_auto_continues_append_then_verify(monkeypatch, model):
+    agent = _build_agent(monkeypatch, model=model)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Run shell commands",
+            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+        },
+    }]
+    agent.valid_tool_names = {"terminal"}
+
+    responses = [
+        {
+            "content": "I can continue with the requested task if you want.",
+            "message_id": "msg_append",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "It appears there is an issue with executing the command. I'll continue to work through it and update you once it's resolved.",
+            "message_id": "msg_verify",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "Would you like me to continue?",
+            "message_id": "msg_final",
+            "model": model,
+            "finish_reason": "stop",
+        },
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: agent._wrap_chatgpt_web_response(responses.pop(0)))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            command = json.loads(call.function.arguments)["command"]
+            if command.startswith("printf '%s\\n'"):
+                output = ""
+            elif command.startswith("grep -Fqx --"):
+                output = "verified\n"
+            else:
+                raise AssertionError(f"unexpected command: {command}")
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": json.dumps({"output": output, "exit_code": 0, "error": None}),
+            })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation(
+        "Use terminal to append the exact text LIVE_SOAK_MARKER to /tmp/hermes-web-soak/repo/README, "
+        "then use terminal to verify the marker exists. Keep going automatically until the task is complete "
+        "and answer only verified."
+    )
+
+    assert result["final_response"] == "verified"
+
+
+@pytest.mark.parametrize("model", ["gpt-5-4-thinking"])
+def test_run_conversation_chatgpt_web_auto_continues_clone_then_branch(monkeypatch, model):
+    agent = _build_agent(monkeypatch, model=model)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Run shell commands",
+            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+        },
+    }]
+    agent.valid_tool_names = {"terminal"}
+
+    responses = [
+        {
+            "content": "I can continue with the requested task if you want.",
+            "message_id": "msg_clone",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "It seems there is a technical issue preventing the use of the terminal. Would you like me to assist with another solution?",
+            "message_id": "msg_branch",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "I can continue by checking the branch now if you want.",
+            "message_id": "msg_final",
+            "model": model,
+            "finish_reason": "stop",
+        },
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: agent._wrap_chatgpt_web_response(responses.pop(0)))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            command = json.loads(call.function.arguments)["command"]
+            if command.startswith("git clone --depth 1"):
+                output = "Cloning into '/tmp/hermes-web-soak/hello-world'...\n"
+            elif command == "git -C '/tmp/hermes-web-soak/hello-world' rev-parse --abbrev-ref HEAD":
+                output = "master\n"
+            else:
+                raise AssertionError(f"unexpected command: {command}")
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": json.dumps({"output": output, "exit_code": 0, "error": None}),
+            })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation(
+        "Use terminal to clone https://github.com/octocat/Hello-World.git with depth 1 into "
+        "/tmp/hermes-web-soak/hello-world. After cloning, use terminal to print the current branch. "
+        "Keep going automatically until the task is complete. Answer only the branch name."
+    )
+
+    assert result["final_response"] == "master"
+
+
+@pytest.mark.parametrize("model", ["gpt-5-4-thinking"])
+def test_run_conversation_chatgpt_web_auto_continues_read_patch_verify(monkeypatch, model):
+    agent = _build_agent(monkeypatch, model=model)
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read files",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "patch",
+                "description": "Patch files",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+            },
+        },
+    ]
+    agent.valid_tool_names = {"read_file", "patch"}
+
+    responses = [
+        {
+            "content": "I can continue with the requested task if you want.",
+            "message_id": "msg_read",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "It seems there is an issue with tool usage at the moment. Let me address that and proceed with the correct steps.",
+            "message_id": "msg_patch",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "There was an issue with tool usage, but I can proceed.",
+            "message_id": "msg_verify",
+            "model": model,
+            "finish_reason": "stop",
+        },
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: agent._wrap_chatgpt_web_response(
+            responses.pop(0) if responses else {
+                "content": "verified",
+                "message_id": "msg_done",
+                "model": model,
+                "finish_reason": "stop",
+            }
+        ),
+    )
+    read_calls = {"count": 0}
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            tool_name = call.function.name
+            args = json.loads(call.function.arguments)
+            if tool_name == "read_file":
+                read_calls["count"] += 1
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": json.dumps({
+                        "content": (
+                            "     1|Hello World!\n     2|\n"
+                            if read_calls["count"] == 1
+                            else "     1|Hello World!\n     2|LIVE_PATCH_MARKER\n"
+                        ),
+                        "truncated": False,
+                    }),
+                })
+            elif tool_name == "patch":
+                assert args["mode"] == "replace"
+                assert args["old_string"] == "Hello World!\n"
+                assert args["new_string"] == "Hello World!\nLIVE_PATCH_MARKER\n"
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": json.dumps({"success": True}),
+                })
+            else:
+                raise AssertionError(f"unexpected tool: {tool_name}")
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation(
+        "Use read_file to inspect /tmp/hermes-web-soak/repo/README, then use patch to append the exact text "
+        "LIVE_PATCH_MARKER at the end of that file, then use read_file again to verify the marker is present. "
+        "Keep going automatically until the task is complete. Answer only verified."
+    )
+
+    assert result["final_response"] == "verified"
 
 
 @pytest.mark.parametrize("model", ["gpt-5-thinking", "gpt-5-instant"])

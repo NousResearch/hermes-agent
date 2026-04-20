@@ -57,6 +57,11 @@ def test_resolve_runtime_provider_chatgpt_web_uses_chatgpt_web_mode(monkeypatch)
             "api_key": "chatgpt-web-token",
             "base_url": "https://chatgpt.com/backend-api/f",
             "source": "codex-oauth",
+            "session_token": "session-cookie",
+            "cookie_header": "cf_clearance=cf-cookie",
+            "browser_cookies": [{"name": "cf_clearance", "value": "cf-cookie"}],
+            "user_agent": "Mozilla/Test",
+            "device_id": "device-123",
         },
     )
 
@@ -66,6 +71,11 @@ def test_resolve_runtime_provider_chatgpt_web_uses_chatgpt_web_mode(monkeypatch)
     assert runtime["api_mode"] == "chatgpt_web"
     assert runtime["api_key"] == "chatgpt-web-token"
     assert runtime["base_url"] == "https://chatgpt.com/backend-api/f"
+    assert runtime["session_token"] == "session-cookie"
+    assert runtime["cookie_header"] == "cf_clearance=cf-cookie"
+    assert runtime["browser_cookies"] == [{"name": "cf_clearance", "value": "cf-cookie"}]
+    assert runtime["user_agent"] == "Mozilla/Test"
+    assert runtime["device_id"] == "device-123"
 
 
 def test_model_flow_chatgpt_web_uses_runtime_access_token_for_model_list(monkeypatch):
@@ -141,6 +151,40 @@ def test_format_initial_message_keeps_developer_instructions_on_remote_thread():
     assert "Latest user request:\nContinue from the latest step." in prompt
 
 
+def test_format_initial_message_keeps_latest_tool_context_on_remote_thread():
+    from hermes_cli.chatgpt_web import _format_initial_message
+
+    prompt = _format_initial_message(
+        instructions="Use tools before answering.",
+        messages=[
+            {"role": "user", "content": "Find the branch and then inspect Wikipedia."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command": "git rev-parse --abbrev-ref HEAD"}',
+                        }
+                    }
+                ],
+            },
+            {"role": "tool", "content": '{"output":"main","exit_code":0,"error":null}'},
+        ],
+        has_remote_thread=True,
+    )
+
+    assert "Latest user request:\nFind the branch and then inspect Wikipedia." in prompt
+    assert "Local Hermes context after that request" in prompt
+    assert "<tool_call>" in prompt
+    assert "\"name\": \"terminal\"" in prompt
+    assert "<tool_response>" in prompt
+    assert "\"output\":\"main\"" in prompt
+    assert "same task" in prompt
+    assert "not a new user request" in prompt
+
+
 def test_format_initial_message_renders_multimodal_user_text_without_image_noise():
     from hermes_cli.chatgpt_web import _format_initial_message
 
@@ -160,6 +204,44 @@ def test_format_initial_message_renders_multimodal_user_text_without_image_noise
 
     assert "Describe the attached image briefly." in prompt
     assert "file:///tmp/red-square.png" not in prompt
+
+
+def test_select_chatgpt_web_browser_response_text_falls_back_to_article_text():
+    from hermes_cli.chatgpt_web import _select_chatgpt_web_browser_response_text
+
+    text, model = _select_chatgpt_web_browser_response_text(
+        {
+            "assistant": [],
+            "articles": [
+                {"text": "Describe the attached image briefly.", "author": "user", "model": ""},
+                {"text": "Describe the attached image briefly. The image is a red square.", "author": "assistant", "model": "gpt-5-4-thinking"},
+            ],
+            "mainText": "Describe the attached image briefly. The image is a red square.",
+        },
+        "Describe the attached image briefly.",
+    )
+
+    assert text == "The image is a red square."
+    assert model == "gpt-5-4-thinking"
+
+
+def test_select_chatgpt_web_browser_response_text_ignores_prompt_echo_page_chrome():
+    from hermes_cli.chatgpt_web import _select_chatgpt_web_browser_response_text
+
+    text, model = _select_chatgpt_web_browser_response_text(
+        {
+            "assistant": [],
+            "articles": [],
+            "mainText": (
+                "Developer instructions: ... Conversation so far: User: Look at this local image. "
+                "Reading documents Thinking ChatGPT can make mistakes. See Cookie Preferences."
+            ),
+        },
+        "Look at this local image. Answer only with the dominant color and shape.",
+    )
+
+    assert text == ""
+    assert model == ""
 
 
 def test_materialize_chatgpt_web_browser_image_accepts_data_urls():
@@ -454,6 +536,58 @@ def test_resolve_chatgpt_web_runtime_credentials_refreshes_pool_session_token(tm
     assert creds["user_agent"] == "Mozilla/Test"
 
 
+def test_resolve_chatgpt_web_runtime_credentials_force_refreshes_exhausted_pool_entry(tmp_path, monkeypatch):
+    from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL, resolve_chatgpt_web_runtime_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("CHATGPT_WEB_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("CHATGPT_WEB_SESSION_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.chatgpt_web._fetch_chatgpt_web_access_token_from_session",
+        lambda session_token, **kwargs: "fresh-access-token",
+    )
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "credential_pool": {
+                    "chatgpt-web": [
+                        {
+                            "id": "cred-web",
+                            "label": "desktop-browser",
+                            "auth_type": "api_key",
+                            "priority": 0,
+                            "source": "manual:session_token",
+                            "access_token": "stale-access-token",
+                            "session_token": "session-cookie-token",
+                            "last_status": "exhausted",
+                            "last_status_at": 123.0,
+                            "last_error_code": 401,
+                            "last_error_message": "expired",
+                            "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    creds = resolve_chatgpt_web_runtime_credentials(force_refresh=True)
+
+    assert creds["provider"] == "chatgpt-web"
+    assert creds["api_key"] == "fresh-access-token"
+    assert creds["source"] == "pool:desktop-browser"
+
+    saved = json.loads(auth_path.read_text())
+    refreshed_entry = saved["credential_pool"]["chatgpt-web"][0]
+    assert refreshed_entry["access_token"] == "fresh-access-token"
+    assert refreshed_entry.get("last_status") is None
+    assert refreshed_entry.get("last_error_code") is None
+
+
 def test_build_chatgpt_web_headers_merge_browser_cookie_state():
     from hermes_cli.chatgpt_web import _build_chatgpt_web_headers
 
@@ -646,6 +780,126 @@ def test_stream_chatgpt_web_completion_parses_patch_events_without_outer_op(monk
     assert deltas == ["Yes,", " tools are active", " and ready."]
 
 
+def test_stream_chatgpt_web_completion_prefers_http_transport_for_text_turns(monkeypatch):
+    from hermes_cli import chatgpt_web as chatgpt_web_mod
+
+    monkeypatch.setattr(chatgpt_web_mod, "_chatgpt_web_debug_base", lambda: "http://127.0.0.1:9225")
+    monkeypatch.delenv("CHATGPT_WEB_FORCE_BROWSER_FETCH", raising=False)
+    monkeypatch.setattr(
+        chatgpt_web_mod,
+        "_chatgpt_web_browser_fetch_sync",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("browser transport should stay disabled for text turns")),
+    )
+
+    class _JSONResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+        def json(self):
+            return self._payload
+
+    class _StreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"conversation_id":"conv_http","type":"resume_conversation_token"}'
+            yield 'data: {"v":{"message":{"id":"msg_http","author":{"role":"assistant"},"content":{"content_type":"text","parts":["OK over HTTP"]},"status":"finished_successfully","metadata":{}}}}'
+            yield 'data: {"type":"message_stream_complete","conversation_id":"conv_http"}'
+            yield 'data: [DONE]'
+
+    class _Client:
+        def post(self, url, headers=None, json=None):
+            if url.endswith("/conversation/prepare"):
+                return _JSONResponse({"conduit_token": "conduit-http"})
+            if url.endswith("/sentinel/chat-requirements"):
+                return _JSONResponse({"token": "***", "proofofwork": {}})
+            raise AssertionError(f"unexpected POST {url}")
+
+        def stream(self, method, url, headers=None, json=None):
+            assert method == "POST"
+            assert url.endswith("/conversation")
+            return _StreamResponse()
+
+    result = chatgpt_web_mod.stream_chatgpt_web_completion(
+        access_token="chatgpt-web-token",
+        model="gpt-5-thinking",
+        messages=[{"role": "user", "content": "hello"}],
+        client=_Client(),
+        history_and_training_disabled=True,
+    )
+
+    assert result["content"] == "OK over HTTP"
+    assert result["conversation_id"] == "conv_http"
+    assert result["message_id"] == "msg_http"
+
+
+
+def test_stream_chatgpt_web_completion_auto_uses_browser_transport_for_browser_backed_session(monkeypatch):
+    from hermes_cli import chatgpt_web as chatgpt_web_mod
+
+    browser_calls = []
+
+    monkeypatch.setattr(chatgpt_web_mod, "_chatgpt_web_debug_base", lambda: "http://127.0.0.1:9227")
+    monkeypatch.delenv("CHATGPT_WEB_FORCE_BROWSER_FETCH", raising=False)
+
+    def _fake_browser_fetch_sync(**kwargs):
+        browser_calls.append((kwargs["method"], kwargs["url"]))
+        url = kwargs["url"]
+        if url.endswith("/conversation/prepare"):
+            return {"status": 200, "text": '{"conduit_token":"conduit-browser"}'}
+        if url.endswith("/sentinel/chat-requirements"):
+            return {"status": 200, "text": '{"token":"req-browser","proofofwork":{}}'}
+        if url.endswith("/conversation"):
+            return {
+                "status": 200,
+                "text": "\n".join([
+                    'data: {"conversation_id":"conv_browser_text","type":"resume_conversation_token"}',
+                    'data: {"v":{"message":{"id":"msg_browser_text","author":{"role":"assistant"},"content":{"content_type":"text","parts":["READY"]},"status":"finished_successfully","metadata":{}}}}',
+                    'data: {"type":"message_stream_complete","conversation_id":"conv_browser_text"}',
+                    "data: [DONE]",
+                ]),
+            }
+        raise AssertionError(f"unexpected browser fetch {url}")
+
+    monkeypatch.setattr(chatgpt_web_mod, "_chatgpt_web_browser_fetch_sync", _fake_browser_fetch_sync)
+
+    class _Client:
+        def post(self, url, headers=None, json=None):
+            raise AssertionError("HTTP POST transport should stay disabled for browser-backed sessions")
+
+        def stream(self, method, url, headers=None, json=None):
+            raise AssertionError("HTTP stream transport should stay disabled for browser-backed sessions")
+
+    result = chatgpt_web_mod.stream_chatgpt_web_completion(
+        access_token="chatgpt-web-token",
+        model="gpt-5-thinking",
+        messages=[{"role": "user", "content": "hello"}],
+        client=_Client(),
+        history_and_training_disabled=True,
+        session_token="session-123",
+    )
+
+    assert result["content"] == "READY"
+    assert result["conversation_id"] == "conv_browser_text"
+    assert result["message_id"] == "msg_browser_text"
+    assert browser_calls == [
+        ("POST", "https://chatgpt.com/backend-api/f/conversation/prepare"),
+        ("POST", "https://chatgpt.com/backend-api/sentinel/chat-requirements"),
+        ("POST", "https://chatgpt.com/backend-api/f/conversation"),
+    ]
+
 
 def test_stream_chatgpt_web_completion_tolerates_protocol_close_after_completion(monkeypatch):
     from hermes_cli.chatgpt_web import stream_chatgpt_web_completion
@@ -728,6 +982,8 @@ def test_stream_chatgpt_web_completion_routes_multimodal_turns_through_browser(m
     result = chatgpt_web_mod.stream_chatgpt_web_completion(
         access_token="chatgpt-web-token",
         model="gpt-5-thinking",
+        session_token="session-123",
+        browser_cookies=[{"name": "oai-did", "value": "device-1", "domain": "chatgpt.com"}],
         messages=[
             {
                 "role": "user",
@@ -745,6 +1001,129 @@ def test_stream_chatgpt_web_completion_routes_multimodal_turns_through_browser(m
     assert captured["model"] == "gpt-5-thinking"
     assert captured["prompt_text"].startswith("Conversation so far:")
     assert captured["image_sources"] == ["file:///tmp/red-square.png"]
+    assert captured["session_token"] == "session-123"
+    assert captured["browser_cookies"] == [{"name": "oai-did", "value": "device-1", "domain": "chatgpt.com"}]
+
+
+def test_chatgpt_web_browser_auth_cookies_adds_session_cookie():
+    from hermes_cli.chatgpt_web import _chatgpt_web_browser_auth_cookies
+
+    cookies = _chatgpt_web_browser_auth_cookies(
+        session_token="session-abc",
+        browser_cookies=[{"name": "oai-did", "value": "device-1", "domain": "chatgpt.com"}],
+    )
+
+    assert any(item["name"] == "oai-did" for item in cookies)
+    assert any(
+        item["name"] == "__Secure-next-auth.session-token"
+        and item["value"] == "session-abc"
+        and item["domain"] == "chatgpt.com"
+        for item in cookies
+    )
+
+
+def test_chatgpt_web_browser_fetch_opens_chatgpt_target_when_no_tab_exists(monkeypatch):
+    from hermes_cli import chatgpt_web as chatgpt_web_mod
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps([
+                {"id": "wiki", "type": "page", "url": "https://en.wikipedia.org/wiki/OpenAI"},
+            ]).encode("utf-8")
+
+    class _FakeWebSocket:
+        def __init__(self):
+            self._messages = [
+                json.dumps({"id": 1, "result": {}}),
+                json.dumps(
+                    {
+                        "id": 2,
+                        "result": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "id": 3,
+                        "result": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "id": 4,
+                        "result": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "id": 5,
+                        "result": {
+                            "result": {
+                                "value": json.dumps({"status": 200, "ok": True, "text": '{"ok":true}'})
+                            }
+                        },
+                    }
+                ),
+            ]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def send(self, payload):
+            return None
+
+        async def recv(self):
+            return self._messages.pop(0)
+
+    class _FakeWebSockets:
+        def connect(self, ws_url, max_size=None):
+            assert ws_url == "ws://127.0.0.1:9225/devtools/page/chatgpt"
+            return _FakeWebSocket()
+
+    created = {}
+
+    monkeypatch.setattr(chatgpt_web_mod, "websockets", _FakeWebSockets())
+    monkeypatch.setattr(chatgpt_web_mod.urllib.request, "urlopen", lambda *args, **kwargs: _Response())
+    async def _fake_wait_for_location(ws, next_id, **kwargs):
+        return {"href": "https://chatgpt.com/", "readyState": "complete"}
+
+    monkeypatch.setattr(chatgpt_web_mod, "_chatgpt_web_browser_wait_for_location", _fake_wait_for_location)
+
+    async def _fake_create_target(debug_base, url):
+        created["debug_base"] = debug_base
+        created["url"] = url
+        return "chatgpt-target"
+
+    monkeypatch.setattr(chatgpt_web_mod, "_chatgpt_web_browser_create_target", _fake_create_target)
+    monkeypatch.setattr(
+        chatgpt_web_mod,
+        "_chatgpt_web_browser_page_target",
+        lambda debug_base, target_id: {
+            "id": target_id,
+            "type": "page",
+            "url": "https://chatgpt.com/",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9225/devtools/page/chatgpt",
+        },
+    )
+
+    result = chatgpt_web_mod._chatgpt_web_browser_fetch_sync(
+        debug_base="http://127.0.0.1:9225",
+        url="https://chatgpt.com/backend-api/f/conversation/prepare",
+    )
+
+    assert created == {
+        "debug_base": "http://127.0.0.1:9225",
+        "url": "https://chatgpt.com/",
+    }
+    assert result == {"status": 200, "ok": True, "text": '{"ok":true}'}
 
 
 def test_stream_chatgpt_web_completion_resolves_async_generated_images(monkeypatch):

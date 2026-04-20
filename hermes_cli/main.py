@@ -663,10 +663,7 @@ def cmd_chat(args):
         sys.exit(1)
 
 
-def cmd_gateway(args):
-    """Gateway management commands."""
-    from hermes_cli.gateway import gateway_command
-    gateway_command(args)
+from hermes_cli.cmd_handlers.gateway_handler import cmd_gateway  # noqa: E402,F401
 
 
 def cmd_whatsapp(args):

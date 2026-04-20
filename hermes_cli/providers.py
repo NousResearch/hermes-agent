@@ -322,12 +322,16 @@ def normalize_provider(name: str) -> str:
 
 
 def get_provider(name: str) -> Optional[ProviderDef]:
-    """Look up a provider by id or alias, merging all data sources.
+    """Look up a built-in provider by id or alias.
 
     Resolution order:
       1. Hermes overlays (for providers not in models.dev: nous, openai-codex, etc.)
       2. models.dev catalog + Hermes overlay
-      3. User-defined providers from config (TODO: Phase 4)
+
+    User-defined providers from config.yaml (``providers:`` / ``custom_providers:``)
+    are resolved by :func:`resolve_provider_full`, which layers ``resolve_user_provider``
+    and ``resolve_custom_provider`` on top of this function. Callers that need
+    user-config support should use ``resolve_provider_full`` instead.
 
     Returns a fully-resolved ProviderDef or None.
     """

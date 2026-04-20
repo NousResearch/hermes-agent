@@ -237,7 +237,6 @@ export interface SlashHandlerContext {
     newSession: (msg?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
-    setLastUserAt: StateSetter<null | number>
     setSessionStartedAt: StateSetter<number>
   }
   slashFlightRef: MutableRefObject<number>
@@ -300,11 +299,11 @@ export interface AppLayoutProgressProps {
 export interface AppLayoutStatusProps {
   cwdLabel: string
   goodVibesTick: number
-  lastUserAt: null | number
   sessionStartedAt: null | number
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string
+  turnStartedAt: null | number
   voiceLabel: string
 }
 

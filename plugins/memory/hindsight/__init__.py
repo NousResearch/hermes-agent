@@ -304,7 +304,11 @@ class HindsightMemoryProvider(MemoryProvider):
             mode = cfg.get("mode", "cloud")
             if mode in ("local", "local_embedded", "local_external"):
                 return True
-            has_key = bool(cfg.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", ""))
+            has_key = bool(
+                cfg.get("apiKey")
+                or cfg.get("api_key")
+                or os.environ.get("HINDSIGHT_API_KEY", "")
+            )
             has_url = bool(cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", ""))
             return has_key or has_url
         except Exception:

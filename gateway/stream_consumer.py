@@ -20,6 +20,7 @@ import logging
 import queue
 import re
 import time
+import inspect
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -108,6 +109,10 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        # Some adapters (or third-party adapters) may not accept the
+        # ``finalize`` kwarg on edit_message(), even though BaseAdapter does.
+        # Detect and cache support once to keep streaming robust.
+        self._adapter_accepts_edit_finalize: bool = self._detect_edit_finalize_support(adapter)
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -262,6 +267,22 @@ class GatewayStreamConsumer:
         if self._think_buffer and not self._in_think_block:
             self._accumulated += self._think_buffer
             self._think_buffer = ""
+
+    @staticmethod
+    def _detect_edit_finalize_support(adapter: Any) -> bool:
+        """Return True if adapter.edit_message() accepts a 'finalize' kwarg."""
+        try:
+            fn = getattr(adapter, "edit_message", None)
+            if fn is None:
+                return False
+            sig = inspect.signature(fn)
+            params = sig.parameters
+            if "finalize" in params:
+                return True
+            return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        except Exception:
+            # If introspection fails (e.g. mocks), assume support to preserve behavior.
+            return True
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
@@ -787,11 +808,14 @@ class GatewayStreamConsumer:
                     ):
                         return True
                     # Edit existing message
+                    edit_kwargs = {}
+                    if self._adapter_accepts_edit_finalize:
+                        edit_kwargs["finalize"] = finalize
                     result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
                         message_id=self._message_id,
                         content=text,
-                        finalize=finalize,
+                        **edit_kwargs,
                     )
                     if result.success:
                         self._already_sent = True

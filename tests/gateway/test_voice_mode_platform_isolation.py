@@ -61,30 +61,6 @@ class TestVoiceModePlatformIsolation:
         assert runner._voice_mode.get(runner._voice_key(Platform.TELEGRAM, "123")) == "off"
         assert runner._voice_mode.get(runner._voice_key(Platform.SLACK, "123")) == "voice_only"
 
-    def test_legacy_key_collision_bug(self):
-        """Demonstrates the pre-fix bug: same key without platform prefix collides.
-
-        This test documents the original bug behavior. After the fix, keys are
-        properly namespaced, so this scenario cannot occur in the fixed code.
-        The test shows that if two platforms shared the same raw chat_id as key,
-        they would overwrite each other.
-        """
-        runner = _make_runner()
-
-        # Simulate legacy behavior where keys were just chat_id (no platform prefix)
-        # In the fixed code this cannot happen because _voice_key is always used,
-        # but this test shows WHY the fix was needed.
-        legacy_key = "123"  # No platform prefix
-
-        runner._voice_mode[legacy_key] = "all"
-        # If Slack also used "123" as key, it would overwrite
-        runner._voice_mode[legacy_key] = "voice_only"
-
-        # Both platforms would see the same value (last write wins)
-        assert runner._voice_mode[legacy_key] == "voice_only"
-
-        # The fix prevents this by using platform-prefixed keys
-
 
 class TestLegacyKeyMigration:
     """Test migration of legacy unprefixed keys in _load_voice_modes."""

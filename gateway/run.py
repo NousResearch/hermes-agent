@@ -5962,7 +5962,7 @@ class GatewayRunner:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
-            self._voice_mode[self._voice_key(Platform.DISCORD, event.source.chat_id)] = "all"
+            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=False)
             return (
@@ -5989,7 +5989,7 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
         # Always clean up state even if leave raised an exception
-        self._voice_mode[self._voice_key(Platform.DISCORD, event.source.chat_id)] = "off"
+        self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "off"
         self._save_voice_modes()
         self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
         if hasattr(adapter, "_voice_input_callback"):

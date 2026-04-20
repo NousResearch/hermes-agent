@@ -99,22 +99,22 @@ class TestHandleVoiceCommand:
         event = _make_event("/voice on")
         result = await runner._handle_voice_command(event)
         assert "enabled" in result.lower()
-        assert runner._voice_mode["123"] == "voice_only"
+        assert runner._voice_mode["telegram:123"] == "voice_only"
 
     @pytest.mark.asyncio
     async def test_voice_off(self, runner):
-        runner._voice_mode["123"] = "voice_only"
+        runner._voice_mode["telegram:123"] = "voice_only"
         event = _make_event("/voice off")
         result = await runner._handle_voice_command(event)
         assert "disabled" in result.lower()
-        assert runner._voice_mode["123"] == "off"
+        assert runner._voice_mode["telegram:123"] == "off"
 
     @pytest.mark.asyncio
     async def test_voice_tts(self, runner):
         event = _make_event("/voice tts")
         result = await runner._handle_voice_command(event)
         assert "tts" in result.lower()
-        assert runner._voice_mode["123"] == "all"
+        assert runner._voice_mode["telegram:123"] == "all"
 
     @pytest.mark.asyncio
     async def test_voice_status_off(self, runner):
@@ -124,7 +124,7 @@ class TestHandleVoiceCommand:
 
     @pytest.mark.asyncio
     async def test_voice_status_on(self, runner):
-        runner._voice_mode["123"] = "voice_only"
+        runner._voice_mode["telegram:123"] = "voice_only"
         event = _make_event("/voice status")
         result = await runner._handle_voice_command(event)
         assert "voice reply" in result.lower()
@@ -134,15 +134,15 @@ class TestHandleVoiceCommand:
         event = _make_event("/voice")
         result = await runner._handle_voice_command(event)
         assert "enabled" in result.lower()
-        assert runner._voice_mode["123"] == "voice_only"
+        assert runner._voice_mode["telegram:123"] == "voice_only"
 
     @pytest.mark.asyncio
     async def test_toggle_on_to_off(self, runner):
-        runner._voice_mode["123"] = "voice_only"
+        runner._voice_mode["telegram:123"] = "voice_only"
         event = _make_event("/voice")
         result = await runner._handle_voice_command(event)
         assert "disabled" in result.lower()
-        assert runner._voice_mode["123"] == "off"
+        assert runner._voice_mode["telegram:123"] == "off"
 
     @pytest.mark.asyncio
     async def test_persistence_saved(self, runner):
@@ -150,39 +150,47 @@ class TestHandleVoiceCommand:
         await runner._handle_voice_command(event)
         assert runner._VOICE_MODE_PATH.exists()
         data = json.loads(runner._VOICE_MODE_PATH.read_text())
-        assert data["123"] == "voice_only"
+        assert data["telegram:123"] == "voice_only"
 
     @pytest.mark.asyncio
     async def test_persistence_loaded(self, runner):
-        runner._VOICE_MODE_PATH.write_text(json.dumps({"456": "all"}))
+        runner._VOICE_MODE_PATH.write_text(json.dumps({"telegram:456": "all"}))
         loaded = runner._load_voice_modes()
-        assert loaded == {"456": "all"}
+        assert loaded == {"telegram:456": "all"}
 
     @pytest.mark.asyncio
     async def test_persistence_saved_for_off(self, runner):
         event = _make_event("/voice off")
         await runner._handle_voice_command(event)
         data = json.loads(runner._VOICE_MODE_PATH.read_text())
-        assert data["123"] == "off"
+        assert data["telegram:123"] == "off"
 
     def test_sync_voice_mode_state_to_adapter_restores_off_chats(self, runner):
-        runner._voice_mode = {"123": "off", "456": "all"}
-        adapter = SimpleNamespace(_auto_tts_disabled_chats=set())
+        from gateway.config import Platform
+        runner._voice_mode = {"telegram:123": "off", "telegram:456": "all"}
+        adapter = SimpleNamespace(
+            _auto_tts_disabled_chats=set(),
+            platform=Platform.TELEGRAM,
+        )
 
         runner._sync_voice_mode_state_to_adapter(adapter)
 
         assert adapter._auto_tts_disabled_chats == {"123"}
 
     def test_restart_restores_voice_off_state(self, runner, tmp_path):
-        runner._VOICE_MODE_PATH.write_text(json.dumps({"123": "off"}))
+        from gateway.config import Platform
+        runner._VOICE_MODE_PATH.write_text(json.dumps({"telegram:123": "off"}))
 
         restored_runner = _make_runner(tmp_path)
         restored_runner._voice_mode = restored_runner._load_voice_modes()
-        adapter = SimpleNamespace(_auto_tts_disabled_chats=set())
+        adapter = SimpleNamespace(
+            _auto_tts_disabled_chats=set(),
+            platform=Platform.TELEGRAM,
+        )
 
         restored_runner._sync_voice_mode_state_to_adapter(adapter)
 
-        assert restored_runner._voice_mode["123"] == "off"
+        assert restored_runner._voice_mode["telegram:123"] == "off"
         assert adapter._auto_tts_disabled_chats == {"123"}
 
     @pytest.mark.asyncio
@@ -191,8 +199,21 @@ class TestHandleVoiceCommand:
         e2 = _make_event("/voice tts", chat_id="bbb")
         await runner._handle_voice_command(e1)
         await runner._handle_voice_command(e2)
-        assert runner._voice_mode["aaa"] == "voice_only"
-        assert runner._voice_mode["bbb"] == "all"
+        assert runner._voice_mode["telegram:aaa"] == "voice_only"
+        assert runner._voice_mode["telegram:bbb"] == "all"
+
+    @pytest.mark.asyncio
+    async def test_platform_isolation(self, runner):
+        """Same chat_id on different platforms must not collide (#12542)."""
+        telegram_event = _make_event("/voice on", chat_id="999")
+        slack_event = _make_event("/voice off", chat_id="999")
+        slack_event.source.platform.value = "slack"
+
+        await runner._handle_voice_command(telegram_event)
+        await runner._handle_voice_command(slack_event)
+
+        assert runner._voice_mode["telegram:999"] == "voice_only"
+        assert runner._voice_mode["slack:999"] == "off"
 
 
 # =====================================================================
@@ -223,9 +244,9 @@ class TestAutoVoiceReply:
         """Call real _should_send_voice_reply on a GatewayRunner instance."""
         chat_id = "123"
         if voice_mode != "off":
-            runner._voice_mode[chat_id] = voice_mode
+            runner._voice_mode["telegram:" + chat_id] = voice_mode
         else:
-            runner._voice_mode.pop(chat_id, None)
+            runner._voice_mode.pop("telegram:" + chat_id, None)
 
         event = _make_event(message_type=message_type)
 
@@ -713,7 +734,7 @@ class TestVoiceChannelCommands:
         result = await runner._handle_voice_channel_join(event)
         assert "joined" in result.lower()
         assert "General" in result
-        assert runner._voice_mode["123"] == "all"
+        assert runner._voice_mode["discord:123"] == "all"
         assert mock_adapter._voice_sources[111]["chat_id"] == "123"
         assert mock_adapter._voice_sources[111]["chat_type"] == "group"
 
@@ -791,10 +812,10 @@ class TestVoiceChannelCommands:
         mock_adapter.leave_voice_channel = AsyncMock()
         event = self._make_discord_event("/voice leave")
         runner.adapters[event.source.platform] = mock_adapter
-        runner._voice_mode["123"] = "all"
+        runner._voice_mode["discord:123"] = "all"
         result = await runner._handle_voice_channel_leave(event)
         assert "left" in result.lower()
-        assert runner._voice_mode["123"] == "off"
+        assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
 
     # -- _handle_voice_channel_input --
@@ -1298,11 +1319,11 @@ class TestLeaveExceptionHandling:
         event = _make_event("/voice leave")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
         runner.adapters[event.source.platform] = mock_adapter
-        runner._voice_mode["123"] = "all"
+        runner._voice_mode["telegram:123"] = "all"
 
         result = await runner._handle_voice_channel_leave(event)
         assert "left" in result.lower()
-        assert runner._voice_mode["123"] == "off"
+        assert runner._voice_mode["telegram:123"] == "off"
         assert mock_adapter._voice_input_callback is None
 
     @pytest.mark.asyncio
@@ -1316,7 +1337,7 @@ class TestLeaveExceptionHandling:
         event = _make_event("/voice leave")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
         runner.adapters[event.source.platform] = mock_adapter
-        runner._voice_mode["123"] = "all"
+        runner._voice_mode["telegram:123"] = "all"
 
         await runner._handle_voice_channel_leave(event)
         assert mock_adapter._voice_input_callback is None
@@ -1763,11 +1784,11 @@ class TestVoiceTimeoutCleansRunnerState:
     async def test_runner_cleanup_method_removes_voice_mode(self, tmp_path):
         """_handle_voice_timeout_cleanup removes voice_mode for chat."""
         runner = _make_runner(tmp_path)
-        runner._voice_mode["999"] = "all"
+        runner._voice_mode["discord:999"] = "all"
 
         runner._handle_voice_timeout_cleanup("999")
 
-        assert runner._voice_mode["999"] == "off", \
+        assert runner._voice_mode["discord:999"] == "off", \
             "voice_mode must persist explicit off state after timeout cleanup"
 
     @pytest.mark.asyncio
@@ -2524,7 +2545,7 @@ class TestVoiceTTSPlayback:
                            agent_msgs=None, already_sent=False):
         from gateway.platforms.base import MessageType, MessageEvent, SessionSource
         from gateway.config import Platform
-        runner._voice_mode["ch1"] = voice_mode
+        runner._voice_mode["discord:ch1"] = voice_mode
         source = SessionSource(
             platform=Platform.DISCORD, chat_id="ch1",
             user_id="1", user_name="test", chat_type="channel",

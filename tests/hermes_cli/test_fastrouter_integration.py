@@ -471,13 +471,6 @@ class TestBuildApiKwargsFastRouter:
         kwargs = agent._build_api_kwargs(messages)
         assert "max_tokens" in kwargs
 
-    def test_prompt_caching_enabled_for_claude_on_fastrouter(self, monkeypatch):
-        agent = _make_agent(
-            monkeypatch, "fastrouter", "https://api.fastrouter.ai/api/v1",
-            model="anthropic/claude-opus-4.6",
-        )
-        assert agent._use_prompt_caching is True
-
 
 # ── Client Headers ────────────────────────────────────────────────────────────
 

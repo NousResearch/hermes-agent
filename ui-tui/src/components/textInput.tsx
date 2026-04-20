@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { isActionMod, isMac } from '../lib/platform.js'
-import { writeOsc52Clipboard } from '../lib/osc52.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -282,7 +281,6 @@ export function TextInput({
   onChange,
   onPaste,
   onSubmit,
-  allowClipboardHotkeys = false,
   mask,
   placeholder = '',
   focus = true
@@ -508,12 +506,12 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
-      if (eventRaw === '\x1bv' || eventRaw === '\x1bV' || eventRaw === '\x16' || (allowClipboardHotkeys && isMac && k.meta && inp.toLowerCase() === 'v')) {
+      if (eventRaw === '\x1bv' || eventRaw === '\x1bV' || eventRaw === '\x16' || (isMac && k.meta && inp.toLowerCase() === 'v')) {
         if (cbPaste.current) {
           return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
         }
 
-        if (allowClipboardHotkeys) {
+        if (isMac) {
           void readClipboardText().then(text => {
             if (text) {
               pastePlainText(text)
@@ -524,17 +522,13 @@ export function TextInput({
         return
       }
 
-      if (allowClipboardHotkeys && isMac && k.meta && inp.toLowerCase() === 'c') {
+      if (isMac && k.meta && inp.toLowerCase() === 'c') {
         const range = selRange()
 
         if (range) {
           const text = vRef.current.slice(range.start, range.end)
 
-          void writeClipboardText(text).then(copied => {
-            if (!copied) {
-              writeOsc52Clipboard(text)
-            }
-          })
+          void writeClipboardText(text)
         }
 
         return
@@ -735,7 +729,6 @@ export interface PasteEvent {
 }
 
 interface TextInputProps {
-  allowClipboardHotkeys?: boolean
   columns?: number
   focus?: boolean
   mask?: string

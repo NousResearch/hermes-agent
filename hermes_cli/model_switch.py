@@ -1082,6 +1082,13 @@ def list_authenticated_providers(
                     if m and m not in models_list:
                         models_list.append(m)
 
+            # Skip entries that don't have a resolvable URL — new-format
+            # providers (using base_url) are handled by section 4 via
+            # get_compatible_custom_providers and would create a duplicate
+            # zero-model entry here if we didn't guard.
+            if not display_name or not api_url:
+                continue
+
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config
             results.append({
@@ -1133,6 +1140,7 @@ def list_authenticated_providers(
                 groups[slug] = {
                     "name": display_name,
                     "api_url": api_url,
+                    "api_key": (entry.get("api_key") or "").strip(),
                     "models": [],
                 }
             # The singular ``model:`` field only holds the currently
@@ -1155,6 +1163,20 @@ def list_authenticated_providers(
                 for m in cfg_models:
                     if m and m not in groups[slug]["models"]:
                         groups[slug]["models"].append(m)
+
+        # Probe each group's /v1/models endpoint for a live model list.
+        # Config-based models serve as fallback if the endpoint is unreachable.
+        try:
+            from hermes_cli.models import fetch_api_models as _fetch_api_models
+
+            for grp in groups.values():
+                live = _fetch_api_models(
+                    grp.get("api_key") or "", grp["api_url"], timeout=3.0
+                )
+                if live:
+                    grp["models"] = live
+        except Exception:
+            pass
 
         for slug, grp in groups.items():
             if slug.lower() in seen_slugs:
@@ -1179,6 +1201,7 @@ def list_authenticated_providers(
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
+                "api_key": grp.get("api_key", ""),
             })
             seen_slugs.add(slug.lower())
 

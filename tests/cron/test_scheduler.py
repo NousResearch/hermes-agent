@@ -1239,6 +1239,30 @@ class TestParseWakeGate:
 class TestRunJobWakeGate:
     """Integration tests for run_job wake-gate short-circuit."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_runtime_provider(self):
+        """Stub ``resolve_runtime_provider`` for wake-gate tests.
+
+        ``run_job`` resolves the runtime provider BEFORE constructing
+        ``AIAgent``, so these tests must mock ``resolve_runtime_provider``
+        in addition to ``AIAgent`` — otherwise in a hermetic CI env (no
+        API keys), the resolver raises and the test fails before the
+        patched AIAgent is ever reached.
+        """
+        fake_runtime = {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "stub",
+            "requested_provider": None,
+        }
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ):
+            yield
+
     def _make_job(self, name="wake-gate-test", script="check.py"):
         """Minimal valid cron job dict for run_job."""
         return {

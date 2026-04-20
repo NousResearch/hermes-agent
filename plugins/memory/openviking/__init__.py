@@ -576,7 +576,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             resp = self._client.get("/api/v1/fs/stat", params={"uri": uri})
             return resp.get("result", {}).get("isDir", False)
         except Exception:
-            # 如果 stat 失败，尝试 ls 来判断（目录可以 ls，文件不行）
+            # Fallback: try ls to distinguish (directories succeed, files fail)
             try:
                 resp = self._client.get("/api/v1/fs/ls", params={"uri": uri})
                 return resp.get("result") is not None
@@ -592,7 +592,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         is_dir = self._is_directory(uri)
 
         if is_dir:
-            # 目录级别：按 level 调用对应端点（abstract/overview 仅支持目录）
+            # Directory: use abstract/overview endpoints (directory-only)
             if level == "abstract":
                 resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
             elif level == "full":
@@ -600,7 +600,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             else:  # overview
                 resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
         else:
-            # 文件级别：统一走 /content/read
+            # File: always use /content/read
             resp = self._client.get("/api/v1/content/read", params={"uri": uri})
 
         result = resp.get("result", "")

@@ -200,6 +200,8 @@ if _config_path.exists():
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
                 os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
+            if "presence_penalty" in _agent_cfg and "HERMES_PRESENCE_PENALTY" not in os.environ:
+                os.environ["HERMES_PRESENCE_PENALTY"] = str(_agent_cfg["presence_penalty"])
             # Bridge agent.gateway_timeout → HERMES_AGENT_TIMEOUT env var.
             # Env var from .env takes precedence (already in os.environ).
             if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:

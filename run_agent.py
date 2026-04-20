@@ -7552,6 +7552,20 @@ class AIAgent:
                 "sessionId": self.session_id or "hermes",
                 "promptId": str(uuid.uuid4()),
             }
+        # Presence penalty — prevents small/local models (Qwen3.x, Gemma, etc.)
+        # from entering repetition loops where the same tool is called with
+        # identical args across turns.  The OpenAI Python SDK sends
+        # presence_penalty=0 by default, overriding any server-side setting.
+        # Config: agent.presence_penalty in config.yaml, or env
+        # HERMES_PRESENCE_PENALTY.  When set, always sent.  When unset,
+        # defaults to 1.5 for local endpoints (localhost/127.0.0.1) which
+        # overwhelmingly run open-weight models susceptible to this issue.
+        _pp = os.environ.get("HERMES_PRESENCE_PENALTY")
+        if _pp is not None:
+            api_kwargs["presence_penalty"] = float(_pp)
+        elif "localhost" in (self.base_url or "") or "127.0.0.1" in (self.base_url or ""):
+            api_kwargs["presence_penalty"] = 1.5
+
         if self.tools:
             api_kwargs["tools"] = self.tools
 

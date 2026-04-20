@@ -2358,6 +2358,74 @@ def setup_tools(config: dict, first_install: bool = False):
 # =============================================================================
 
 
+def _model_section_has_credentials(config: dict) -> bool:
+    """Return True when any known inference provider has usable credentials.
+
+    Sources of truth:
+      * ``PROVIDER_REGISTRY`` in ``hermes_cli.auth`` — lists every supported
+        provider along with its ``api_key_env_vars``.
+      * ``active_provider`` in the auth store — covers OAuth device-code /
+        external-OAuth providers (Nous, Codex, Qwen, Gemini CLI, ...).
+      * The legacy OpenRouter aggregator env vars, which route generic
+        ``OPENAI_API_KEY`` / ``OPENROUTER_API_KEY`` values through OpenRouter.
+    """
+    try:
+        from hermes_cli.auth import get_active_provider
+        if get_active_provider():
+            return True
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        PROVIDER_REGISTRY = {}  # type: ignore[assignment]
+
+    def _has_key(pconfig) -> bool:
+        for env_var in pconfig.api_key_env_vars:
+            # CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself, not by
+            # the user — mirrors is_provider_explicitly_configured in auth.py.
+            if env_var == "CLAUDE_CODE_OAUTH_TOKEN":
+                continue
+            if get_env_value(env_var):
+                return True
+        return False
+
+    # Prefer the provider declared in config.yaml, avoids false positives
+    # from stray env vars (GH_TOKEN, etc.) when the user has already picked
+    # a different provider.
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    if isinstance(model_cfg, dict):
+        provider_id = (model_cfg.get("provider") or "").strip().lower()
+        if provider_id in PROVIDER_REGISTRY:
+            if _has_key(PROVIDER_REGISTRY[provider_id]):
+                return True
+        if provider_id == "openrouter":
+            for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+                if get_env_value(env_var):
+                    return True
+
+    # OpenRouter aggregator fallback (no provider declared in config).
+    for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+        if get_env_value(env_var):
+            return True
+
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        # Skip copilot in auto-detect: GH_TOKEN / GITHUB_TOKEN are
+        # commonly set for git tooling.  Mirrors resolve_provider in auth.py.
+        if pid == "copilot":
+            continue
+        if _has_key(pconfig):
+            return True
+    return False
+
+
+def _gateway_platform_short_label(label: str) -> str:
+    """Strip trailing parenthetical qualifiers from a gateway platform label."""
+    base = label.split("(", 1)[0].strip()
+    return base or label
+
+
 def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
     """Return a short summary if a setup section is already configured, else None.
 
@@ -2366,20 +2434,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
     so that test patches on ``setup_mod.get_env_value`` take effect.
     """
     if section_key == "model":
-        has_key = bool(
-            get_env_value("OPENROUTER_API_KEY")
-            or get_env_value("OPENAI_API_KEY")
-            or get_env_value("ANTHROPIC_API_KEY")
-        )
-        if not has_key:
-            # Check for OAuth providers
-            try:
-                from hermes_cli.auth import get_active_provider
-                if get_active_provider():
-                    has_key = True
-            except Exception:
-                pass
-        if not has_key:
+        if not _model_section_has_credentials(config):
             return None
         model = config.get("model")
         if isinstance(model, str) and model.strip():
@@ -2397,37 +2452,11 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
-        platforms = []
-        if get_env_value("TELEGRAM_BOT_TOKEN"):
-            platforms.append("Telegram")
-        if get_env_value("DISCORD_BOT_TOKEN"):
-            platforms.append("Discord")
-        if get_env_value("SLACK_BOT_TOKEN"):
-            platforms.append("Slack")
-        if get_env_value("SIGNAL_ACCOUNT"):
-            platforms.append("Signal")
-        if get_env_value("EMAIL_ADDRESS"):
-            platforms.append("Email")
-        if get_env_value("TWILIO_ACCOUNT_SID"):
-            platforms.append("SMS")
-        if get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD"):
-            platforms.append("Matrix")
-        if get_env_value("MATTERMOST_TOKEN"):
-            platforms.append("Mattermost")
-        if get_env_value("WHATSAPP_PHONE_NUMBER_ID"):
-            platforms.append("WhatsApp")
-        if get_env_value("DINGTALK_CLIENT_ID"):
-            platforms.append("DingTalk")
-        if get_env_value("FEISHU_APP_ID"):
-            platforms.append("Feishu")
-        if get_env_value("WECOM_BOT_ID"):
-            platforms.append("WeCom")
-        if get_env_value("WEIXIN_ACCOUNT_ID"):
-            platforms.append("Weixin")
-        if get_env_value("BLUEBUBBLES_SERVER_URL"):
-            platforms.append("BlueBubbles")
-        if get_env_value("WEBHOOK_ENABLED"):
-            platforms.append("Webhooks")
+        platforms = [
+            _gateway_platform_short_label(label)
+            for label, env_var, _ in _GATEWAY_PLATFORMS
+            if get_env_value(env_var)
+        ]
         if platforms:
             return ", ".join(platforms)
         return None  # No platforms configured — section must run

@@ -124,7 +124,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[normal|fast|status]",
                subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
-               args_hint="[name]"),
+               cli_only=True, args_hint="[name]"),
+    CommandDef("markdown", "Toggle markdown rendering for responses", "Configuration",
+               cli_only=True, aliases=("md",), args_hint="[on|off]",
+               subcommands=("on", "off")),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 

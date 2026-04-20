@@ -1070,7 +1070,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1126,12 +1126,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v7
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1144,6 +1144,103 @@ class TestSchemaInit:
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+    def test_migration_from_v6_adds_session_events_table(self, tmp_path):
+        """Opening a v6 database should migrate to v7 with session_events."""
+        import sqlite3
+
+        db_path = tmp_path / "migrate_events.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+        try:
+            version = migrated_db._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+            assert version == 7
+            tables = {
+                row[0]
+                for row in migrated_db._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            assert "session_events" in tables
+        finally:
+            migrated_db.close()
+
+
+class TestSessionEvents:
+    def test_append_and_get_events(self, db):
+        db.create_session("sess-events", "cli")
+
+        db.append_event(
+            session_id="sess-events",
+            event_type="run.started",
+            payload={"run_id": "run-1", "backend": "legacy"},
+        )
+        db.append_event(
+            session_id="sess-events",
+            event_type="tool.completed",
+            payload={"name": "search_files", "duration": 0.12},
+        )
+
+        events = db.get_events("sess-events")
+
+        assert [event["event_type"] for event in events] == [
+            "run.started",
+            "tool.completed",
+        ]
+        assert events[0]["payload"]["run_id"] == "run-1"
+        assert events[1]["payload"]["name"] == "search_files"
 
 
 class TestTitleUniqueness:

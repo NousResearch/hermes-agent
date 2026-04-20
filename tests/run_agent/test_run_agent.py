@@ -4220,3 +4220,66 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestLLMOpsRunMetadata:
+    def test_run_conversation_exposes_run_metadata_and_event_sequence(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            with (
+                patch(
+                    "run_agent.get_tool_definitions",
+                    return_value=_make_tool_defs("web_search"),
+                ),
+                patch("run_agent.check_toolset_requirements", return_value={}),
+                patch("run_agent.OpenAI"),
+            ):
+                agent = AIAgent(
+                    api_key="test-key-1234567890",
+                    base_url="https://openrouter.ai/api/v1",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                    session_db=db,
+                    session_id="sess-llmops",
+                    platform="telegram",
+                )
+
+            agent.client = MagicMock()
+            agent._interruptible_api_call = MagicMock(
+                side_effect=[
+                    _mock_response(
+                        content="",
+                        finish_reason="tool_calls",
+                        tool_calls=[_mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="call-1")],
+                    ),
+                    _mock_response(content="done", finish_reason="stop"),
+                ]
+            )
+
+            with patch("run_agent.handle_function_call", return_value="search result"):
+                result = agent.run_conversation("find it", task_id="task-llmops")
+
+            assert result["final_response"] == "done"
+            assert result["run"]["session_id"] == "sess-llmops"
+            assert result["run"]["task_id"] == "task-llmops"
+            assert result["run"]["model"] == agent.model
+            assert result["run"]["backend"] == "legacy"
+            assert result["run"]["tool_names"] == ["web_search"]
+
+            events = db.get_events("sess-llmops")
+            assert [event["event_type"] for event in events] == [
+                "run.started",
+                "api.request.started",
+                "api.request.completed",
+                "tool.started",
+                "tool.completed",
+                "api.request.started",
+                "api.request.completed",
+                "run.completed",
+            ]
+            assert events[-1]["payload"]["status"] == "completed"
+        finally:
+            db.close()

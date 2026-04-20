@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -84,10 +84,19 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT
 );
 
+CREATE TABLE IF NOT EXISTS session_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    event_type TEXT NOT NULL,
+    payload TEXT,
+    created_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, created_at, id);
 """
 
 FTS_SQL = """
@@ -329,6 +338,21 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS session_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL REFERENCES sessions(id),
+                        event_type TEXT NOT NULL,
+                        payload TEXT,
+                        created_at REAL NOT NULL
+                    )"""
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_session_events_session "
+                    "ON session_events(session_id, created_at, id)"
+                )
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -787,6 +811,50 @@ class SessionDB:
     # =========================================================================
     # Message storage
     # =========================================================================
+
+    def append_event(
+        self,
+        session_id: str,
+        event_type: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Append a durable session-scoped event. Returns the row ID."""
+
+        def _do(conn):
+            cursor = conn.execute(
+                "INSERT INTO session_events (session_id, event_type, payload, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    session_id,
+                    event_type,
+                    json.dumps(payload) if payload is not None else None,
+                    time.time(),
+                ),
+            )
+            return cursor.lastrowid
+
+        return self._execute_write(_do)
+
+    def get_events(self, session_id: str) -> List[Dict[str, Any]]:
+        """Load durable session events ordered by insertion time."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM session_events WHERE session_id = ? ORDER BY created_at, id",
+                (session_id,),
+            ).fetchall()
+
+        events: List[Dict[str, Any]] = []
+        for row in rows:
+            event = dict(row)
+            if event.get("payload"):
+                try:
+                    event["payload"] = json.loads(event["payload"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize session event payload, falling back to None")
+                    event["payload"] = None
+            else:
+                event["payload"] = None
+            events.append(event)
+        return events
 
     def append_message(
         self,

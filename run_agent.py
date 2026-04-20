@@ -819,6 +819,7 @@ class AIAgent:
         self.interim_assistant_callback = interim_assistant_callback
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
+        self._llmops_recorder = None
 
         
         # Tool execution state — allows _vprint during tool execution
@@ -3014,6 +3015,27 @@ class AIAgent:
         summary["prompt_tokens"] = cu.prompt_tokens
         summary["total_tokens"] = cu.total_tokens
         return summary
+
+    def _finalize_run_result(self, result: Dict[str, Any], status: str | None = None) -> Dict[str, Any]:
+        recorder = getattr(self, "_llmops_recorder", None)
+        if recorder and "run" not in result:
+            resolved_status = status or (
+                "interrupted"
+                if result.get("interrupted")
+                else "failed"
+                if result.get("failed")
+                else "completed"
+            )
+            recorder.record(
+                "run.completed",
+                status=resolved_status,
+                completed=bool(result.get("completed")),
+                interrupted=bool(result.get("interrupted")),
+                failed=bool(result.get("failed")),
+                api_calls=result.get("api_calls", 0),
+            )
+            result["run"] = recorder.metadata(status=resolved_status)
+        return result
 
     def _dump_api_request_debug(
         self,
@@ -7866,6 +7888,13 @@ class AIAgent:
                     print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
         for tc, name, args in parsed_calls:
+            if self._llmops_recorder:
+                self._llmops_recorder.record(
+                    "tool.started",
+                    tool_call_id=tc.id,
+                    tool_name=name,
+                    arguments=args,
+                )
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(name, args)
@@ -8033,6 +8062,14 @@ class AIAgent:
                         )
                     except Exception as cb_err:
                         logging.debug(f"Tool progress callback error: {cb_err}")
+                if self._llmops_recorder:
+                    self._llmops_recorder.record(
+                        "tool.completed",
+                        tool_call_id=tc.id,
+                        tool_name=function_name,
+                        duration=tool_duration,
+                        is_error=is_error,
+                    )
 
                 if self.verbose_logging:
                     logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -8164,6 +8201,13 @@ class AIAgent:
                 except Exception:
                     pass
 
+            if _block_msg is None and self._llmops_recorder:
+                self._llmops_recorder.record(
+                    "tool.started",
+                    tool_call_id=tool_call.id,
+                    tool_name=function_name,
+                    arguments=function_args,
+                )
             if _block_msg is None and self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(function_name, function_args)
@@ -8407,6 +8451,14 @@ class AIAgent:
                     )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+            if self._llmops_recorder:
+                self._llmops_recorder.record(
+                    "tool.completed",
+                    tool_call_id=tool_call.id,
+                    tool_name=function_name,
+                    duration=tool_duration,
+                    is_error=_is_error_result,
+                )
 
             self._current_tool = None
             self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
@@ -8707,6 +8759,26 @@ class AIAgent:
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+        from agent.llmops import RunRecorder, build_run_envelope
+        self._llmops_recorder = RunRecorder(
+            self._session_db,
+            build_run_envelope(
+                session_id=self.session_id,
+                task_id=effective_task_id,
+                platform=self.platform,
+                thread_id=getattr(self, "gateway_session_key", None),
+                workflow=getattr(self, "workflow_name", None) or "conversation",
+                backend=getattr(self, "orchestration_backend", None) or "legacy",
+                model=self.model,
+                tool_names=self.valid_tool_names,
+            ),
+        )
+        self._llmops_recorder.record(
+            "run.started",
+            model=self.model,
+            platform=self.platform or "",
+            backend=getattr(self, "orchestration_backend", None) or "legacy",
+        )
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
@@ -9267,7 +9339,7 @@ class AIAgent:
                                 continue
                             # No fallback available — return with clear message
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return self._finalize_run_result({
                                 "final_response": (
                                     f"⏳ {_nous_msg}\n\n"
                                     "No fallback provider available. "
@@ -9279,7 +9351,7 @@ class AIAgent:
                                 "completed": False,
                                 "failed": True,
                                 "error": _nous_msg,
-                            }
+                            })
                     except ImportError:
                         pass
                     except Exception:
@@ -9350,6 +9422,14 @@ class AIAgent:
                         if isinstance(getattr(self, "client", None), Mock):
                             _use_streaming = False
 
+                    self._llmops_recorder.record(
+                        "api.request.started",
+                        api_call_count=api_call_count,
+                        message_count=len(api_messages),
+                        approx_input_tokens=approx_tokens,
+                        tool_count=len(self.tools or []),
+                    )
+
                     if _use_streaming:
                         response = self._interruptible_streaming_api_call(
                             api_kwargs, on_first_delta=_stop_spinner
@@ -9358,6 +9438,14 @@ class AIAgent:
                         response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
+                    self._llmops_recorder.record(
+                        "api.request.completed",
+                        api_call_count=api_call_count,
+                        duration=api_duration,
+                        finish_reason=getattr(response.choices[0], "finish_reason", None)
+                        if response is not None and hasattr(response, "choices") and response.choices
+                        else None,
+                    )
                     
                     # Stop thinking spinner silently -- the response box or tool
                     # execution messages that follow are more informative.
@@ -9529,13 +9617,13 @@ class AIAgent:
                             self._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return self._finalize_run_result({
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
                                 "failed": True  # Mark as failure for filtering
-                            }
+                            })
                         
                         # Backoff before retry — jittered exponential: 5s base, 120s cap
                         wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
@@ -9550,13 +9638,13 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
-                                return {
+                                return self._finalize_run_result({
                                     "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
                                     "interrupted": True,
-                                }
+                                })
                             time.sleep(0.2)
                             # Touch activity every ~30s so the gateway's inactivity
                             # monitor knows we're alive during backoff waits.
@@ -9667,14 +9755,14 @@ class AIAgent:
                             )
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return self._finalize_run_result({
                                 "final_response": _exhaust_response,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": _exhaust_error,
-                            }
+                            })
 
                         if self.api_mode in ("chat_completions", "bedrock_converse"):
                             assistant_message = response.choices[0].message
@@ -9707,14 +9795,14 @@ class AIAgent:
                                 partial_response = self._strip_think_blocks(truncated_response_prefix).strip()
                                 self._cleanup_task_resources(effective_task_id)
                                 self._persist_session(messages, conversation_history)
-                                return {
+                                return self._finalize_run_result({
                                     "final_response": partial_response or None,
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
                                     "partial": True,
                                     "error": "Response remained truncated after 3 continuation attempts",
-                                }
+                                })
 
                         if self.api_mode in ("chat_completions", "bedrock_converse"):
                             assistant_message = response.choices[0].message
@@ -9735,14 +9823,14 @@ class AIAgent:
                                 )
                                 self._cleanup_task_resources(effective_task_id)
                                 self._persist_session(messages, conversation_history)
-                                return {
+                                return self._finalize_run_result({
                                     "final_response": None,
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
                                     "partial": True,
                                     "error": "Response truncated due to output length limit",
-                                }
+                                })
 
                         # If we have prior messages, roll back to last complete state
                         if len(messages) > 1:
@@ -9752,26 +9840,26 @@ class AIAgent:
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
 
-                            return {
+                            return self._finalize_run_result({
                                 "final_response": None,
                                 "messages": rolled_back_messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": "Response truncated due to output length limit"
-                            }
+                            })
                         else:
                             # First message was truncated - mark as failed
                             self._vprint(f"{self.log_prefix}❌ First response truncated - cannot recover", force=True)
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return self._finalize_run_result({
                                 "final_response": None,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "failed": True,
                                 "error": "First response truncated due to output length limit"
-                            }
+                            })
                     
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
@@ -10247,13 +10335,13 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
-                        return {
+                        return self._finalize_run_result({
                             "final_response": f"Operation interrupted: handling API error ({error_type}: {self._clean_error_message(str(api_error))}).",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "interrupted": True,
-                        }
+                        })
                     
                     # Check for 413 payload-too-large BEFORE generic 4xx handler.
                     # A 413 is a payload-size error — the correct response is to
@@ -10384,7 +10472,7 @@ class AIAgent:
                             self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return self._finalize_run_result({
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
@@ -10392,7 +10480,7 @@ class AIAgent:
                                 "partial": True,
                                 "failed": True,
                                 "compression_exhausted": True,
-                            }
+                            })
                         self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
@@ -10415,7 +10503,7 @@ class AIAgent:
                             self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return self._finalize_run_result({
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
@@ -10423,7 +10511,7 @@ class AIAgent:
                                 "partial": True,
                                 "failed": True,
                                 "compression_exhausted": True,
-                            }
+                            })
 
                     # Check for context-length errors BEFORE generic 4xx handler.
                     # The classifier detects context overflow from: explicit error
@@ -10468,7 +10556,7 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                                 logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                                 self._persist_session(messages, conversation_history)
-                                return {
+                                return self._finalize_run_result({
                                     "messages": messages,
                                     "completed": False,
                                     "api_calls": api_call_count,
@@ -10476,7 +10564,7 @@ class AIAgent:
                                     "partial": True,
                                     "failed": True,
                                     "compression_exhausted": True,
-                                }
+                                })
                             restart_with_compressed_messages = True
                             break
 
@@ -10520,7 +10608,7 @@ class AIAgent:
                             self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return self._finalize_run_result({
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
@@ -10528,7 +10616,7 @@ class AIAgent:
                                 "partial": True,
                                 "failed": True,
                                 "compression_exhausted": True,
-                            }
+                            })
                         self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
@@ -10553,7 +10641,7 @@ class AIAgent:
                             self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return self._finalize_run_result({
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
@@ -10561,7 +10649,7 @@ class AIAgent:
                                 "partial": True,
                                 "failed": True,
                                 "compression_exhausted": True,
-                            }
+                            })
 
                     # Check for non-retryable client errors.  The classifier
                     # already accounts for 413, 429, 529 (transient), context
@@ -10637,14 +10725,14 @@ class AIAgent:
                             )
                         else:
                             self._persist_session(messages, conversation_history)
-                        return {
+                        return self._finalize_run_result({
                             "final_response": None,
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
                             "error": str(api_error),
-                        }
+                        })
 
                     if retry_count >= max_retries:
                         # Before falling back, try rebuilding the primary
@@ -11832,7 +11920,7 @@ class AIAgent:
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)
 
-        return result
+        return self._finalize_run_result(result)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

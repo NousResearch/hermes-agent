@@ -464,6 +464,12 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+def _resolve_orchestration_backend(config: dict | None = None) -> str:
+    cfg = config if config is not None else _load_gateway_config()
+    raw = str((cfg.get("agent") or {}).get("orchestration_backend", "legacy") or "legacy").strip().lower()
+    return raw if raw in {"legacy", "langgraph"} else "legacy"
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -1008,6 +1014,71 @@ class GatewayRunner:
             overrides = None
         route["request_overrides"] = overrides
         return route
+
+    def _run_conversation_via_orchestration_sync(
+        self,
+        *,
+        route_name: str,
+        session_id: str,
+        task_id: str,
+        thread_id: str | None,
+        model: str,
+        tool_names: list[str],
+        runner,
+        config: dict | None = None,
+    ) -> dict:
+        from agent.task_orchestration import HermesTaskOrchestrator, TaskEnvelope, WorkflowStep
+
+        backend = _resolve_orchestration_backend(config)
+        orchestrator = HermesTaskOrchestrator(backend=backend)
+        envelope = TaskEnvelope(
+            session_id=session_id,
+            task_id=task_id,
+            workflow=route_name,
+            backend=backend,
+            thread_id=thread_id or "",
+            metadata={"model": model, "tool_names": list(tool_names)},
+        )
+        execution = orchestrator.run(
+            envelope,
+            steps=[WorkflowStep(name=route_name)],
+            executor=runner,
+        )
+        result = dict(execution.get("result") or {})
+        result["orchestration"] = {
+            "backend": backend,
+            "status": execution.get("status", "completed"),
+            "trace": execution.get("trace", {}),
+            "completed_steps": execution.get("completed_steps", []),
+            "artifacts": execution.get("artifacts", {}),
+            "failed_step": execution.get("failed_step"),
+        }
+        return result
+
+    async def _run_conversation_via_orchestration(
+        self,
+        *,
+        route_name: str,
+        session_id: str,
+        task_id: str,
+        thread_id: str | None,
+        model: str,
+        tool_names: list[str],
+        runner,
+        config: dict | None = None,
+    ) -> dict:
+        return await self._run_in_executor_with_context(
+            lambda: self._run_conversation_via_orchestration_sync(
+                route_name=route_name,
+                session_id=session_id,
+                task_id=task_id,
+                thread_id=thread_id,
+                model=model,
+                tool_names=tool_names,
+                runner=runner,
+                config=config,
+            )
+        )
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
@@ -6188,6 +6259,8 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                 )
                 try:
+                    agent.workflow_name = "gateway.background"
+                    agent.orchestration_backend = _resolve_orchestration_backend(user_config)
                     return agent.run_conversation(
                         user_message=prompt,
                         task_id=task_id,
@@ -6195,7 +6268,16 @@ class GatewayRunner:
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            result = await self._run_conversation_via_orchestration(
+                route_name="gateway.background",
+                session_id=task_id,
+                task_id=task_id,
+                thread_id=source.thread_id,
+                model=turn_route["model"],
+                tool_names=enabled_toolsets,
+                runner=run_sync,
+                config=user_config,
+            )
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -6372,6 +6454,8 @@ class GatewayRunner:
                     persist_session=False,
                 )
                 try:
+                    agent.workflow_name = "gateway.btw"
+                    agent.orchestration_backend = _resolve_orchestration_backend(user_config)
                     return agent.run_conversation(
                         user_message=btw_prompt,
                         conversation_history=history_snapshot,
@@ -6380,7 +6464,16 @@ class GatewayRunner:
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            result = await self._run_conversation_via_orchestration(
+                route_name="gateway.btw",
+                session_id=task_id,
+                task_id=task_id,
+                thread_id=source.thread_id,
+                model=turn_route["model"],
+                tool_names=[],
+                runner=run_sync,
+                config=user_config,
+            )
 
             response = (result.get("final_response") or "") if result else ""
             if not response and result and result.get("error"):
@@ -9537,7 +9630,18 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                agent.workflow_name = "gateway.message"
+                agent.orchestration_backend = _resolve_orchestration_backend(user_config)
+                result = self._run_conversation_via_orchestration_sync(
+                    route_name="gateway.message",
+                    session_id=session_id,
+                    task_id=session_id,
+                    thread_id=source.thread_id,
+                    model=turn_route["model"],
+                    tool_names=enabled_toolsets,
+                    runner=lambda: agent.run_conversation(message, conversation_history=agent_history, task_id=session_id),
+                    config=user_config,
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

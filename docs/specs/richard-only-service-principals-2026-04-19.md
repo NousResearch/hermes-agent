@@ -117,3 +117,22 @@ For Richard's setup, both should resolve to the same canonical identity:
 This change introduces the policy and helper, not the service bridges
 themselves. Hermes still needs actual Zoom, Grain, and Granola MCP or proxy
 bridges before those services become callable.
+
+## Hermes Spark memory identity status
+
+Update: 2026-04-20
+
+For the live local Hermes deployment on `rj-spark`, Richard is now the
+canonical memory and service principal:
+
+- `rj@stratminds.vc`
+
+That canonical identity is used for:
+
+- MemOS writes and lookups
+- MemPalace writes and lookups
+- service-principal policy gating for future Zoom, Grain, and Granola bridges
+
+The Telegram alias observed by Hermes remains mapped to that canonical
+principal, so memory and service authorization stay aligned across transport and
+storage layers.

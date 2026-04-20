@@ -223,3 +223,46 @@ step is to move them into one or more tracked homes:
    - stdio MCP sees sane proxy env
    - Notion MCP can complete a search
    - MemPalace HTTPS no longer fails certificate verification
+
+## Hermes Spark client-node cutover status
+
+Update: 2026-04-20
+
+Hermes Spark on `rj-spark` has now been cut over to the dedicated client-node
+OneCli handoff model with runtime-specific proxy identity and explicit CA
+material supplied through a local env file.
+
+Operationally, the cutover was completed with:
+
+- a dedicated local env file at `~/.config/onecli/hermes-spark-proxy.env`
+- dedicated CA files under `~/.config/onecli/certs/`
+- wrapper changes that make explicit env-file CA paths win over bootstrap CA
+  material
+
+Important result:
+
+- bootstrap-derived proxy material is no longer required for Hermes Spark
+- bootstrap-derived CA material is now fallback-only when explicit CA env is
+  present
+
+Validated outcomes:
+
+- the live gateway process runs with the dedicated `ONECLI_PROXY_URL` from the
+  installed env file
+- the live gateway process keeps explicit CA paths from
+  `~/.config/onecli/certs/` instead of rewriting them to temp bootstrap files
+- a real Notion MCP provider call succeeds through the dedicated env file
+
+Failure classification during cutover:
+
+- dedicated proxy identity alone was not sufficient at first
+- the first failure class was TLS trust, not connectivity, proxy auth, or
+  upstream Notion behavior
+- the dedicated handoff CA bundle resolved that TLS failure
+
+The validated end state for Hermes Spark is:
+
+- dedicated proxy identity: active
+- real provider validation: passed
+- bootstrap dependency for proxy material: removed
+- bootstrap dependency for CA material: reduced to fallback only

@@ -11736,10 +11736,12 @@ class AIAgent:
                     # should_compress(0) never fires.  (#2153)
                     _compressor = self.context_compressor
                     if _compressor.last_prompt_tokens > 0:
-                        _real_tokens = (
-                            _compressor.last_prompt_tokens
-                            + _compressor.last_completion_tokens
-                        )
+                        # Only use prompt_tokens — completion/reasoning
+                        # tokens don't consume context window space.
+                        # Thinking models (GLM-5.1, QwQ, DeepSeek R1)
+                        # inflate completion_tokens with reasoning,
+                        # causing premature compression.  (#12026)
+                        _real_tokens = _compressor.last_prompt_tokens
                     else:
                         _real_tokens = estimate_messages_tokens_rough(messages)
 

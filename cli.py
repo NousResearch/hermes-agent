@@ -6162,7 +6162,7 @@ class HermesCLI:
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_final_assistant_content(response, mode=self.final_response_markdown),
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -6287,7 +6287,7 @@ class HermesCLI:
                         _resp_color = "#4F6D4A"
 
                     ChatConsole().print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_final_assistant_content(response, mode=self.final_response_markdown),
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,

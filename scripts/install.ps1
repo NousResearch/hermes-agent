@@ -721,6 +721,20 @@ function Install-NodeDeps {
         }
     }
     
+    # Install TUI dependencies
+    $tuiDir = "$InstallDir\ui-tui"
+    if (Test-Path "$tuiDir\package.json") {
+        Write-Info "Installing TUI dependencies..."
+        Push-Location $tuiDir
+        try {
+            npm install --silent 2>&1 | Out-Null
+            Write-Success "TUI dependencies installed"
+        } catch {
+            Write-Warn "TUI npm install failed (hermes --tui may not work)"
+        }
+        Pop-Location
+    }
+
     # Install WhatsApp bridge dependencies
     $bridgeDir = "$InstallDir\scripts\whatsapp-bridge"
     if (Test-Path "$bridgeDir\package.json") {

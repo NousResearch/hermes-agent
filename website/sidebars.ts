@@ -21,6 +21,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'user-guide/cli',
+        'user-guide/tui',
         'user-guide/configuration',
         'user-guide/sessions',
         'user-guide/profiles',
@@ -161,6 +162,8 @@ const sidebars: SidebarsConfig = {
         'guides/cron-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',
+        'guides/github-pr-review-agent',
+        'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
       ],

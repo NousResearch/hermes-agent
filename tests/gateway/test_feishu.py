@@ -601,6 +601,10 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("message_recalled")
                 return self
 
+            def register_p2_customized_event(self, event_key, _handler):
+                calls.append(f"customized:{event_key}")
+                return self
+
             def build(self):
                 calls.append("build")
                 return "handler"
@@ -628,6 +632,7 @@ class TestAdapterBehavior(unittest.TestCase):
                 "bot_deleted",
                 "p2p_chat_entered",
                 "message_recalled",
+                "customized:drive.notice.comment_add_v1",
                 "build",
             ],
         )
@@ -737,6 +742,57 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
         self.assertFalse(adapter._should_accept_group_message(SimpleNamespace(mentions=[other_mention]), sender_id, ""))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_other_bot_sender_is_not_treated_as_self_sent_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_other_bot", user_id="u_other_bot"),
+            )
+        )
+
+        self.assertFalse(adapter._is_self_sent_bot_message(event))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_self_bot_sender_is_treated_as_self_sent_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        by_open_id = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_hermes", user_id="u_other"),
+            )
+        )
+        by_user_id = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="app",
+                sender_id=SimpleNamespace(open_id="ou_other", user_id="u_hermes"),
+            )
+        )
+
+        self.assertTrue(adapter._is_self_sent_bot_message(by_open_id))
+        self.assertTrue(adapter._is_self_sent_bot_message(by_user_id))
 
     @patch.dict(
         os.environ,
@@ -2366,6 +2422,134 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_codeblock"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "确认已入库 ✓\n"
+            "文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n"
+            "**解码后的内容：**\n"
+            "```json\n"
+            '{"cron": "list"}\n'
+            "```\n"
+            "后续说明仍应保留。"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(
+            rows,
+            [
+                [
+                    {
+                        "tag": "md",
+                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
+                    }
+                ],
+                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
+                [{"tag": "md", "text": "后续说明仍应保留。"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\n```oops\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\n```oops\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_preserves_trailing_spaces_in_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\nline with two spaces  \n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\nline with two spaces  \n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_splits_multiple_fenced_code_blocks(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\nprint(1)\n```\nmiddle\n```json\n{}\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\nprint(1)\n```"}],
+                [{"tag": "md", "text": "middle"}],
+                [{"tag": "md", "text": "```json\n{}\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -2498,6 +2682,135 @@ class TestAdapterBehavior(unittest.TestCase):
             rows,
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
+
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+class TestHydrateBotIdentity(unittest.TestCase):
+    """Hydration of bot identity via /open-apis/bot/v3/info and application info.
+
+    Covers the manual-setup path where FEISHU_BOT_OPEN_ID / FEISHU_BOT_USER_ID
+    are not configured. Hydration must populate _bot_open_id so that
+    _is_self_sent_bot_message() can filter the adapter's own outbound echoes.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        return FeishuAdapter(PlatformConfig())
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydration_populates_open_id_from_bot_info(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hermes Bot",
+                    "open_id": "ou_hermes_hydrated",
+                },
+            }
+        ).encode("utf-8")
+        response = SimpleNamespace(content=payload)
+        adapter._client.request = Mock(return_value=response)
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_hermes_hydrated")
+        self.assertEqual(adapter._bot_name, "Hermes Bot")
+        # Application-info fallback must NOT run when bot_name is already set.
+        self.assertFalse(
+            adapter._client.application.v6.application.get.called
+            if hasattr(adapter._client, "application") else False
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_env",
+            "FEISHU_BOT_NAME": "Env Hermes",
+        },
+        clear=True,
+    )
+    def test_hydration_skipped_when_env_vars_supply_both_fields(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock()
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        # Neither probe should run — both fields are already populated.
+        adapter._client.request.assert_not_called()
+        self.assertEqual(adapter._bot_open_id, "ou_env")
+        self.assertEqual(adapter._bot_name, "Env Hermes")
+
+    @patch.dict(os.environ, {"FEISHU_BOT_OPEN_ID": "ou_env"}, clear=True)
+    def test_hydration_fills_only_missing_fields(self):
+        """Env-var open_id must NOT be overwritten by a different probe value."""
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hermes Bot",
+                    "open_id": "ou_probe_DIFFERENT",
+                },
+            }
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(content=payload))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_env")  # preserved
+        self.assertEqual(adapter._bot_name, "Hermes Bot")  # filled in
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydration_tolerates_probe_failure_and_falls_back_to_app_info(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock(side_effect=RuntimeError("network down"))
+
+        # Make the application-info fallback succeed for _bot_name.
+        app_response = Mock()
+        app_response.success = Mock(return_value=True)
+        app_response.data = SimpleNamespace(app=SimpleNamespace(app_name="Fallback Bot"))
+        adapter._client.application.v6.application.get = Mock(return_value=app_response)
+        adapter._build_get_application_request = Mock(return_value=object())
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        # Primary probe failed — open_id stays empty, but bot_name came from app-info.
+        self.assertEqual(adapter._bot_open_id, "")
+        self.assertEqual(adapter._bot_name, "Fallback Bot")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydrated_open_id_enables_self_send_filter(self):
+        """E2E: after hydration, _is_self_sent_bot_message() rejects adapter's own id."""
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {"code": 0, "bot": {"bot_name": "Hermes", "open_id": "ou_hermes"}}
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(content=payload))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self_event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_hermes", user_id=""),
+            )
+        )
+        peer_event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_peer_bot", user_id=""),
+            )
+        )
+        self.assertTrue(adapter._is_self_sent_bot_message(self_event))
+        self.assertFalse(adapter._is_self_sent_bot_message(peer_event))
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")

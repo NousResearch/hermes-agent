@@ -184,6 +184,8 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    "BROWSER_CDP_URL",
+    "CAMOFOX_URL",
 })
 
 
@@ -228,6 +230,15 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("LANG", "C.UTF-8")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
+
+    # 4b. Disable AWS IMDS lookups. Without this, any test that ends up
+    #     calling has_aws_credentials() / resolve_aws_auth_env_var()
+    #     (e.g. provider auto-detect, status command, cron run_job) burns
+    #     ~2s waiting for the metadata service at 169.254.169.254 to time
+    #     out. Tests don't run on EC2 — IMDS is always unreachable here.
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
+    monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
 
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the

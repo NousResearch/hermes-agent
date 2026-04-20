@@ -43,6 +43,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _effective_temperature_for_model(
+    model: str,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Return a fixed temperature for models with strict sampling contracts."""
+    try:
+        from agent.auxiliary_client import _fixed_temperature_for_model
+    except Exception:
+        return None
+    return _fixed_temperature_for_model(model, base_url)
+
+
 
 
 # ============================================================================
@@ -442,12 +454,20 @@ Complete the user's task step by step."""
                 
                 # Make API call
                 try:
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=api_messages,
-                        tools=self.tools,
-                        timeout=300.0
+                    api_kwargs = {
+                        "model": self.model,
+                        "messages": api_messages,
+                        "tools": self.tools,
+                        "timeout": 300.0,
+                    }
+                    fixed_temperature = _effective_temperature_for_model(
+                        self.model,
+                        str(getattr(self.client, "base_url", "") or ""),
                     )
+                    if fixed_temperature is not None:
+                        api_kwargs["temperature"] = fixed_temperature
+
+                    response = self.client.chat.completions.create(**api_kwargs)
                 except Exception as e:
                     self.logger.error(f"API call failed: {e}")
                     break

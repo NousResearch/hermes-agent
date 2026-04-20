@@ -825,6 +825,7 @@ def run_doctor(args):
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
+        ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
         # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
         ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
@@ -894,8 +895,8 @@ def run_doctor(args):
                 _model_count = len(_br_resp.get("modelSummaries", []))
                 print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'({_auth_var}, {_region}, {_model_count} models)', Colors.DIM)}           ")
             except ImportError:
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color('(boto3 not installed — pip install hermes-agent[bedrock])', Colors.DIM)}           ")
-                issues.append("Install boto3 for Bedrock: pip install hermes-agent[bedrock]")
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(boto3 not installed — {sys.executable} -m pip install boto3)', Colors.DIM)}           ")
+                issues.append(f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3")
             except Exception as _e:
                 _err_name = type(_e).__name__
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_err_name}: {_e})', Colors.DIM)}           ")

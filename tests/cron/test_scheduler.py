@@ -1024,7 +1024,7 @@ class TestRunJobSkillBacked:
             "id": "multi-skill-job",
             "name": "multi skill test",
             "prompt": "Combine the results.",
-            "skills": ["blogwatcher", "find-nearby"],
+            "skills": ["blogwatcher", "maps"],
         }
 
         fake_db = MagicMock()
@@ -1057,12 +1057,12 @@ class TestRunJobSkillBacked:
         assert error is None
         assert final_response == "ok"
         assert skill_view_mock.call_count == 2
-        assert [call.args[0] for call in skill_view_mock.call_args_list] == ["blogwatcher", "find-nearby"]
+        assert [call.args[0] for call in skill_view_mock.call_args_list] == ["blogwatcher", "maps"]
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
-        assert prompt_arg.index("blogwatcher") < prompt_arg.index("find-nearby")
+        assert prompt_arg.index("blogwatcher") < prompt_arg.index("maps")
         assert "Instructions for blogwatcher." in prompt_arg
-        assert "Instructions for find-nearby." in prompt_arg
+        assert "Instructions for maps." in prompt_arg
         assert "Combine the results." in prompt_arg
 
 
@@ -1173,6 +1173,204 @@ class TestBuildJobPromptSilentHint:
         system_pos = result.index("do NOT use send_message")
         prompt_pos = result.index("My custom prompt")
         assert system_pos < prompt_pos
+
+
+class TestParseWakeGate:
+    """Unit tests for _parse_wake_gate — pure function, no side effects."""
+
+    def test_empty_output_wakes(self):
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate("") is True
+        assert _parse_wake_gate(None) is True
+
+    def test_whitespace_only_wakes(self):
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate("   \n\n  \t\n") is True
+
+    def test_non_json_last_line_wakes(self):
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate("hello world") is True
+        assert _parse_wake_gate("line 1\nline 2\nplain text") is True
+
+    def test_json_non_dict_wakes(self):
+        """Bare arrays, numbers, strings must not be interpreted as a gate."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate("[1, 2, 3]") is True
+        assert _parse_wake_gate("42") is True
+        assert _parse_wake_gate('"wakeAgent"') is True
+
+    def test_wake_gate_false_skips(self):
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate('{"wakeAgent": false}') is False
+
+    def test_wake_gate_true_wakes(self):
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate('{"wakeAgent": true}') is True
+
+    def test_wake_gate_missing_wakes(self):
+        """A JSON dict without a wakeAgent key defaults to waking."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate('{"data": {"foo": "bar"}}') is True
+
+    def test_non_boolean_false_still_wakes(self):
+        """Only strict ``False`` skips — truthy/falsy shortcuts are too risky."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate('{"wakeAgent": 0}') is True
+        assert _parse_wake_gate('{"wakeAgent": null}') is True
+        assert _parse_wake_gate('{"wakeAgent": ""}') is True
+
+    def test_only_last_non_empty_line_parsed(self):
+        from cron.scheduler import _parse_wake_gate
+        multi = 'some log output\nmore output\n{"wakeAgent": false}'
+        assert _parse_wake_gate(multi) is False
+
+    def test_trailing_blank_lines_ignored(self):
+        from cron.scheduler import _parse_wake_gate
+        multi = '{"wakeAgent": false}\n\n\n'
+        assert _parse_wake_gate(multi) is False
+
+    def test_non_last_json_line_does_not_gate(self):
+        """A JSON gate on an earlier line with plain text after it does NOT trigger."""
+        from cron.scheduler import _parse_wake_gate
+        multi = '{"wakeAgent": false}\nactually this is the real output'
+        assert _parse_wake_gate(multi) is True
+
+
+class TestRunJobWakeGate:
+    """Integration tests for run_job wake-gate short-circuit."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_runtime_provider(self):
+        """Stub ``resolve_runtime_provider`` for wake-gate tests.
+
+        ``run_job`` resolves the runtime provider BEFORE constructing
+        ``AIAgent``, so these tests must mock ``resolve_runtime_provider``
+        in addition to ``AIAgent`` — otherwise in a hermetic CI env (no
+        API keys), the resolver raises and the test fails before the
+        patched AIAgent is ever reached.
+        """
+        fake_runtime = {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "stub",
+            "requested_provider": None,
+        }
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ):
+            yield
+
+    def _make_job(self, name="wake-gate-test", script="check.py"):
+        """Minimal valid cron job dict for run_job."""
+        return {
+            "id": f"job_{name}",
+            "name": name,
+            "prompt": "Do a thing",
+            "schedule": "*/5 * * * *",
+            "script": script,
+        }
+
+    def test_wake_false_skips_agent_and_returns_silent(self, caplog):
+        """When _run_job_script output ends with {wakeAgent: false}, the agent
+        is not invoked and run_job returns the SILENT marker so delivery is
+        suppressed."""
+        from cron.scheduler import SILENT_MARKER
+        import cron.scheduler as scheduler
+
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, '{"wakeAgent": false}')), \
+             patch("run_agent.AIAgent") as agent_cls:
+            success, doc, final, err = scheduler.run_job(self._make_job())
+
+        assert success is True
+        assert err is None
+        assert final == SILENT_MARKER
+        assert "Script gate returned `wakeAgent=false`" in doc
+        agent_cls.assert_not_called()
+
+    def test_wake_true_runs_agent_with_injected_output(self):
+        """When the script returns {wakeAgent: true, data: ...}, the agent is
+        invoked and the data line still shows up in the prompt."""
+        import cron.scheduler as scheduler
+
+        script_output = '{"wakeAgent": true, "data": {"new": 3}}'
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, script_output)), \
+             patch("run_agent.AIAgent", return_value=agent) as agent_cls:
+            success, doc, final, err = scheduler.run_job(self._make_job())
+
+        agent_cls.assert_called_once()
+        # The script output should be visible in the prompt passed to
+        # run_conversation.
+        call_kwargs = agent.run_conversation.call_args
+        prompt_arg = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("user_message", "")
+        assert script_output in prompt_arg
+        assert success is True
+        assert err is None
+
+    def test_script_runs_only_once_on_wake(self):
+        """Wake-true path must not re-run the script inside _build_job_prompt
+        (script would execute twice otherwise, wasting work and risking
+        double-side-effects)."""
+        import cron.scheduler as scheduler
+
+        call_count = 0
+        def _script_stub(path):
+            nonlocal call_count
+            call_count += 1
+            return (True, "regular output")
+
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+        with patch.object(scheduler, "_run_job_script", side_effect=_script_stub), \
+             patch("run_agent.AIAgent", return_value=agent):
+            scheduler.run_job(self._make_job())
+
+        assert call_count == 1, f"script ran {call_count}x, expected exactly 1"
+
+    def test_script_failure_does_not_trigger_gate(self):
+        """If _run_job_script returns success=False, the gate is NOT evaluated
+        and the agent still runs (the failure is reported as context)."""
+        import cron.scheduler as scheduler
+
+        # Malicious or broken script whose stderr happens to contain the
+        # gate JSON — we must NOT honor it because ran_ok is False.
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(False, '{"wakeAgent": false}')), \
+             patch("run_agent.AIAgent", return_value=agent) as agent_cls:
+            success, doc, final, err = scheduler.run_job(self._make_job())
+
+        agent_cls.assert_called_once()  # Agent DID wake despite the gate-like text
+
+    def test_no_script_path_runs_agent_normally(self):
+        """Regression: jobs without a script still work."""
+        import cron.scheduler as scheduler
+
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+        job = self._make_job(script=None)
+        job.pop("script", None)
+        with patch.object(scheduler, "_run_job_script") as script_fn, \
+             patch("run_agent.AIAgent", return_value=agent) as agent_cls:
+            scheduler.run_job(job)
+
+        script_fn.assert_not_called()
+        agent_cls.assert_called_once()
 
 
 class TestBuildJobPromptMissingSkill:

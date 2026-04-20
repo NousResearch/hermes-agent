@@ -21,26 +21,36 @@ RUN useradd -u 10000 -m -d /opt/data hermes
 COPY --chmod=0755 --from=gosu_source /gosu /usr/local/bin/
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
-COPY . /opt/hermes
 WORKDIR /opt/hermes
 
-# Install Node dependencies and Playwright as root (--with-deps needs apt)
+# ---------- Layer-cached dependency install ----------
+# Copy only package manifests first so npm install + Playwright are cached
+# unless the lockfiles themselves change.
+COPY package.json package-lock.json ./
+COPY scripts/whatsapp-bridge/package.json scripts/whatsapp-bridge/package-lock.json scripts/whatsapp-bridge/
+COPY web/package.json web/package-lock.json web/
+
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
-    cd /opt/hermes/scripts/whatsapp-bridge && \
-    npm install --prefer-offline --no-audit && \
+    (cd scripts/whatsapp-bridge && npm install --prefer-offline --no-audit) && \
+    (cd web && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
-# Hand ownership to hermes user, then install Python deps in a virtualenv
-RUN chown -R hermes:hermes /opt/hermes
-USER hermes
+# ---------- Source code ----------
+# .dockerignore excludes node_modules, so the installs above survive.
+COPY --chown=hermes:hermes . .
 
+# Build web dashboard (Vite outputs to hermes_cli/web_dist/)
+RUN cd web && npm run build
+
+# ---------- Python virtualenv ----------
+RUN chown hermes:hermes /opt/hermes
+USER hermes
 RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 
-USER root
-RUN chmod +x /opt/hermes/docker/entrypoint.sh
-
+# ---------- Runtime ----------
+ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]

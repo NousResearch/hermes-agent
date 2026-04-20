@@ -29,6 +29,7 @@ from acp.schema import (
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
+from acp_adapter.tools import build_tool_start
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,25 @@ class TestMcpRegistrationE2E:
         # rawOutput should contain the tool result string
         assert complete_event.raw_output is not None
         assert "hello" in str(complete_event.raw_output)
+
+    def test_patch_mode_tool_start_emits_diff_blocks_for_v4a_patch(self):
+        update = build_tool_start(
+            "tc-1",
+            "patch",
+            {
+                "mode": "patch",
+                "patch": "*** Begin Patch\n*** Update File: src/app.py\n@@\n-old line\n+new line\n*** Add File: src/new.py\n+hello\n*** End Patch",
+            },
+        )
+
+        assert len(update.content) == 2
+        assert update.content[0].type == "diff"
+        assert update.content[0].path == "src/app.py"
+        assert update.content[0].old_text == "old line"
+        assert update.content[0].new_text == "new line"
+        assert update.content[1].type == "diff"
+        assert update.content[1].path == "src/new.py"
+        assert update.content[1].new_text == "hello"
 
     @pytest.mark.asyncio
     async def test_prompt_tool_results_paired_by_call_id(self, acp_agent, mock_manager):

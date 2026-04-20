@@ -622,10 +622,13 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     # would silently override the user's unchecked selections on the next read.
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
-    # Get existing toolsets for this platform
-    existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
-    if not isinstance(existing_toolsets, list):
-        existing_toolsets = []
+    # Get existing toolsets for this platform. YAML may parse bare numeric
+    # names (e.g. ``12306:``) as int, so normalise to str up front to mirror
+    # the read path in ``_get_platform_tools`` and keep ``sorted()`` monomorphic.
+    existing_toolsets_raw = config.get("platform_toolsets", {}).get(platform, [])
+    if not isinstance(existing_toolsets_raw, list):
+        existing_toolsets_raw = []
+    existing_toolsets = [str(ts) for ts in existing_toolsets_raw]
 
     # Preserve any entries that are NOT configurable toolsets and NOT platform
     # defaults (i.e. only MCP server names should be preserved)
@@ -634,8 +637,15 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         if entry not in configurable_keys and entry not in platform_default_keys
     }
 
-    # Merge preserved entries with new enabled toolsets
-    config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
+    # If the caller is re-enabling any MCP server, drop the stale ``no_mcp``
+    # disable-all sentinel so the selection actually takes effect.
+    mcp_server_names = set((config.get("mcp_servers") or {}).keys())
+    if "no_mcp" in preserved_entries and enabled_toolset_keys & mcp_server_names:
+        preserved_entries.discard("no_mcp")
+
+    # Merge preserved entries with new enabled toolsets (all strings now).
+    merged = {str(ts) for ts in enabled_toolset_keys} | preserved_entries
+    config["platform_toolsets"][platform] = sorted(merged)
 
     # Track which plugin toolsets are "known" for this platform so we can
     # distinguish "new plugin, default enabled" from "user disabled it".

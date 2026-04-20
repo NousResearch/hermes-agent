@@ -308,6 +308,38 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
     assert "terminal" not in saved
 
 
+def test_save_platform_tools_clears_stale_no_mcp_when_enabling_mcp_server():
+    """Regression for #13028: re-enabling any MCP server for a platform must
+    drop the ``no_mcp`` disable-all sentinel, otherwise the newly selected
+    server is silently suppressed on the next read."""
+    config = {
+        "platform_toolsets": {"cli": ["web", "no_mcp"]},
+        "mcp_servers": {"exa": {"url": "https://mcp.exa.ai/mcp"}},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "exa"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "no_mcp" not in saved, "stale no_mcp sentinel leaked through save"
+    assert "exa" in saved
+    assert "web" in saved
+
+
+def test_save_platform_tools_normalises_numeric_existing_entries():
+    """Regression for #13028: YAML may parse bare numeric toolset names
+    (e.g. ``12306:``) as ``int``. Without normalisation the merged
+    ``sorted()`` call crashes with a str-vs-int comparison error."""
+    config = {"platform_toolsets": {"cli": ["web", 12306]}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "12306" in saved
+    assert "web" in saved
+
+
 def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch):
     monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     config = {"model": {"provider": "nous"}}

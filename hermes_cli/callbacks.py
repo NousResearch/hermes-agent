@@ -7,6 +7,7 @@ with the TUI.
 """
 
 import queue
+import sys
 import time as _time
 import getpass
 
@@ -218,6 +219,11 @@ def approval_callback(cli, command: str, description: str) -> str:
 
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
+
+        # Bell on approval prompt
+        if CLI_CONFIG.get("display", {}).get("bell_on_approval", False):
+            sys.stdout.write("\a")
+            sys.stdout.flush()
 
         while True:
             try:

@@ -7625,6 +7625,12 @@ class HermesCLI:
 
             self._invalidate()
 
+            # Bell on approval prompt
+            from cli import CLI_CONFIG
+            if CLI_CONFIG.get("display", {}).get("bell_on_approval", False):
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+
             _last_countdown_refresh = _time.monotonic()
             while True:
                 try:

@@ -2,7 +2,6 @@
 
 import io
 import sys
-import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,7 +16,6 @@ def db(tmp_path):
     db_path = tmp_path / ".hermes" / "state.db"
     db_path.parent.mkdir(parents=True)
     _db = SessionDB(db_path=db_path)
-    # Prevent handlers' finally: db.close() from killing our connection.
     _real_close = _db.close
     _db.close = lambda: None
     yield _db
@@ -68,47 +66,26 @@ class TestSlashList:
 
     def test_list_state_filter(self, db):
         db.create_copilot_job(
-            job_id="cj_p", repo_slug="repo-a", repo_path="/a"
+            job_id="cj_r", repo_slug="repo-a", repo_path="/a"
         )
         db.create_copilot_job(
-            job_id="cj_r", repo_slug="repo-b", repo_path="/b"
+            job_id="cj_d", repo_slug="repo-b", repo_path="/b"
         )
-        db.transition_copilot_job("cj_r", "running", event_type="test")
+        db.finish_copilot_job("cj_d", state="done", exit_code=0)
 
         out = _capture_slash("/copilot list --state running")
         assert "cj_r" in out
-        assert "cj_p" not in out
-
-
-class TestSlashLaunchNoAuto:
-    def test_no_auto_creates_pending(self, db):
-        out = _capture_slash(
-            "/copilot launch --no-auto --repo test-repo --repo-path /test Fix bug"
-        )
-        assert "pending" in out
-        assert "Manual launch required" in out
-
-        job = db.list_copilot_jobs(state="pending")
-        assert len(job) == 1
-        assert job[0]["repo_slug"] == "test-repo"
-
-    def test_no_auto_records_prompt(self, db):
-        _capture_slash(
-            "/copilot launch --no-auto --repo r --repo-path /p Refactor auth module"
-        )
-        jobs = db.list_copilot_jobs()
-        assert "Refactor auth module" in (jobs[0].get("prompt") or "")
+        assert "cj_d" not in out
 
 
 class TestSlashLaunchDryRun:
-    def test_dry_run_auto_launches(self, db):
+    def test_dry_run_launches(self, db):
         out = _capture_slash(
             "/copilot launch --dry-run --repo dr-repo --repo-path /dr Do something"
         )
-        assert "running" in out
-        assert "pid 0" in out
+        assert "done" in out.lower() or "dry-run" in out.lower()
 
-        jobs = db.list_copilot_jobs(state="running")
+        jobs = db.list_copilot_jobs(state="done")
         assert len(jobs) == 1
         assert jobs[0]["copilot_session_id"].startswith("dry-run-")
 
@@ -116,7 +93,7 @@ class TestSlashLaunchDryRun:
         out = _capture_slash(
             "/copilot launch --dry-run --model gpt-5 --repo m-repo --repo-path /m Test"
         )
-        assert "running" in out
+        assert "done" in out.lower() or "dry-run" in out.lower()
 
 
 class TestSlashShow:
@@ -127,104 +104,18 @@ class TestSlashShow:
         out = _capture_slash("/copilot show cj_show")
         assert "cj_show" in out
         assert "show-repo" in out
-        assert "pending" in out
 
     def test_show_nonexistent(self):
         out = _capture_slash("/copilot show cj_nope")
         assert "not found" in out.lower()
 
 
-class TestSlashActivate:
-    def test_activate_with_session_id(self, db):
-        db.create_copilot_job(
-            job_id="cj_act", repo_slug="act-repo", repo_path="/act"
-        )
-        out = _capture_slash(
-            "/copilot activate cj_act --session-id ses_999"
-        )
-        assert "activated" in out
-
-        job = db.get_copilot_job("cj_act")
-        assert job["state"] == "running"
-        assert job["copilot_session_id"] == "ses_999"
-
-
-class TestSlashTakeover:
-    def test_takeover(self, db):
-        db.create_copilot_job(
-            job_id="cj_take", repo_slug="take-repo", repo_path="/take"
-        )
-        out = _capture_slash("/copilot takeover cj_take")
-        assert "human" in out
-
-        job = db.get_copilot_job("cj_take")
-        assert job["owner"] == "human"
-
-
-class TestSlashIdleAndClose:
-    def test_idle_then_close(self, db):
-        db.create_copilot_job(
-            job_id="cj_ic", repo_slug="ic-repo", repo_path="/ic"
-        )
-        db.transition_copilot_job("cj_ic", "running", event_type="test")
-
-        out = _capture_slash("/copilot idle cj_ic")
-        assert "idle" in out.lower()
-
-        out = _capture_slash("/copilot close cj_ic")
-        assert "closed" in out.lower()
-
-        job = db.get_copilot_job("cj_ic")
-        assert job["state"] == "closed"
-
-
-class TestSlashReap:
-    def test_reap_nothing(self):
-        out = _capture_slash("/copilot reap")
-        assert "nothing to do" in out.lower()
-
-    def test_reap_stale_pending(self, db):
-        db.create_copilot_job(
-            job_id="cj_stale", repo_slug="stale-repo", repo_path="/stale"
-        )
-        db._conn.execute(
-            "UPDATE copilot_jobs SET created_at = ? WHERE id = ?",
-            (time.time() - 7200, "cj_stale"),
-        )
-        db._conn.commit()
-
-        out = _capture_slash("/copilot reap")
-        assert "stale" in out.lower() or "pending" in out.lower()
-
-        job = db.get_copilot_job("cj_stale")
-        assert job["state"] == "closed"
-
-
 class TestSlashErrorPaths:
-    def test_duplicate_repo_guard(self, db):
-        db.create_copilot_job(
-            job_id="cj_dup", repo_slug="dup-repo", repo_path="/dup"
-        )
-        out = _capture_slash(
-            "/copilot launch --no-auto --repo dup-repo --repo-path /dup Again"
-        )
-        assert "already exists" in out.lower()
-
     def test_empty_launch(self):
         out = _capture_slash("/copilot launch")
         assert "required" in out.lower()
-
-    def test_close_running_fails(self, db):
-        db.create_copilot_job(
-            job_id="cj_crf", repo_slug="crf-repo", repo_path="/crf"
-        )
-        db.transition_copilot_job("cj_crf", "running", event_type="test")
-
-        out = _capture_slash("/copilot close cj_crf")
-        assert "invalid transition" in out.lower()
 
     def test_unknown_subcommand_shows_help(self):
         out = _capture_slash("/copilot foobar")
         assert "usage" in out.lower()
         assert "launch" in out
-        assert "reap" in out

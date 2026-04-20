@@ -6,18 +6,14 @@ from typing import Optional
 
 
 class JobState(str, Enum):
-    """Valid states for a copilot job."""
-    PENDING = "pending"
+    """Valid states for a copilot job.
+
+    Simplified: copilot sessions are cloud-managed via --remote/--connect,
+    so we only track whether we've launched and whether it finished.
+    """
     RUNNING = "running"
-    IDLE = "idle"
-    CLOSED = "closed"
+    DONE = "done"
     FAILED = "failed"
-
-
-class JobOwner(str, Enum):
-    """Who currently owns a copilot job."""
-    HERMES = "hermes"
-    HUMAN = "human"
 
 
 @dataclass

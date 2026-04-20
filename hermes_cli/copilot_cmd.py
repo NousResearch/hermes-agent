@@ -1,19 +1,19 @@
-"""``hermes copilot`` CLI subcommand — manage Copilot remote sessions.
+"""``hermes copilot`` CLI subcommand — launch and list Copilot sessions.
 
-Provides launch, list, show, and takeover commands for the Copilot
-remote session lifecycle managed through SessionDB.
+Simplified interface: launch routes a prompt to a repo, spawns copilot
+with ``--remote``, captures the session ID, and logs it.  Sessions are
+cloud-managed — use ``copilot --connect=<session_id>`` from any
+authenticated terminal to attach, and ``copilot --resume=<session_id>``
+to resume a completed session.
 """
 
 import json
-import os
 import sys
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 
 from hermes_state import SessionDB
-from copilot_jobs.models import JobState, JobOwner
 
 
 def _get_db() -> SessionDB:
@@ -22,7 +22,7 @@ def _get_db() -> SessionDB:
 
 
 def _short_id() -> str:
-    """Generate a short job ID like '20260419_153012_a1b2c3'."""
+    """Generate a short job ID like 'cj_20260419_153012_a1b2c3'."""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = uuid.uuid4().hex[:6]
     return f"cj_{ts}_{suffix}"
@@ -47,21 +47,22 @@ def _relative_time(ts) -> str:
 def _state_badge(state: str) -> str:
     """Return a colored state indicator."""
     badges = {
-        "pending": "⏳ pending",
         "running": "🟢 running",
-        "idle": "💤 idle",
-        "closed": "⬛ closed",
+        "done": "✅ done",
         "failed": "🔴 failed",
     }
     return badges.get(state, state)
 
 
 def copilot_launch(args):
-    """Launch a new Copilot session for a repo."""
+    """Launch a new Copilot session for a repo.
+
+    Routes the prompt to a repo (or uses --repo), spawns copilot with
+    --remote, waits for completion, and records the result.
+    """
     prompt = getattr(args, "prompt", None) or ""
     repo = getattr(args, "repo", None)
     repo_path = getattr(args, "repo_path", None)
-    auto = getattr(args, "auto", True)
     model = getattr(args, "model", None)
 
     # If no explicit repo, try the router
@@ -88,105 +89,55 @@ def copilot_launch(args):
 
     db = _get_db()
     try:
-        # Check for existing active job on this repo
-        existing = db.find_active_copilot_job_for_repo(repo)
-        if existing:
-            print(
-                f"Warning: Active job already exists for {repo}: "
-                f"{existing['id']} ({existing['state']})",
-                file=sys.stderr,
-            )
-            print(f"Use 'hermes copilot show {existing['id']}' to inspect it.")
-            sys.exit(1)
-
         job_id = _short_id()
-        signal_source = getattr(args, "signal_source", None) or "cli"
-        signal_ref = getattr(args, "signal_ref", None)
-        idle_ttl = getattr(args, "idle_ttl", 300)
+        now = time.time()
 
+        # Create job record
         db.create_copilot_job(
             job_id=job_id,
             repo_slug=repo,
             repo_path=repo_path,
             prompt=prompt or None,
-            signal_source=signal_source,
-            signal_ref=signal_ref,
-            idle_ttl_seconds=idle_ttl,
+            signal_source=getattr(args, "signal_source", None) or "cli",
+            signal_ref=getattr(args, "signal_ref", None),
         )
 
-        print(f"Created copilot job: {job_id}")
-        print(f"  Repo:   {repo}")
-        print(f"  Path:   {repo_path}")
-        print(f"  TTL:    {idle_ttl}s")
-
+        print(f"Launching copilot job: {job_id}")
+        print(f"  Repo: {repo}")
         if prompt:
             preview = prompt[:80] + ("..." if len(prompt) > 80 else "")
             print(f"  Prompt: {preview}")
 
-        if auto and prompt:
-            from copilot_jobs.launcher import launch_copilot
-            from copilot_jobs.models import RepoEntry as _RE
+        # Launch copilot
+        from copilot_jobs.launcher import launch_copilot
+        from copilot_jobs.models import RepoEntry as _RE
 
-            repo_entry = _RE(slug=repo, path=repo_path)
-            result = launch_copilot(
-                db, job_id, repo_entry, prompt,
-                model=model,
-                dry_run=getattr(args, "dry_run", False),
-            )
-            print(f"  State:  running (pid {result['pid']})")
-            print(f"\nCopilot is working. Monitor with:")
-            print(f"  hermes copilot show {job_id}")
-        else:
-            print(f"  State:  pending")
-            print(f"\nManual launch required:")
-            print(f"  1. Start: copilot -p '{prompt[:60]}...' --allow-all -s --cwd {repo_path}")
-            print(f"  2. Activate: hermes copilot activate {job_id} --session-id <id>")
-
-    finally:
-        db.close()
-
-
-def copilot_activate(args):
-    """Activate a pending job by recording Copilot session details."""
-    job_id = args.job_id
-    session_id = getattr(args, "session_id", None)
-    remote_name = getattr(args, "remote_name", None)
-    pid = getattr(args, "pid", None)
-
-    db = _get_db()
-    try:
-        job = db.get_copilot_job(job_id)
-        if not job:
-            print(f"Error: Job not found: {job_id}", file=sys.stderr)
-            sys.exit(1)
-        if job["state"] not in ("pending", "running"):
-            print(
-                f"Error: Job {job_id} is in state '{job['state']}', "
-                f"cannot activate.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        # Build attach command — uses cloud relay, works from any terminal
-        # with copilot CLI authenticated to the same GitHub account.
-        attach_cmd = None
-        if session_id:
-            attach_cmd = f"copilot --connect={session_id}"
-
-        db.update_copilot_job_remote(
-            job_id=job_id,
-            copilot_session_id=session_id,
-            remote_name=remote_name,
-            pid=pid,
-            attach_command=attach_cmd,
+        repo_entry = _RE(slug=repo, path=repo_path)
+        result = launch_copilot(
+            repo_entry, prompt,
+            model=model,
+            dry_run=getattr(args, "dry_run", False),
         )
 
-        if job["state"] == "pending":
-            db.transition_copilot_job(job_id, "running", event_type="activated")
+        session_id = result.get("session_id")
+        exit_code = result.get("exit_code", -1)
+        state = "done" if exit_code == 0 else "failed"
 
-        print(f"Job {job_id} activated.")
-        if attach_cmd:
-            print(f"  Attach: {attach_cmd}")
+        # Update job with results
+        db.finish_copilot_job(
+            job_id,
+            state=state,
+            copilot_session_id=session_id,
+            exit_code=exit_code,
+        )
+
+        print(f"  State: {_state_badge(state)}")
+        if session_id:
+            print(f"  Session: {session_id}")
+            print(f"\n  Connect: copilot --connect={session_id}")
+            print(f"  Resume:  copilot --resume={session_id}")
+        if exit_code != 0:
+            print(f"  Exit code: {exit_code}", file=sys.stderr)
 
     finally:
         db.close()
@@ -204,17 +155,17 @@ def copilot_list(args):
             print("No copilot jobs found.")
             return
 
-        # Table header
-        fmt = "{:<30s} {:<20s} {:<14s} {:<8s} {:<14s}"
-        print(fmt.format("ID", "REPO", "STATE", "OWNER", "CREATED"))
-        print("-" * 90)
+        fmt = "{:<30s} {:<20s} {:<12s} {:<14s} {:<40s}"
+        print(fmt.format("ID", "REPO", "STATE", "CREATED", "SESSION"))
+        print("-" * 120)
         for job in jobs:
+            sid = job.get("copilot_session_id") or "-"
             print(fmt.format(
                 job["id"][:30],
                 (job["repo_slug"] or "")[:20],
-                _state_badge(job["state"])[:14],
-                job["owner"][:8],
+                _state_badge(job["state"])[:12],
                 _relative_time(job["created_at"]),
+                sid[:40],
             ))
     finally:
         db.close()
@@ -231,130 +182,28 @@ def copilot_show(args):
             print(f"Error: Job not found: {job_id}", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Job:            {job['id']}")
-        print(f"State:          {_state_badge(job['state'])}")
-        print(f"Owner:          {job['owner']}")
-        print(f"Repo:           {job['repo_slug']}")
-        print(f"Path:           {job['repo_path']}")
-        print(f"Created:        {_relative_time(job['created_at'])}")
-        print(f"Updated:        {_relative_time(job['updated_at'])}")
+        print(f"Job:      {job['id']}")
+        print(f"State:    {_state_badge(job['state'])}")
+        print(f"Repo:     {job['repo_slug']}")
+        print(f"Path:     {job['repo_path']}")
+        print(f"Created:  {_relative_time(job['created_at'])}")
 
         if job.get("prompt"):
             preview = job["prompt"][:120] + ("..." if len(job["prompt"]) > 120 else "")
-            print(f"Prompt:         {preview}")
+            print(f"Prompt:   {preview}")
         if job.get("copilot_session_id"):
-            print(f"Session ID:     {job['copilot_session_id']}")
-        if job.get("remote_name"):
-            print(f"Remote Name:    {job['remote_name']}")
-        if job.get("pid"):
-            print(f"PID:            {job['pid']}")
-        if job.get("attach_command"):
-            print(f"Attach:         {job['attach_command']}")
-        if job.get("idle_since"):
-            print(f"Idle since:     {_relative_time(job['idle_since'])}")
-        if job.get("idle_ttl_seconds"):
-            print(f"Idle TTL:       {job['idle_ttl_seconds']}s")
+            sid = job["copilot_session_id"]
+            print(f"Session:  {sid}")
+            print(f"Connect:  copilot --connect={sid}")
+            print(f"Resume:   copilot --resume={sid}")
+        if job.get("exit_code") is not None:
+            print(f"Exit:     {job['exit_code']}")
         if job.get("error_text"):
-            print(f"Error:          {job['error_text']}")
+            print(f"Error:    {job['error_text']}")
         if job.get("signal_source"):
             ref = f" ({job['signal_ref']})" if job.get("signal_ref") else ""
-            print(f"Signal:         {job['signal_source']}{ref}")
+            print(f"Signal:   {job['signal_source']}{ref}")
 
-        # Show recent events
-        events = db.get_copilot_job_events(job_id, limit=10)
-        if events:
-            print("\nRecent events:")
-            for ev in events:
-                ts = _relative_time(ev["created_at"])
-                transition = ""
-                if ev.get("from_state") and ev.get("to_state"):
-                    transition = f" ({ev['from_state']} → {ev['to_state']})"
-                elif ev.get("to_state"):
-                    transition = f" (→ {ev['to_state']})"
-                print(f"  {ts}  {ev['event_type']}{transition}")
-
-    finally:
-        db.close()
-
-
-def copilot_takeover(args):
-    """Transfer ownership of a job from hermes to human."""
-    job_id = args.job_id
-
-    db = _get_db()
-    try:
-        job = db.take_over_copilot_job(job_id)
-        print(f"Job {job_id} transferred to human.")
-        print(f"  State: {_state_badge(job['state'])}")
-        print(f"  Owner: {job['owner']}")
-        if job.get("attach_command"):
-            print(f"  Attach: {job['attach_command']}\n")
-        print("TTL reaping is now suppressed for this job.")
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        db.close()
-
-
-def copilot_idle(args):
-    """Mark a running job as idle (Copilot process exited)."""
-    job_id = args.job_id
-
-    db = _get_db()
-    try:
-        job = db.mark_copilot_job_idle(job_id)
-        print(f"Job {job_id} marked idle.")
-        print(f"  Idle TTL: {job.get('idle_ttl_seconds', 300)}s")
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        db.close()
-
-
-def copilot_close(args):
-    """Close an idle or failed job."""
-    job_id = args.job_id
-
-    db = _get_db()
-    try:
-        job = db.close_copilot_job(job_id)
-        print(f"Job {job_id} closed.")
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        db.close()
-
-
-def copilot_reap(args):
-    """Run the reaper: close dead processes and expired idle jobs."""
-    from copilot_jobs.reaper import reap
-
-    db = _get_db()
-    try:
-        result = reap(db, pending_max_age=getattr(args, "pending_max_age", 3600))
-        dead = result["dead_processes"]
-        expired = result["ttl_expired"]
-        stale = result["stale_pending"]
-
-        if not dead and not expired and not stale:
-            print("Reaper: nothing to do.")
-            return
-
-        if dead:
-            print(f"Reaped {len(dead)} dead process(es):")
-            for j in dead:
-                print(f"  {j['id']} ({j['repo_slug']}) pid {j.get('pid')} → idle")
-        if expired:
-            print(f"Closed {len(expired)} expired idle job(s):")
-            for j in expired:
-                print(f"  {j['id']} ({j['repo_slug']}) → closed")
-        if stale:
-            print(f"Closed {len(stale)} stale pending job(s):")
-            for j in stale:
-                print(f"  {j['id']} ({j['repo_slug']}) → closed")
     finally:
         db.close()
 
@@ -369,12 +218,7 @@ def copilot_command(args):
 
     handlers = {
         "launch": copilot_launch,
-        "activate": copilot_activate,
         "show": copilot_show,
-        "takeover": copilot_takeover,
-        "idle": copilot_idle,
-        "close": copilot_close,
-        "reap": copilot_reap,
     }
 
     handler = handlers.get(subcmd)
@@ -382,7 +226,7 @@ def copilot_command(args):
         handler(args)
     else:
         print(f"Unknown copilot command: {subcmd}")
-        print("Usage: hermes copilot [launch|activate|list|show|takeover|idle|close|reap]")
+        print("Usage: hermes copilot [launch|list|show]")
         sys.exit(1)
 
 
@@ -394,20 +238,16 @@ def handle_copilot_slash(raw_command: str) -> None:
     """Handle /copilot slash command from an interactive Hermes session.
 
     Parses the raw command text and dispatches to the appropriate handler.
-    Unlike the argparse CLI path, this uses a lightweight SimpleNamespace
-    so it works without sys.exit() calls in the interactive loop.
     """
     from types import SimpleNamespace
 
     parts = raw_command.strip().split()
-    # parts[0] is "/copilot", rest are subcommand + args
     subcmd = parts[1] if len(parts) > 1 else "list"
     args_rest = parts[2:]
 
     try:
         if subcmd == "list":
             ns = SimpleNamespace(state=None, limit=20)
-            # Parse optional --state flag
             for i, a in enumerate(args_rest):
                 if a == "--state" and i + 1 < len(args_rest):
                     ns.state = args_rest[i + 1]
@@ -415,12 +255,10 @@ def handle_copilot_slash(raw_command: str) -> None:
 
         elif subcmd == "launch":
             ns = SimpleNamespace(
-                prompt=" ".join(args_rest) if args_rest else "",
-                repo=None, repo_path=None, auto=True, model=None,
+                prompt="", repo=None, repo_path=None, model=None,
                 dry_run=False,
-                signal_source="slash", signal_ref=None, idle_ttl=300,
+                signal_source="slash", signal_ref=None,
             )
-            # Parse flags from args
             i = 0
             prompt_parts = []
             while i < len(args_rest):
@@ -430,15 +268,9 @@ def handle_copilot_slash(raw_command: str) -> None:
                 elif args_rest[i] == "--repo-path" and i + 1 < len(args_rest):
                     ns.repo_path = args_rest[i + 1]
                     i += 2
-                elif args_rest[i] == "--idle-ttl" and i + 1 < len(args_rest):
-                    ns.idle_ttl = int(args_rest[i + 1])
-                    i += 2
                 elif args_rest[i] == "--model" and i + 1 < len(args_rest):
                     ns.model = args_rest[i + 1]
                     i += 2
-                elif args_rest[i] == "--no-auto":
-                    ns.auto = False
-                    i += 1
                 elif args_rest[i] == "--dry-run":
                     ns.dry_run = True
                     i += 1
@@ -452,60 +284,16 @@ def handle_copilot_slash(raw_command: str) -> None:
             ns = SimpleNamespace(job_id=args_rest[0])
             copilot_show(ns)
 
-        elif subcmd == "activate" and args_rest:
-            ns = SimpleNamespace(
-                job_id=args_rest[0],
-                session_id=None, remote_name=None, pid=None,
-            )
-            i = 1
-            while i < len(args_rest):
-                if args_rest[i] == "--session-id" and i + 1 < len(args_rest):
-                    ns.session_id = args_rest[i + 1]
-                    i += 2
-                elif args_rest[i] == "--remote-name" and i + 1 < len(args_rest):
-                    ns.remote_name = args_rest[i + 1]
-                    i += 2
-                elif args_rest[i] == "--pid" and i + 1 < len(args_rest):
-                    ns.pid = int(args_rest[i + 1])
-                    i += 2
-                else:
-                    i += 1
-            copilot_activate(ns)
-
-        elif subcmd == "takeover" and args_rest:
-            ns = SimpleNamespace(job_id=args_rest[0])
-            copilot_takeover(ns)
-
-        elif subcmd == "idle" and args_rest:
-            ns = SimpleNamespace(job_id=args_rest[0])
-            copilot_idle(ns)
-
-        elif subcmd == "close" and args_rest:
-            ns = SimpleNamespace(job_id=args_rest[0])
-            copilot_close(ns)
-
-        elif subcmd == "reap":
-            ns = SimpleNamespace(pending_max_age=3600)
-            copilot_reap(ns)
-
         else:
-            print("Usage: /copilot [launch|list|show|activate|takeover|idle|close|reap]")
+            print("Usage: /copilot [launch|list|show]")
             print()
             print("  /copilot list                        List all jobs")
             print("  /copilot launch <prompt>             Route prompt → repo, launch copilot")
-            print("  /copilot launch --no-auto <prompt>   Create job without auto-launching")
             print("  /copilot launch --model <m> <prompt> Use specific model")
             print("  /copilot launch --repo <slug> <msg>  Launch for specific repo")
-            print("  /copilot show <job_id>               Show job details")
-            print("  /copilot activate <id> --session-id <sid>  Record Copilot session")
-            print("  /copilot takeover <job_id>           Transfer ownership to human")
-            print("  /copilot idle <job_id>               Mark job as idle")
-            print("  /copilot close <job_id>              Close a job")
-            print("  /copilot reap                        Clean up dead/expired jobs")
+            print("  /copilot show <job_id>               Show job details + connect command")
 
     except SystemExit:
-        # copilot_* functions call sys.exit() on errors — catch it
-        # so the interactive session stays alive.
         pass
     except ValueError as exc:
-        print(f"Error: {exc}")
+        print(f"Error: {exc}", file=sys.stderr)

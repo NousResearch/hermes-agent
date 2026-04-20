@@ -98,72 +98,15 @@ CREATE TABLE IF NOT EXISTS copilot_jobs (
     signal_source TEXT,
     signal_ref TEXT,
     copilot_session_id TEXT,
-    remote_name TEXT,
-    pid INTEGER,
-    state TEXT NOT NULL DEFAULT 'pending',
-    owner TEXT NOT NULL DEFAULT 'hermes',
-    attach_command TEXT,
+    state TEXT NOT NULL DEFAULT 'running',
+    exit_code INTEGER,
     created_at REAL NOT NULL,
-    updated_at REAL NOT NULL,
-    last_activity_at REAL,
-    idle_since REAL,
-    closed_at REAL,
-    idle_ttl_seconds INTEGER DEFAULT 300,
+    finished_at REAL,
     error_text TEXT
-);
-
-CREATE TABLE IF NOT EXISTS copilot_job_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id TEXT NOT NULL REFERENCES copilot_jobs(id),
-    from_state TEXT,
-    to_state TEXT NOT NULL,
-    owner TEXT,
-    event_type TEXT NOT NULL,
-    payload_json TEXT,
-    created_at REAL NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_copilot_jobs_state ON copilot_jobs(state);
 CREATE INDEX IF NOT EXISTS idx_copilot_jobs_repo ON copilot_jobs(repo_slug, state);
-CREATE INDEX IF NOT EXISTS idx_copilot_job_events_job ON copilot_job_events(job_id, created_at);
-
-CREATE TABLE IF NOT EXISTS copilot_jobs (
-    id TEXT PRIMARY KEY,
-    hermes_session_id TEXT REFERENCES sessions(id),
-    repo_slug TEXT NOT NULL,
-    repo_path TEXT NOT NULL,
-    prompt TEXT,
-    signal_source TEXT,
-    signal_ref TEXT,
-    copilot_session_id TEXT,
-    remote_name TEXT,
-    pid INTEGER,
-    state TEXT NOT NULL DEFAULT 'pending',
-    owner TEXT NOT NULL DEFAULT 'hermes',
-    attach_command TEXT,
-    created_at REAL NOT NULL,
-    updated_at REAL NOT NULL,
-    last_activity_at REAL,
-    idle_since REAL,
-    closed_at REAL,
-    idle_ttl_seconds INTEGER DEFAULT 300,
-    error_text TEXT
-);
-
-CREATE TABLE IF NOT EXISTS copilot_job_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id TEXT NOT NULL REFERENCES copilot_jobs(id),
-    from_state TEXT,
-    to_state TEXT NOT NULL,
-    owner TEXT,
-    event_type TEXT NOT NULL,
-    payload_json TEXT,
-    created_at REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_copilot_jobs_state ON copilot_jobs(state);
-CREATE INDEX IF NOT EXISTS idx_copilot_jobs_repo ON copilot_jobs(repo_slug, state);
-CREATE INDEX IF NOT EXISTS idx_copilot_job_events_job ON copilot_job_events(job_id, created_at);
 """
 
 FTS_SQL = """
@@ -1363,15 +1306,6 @@ class SessionDB:
     # Copilot job lifecycle
     # =========================================================================
 
-    # Valid state transitions for copilot jobs.
-    _COPILOT_JOB_TRANSITIONS = {
-        "pending":   {"running", "closed", "failed"},
-        "running":   {"idle", "failed"},
-        "idle":      {"running", "closed", "failed"},
-        "closed":    set(),
-        "failed":    set(),
-    }
-
     def create_copilot_job(
         self,
         job_id: str,
@@ -1381,28 +1315,40 @@ class SessionDB:
         signal_source: str = None,
         signal_ref: str = None,
         hermes_session_id: str = None,
-        idle_ttl_seconds: int = 300,
     ) -> str:
-        """Create a new copilot job in 'pending' state. Returns the job_id."""
+        """Create a new copilot job in 'running' state. Returns the job_id."""
         now = time.time()
         def _do(conn):
             conn.execute(
                 """INSERT INTO copilot_jobs
                    (id, hermes_session_id, repo_slug, repo_path, prompt,
-                    signal_source, signal_ref, state, owner,
-                    idle_ttl_seconds, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'hermes', ?, ?, ?)""",
+                    signal_source, signal_ref, state, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
                 (job_id, hermes_session_id, repo_slug, repo_path, prompt,
-                 signal_source, signal_ref, idle_ttl_seconds, now, now),
-            )
-            conn.execute(
-                """INSERT INTO copilot_job_events
-                   (job_id, from_state, to_state, owner, event_type, created_at)
-                   VALUES (?, NULL, 'pending', 'hermes', 'created', ?)""",
-                (job_id, now),
+                 signal_source, signal_ref, now),
             )
         self._execute_write(_do)
         return job_id
+
+    def finish_copilot_job(
+        self,
+        job_id: str,
+        state: str,
+        copilot_session_id: str = None,
+        exit_code: int = None,
+        error_text: str = None,
+    ) -> None:
+        """Mark a copilot job as done or failed with results."""
+        now = time.time()
+        def _do(conn):
+            conn.execute(
+                """UPDATE copilot_jobs
+                   SET state = ?, copilot_session_id = ?, exit_code = ?,
+                       finished_at = ?, error_text = ?
+                   WHERE id = ?""",
+                (state, copilot_session_id, exit_code, now, error_text, job_id),
+            )
+        self._execute_write(_do)
 
     def get_copilot_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get a copilot job by ID."""
@@ -1431,198 +1377,4 @@ class SessionDB:
                     "SELECT * FROM copilot_jobs ORDER BY created_at DESC LIMIT ?",
                     (limit,),
                 )
-            return [dict(row) for row in cursor.fetchall()]
-
-    def find_active_copilot_job_for_repo(
-        self, repo_slug: str
-    ) -> Optional[Dict[str, Any]]:
-        """Find an active (pending/running/idle) copilot job for a repo."""
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM copilot_jobs "
-                "WHERE repo_slug = ? AND state IN ('pending', 'running', 'idle') "
-                "ORDER BY created_at DESC LIMIT 1",
-                (repo_slug,),
-            )
-            row = cursor.fetchone()
-        return dict(row) if row else None
-
-    def transition_copilot_job(
-        self,
-        job_id: str,
-        to_state: str,
-        event_type: str = "transition",
-        payload_json: str = None,
-        error_text: str = None,
-    ) -> Dict[str, Any]:
-        """Transition a copilot job to a new state. Validates the transition.
-
-        Raises ValueError for illegal transitions or missing jobs.
-        Returns the updated job row.
-        """
-        now = time.time()
-        def _do(conn):
-            cursor = conn.execute(
-                "SELECT * FROM copilot_jobs WHERE id = ?", (job_id,)
-            )
-            row = cursor.fetchone()
-            if not row:
-                raise ValueError(f"Copilot job not found: {job_id}")
-            job = dict(row)
-            from_state = job["state"]
-
-            allowed = self._COPILOT_JOB_TRANSITIONS.get(from_state, set())
-            if to_state not in allowed:
-                raise ValueError(
-                    f"Invalid transition: {from_state} -> {to_state} "
-                    f"(allowed: {sorted(allowed)})"
-                )
-
-            updates = {"state": to_state, "updated_at": now}
-            if to_state == "idle":
-                updates["idle_since"] = now
-            elif to_state == "running" and from_state == "idle":
-                updates["idle_since"] = None
-            if to_state in ("closed", "failed"):
-                updates["closed_at"] = now
-            if error_text:
-                updates["error_text"] = error_text
-
-            set_clauses = ", ".join(f"{k} = ?" for k in updates)
-            conn.execute(
-                f"UPDATE copilot_jobs SET {set_clauses} WHERE id = ?",
-                (*updates.values(), job_id),
-            )
-
-            conn.execute(
-                """INSERT INTO copilot_job_events
-                   (job_id, from_state, to_state, owner, event_type,
-                    payload_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (job_id, from_state, to_state, job["owner"],
-                 event_type, payload_json, now),
-            )
-
-            cursor = conn.execute(
-                "SELECT * FROM copilot_jobs WHERE id = ?", (job_id,)
-            )
-            return dict(cursor.fetchone())
-        return self._execute_write(_do)
-
-    def record_copilot_job_event(
-        self,
-        job_id: str,
-        event_type: str,
-        payload_json: str = None,
-    ) -> None:
-        """Record an informational event without changing state."""
-        now = time.time()
-        def _do(conn):
-            cursor = conn.execute(
-                "SELECT state, owner FROM copilot_jobs WHERE id = ?", (job_id,)
-            )
-            row = cursor.fetchone()
-            if not row:
-                raise ValueError(f"Copilot job not found: {job_id}")
-            conn.execute(
-                """INSERT INTO copilot_job_events
-                   (job_id, from_state, to_state, owner, event_type,
-                    payload_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (job_id, row["state"], row["state"], row["owner"],
-                 event_type, payload_json, now),
-            )
-            conn.execute(
-                "UPDATE copilot_jobs SET last_activity_at = ?, updated_at = ? WHERE id = ?",
-                (now, now, job_id),
-            )
-        self._execute_write(_do)
-
-    def update_copilot_job_remote(
-        self,
-        job_id: str,
-        copilot_session_id: str = None,
-        remote_name: str = None,
-        pid: int = None,
-        attach_command: str = None,
-    ) -> None:
-        """Update remote connection details after Copilot launch."""
-        now = time.time()
-        def _do(conn):
-            parts = ["updated_at = ?"]
-            params: list = [now]
-            if copilot_session_id is not None:
-                parts.append("copilot_session_id = ?")
-                params.append(copilot_session_id)
-            if remote_name is not None:
-                parts.append("remote_name = ?")
-                params.append(remote_name)
-            if pid is not None:
-                parts.append("pid = ?")
-                params.append(pid)
-            if attach_command is not None:
-                parts.append("attach_command = ?")
-                params.append(attach_command)
-            params.append(job_id)
-            conn.execute(
-                f"UPDATE copilot_jobs SET {', '.join(parts)} WHERE id = ?",
-                params,
-            )
-        self._execute_write(_do)
-
-    def mark_copilot_job_idle(self, job_id: str) -> Dict[str, Any]:
-        """Convenience: transition a running job to idle."""
-        return self.transition_copilot_job(
-            job_id, "idle", event_type="copilot_exited"
-        )
-
-    def close_copilot_job(
-        self, job_id: str, reason: str = "closed"
-    ) -> Dict[str, Any]:
-        """Close an idle or failed job."""
-        return self.transition_copilot_job(
-            job_id, "closed", event_type=reason
-        )
-
-    def take_over_copilot_job(self, job_id: str) -> Dict[str, Any]:
-        """Transfer ownership of a job from hermes to human.
-
-        Returns the updated job row.  Raises ValueError if job not found.
-        """
-        now = time.time()
-        def _do(conn):
-            cursor = conn.execute(
-                "SELECT * FROM copilot_jobs WHERE id = ?", (job_id,)
-            )
-            row = cursor.fetchone()
-            if not row:
-                raise ValueError(f"Copilot job not found: {job_id}")
-            job = dict(row)
-            old_owner = job["owner"]
-            conn.execute(
-                "UPDATE copilot_jobs SET owner = 'human', updated_at = ? WHERE id = ?",
-                (now, job_id),
-            )
-            conn.execute(
-                """INSERT INTO copilot_job_events
-                   (job_id, from_state, to_state, owner, event_type, created_at)
-                   VALUES (?, ?, ?, ?, 'takeover', ?)""",
-                (job_id, job["state"], job["state"], old_owner, now),
-            )
-            cursor = conn.execute(
-                "SELECT * FROM copilot_jobs WHERE id = ?", (job_id,)
-            )
-            return dict(cursor.fetchone())
-        return self._execute_write(_do)
-
-    def get_copilot_job_events(
-        self, job_id: str, limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """Get event history for a copilot job."""
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM copilot_job_events "
-                "WHERE job_id = ? ORDER BY created_at ASC LIMIT ?",
-                (job_id, limit),
-            )
             return [dict(row) for row in cursor.fetchall()]

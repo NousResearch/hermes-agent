@@ -71,6 +71,17 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
+def _resolve_path(filepath: str) -> Path:
+    """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
+    instead of the main repository root.
+    """
+    p = Path(filepath).expanduser()
+    if not p.is_absolute():
+        base = os.environ.get("TERMINAL_CWD", os.getcwd())
+        p = Path(base) / p
+    return p.resolve()
+
+
 def _is_blocked_device(filepath: str) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
@@ -102,7 +113,7 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = os.path.realpath(os.path.expanduser(filepath))
+        resolved = str(_resolve_path(filepath))
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(os.path.expanduser(filepath))
@@ -347,7 +358,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        _resolved = Path(path).expanduser().resolve()
+        _resolved = _resolve_path(path)
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -555,7 +566,7 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     refreshes the stored timestamp to match the file's new state.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(_resolve_path(filepath))
         current_mtime = os.path.getmtime(resolved)
     except (OSError, ValueError):
         return
@@ -574,7 +585,7 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     or was never read.  Does not block — the write still proceeds.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(_resolve_path(filepath))
     except (OSError, ValueError):
         return None
     with _read_tracker_lock:

@@ -628,3 +628,19 @@ class TestAvailability:
         monkeypatch.setenv("HINDSIGHT_MODE", "local")
         p = HindsightMemoryProvider()
         assert p.is_available()
+
+    def test_available_with_snake_case_api_key_in_config(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "cloud",
+            "api_key": "config-key",
+        }))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path,
+        )
+
+        p = HindsightMemoryProvider()
+
+        assert p.is_available()

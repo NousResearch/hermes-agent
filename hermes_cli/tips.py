@@ -3,12 +3,28 @@
 import random
 
 
+def _detect_tip_language() -> str:
+    """Detect the configured language for tips."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        lang = (config.get("approvals") or {}).get("language", "")
+        if lang:
+            return lang.lower()
+        lang = (config.get("display") or {}).get("language", "")
+        if lang:
+            return lang.lower()
+    except Exception:
+        pass
+    return "en"
+
+
 # ---------------------------------------------------------------------------
 # Tip corpus — one-liners covering slash commands, CLI flags, config,
 # keybindings, tools, gateway, skills, profiles, and workflow tricks.
 # ---------------------------------------------------------------------------
 
-TIPS = [
+TIPS_EN = [
     # --- Slash Commands ---
     "/btw <question> asks a quick side question without tools or history — great for clarifications.",
     "/background <prompt> runs a task in a separate session while your current one stays free.",
@@ -334,6 +350,152 @@ TIPS = [
     "The skills quarantine at ~/.hermes/skills/.hub/quarantine/ holds skills pending security review.",
 ]
 
+# Chinese tips
+TIPS_ZH = [
+    # --- 斜杠命令 ---
+    "/btw <问题> 可以快速提问而不使用工具或历史记录 — 适合澄清疑问。",
+    "/background <提示> 在独立会话中运行任务，同时保持当前会话可用。",
+    "/branch 分叉当前会话，让你探索不同方向而不丢失进度。",
+    "/compress 手动压缩对话上下文。",
+    "/rollback 列出文件系统检查点 — 将文件恢复到代理修改前的任何状态。",
+    '/title "我的项目" 为会话命名 — 稍后使用 /resume 或 hermes -c 恢复。',
+    "/resume 从之前命名的会话继续。",
+    "/queue <提示> 将消息加入队列，不中断当前操作。",
+    "/undo 删除对话中的最后一次用户/助手交互。",
+    "/retry 重新发送你的最后一条消息。",
+    "/verbose 循环切换工具进度显示：off → new → all → verbose。",
+    "/reasoning high 增加模型的思考深度。/reasoning show 显示推理过程。",
+    "/yolo 跳过本会话剩余时间的所有危险命令批准提示。",
+    "/model 让你可以在会话中途切换模型 — 试试 /model sonnet 或 /model gpt-5。",
+    "/personality pirate 设置有趣的性格 — 14 种内置选项从可爱到莎士比亚风格。",
+    "/skin 更改 CLI 主题 — 试试 ares、mono、slate、poseidon 或 chinese。",
+    "/statusbar 切换显示持久状态栏，显示模型、token、上下文填充%、成本和时长。",
+    "/tools disable browser 临时移除当前会话的浏览器工具。",
+    "/usage 显示 token 使用情况、成本分解和会话时长。",
+    "/config 显示当前配置概览。",
+    
+    # --- @ 上下文引用 ---
+    "@file:path/to/file.py 将文件内容直接注入到你的消息中。",
+    "@file:main.py:10-50 只注入文件的第 10-50 行。",
+    "@folder:src/ 注入目录树列表。",
+    "@diff 注入你未暂存的 git 更改。",
+    "@url:https://example.com 获取并注入网页内容。",
+    "输入 @ 触发文件系统路径自动完成 — 交互导航到任何文件。",
+    
+    # --- 快捷键 ---
+    "Alt+Enter（或 Ctrl+J）插入换行符用于多行输入。",
+    "Ctrl+C 中断代理。2 秒内双击强制退出。",
+    "Ctrl+Z 将 Hermes 挂起到后台 — 在 shell 中运行 fg 恢复。",
+    "Tab 接受自动建议幽灵文本或自动完成斜杠命令。",
+    "代理工作时输入新消息可中断并重新引导它。",
+    "Alt+V 从剪贴板粘贴图像到对话中。",
+    
+    # --- CLI 标志 ---
+    'hermes -c 恢复最近的 CLI 会话。hermes -c "项目名" 按标题恢复。',
+    "hermes -w 创建隔离的 git 工作树 — 适合并行代理工作流。",
+    "hermes chat -t web,terminal 仅启用特定工具集进行专注会话。",
+    "hermes chat -s github-pr-workflow 启动时预加载技能。",
+    "hermes --yolo 绕过整个会话的所有危险命令批准提示。",
+    
+    # --- CLI 子命令 ---
+    "hermes doctor --fix 诊断并自动修复配置和依赖问题。",
+    "hermes config edit 在默认编辑器中打开 config.yaml。",
+    "hermes sessions browse 打开交互式会话选择器并支持搜索。",
+    "hermes skills search react --source skills-sh 搜索 skills.sh 公共目录。",
+    "hermes mcp add github --command npx 从命令行添加 MCP 服务器。",
+    "hermes completion bash >> ~/.bashrc 为所有命令和 profile 启用 tab 补全。",
+    "hermes backup 创建整个 Hermes 主目录的 zip 备份。",
+    "hermes profile create coder 创建隔离的 profile，成为独立的 coder 命令。",
+    "hermes update 自动同步所有 profile 的新捆绑技能。",
+    
+    # --- 配置 ---
+    "在 config.yaml 中设置 display.bell_on_complete: true，长任务完成时响铃。",
+    "设置 display.streaming: true 以实时查看模型生成的 token。",
+    "设置 display.show_reasoning: true 以查看模型的链式推理。",
+    "设置 compression.threshold: 0.50 控制自动压缩触发的时机（默认：上下文的 50%）。",
+    "设置 agent.max_turns: 200 让代理每轮进行更多工具调用步骤。",
+    "设置 approvals.mode: smart 让 LLM 自动批准安全命令并自动拒绝危险命令。",
+    "设置 fallback_model 自动故障转移到备用提供者。",
+    "环境变量替换在 config.yaml 中生效：使用 ${VAR_NAME} 语法。",
+    
+    # --- 工具与功能 ---
+    "execute_code 运行调用 Hermes 工具的 Python 脚本 — 结果不进入上下文。",
+    "delegate_task 生成最多 3 个并发子代理，隔离上下文进行并行工作。",
+    "web_extract 支持 PDF URL — 传递任何 PDF 链接并转换为 markdown。",
+    "search_files 基于 ripgrep，比 grep 更快 — 用它代替终端 grep。",
+    "patch 使用 9 种模糊匹配策略，微小的空格差异不会破坏编辑。",
+    "read_file 在文件未找到时建议相似的文件名。",
+    "browser_vision 截取屏幕并用 AI 分析 — 适用于 CAPTCHA 和视觉内容。",
+    "image_generate 使用 FLUX 2 Pro 创建图像并自动 2 倍放大。",
+    "text_to_speech 将文本转换为音频 — 在 Telegram 上作为语音气泡播放。",
+    "session_search 在所有过去的对话中执行全文搜索。",
+    "代理自动将偏好、更正和环境事实保存到内存。",
+    
+    # --- Profile ---
+    "每个 profile 都有自己的配置、API 密钥、内存、会话、技能和定时任务。",
+    "Profile 名称成为 shell 命令 — 'hermes profile create coder' 创建'coder'命令。",
+    
+    # --- 会话 ---
+    "会话在第一次交互后自动生成描述性标题 — 无需手动命名。",
+    '会话标题支持谱系："我的项目" → "我的项目 #2" → "我的项目 #3"。',
+    "退出时，Hermes 打印带会话 ID 和统计信息的恢复命令。",
+    "hermes -r SESSION_ID 通过 ID 恢复任何特定的过去会话。",
+    
+    # --- 内存 ---
+    "内存是冻结的快照 — 更改仅在下次会话开始时出现在系统提示中。",
+    "内存条目自动扫描提示注入和窃取模式。",
+    "代理有两个内存存储：个人笔记（约 2200 字符）和用户配置文件（约 1375 字符）。",
+    
+    # --- 技能 ---
+    "80 多个捆绑技能涵盖 github、creative、mlops、productivity、research 等。",
+    "每个安装的技能自动成为斜杠命令 — 输入 / 查看全部。",
+    "hermes skills install official/security/1password 从仓库安装可选技能。",
+    "代理可以使用 skill_manage 创建自己的技能作为过程内存。",
+    
+    # --- 定时任务 ---
+    '定时任务可以附加技能：hermes cron add --skill blogwatcher "检查新帖子"。',
+    "定时任务交付目标包括 telegram、discord、slack、email、sms 等 12+ 平台。",
+    "如果定时任务响应以 [SILENT] 开头，则抑制交付 — 适合仅监控任务。",
+    
+    # --- 语音 ---
+    "如果安装了 faster-whisper，语音模式无需 API 密钥（免费本地语音转文本）。",
+    "五种 TTS 提供者：Edge TTS（免费）、ElevenLabs、OpenAI、NeuTTS（免费本地）、MiniMax。",
+    "/voice on 在 CLI 中启用语音模式。Ctrl+B 切换按住说话录音。",
+    "流式 TTS 在生成时播放句子 — 无需等待完整响应。",
+    
+    # --- 网关与消息 ---
+    "Hermes 运行在 18 个平台上：Telegram、Discord、Slack、WhatsApp、Signal、Matrix、email 等。",
+    "hermes gateway install 将其设置为系统服务，启动时自动运行。",
+    "Webhook 路由支持 HMAC 验证、速率限制和事件过滤。",
+    "API 服务器提供与 Open WebUI 和 LibreChat 兼容的 OpenAI 兼容端点。",
+    
+    # --- 安全 ---
+    "危险命令批准有 4 个级别：once、session、always（永久白名单）、deny。",
+    "智能批准模式使用 LLM 自动批准安全命令并标记危险命令。",
+    "SSRF 保护阻止私有网络、回环、链路本地和云元数据地址。",
+    
+    # --- 上下文与压缩 ---
+    "上下文达到阈值时自动压缩 — 内存被刷新并总结历史。",
+    "状态栏随着上下文填充变为黄色、橙色、然后红色。",
+    "SOUL.md 位于 ~/.hermes/SOUL.md 是代理的主要身份 — 自定义它以塑造行为。",
+    "Hermes 从 .hermes.md、AGENTS.md、CLAUDE.md 或 .cursorrules 加载项目上下文（第一个匹配）。",
+    
+    # --- 浏览器 ---
+    "五种浏览器提供者：本地 Chromium、Browserbase、Browser Use、Camofox 和 Firecrawl。",
+    "Camofox 是反检测浏览器 — 带有 C++ 指纹伪造的 Firefox 分支。",
+    
+    # --- MCP ---
+    "MCP 服务器在 config.yaml 中配置 — 支持 stdio 和 HTTP 传输。",
+    "每服务器工具过滤：tools.include 白名单和 tools.exclude 黑名单特定工具。",
+    "MCP 服务器在运行时自动生成工具集 — hermes tools 可以每平台切换它们。",
+    
+    # --- 检查点与回滚 ---
+    "没有文件修改时检查点零开销 — 默认启用。",
+    "预回滚快照自动保存，以便你可以撤销撤销操作。",
+    "/rollback 还撤销对话轮次，因此代理不记得回滚的更改。",
+    "检查点使用 ~/.hermes/checkpoints/中的影子仓库 — 从不触碰项目的.git。",
+]
+
 
 def get_random_tip(exclude_recent: int = 0) -> str:
     """Return a random tip string.
@@ -342,6 +504,8 @@ def get_random_tip(exclude_recent: int = 0) -> str:
         exclude_recent: not used currently; reserved for future
             deduplication across sessions.
     """
-    return random.choice(TIPS)
+    lang = _detect_tip_language()
+    tips = TIPS_ZH if lang.startswith("zh") else TIPS_EN
+    return random.choice(tips)
 
 

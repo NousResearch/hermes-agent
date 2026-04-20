@@ -95,6 +95,10 @@ BUILT-IN SKINS
 - ``slate``   — Cool blue developer-focused theme
 - ``daylight`` — Light background theme with dark text and blue accents
 - ``warm-lightmode`` — Warm brown/gold text for light terminal backgrounds
+- ``poseidon`` — Ocean-god theme with deep blue and seafoam
+- ``sisyphus`` — Austere grayscale with persistence
+- ``charizard`` — Volcanic burnt orange and ember theme
+- ``chinese`` — 中文界面 (Chinese UI) with classic gold theme
 
 USER SKINS
 ==========
@@ -579,6 +583,42 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
     },
+    "chinese": {
+        "name": "chinese",
+        "description": "中文界面 — 经典金色主题",
+        "colors": {
+            "banner_border": "#CD7F32",
+            "banner_title": "#FFD700",
+            "banner_accent": "#FFBF00",
+            "banner_dim": "#B8860B",
+            "banner_text": "#FFF8DC",
+            "ui_accent": "#FFBF00",
+            "ui_label": "#DAA520",
+            "ui_ok": "#4caf50",
+            "ui_error": "#ef5350",
+            "ui_warn": "#ffa726",
+            "prompt": "#FFF8DC",
+            "input_rule": "#CD7F32",
+            "response_border": "#FFD700",
+            "session_label": "#DAA520",
+            "session_border": "#8B8682",
+        },
+        "spinner": {
+            "thinking_verbs": [
+                "思考中", "分析中", "规划中", "处理中", "整理思路", "查找信息",
+                "构建方案", "评估选项", "深入思考", "综合判断",
+            ],
+        },
+        "branding": {
+            "agent_name": "Hermes 助手",
+            "welcome": "欢迎使用 Hermes 助手！输入消息或 /help 查看命令。",
+            "goodbye": "再见！⚕",
+            "response_label": " ⚕ Hermes ",
+            "prompt_symbol": "❯ ",
+            "help_header": "(^_^)? 可用命令",
+        },
+        "tool_prefix": "┊",
+    },
 }
 
 
@@ -707,15 +747,38 @@ def init_skin_from_config(config: dict) -> None:
     """Initialize the active skin from CLI config at startup.
 
     Call this once during CLI init with the loaded config dict.
+    
+    Auto-selects 'chinese' skin if approvals.language is 'zh' and no
+    explicit non-default skin is configured, so users get a consistent 
+    Chinese UI without needing to manually set display.skin.
     """
     display = config.get("display") or {}
     if not isinstance(display, dict):
         display = {}
-    skin_name = display.get("skin", "default")
-    if isinstance(skin_name, str) and skin_name.strip():
+    
+    # Check if user explicitly set a non-default skin
+    skin_name = display.get("skin")
+    
+    if skin_name and isinstance(skin_name, str) and skin_name.strip().lower() != "default":
+        # User explicitly configured a non-default skin — respect it
         set_active_skin(skin_name.strip())
     else:
-        set_active_skin("default")
+        # No explicit skin or explicitly 'default' — auto-detect based on language
+        # Check approvals.language first (existing convention)
+        lang = ""
+        approvals = config.get("approvals") or {}
+        if isinstance(approvals, dict):
+            lang = approvals.get("language", "")
+        
+        # Also check display.language as fallback
+        if not lang:
+            lang = display.get("language", "")
+        
+        if lang and isinstance(lang, str) and lang.lower().startswith("zh"):
+            # User wants Chinese — auto-select chinese skin
+            set_active_skin("chinese")
+        else:
+            set_active_skin("default")
 
 
 # =============================================================================

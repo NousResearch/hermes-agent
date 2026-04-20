@@ -1513,6 +1513,7 @@ def _apply_default_agent_settings(config: dict):
 
     config.setdefault("compression", {})["enabled"] = True
     config["compression"]["threshold"] = 0.50
+    config.setdefault("search", {})["chinese_tokenization"] = False
 
     config.setdefault("session_reset", {}).update({
         "mode": "both",
@@ -1525,6 +1526,7 @@ def _apply_default_agent_settings(config: dict):
     print_info("  Max iterations: 90")
     print_info("  Tool progress: all")
     print_info("  Compression threshold: 0.50")
+    print_info("  Chinese session search tokenization: off")
     print_info("  Session reset: inactivity (1440 min) + daily (4:00)")
     print_info("  Run `hermes setup agent` later to customize.")
 
@@ -1598,6 +1600,21 @@ def setup_agent_settings(config: dict):
     print_success(
         f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
     )
+
+    # ── Session Search Language Support ──
+    print_header("Session Search")
+    print_info("Hermes indexes past conversations with SQLite FTS5.")
+    print_info("Enable Chinese tokenization if you search Chinese chat history often.")
+    current_chinese_search = config.get("search", {}).get("chinese_tokenization", False)
+    enable_chinese_search = prompt_yes_no(
+        "Enable Chinese word segmentation for session search?",
+        bool(current_chinese_search),
+    )
+    config.setdefault("search", {})["chinese_tokenization"] = enable_chinese_search
+    if enable_chinese_search:
+        print_success("Chinese session search tokenization enabled")
+    else:
+        print_info("Chinese session search tokenization disabled")
 
     # ── Session Reset Policy ──
     print_header("Session Reset Policy")

@@ -717,6 +717,68 @@ class TestCJKSearchFallback:
         assert len(results) == 1
 
 
+class TestChineseTokenizedSearch:
+    def test_fts_table_is_decoupled_from_messages(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db", chinese_search=True)
+        try:
+            cursor = db._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'"
+            )
+            sql = cursor.fetchone()[0].lower()
+        finally:
+            db.close()
+
+        assert "content=messages" not in sql
+        assert "content_rowid" not in sql
+
+    def test_jieba_tokenized_index_finds_spaced_chinese_query(self, tmp_path):
+        pytest.importorskip("jieba")
+        db = SessionDB(db_path=tmp_path / "state.db", chinese_search=True)
+        try:
+            content = "\u6211\u6700\u8fd1\u5728\u7814\u7a76\u673a\u5668\u5b66\u4e60\u7b97\u6cd5"
+            db.create_session(session_id="s1", source="cli")
+            msg_id = db.append_message("s1", role="user", content=content)
+
+            results = db.search_messages("\u673a\u5668 \u5b66\u4e60")
+            cursor = db._conn.execute(
+                "SELECT content FROM messages_fts WHERE rowid = ?", (msg_id,)
+            )
+            indexed_content = cursor.fetchone()[0]
+        finally:
+            db.close()
+
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+        assert "\u673a\u5668" in indexed_content
+        assert "\u5b66\u4e60" in indexed_content
+        assert "\u673a\u5668\u5b66\u4e60" in results[0]["snippet"]
+
+    def test_existing_index_rebuilds_when_chinese_tokenization_enabled(self, tmp_path):
+        pytest.importorskip("jieba")
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path, chinese_search=False)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="user",
+            content="\u6b63\u5728\u8c03\u8bd5\u81ea\u7136\u8bed\u8a00\u5904\u7406\u7ba1\u9053",
+        )
+        db.close()
+
+        db = SessionDB(db_path=db_path, chinese_search=True)
+        try:
+            results = db.search_messages("\u81ea\u7136 \u8bed\u8a00")
+            cursor = db._conn.execute(
+                "SELECT value FROM state_meta WHERE key = 'messages_fts_tokenizer'"
+            )
+            tokenizer = cursor.fetchone()[0]
+        finally:
+            db.close()
+
+        assert len(results) == 1
+        assert tokenizer == "jieba"
+
+
 # =========================================================================
 # Session search and listing
 # =========================================================================
@@ -1169,11 +1231,12 @@ class TestSchemaInit:
         assert "sessions" in tables
         assert "messages" in tables
         assert "schema_version" in tables
+        assert "state_meta" in tables
 
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 8
+        assert version == 9
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1234,7 +1297,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 8
+        assert cursor.fetchone()[0] == 9
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1253,6 +1316,92 @@ class TestSchemaInit:
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+    def test_migration_rebuilds_external_content_fts(self, tmp_path):
+        """v6 databases used an external-content FTS table with triggers."""
+        import sqlite3
+
+        db_path = tmp_path / "migrate_fts.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+
+            CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                content,
+                content=messages,
+                content_rowid=id
+            );
+
+            INSERT INTO sessions (id, source, started_at, message_count)
+            VALUES ('s1', 'cli', 1000.0, 1);
+            INSERT INTO messages (session_id, role, content, timestamp)
+            VALUES ('s1', 'user', 'Docker deployment notes', 1001.0);
+            INSERT INTO messages_fts(rowid, content)
+            VALUES (1, 'Docker deployment notes');
+        """)
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+        try:
+            cursor = migrated_db._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'"
+            )
+            sql = cursor.fetchone()[0].lower()
+            results = migrated_db.search_messages("Docker")
+        finally:
+            migrated_db.close()
+
+        assert "content=messages" not in sql
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
 
 
 class TestTitleUniqueness:

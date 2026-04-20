@@ -640,3 +640,8 @@ class TestUserMessagePreviewConfig:
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]
         assert preview["first_lines"] == 2
         assert preview["last_lines"] == 2
+
+
+class TestSearchConfig:
+    def test_default_config_disables_chinese_tokenization(self):
+        assert DEFAULT_CONFIG["search"]["chinese_tokenization"] is False

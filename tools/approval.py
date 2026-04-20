@@ -184,15 +184,57 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
+# Maximum command length to prevent ReDoS attacks
+_MAX_COMMAND_LENGTH = 10000
+
+# Pre-compiled patterns with timeout protection (compiled once for efficiency)
+_DANGEROUS_PATTERNS_RE = None
+
+def _compile_patterns():
+    """Compile all patterns once for efficiency."""
+    global _DANGEROUS_PATTERNS_RE
+    if _DANGEROUS_PATTERNS_RE is None:
+        _DANGEROUS_PATTERNS_RE = [
+            (re.compile(pattern, re.IGNORECASE | re.DOTALL), description)
+            for pattern, description in DANGEROUS_PATTERNS
+        ]
+    return _DANGEROUS_PATTERNS_RE
+
+# Keywords for quick pre-filtering (skip regex if keyword not present)
+_KEYWORDS_FOR_FAST_FILTER = {
+    'rm', 'chmod', 'chown', 'mkfs', 'dd', 'drop', 'delete', 'truncate',
+    'kill', 'pkill', 'killall', 'curl', 'wget', 'bash', 'sh', 'python',
+    'perl', 'ruby', 'node', 'systemctl', 'find', 'xargs', 'tee', 'sed',
+    'cp', 'mv', 'install', 'git', 'nohup', 'gateway',
+}
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
+    Security improvements:
+    - Input length limit (MAX_COMMAND_LENGTH) to prevent ReDoS
+    - Fast keyword pre-filtering to reduce regex work
+    - Pre-compiled patterns for efficiency
+    
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
+    # Security: limit command length to prevent ReDoS attacks
+    if len(command) > _MAX_COMMAND_LENGTH:
+        logger.warning(f"Command too long ({len(command)} chars), truncating for safety check")
+        command = command[:_MAX_COMMAND_LENGTH]
+    
     command_lower = _normalize_command_for_detection(command).lower()
-    for pattern, description in DANGEROUS_PATTERNS:
-        if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
+    
+    # Fast pre-filter: skip regex if no dangerous keywords present
+    has_keyword = any(kw in command_lower for kw in _KEYWORDS_FOR_FAST_FILTER)
+    if not has_keyword:
+        return (False, None, None)
+    
+    # Use pre-compiled patterns
+    patterns = _compile_patterns()
+    for compiled_pattern, description in patterns:
+        if compiled_pattern.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)

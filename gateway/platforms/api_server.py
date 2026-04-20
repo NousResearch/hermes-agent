@@ -40,6 +40,13 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+try:
+    from cryptography.fernet import Fernet
+    CRYPTO_AVAILABLE = True
+except ImportError:
+    CRYPTO_AVAILABLE = False
+    Fernet = None  # type: ignore[assignment]
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -286,10 +293,29 @@ class ResponseStore:
 
     Persists across gateway restarts.  Falls back to in-memory SQLite
     if the on-disk path is unavailable.
+    
+    Security: Data field is encrypted at rest if cryptography is available.
     """
 
     def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
         self._max_size = max_size
+        self._fernet = None
+        
+        # Initialize encryption if cryptography is available
+        if CRYPTO_AVAILABLE:
+            encryption_key = os.environ.get("API_SERVER_KEY")
+            if encryption_key:
+                try:
+                    # Derive a Fernet key from the provided key
+                    key_hash = hashlib.sha256(encryption_key.encode()).digest()
+                    import base64
+                    fernet_key = base64.urlsafe_b64encode(key_hash)
+                    self._fernet = Fernet(fernet_key)
+                except Exception as e:
+                    logger.warning(f"Failed to initialize encryption: {e}")
+            else:
+                logger.info("No API_SERVER_KEY set - storage will be plaintext")
+        
         if db_path is None:
             try:
                 from hermes_cli.config import get_hermes_home
@@ -298,6 +324,12 @@ class ResponseStore:
                 db_path = ":memory:"
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
+            # Set restrictive file permissions if not in-memory
+            if db_path != ":memory:":
+                try:
+                    os.chmod(db_path, 0o600)
+                except Exception:
+                    pass
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -329,14 +361,33 @@ class ResponseStore:
             (time.time(), response_id),
         )
         self._conn.commit()
-        return json.loads(row[0])
+        
+        # Decrypt data if encryption is enabled
+        raw_data = row[0]
+        if self._fernet:
+            try:
+                raw_data = self._fernet.decrypt(raw_data.encode()).decode()
+            except Exception as e:
+                logger.warning(f"Failed to decrypt response {response_id}: {e}")
+                return None
+        
+        return json.loads(raw_data)
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
         import time
+        
+        # Encrypt data if encryption is enabled
+        raw_data = json.dumps(data, default=str)
+        if self._fernet:
+            try:
+                raw_data = self._fernet.encrypt(raw_data.encode()).decode()
+            except Exception as e:
+                logger.warning(f"Failed to encrypt response {response_id}: {e}")
+        
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()),
+            (response_id, raw_data, time.time()),
         )
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
@@ -449,6 +500,9 @@ else:
 _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "default-src 'none'",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
 
 

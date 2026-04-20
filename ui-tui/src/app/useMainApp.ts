@@ -102,6 +102,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
+  const [lastUserAt, setLastUserAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
@@ -275,6 +276,7 @@ export function useMainApp(gw: GatewayClient) {
     rpc,
     scrollRef,
     setHistoryItems,
+    setLastUserAt,
     setLastUserMsg,
     setSessionStartedAt,
     setStickyPrompt,
@@ -374,6 +376,7 @@ export function useMainApp(gw: GatewayClient) {
     composerState,
     gw,
     maybeGoodVibes,
+    setLastUserAt,
     setLastUserMsg,
     slashRef,
     submitRef,
@@ -497,6 +500,7 @@ export function useMainApp(gw: GatewayClient) {
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,
           resumeById: session.resumeById,
+          setLastUserAt,
           setSessionStartedAt
         },
         slashFlightRef,
@@ -631,13 +635,25 @@ export function useMainApp(gw: GatewayClient) {
     () => ({
       cwdLabel: fmtCwdBranch(cwd, gitBranch),
       goodVibesTick,
+      lastUserAt: ui.sid ? lastUserAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,
       voiceLabel: voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
-    [cwd, gitBranch, goodVibesTick, sessionStartedAt, stickyPrompt, ui, voiceEnabled, voiceProcessing, voiceRecording]
+    [
+      cwd,
+      gitBranch,
+      goodVibesTick,
+      lastUserAt,
+      sessionStartedAt,
+      stickyPrompt,
+      ui,
+      voiceEnabled,
+      voiceProcessing,
+      voiceRecording
+    ]
   )
 
   const appTranscript = useMemo(

@@ -125,11 +125,20 @@ async def test_request_restart_is_idempotent():
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
 
-    assert runner.request_restart(detached=True, via_service=False) is True
-    first_task = next(iter(runner._background_tasks))
-    assert runner.request_restart(detached=True, via_service=False) is False
+    # Patch create_task to capture the restart task (it's no longer in
+    # _background_tasks — see #12875).
+    _captured = []
+    _orig_create_task = asyncio.create_task
+    def _capture(coro, **kw):
+        t = _orig_create_task(coro, **kw)
+        _captured.append(t)
+        return t
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(asyncio, "create_task", _capture)
+        assert runner.request_restart(detached=True, via_service=False) is True
+        assert runner.request_restart(detached=True, via_service=False) is False
 
-    await first_task
+    await _captured[0]
 
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=True, service_restart=False

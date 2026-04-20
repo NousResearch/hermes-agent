@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -21,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
@@ -220,8 +223,8 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
             remove_pid_file()
         else:
             pid_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to remove stale PID file: {e}")
 
 
 def write_pid_file() -> None:
@@ -297,8 +300,8 @@ def remove_pid_file() -> None:
                 # PID file belongs to a different process — leave it alone.
                 return
         path.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to remove PID file: {e}")
 
 
 def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
@@ -381,7 +384,8 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to write scoped lock file, cleaning up: {e}")
         try:
             lock_path.unlink(missing_ok=True)
         except OSError:

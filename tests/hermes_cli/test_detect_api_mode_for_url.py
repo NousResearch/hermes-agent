@@ -28,6 +28,15 @@ class TestCodexResponsesDetection:
         # api.openai.com check must exclude openrouter (which routes to openai-hosted models).
         assert _detect_api_mode_for_url("https://openrouter.ai/api/v1") is None
 
+    def test_openai_host_suffix_does_not_match(self):
+        assert _detect_api_mode_for_url("https://api.openai.com.example/v1") is None
+
+    def test_openai_path_segment_does_not_match(self):
+        assert _detect_api_mode_for_url("https://proxy.example.test/api.openai.com/v1") is None
+
+    def test_xai_host_suffix_does_not_match(self):
+        assert _detect_api_mode_for_url("https://api.x.ai.example/v1") is None
+
 
 class TestAnthropicMessagesDetection:
     """Third-party gateways that speak the Anthropic protocol under /anthropic."""

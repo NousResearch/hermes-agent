@@ -6,10 +6,12 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
+from gateway.group_visible_addressing_platform_specs import (
+    get_group_visible_addressing_platform_spec,
+)
 from gateway.platforms.base import MessageType
-from gateway.qq_intents import _qq_group_has_visible_bot_address
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +314,7 @@ def resolve_auto_background_dispatch(
     auto_background_work_enabled: bool,
     employee_routes: Iterable[dict[str, Any]] | None,
     conversation_history: Optional[list[dict[str, Any]]] = None,
+    group_visible_address_checker: Callable[[str], bool] | None = None,
 ) -> dict[str, Any] | None:
     """Return auto-background metadata when this turn should detach."""
     if not auto_background_work_enabled:
@@ -329,7 +332,11 @@ def resolve_auto_background_dispatch(
     source = getattr(event, "source", None)
     if getattr(source, "chat_type", "") == "group":
         is_shortcut = is_auto_background_shortcut(body)
-        if not _qq_group_has_visible_bot_address(body) and not (
+        visible_address_checker = (
+            group_visible_address_checker
+            or get_group_visible_addressing_platform_spec(getattr(source, "platform", None)).has_visible_bot_address
+        )
+        if not visible_address_checker(body) and not (
             is_shortcut and history_suggests_auto_background_work(conversation_history)
         ):
             return None

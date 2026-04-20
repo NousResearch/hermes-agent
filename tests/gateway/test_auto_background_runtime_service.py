@@ -145,6 +145,21 @@ def test_resolve_auto_background_dispatch_allows_group_followup_shortcut_with_ta
     assert result == {"worker_name": "", "preloaded_skills": []}
 
 
+def test_resolve_auto_background_dispatch_uses_injected_group_visible_address_checker():
+    event = _make_event("上服务器看看日志，把这个问题查清楚。", chat_type="group")
+
+    result = resolve_auto_background_dispatch(
+        event,
+        event.text,
+        auto_background_work_enabled=True,
+        employee_routes=[],
+        conversation_history=None,
+        group_visible_address_checker=lambda body: True,
+    )
+
+    assert result == {"worker_name": "", "preloaded_skills": []}
+
+
 def test_resolve_auto_background_dispatch_ignores_group_shortcut_with_assistant_only_task_history():
     event = _make_event("继续", chat_type="group")
     history = [

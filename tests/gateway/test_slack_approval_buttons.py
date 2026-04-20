@@ -318,6 +318,328 @@ class TestSlackThreadContext:
 
 
 # ===========================================================================
+# Regression coverage for #12421 — thread-context cache must isolate by
+# workspace (team_id).  The rendered content depends on workspace-scoped
+# state (``_team_bot_user_ids`` for mention stripping + ``_get_client``-
+# routed user-name resolution), so a cache hit from workspace A must not
+# serve content to workspace B.
+# ===========================================================================
+
+
+def _make_multi_workspace_adapter():
+    """Build a SlackAdapter wired for two independent workspaces (T1 + T2)
+    with distinct bot user IDs and distinct team-scoped WebClients."""
+    config = PlatformConfig(enabled=True, token="xoxb-test-token")
+    adapter = SlackAdapter(config)
+    adapter._app = MagicMock()
+    adapter._bot_user_id = "U_BOT1"
+    adapter._team_clients = {"T1": AsyncMock(), "T2": AsyncMock()}
+    adapter._team_bot_user_ids = {"T1": "U_BOT1", "T2": "U_BOT2"}
+    adapter._channel_team = {"C1": "T1", "C2": "T2"}
+    return adapter
+
+
+class TestSlackThreadContextWorkspaceIsolation:
+    """The thread-context cache must key on ``team_id`` in addition to
+    channel + thread timestamp.  #12421."""
+
+    @pytest.mark.asyncio
+    async def test_reporter_repro_two_workspaces_do_not_share_cache(self):
+        """Reporter's exact repro: the same ``(channel_id, thread_ts)``
+        tuple lands across two workspaces with different identity data.
+        The second call must not reuse the first workspace's content and
+        must trigger its own API fetch.
+
+        Real-world path: a channel is associated with two workspaces
+        over time (enterprise grid migration, or back-to-back calls
+        under different team_id parameters — as shown by the issue
+        reporter), so we flip ``_channel_team`` between calls to pin
+        the routing deterministically.
+        """
+        adapter = _make_multi_workspace_adapter()
+
+        t1 = adapter._team_clients["T1"]
+        t2 = adapter._team_clients["T2"]
+        t1.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "Hello from T1"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        t2.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "Hello from T2"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        # Route Csame → T1 for the first call.
+        adapter._channel_team["Csame"] = "T1"
+        first = await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+        # Now route Csame → T2 for the second call.
+        adapter._channel_team["Csame"] = "T2"
+        second = await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T2",
+        )
+
+        # Each workspace got its own content (no cross-contamination).
+        assert "Hello from T1" in first
+        assert "Hello from T2" in second
+        assert first != second
+        # Each workspace triggered its own conversations.replies call.
+        assert t1.conversations_replies.await_count == 1
+        assert t2.conversations_replies.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_same_workspace_same_thread_uses_cache(self):
+        """Preserved-behaviour canary: within one workspace, the second
+        call for the same (channel, thread_ts) is a cache hit — no
+        duplicate API call."""
+        adapter = _make_multi_workspace_adapter()
+        t1 = adapter._team_clients["T1"]
+        t1.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "Parent"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        first = await adapter._fetch_thread_context(
+            channel_id="C1", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+        second = await adapter._fetch_thread_context(
+            channel_id="C1", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+
+        assert first == second
+        assert t1.conversations_replies.await_count == 1  # cached
+
+    @pytest.mark.asyncio
+    async def test_structural_pin_cache_key_contains_team_id(self):
+        """Pin the cache key shape directly — a future refactor can't
+        silently drop ``team_id`` and reintroduce the cross-workspace
+        leak without breaking this test."""
+        adapter = _make_multi_workspace_adapter()
+        adapter._channel_team["Csame"] = "T1"
+        t1 = adapter._team_clients["T1"]
+        t1.conversations_replies = AsyncMock(return_value={
+            "messages": [{"ts": "1000.0", "user": "U1", "text": "Parent"}]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+
+        # Cache key must include the team_id.  Precise shape:
+        # ``"T1:Csame:1000.0"``.  If a future refactor changes the
+        # concrete shape, update this assertion — but make sure it
+        # still uniquely identifies the workspace.
+        assert "T1:Csame:1000.0" in adapter._thread_context_cache
+        # The old, workspace-unaware key must NOT be in the cache.
+        assert "Csame:1000.0" not in adapter._thread_context_cache
+
+    @pytest.mark.asyncio
+    async def test_mention_stripping_is_team_specific(self):
+        """The rendered content strips each workspace's *own* bot
+        mention — workspace A's cached output (with A's bot mention
+        stripped) must not leak to workspace B's caller.
+
+        To prove workspace-isolated stripping (and not just coincidental
+        absence of mentions), each workspace returns text that
+        *contains* the *other* workspace's bot mention as a literal
+        substring.  After correct per-workspace stripping:
+
+        * T1's output keeps the literal ``<@U_BOT2>`` (because T1
+          doesn't strip T2's bot mention) and drops ``<@U_BOT1>``.
+        * T2's output keeps ``<@U_BOT1>`` and drops ``<@U_BOT2>``.
+
+        On ``origin/main`` the cache leak would make T2's caller see
+        T1's cached output — so ``<@U_BOT1>`` would be absent from
+        T2's context, and ``<@U_BOT2>`` would be present (T2 never got
+        to strip it).  Both assertions below would fail.
+        """
+        adapter = _make_multi_workspace_adapter()
+        t1 = adapter._team_clients["T1"]
+        t2 = adapter._team_clients["T2"]
+        # Each workspace's triggering message mentions its own bot AND
+        # the other workspace's bot (which looks like a plain literal
+        # from its POV).  Per-workspace stripping removes exactly one
+        # mention per output.
+        t1.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1",
+                 "text": "Hey <@U_BOT1> and also <@U_BOT2> help"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        t2.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1",
+                 "text": "Hey <@U_BOT1> and also <@U_BOT2> help"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        adapter._channel_team["Csame"] = "T1"
+        t1_ctx = await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+        adapter._channel_team["Csame"] = "T2"
+        t2_ctx = await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T2",
+        )
+
+        # T1 strips its own mention, leaves T2's in place.
+        assert "<@U_BOT1>" not in t1_ctx
+        assert "<@U_BOT2>" in t1_ctx
+        # T2 strips its own mention, leaves T1's in place.
+        assert "<@U_BOT2>" not in t2_ctx
+        assert "<@U_BOT1>" in t2_ctx
+        # And the two rendered contexts must be distinct.
+        assert t1_ctx != t2_ctx
+
+    @pytest.mark.asyncio
+    async def test_ttl_is_per_workspace(self):
+        """Each workspace's cache entry gets its own TTL window.  Aging
+        one team's entry into the past must not affect the other
+        team's cached content."""
+        adapter = _make_multi_workspace_adapter()
+        t1 = adapter._team_clients["T1"]
+        t2 = adapter._team_clients["T2"]
+        t1.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "From T1"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        t2.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "From T2"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        # Prime both caches.
+        adapter._channel_team["Csame"] = "T1"
+        await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+        adapter._channel_team["Csame"] = "T2"
+        await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T2",
+        )
+
+        # Expire only T1's entry.
+        ttl = adapter._THREAD_CACHE_TTL
+        t1_entry = adapter._thread_context_cache["T1:Csame:1000.0"]
+        # Rebuild with a stale timestamp rather than mutate a frozen dataclass.
+        import dataclasses
+        adapter._thread_context_cache["T1:Csame:1000.0"] = dataclasses.replace(
+            t1_entry, fetched_at=t1_entry.fetched_at - ttl - 10,
+        )
+
+        # T1 refreshes (API hit), T2 still cached (no new API hit).
+        adapter._channel_team["Csame"] = "T1"
+        await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+        adapter._channel_team["Csame"] = "T2"
+        await adapter._fetch_thread_context(
+            channel_id="Csame", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T2",
+        )
+
+        assert t1.conversations_replies.await_count == 2  # initial + refresh
+        assert t2.conversations_replies.await_count == 1  # still cached
+
+    @pytest.mark.asyncio
+    async def test_empty_team_id_has_own_namespace(self):
+        """Backward-compat: a caller that passes ``team_id=""`` (legacy
+        single-workspace mode or older test harnesses) gets its own
+        namespace and does not collide with ``team_id="T1"``."""
+        adapter = _make_multi_workspace_adapter()
+        t1 = adapter._team_clients["T1"]
+        t1.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "Parent"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        # Empty-team fallback routes through ``self._app.client`` via
+        # ``_get_client`` when the channel has no team mapping.  Wire it.
+        adapter._app.client = t1
+
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        # First call: team_id="" → cache key ``:Cunmapped:1000.0``.
+        # Routing: no team mapping → ``_get_client`` falls back to
+        # ``_app.client`` (wired to t1 above).
+        await adapter._fetch_thread_context(
+            channel_id="Cunmapped", thread_ts="1000.0",
+            current_ts="9999.9", team_id="",
+        )
+        # Second call: team_id="T1" but still no channel→team mapping,
+        # so ``_get_client`` still falls back to ``_app.client``.  Cache
+        # key is ``T1:Cunmapped:1000.0``.
+        await adapter._fetch_thread_context(
+            channel_id="Cunmapped", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+
+        # Two distinct entries — one per team scope.
+        assert ":Cunmapped:1000.0" in adapter._thread_context_cache
+        assert "T1:Cunmapped:1000.0" in adapter._thread_context_cache
+        # And the fetch ran twice because they weren't merged.
+        assert t1.conversations_replies.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_different_channels_same_team_each_get_cached(self):
+        """Sanity: within one workspace, different channels still get
+        independent cache entries (no cross-channel collapsing)."""
+        adapter = _make_multi_workspace_adapter()
+        adapter._channel_team["CA"] = "T1"
+        adapter._channel_team["CB"] = "T1"
+        t1 = adapter._team_clients["T1"]
+        t1.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "Parent"},
+                {"ts": "9999.9", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        await adapter._fetch_thread_context(
+            channel_id="CA", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+        await adapter._fetch_thread_context(
+            channel_id="CB", thread_ts="1000.0",
+            current_ts="9999.9", team_id="T1",
+        )
+
+        assert "T1:CA:1000.0" in adapter._thread_context_cache
+        assert "T1:CB:1000.0" in adapter._thread_context_cache
+        assert t1.conversations_replies.await_count == 2
+
+
+# ===========================================================================
 # _has_active_session_for_thread — session key fix (#5833)
 # ===========================================================================
 

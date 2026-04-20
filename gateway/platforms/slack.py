@@ -1410,10 +1410,19 @@ class SlackAdapter(BasePlatformAdapter):
         Results are cached for _THREAD_CACHE_TTL seconds per thread to avoid
         hammering conversations.replies (Tier 3, ~50 req/min).
 
+        Cache entries are **keyed per workspace** (``team_id``) in addition
+        to channel + thread.  The rendered context depends on workspace-
+        scoped state — ``_team_bot_user_ids`` for mention stripping and
+        ``_get_client``-routed ``users_info`` lookups for display names —
+        so a cache hit from one workspace must not serve content to a
+        caller from a different workspace.  Empty ``team_id`` falls into
+        its own namespace and remains compatible with single-workspace
+        legacy callers.  See #12421.
+
         Returns a formatted string with prior thread history, or empty string
         on failure or if the thread has no prior messages.
         """
-        cache_key = f"{channel_id}:{thread_ts}"
+        cache_key = f"{team_id}:{channel_id}:{thread_ts}"
         now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:

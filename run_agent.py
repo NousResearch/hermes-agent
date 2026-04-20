@@ -6855,12 +6855,15 @@ class AIAgent:
             "timeout": self._resolved_api_call_timeout(),
         }
         try:
-            from agent.auxiliary_client import _fixed_temperature_for_model
+            from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
         except Exception:
             _fixed_temperature_for_model = None
+            OMIT_TEMPERATURE = None
         if _fixed_temperature_for_model is not None:
             fixed_temperature = _fixed_temperature_for_model(self.model, self.base_url)
-            if fixed_temperature is not None:
+            if fixed_temperature is OMIT_TEMPERATURE:
+                api_kwargs.pop("temperature", None)
+            elif fixed_temperature is not None:
                 api_kwargs["temperature"] = fixed_temperature
         if self._is_qwen_portal():
             api_kwargs["metadata"] = {
@@ -7301,12 +7304,19 @@ class AIAgent:
             from agent.auxiliary_client import (
                 call_llm as _call_llm,
                 _fixed_temperature_for_model,
+                OMIT_TEMPERATURE,
             )
             _aux_available = True
-            # Use the fixed-temperature override (e.g. kimi-for-coding → 0.6) if
-            # the model has a strict contract; otherwise the historical 0.3 default.
-            _flush_temperature = _fixed_temperature_for_model(self.model, self.base_url)
-            if _flush_temperature is None:
+            # Kimi models manage temperature server-side — omit it entirely.
+            # Other models with a fixed contract get that value; everyone else
+            # gets the historical 0.3 default.
+            _fixed_temp = _fixed_temperature_for_model(self.model, self.base_url)
+            _omit_temperature = _fixed_temp is OMIT_TEMPERATURE
+            if _omit_temperature:
+                _flush_temperature = None
+            elif _fixed_temp is not None:
+                _flush_temperature = _fixed_temp
+            else:
                 _flush_temperature = 0.3
             try:
                 response = _call_llm(
@@ -7325,7 +7335,10 @@ class AIAgent:
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
-                codex_kwargs["temperature"] = _flush_temperature
+                if _flush_temperature is not None:
+                    codex_kwargs["temperature"] = _flush_temperature
+                else:
+                    codex_kwargs.pop("temperature", None)
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)
@@ -7344,9 +7357,10 @@ class AIAgent:
                     "model": self.model,
                     "messages": api_messages,
                     "tools": [memory_tool_def],
-                    "temperature": _flush_temperature,
                     **self._max_tokens_param(5120),
                 }
+                if _flush_temperature is not None:
+                    api_kwargs["temperature"] = _flush_temperature
                 from agent.auxiliary_client import _get_task_timeout
                 response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(
                     **api_kwargs, timeout=_get_task_timeout("flush_memories")
@@ -8368,14 +8382,17 @@ class AIAgent:
 
             summary_extra_body = {}
             try:
-                from agent.auxiliary_client import _fixed_temperature_for_model
+                from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
             except Exception:
                 _fixed_temperature_for_model = None
-            _summary_temperature = (
+                _OMIT_TEMP = None
+            _raw_summary_temp = (
                 _fixed_temperature_for_model(self.model, self.base_url)
                 if _fixed_temperature_for_model is not None
                 else None
             )
+            _omit_summary_temperature = _raw_summary_temp is _OMIT_TEMP
+            _summary_temperature = None if _omit_summary_temperature else _raw_summary_temp
             _is_nous = "nousresearch" in self._base_url_lower
             if self._supports_reasoning_extra_body():
                 if self.reasoning_config is not None:

@@ -967,10 +967,15 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (ElevenLabs)")
     elif stt_provider == "naga":
         details_parts.append("STT provider: OK (Naga.ac)")
+    elif stt_provider == "mistral":
+        details_parts.append("STT provider: OK (Mistral)")
+    elif stt_provider in ("local_command", "local-command"):
+        details_parts.append("STT provider: OK (local command)")
     else:
         details_parts.append(
             "STT provider: MISSING (pip install faster-whisper, "
-            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY / ELEVENLABS_API_KEY / NAGA_API_KEY)"
+            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY / MISTRAL_API_KEY, "
+            "or configure stt.elevenlabs.api_key / stt.naga.api_key in config)"
         )
 
     for warning in env_check["warnings"]:

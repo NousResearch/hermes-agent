@@ -2,12 +2,15 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with multiple providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **mistral** (paid) — Mistral Voxtral API, requires ``MISTRAL_API_KEY``.
+  - **elevenlabs** (paid) — ElevenLabs STT API, requires ``ELEVENLABS_API_KEY`` or ``stt.elevenlabs.api_key`` in config.
+  - **naga** (paid) — Naga.ac STT API, requires ``NAGA_API_KEY`` or ``stt.naga.api_key`` in config.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -238,7 +241,14 @@ def _get_provider(stt_config: dict) -> str:
 
         if provider == "naga":
             if _resolve_naga_stt_api_key(stt_config):
-                return "naga"
+                try:
+                    import requests  # noqa: F401
+                    return "naga"
+                except ImportError:
+                    logger.warning(
+                        "STT provider 'naga' requires the 'requests' package (pip install requests)"
+                    )
+                    return "none"
             logger.warning(
                 "STT provider 'naga' configured but no NAGA_API_KEY available"
             )
@@ -586,7 +596,8 @@ def _resolve_elevenlabs_stt_api_key(stt_config: Optional[dict] = None) -> str:
     if isinstance(config, dict):
         eleven_cfg = config.get("elevenlabs", {})
         if isinstance(eleven_cfg, dict):
-            cfg_key = str(eleven_cfg.get("api_key", "")).strip()
+            _val = eleven_cfg.get("api_key")
+            cfg_key = _val.strip() if isinstance(_val, str) else ""
             if cfg_key:
                 return cfg_key
     return os.getenv("ELEVENLABS_API_KEY", "").strip()
@@ -642,7 +653,8 @@ def _resolve_naga_stt_api_key(stt_config: Optional[dict] = None) -> str:
     if isinstance(config, dict):
         naga_cfg = config.get("naga", {})
         if isinstance(naga_cfg, dict):
-            cfg_key = str(naga_cfg.get("api_key", "")).strip()
+            _val = naga_cfg.get("api_key")
+            cfg_key = _val.strip() if isinstance(_val, str) else ""
             if cfg_key:
                 return cfg_key
     return os.getenv("NAGA_API_KEY", "").strip()

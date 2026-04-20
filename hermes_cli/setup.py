@@ -2857,6 +2857,7 @@ SETUP_SECTIONS = [
 # configuration. Keep this list in the same order as the visible menu entries.
 RETURNING_USER_MENU_SECTION_KEYS = [
     "model",
+    "stt",
     "terminal",
     "gateway",
     "tools",
@@ -2988,6 +2989,7 @@ def run_setup_wizard(args):
             "Quick Setup - configure missing items only",
             "Full Setup - reconfigure everything",
             "Model & Provider",
+            "Speech-to-Text",
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
@@ -3003,10 +3005,10 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice == 7:
+        elif choice == 8:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif 2 <= choice <= 6:
+        elif 2 <= choice <= 7:
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
             # so positional indexing (choice - 2) would dispatch the wrong section.

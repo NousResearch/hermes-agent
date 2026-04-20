@@ -1908,6 +1908,9 @@ class HermesCLI:
             fb = [fb] if fb.get("provider") and fb.get("model") else []
         self._fallback_model = fb
 
+        # Optional cheap-vs-strong routing for simple turns
+        self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
+
         # Signature of the currently-initialised agent's runtime.  Used to
         # rebuild the agent when provider / model / base_url changes across
         # turns (e.g. after /model or credential rotation).
@@ -3083,34 +3086,28 @@ class HermesCLI:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        Uses smart cheap-vs-strong routing for simple turns when configured.
+        If the user has toggled `/fast` on and the chosen model supports
+        Priority Processing / Anthropic fast mode, attach `request_overrides`
+        so the API call is marked accordingly.
         """
+        from agent.smart_model_routing import resolve_turn_route
         from hermes_cli.models import resolve_fast_mode_overrides
 
-        runtime = {
-            "api_key": self.api_key,
-            "base_url": self.base_url,
-            "provider": self.provider,
-            "api_mode": self.api_mode,
-            "command": self.acp_command,
-            "args": list(self.acp_args or []),
-            "credential_pool": getattr(self, "_credential_pool", None),
-        }
-        route = {
-            "model": self.model,
-            "runtime": runtime,
-            "signature": (
-                self.model,
-                runtime["provider"],
-                runtime["base_url"],
-                runtime["api_mode"],
-                runtime["command"],
-                tuple(runtime["args"]),
-            ),
-        }
+        route = resolve_turn_route(
+            user_message,
+            self._smart_model_routing,
+            {
+                "model": self.model,
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+                "provider": self.provider,
+                "api_mode": self.api_mode,
+                "command": self.acp_command,
+                "args": list(self.acp_args or []),
+                "credential_pool": getattr(self, "_credential_pool", None),
+            },
+        )
 
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:

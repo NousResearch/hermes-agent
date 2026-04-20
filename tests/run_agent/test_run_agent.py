@@ -918,7 +918,11 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
-    def test_public_moonshot_kimi_k2_5_forces_temperature_1(self, agent):
+    def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
+        """Kimi models should NOT have client-side temperature overrides.
+
+        The Kimi gateway selects the correct temperature server-side.
+        """
         agent.base_url = "https://api.moonshot.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -926,9 +930,9 @@ class TestBuildApiKwargs:
 
         kwargs = agent._build_api_kwargs(messages)
 
-        assert kwargs["temperature"] == 1.0
+        assert "temperature" not in kwargs
 
-    def test_public_moonshot_cn_kimi_k2_5_forces_temperature_1(self, agent):
+    def test_public_moonshot_cn_kimi_k2_5_omits_temperature(self, agent):
         agent.base_url = "https://api.moonshot.cn/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -936,9 +940,9 @@ class TestBuildApiKwargs:
 
         kwargs = agent._build_api_kwargs(messages)
 
-        assert kwargs["temperature"] == 1.0
+        assert "temperature" not in kwargs
 
-    def test_kimi_coding_endpoint_keeps_kimi_k2_5_at_0_6(self, agent):
+    def test_kimi_coding_endpoint_omits_temperature(self, agent):
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -946,7 +950,7 @@ class TestBuildApiKwargs:
 
         kwargs = agent._build_api_kwargs(messages)
 
-        assert kwargs["temperature"] == 0.6
+        assert "temperature" not in kwargs
 
     def test_provider_preferences_injected(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"

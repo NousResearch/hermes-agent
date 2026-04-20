@@ -95,85 +95,37 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
-_FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
-    "kimi-for-coding": 0.6,
-}
+# Sentinel: when returned by _fixed_temperature_for_model(), callers must
+# strip the ``temperature`` key from API kwargs entirely so the provider's
+# server-side default applies.  Kimi/Moonshot models manage temperature
+# internally — sending *any* value (even the "correct" one) can conflict
+# with gateway-side mode selection (thinking → 1.0, non-thinking → 0.6).
+OMIT_TEMPERATURE: object = object()
 
-# Moonshot's kimi-for-coding endpoint (api.kimi.com/coding) documents:
-# "k2.5 model will use a fixed value 1.0, non-thinking mode will use a fixed
-# value 0.6.  Any other value will result in an error."  The same lock applies
-# to the other k2.* models served on that endpoint.  Enumerated explicitly so
-# non-coding siblings like `kimi-k2-instruct` (variable temperature, served on
-# the standard chat API and third parties) are NOT clamped.
-# Source: https://platform.kimi.ai/docs/guide/kimi-k2-5-quickstart
-_KIMI_INSTANT_MODELS: frozenset = frozenset({
-    "kimi-k2.6",
-    "kimi-k2.5",
-    "kimi-k2-turbo-preview",
-    "kimi-k2-0905-preview",
-})
-_KIMI_THINKING_MODELS: frozenset = frozenset({
-    "kimi-k2-thinking",
-    "kimi-k2-thinking-turbo",
-})
 
-# Moonshot's public chat endpoint (api.moonshot.ai/v1) enforces a different
-# temperature contract than the Coding Plan endpoint above.  Empirically,
-# `kimi-k2.5` on the public API rejects 0.6 with HTTP 400
-# "invalid temperature: only 1 is allowed for this model" — the Coding Plan
-# lock (0.6 for non-thinking) does not apply.  `kimi-k2-turbo-preview` and the
-# thinking variants already match the Coding Plan contract on the public
-# endpoint, so we only override the models that diverge.
-# Users hit this endpoint when `KIMI_API_KEY` is a legacy `sk-*` key (the
-# `sk-kimi-*` prefix routes to api.kimi.com/coding/v1 instead — see
-# hermes_cli/auth.py:_kimi_base_url_for_key).
-_KIMI_PUBLIC_API_OVERRIDES: Dict[str, float] = {
-    "kimi-k2.5": 1.0,
-}
+def _is_kimi_model(model: Optional[str]) -> bool:
+    """True for any Kimi / Moonshot model that manages temperature server-side."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare.startswith("kimi-") or bare == "kimi"
 
 
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
-) -> Optional[float]:
-    """Return a required temperature override for models with strict contracts.
+) -> "Optional[float] | object":
+    """Return a temperature directive for models with strict contracts.
 
-    Moonshot's kimi-for-coding endpoint rejects any non-approved temperature on
-    the k2.5 family.  Non-thinking variants require exactly 0.6; thinking
-    variants require 1.0.  An optional ``vendor/`` prefix (e.g.
-    ``moonshotai/kimi-k2.5``) is tolerated for aggregator routings.
-
-    When ``base_url`` points to Moonshot's public chat endpoint
-    (``api.moonshot.ai``), the contract changes for ``kimi-k2.5``: the public
-    API only accepts ``temperature=1``, not 0.6.  That override takes precedence
-    over the Coding Plan defaults above.
-
-    Returns ``None`` for every other model, including ``kimi-k2-instruct*``
-    which is the separate non-coding K2 family with variable temperature.
+    Returns:
+        ``OMIT_TEMPERATURE`` — caller must remove the ``temperature`` key so the
+            provider chooses its own default.  Used for all Kimi / Moonshot
+            models whose gateway selects temperature server-side.
+        ``float`` — a specific value the caller must use (reserved for future
+            models with fixed-temperature contracts).
+        ``None`` — no override; caller should use its own default.
     """
-    normalized = (model or "").strip().lower()
-    bare = normalized.rsplit("/", 1)[-1]
-
-    # Public Moonshot API has a stricter contract for some models than the
-    # Coding Plan endpoint — check it first so it wins on conflict.
-    if base_url and ("api.moonshot.ai" in base_url.lower() or "api.moonshot.cn" in base_url.lower()):
-        public = _KIMI_PUBLIC_API_OVERRIDES.get(bare)
-        if public is not None:
-            logger.debug(
-                "Forcing temperature=%s for %r on public Moonshot API", public, model
-            )
-            return public
-
-    fixed = _FIXED_TEMPERATURE_MODELS.get(normalized)
-    if fixed is not None:
-        logger.debug("Forcing temperature=%s for model %r (fixed map)", fixed, model)
-        return fixed
-    if bare in _KIMI_THINKING_MODELS:
-        logger.debug("Forcing temperature=1.0 for kimi thinking model %r", model)
-        return 1.0
-    if bare in _KIMI_INSTANT_MODELS:
-        logger.debug("Forcing temperature=0.6 for kimi instant model %r", model)
-        return 0.6
+    if _is_kimi_model(model):
+        logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        return OMIT_TEMPERATURE
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
@@ -2476,7 +2428,9 @@ def _build_call_kwargs(
     }
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
-    if fixed_temperature is not None:
+    if fixed_temperature is OMIT_TEMPERATURE:
+        temperature = None  # strip — let server choose
+    elif fixed_temperature is not None:
         temperature = fixed_temperature
 
     # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently

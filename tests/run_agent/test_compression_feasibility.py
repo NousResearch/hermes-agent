@@ -10,6 +10,8 @@ Two-phase design:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
@@ -51,12 +53,13 @@ def _make_agent(
 # ── Core warning logic ──────────────────────────────────────────────
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=32_768)
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_warns_when_aux_context_below_threshold(mock_get_client, mock_ctx_len):
-    """Warning emitted when aux model context < main model threshold."""
+def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_client, mock_ctx_len):
+    """Auto-correction: aux >= 64K floor but < threshold → lower threshold
+    to aux_context so compression still works this session."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
-    # threshold = 100,000 — aux has only 32,768
+    # threshold = 100,000 — aux has 80,000 (above 64K floor, below threshold)
     mock_client = MagicMock()
     mock_client.base_url = "https://openrouter.ai/api/v1"
     mock_client.api_key = "sk-aux"
@@ -69,16 +72,41 @@ def test_warns_when_aux_context_below_threshold(mock_get_client, mock_ctx_len):
 
     assert len(messages) == 1
     assert "Compression model" in messages[0]
-    assert "32,768" in messages[0]
-    assert "100,000" in messages[0]
-    assert "will not be possible" in messages[0]
-    # Actionable fix guidance included
-    assert "Fix options" in messages[0]
+    assert "80,000" in messages[0]        # aux context
+    assert "100,000" in messages[0]       # old threshold
+    assert "Auto-lowered" in messages[0]
+    # Actionable persistence guidance included
+    assert "config.yaml" in messages[0]
     assert "auxiliary:" in messages[0]
     assert "compression:" in messages[0]
     assert "threshold:" in messages[0]
     # Warning stored for gateway replay
     assert agent._compression_warning is not None
+    # Threshold on the live compressor was actually lowered
+    assert agent.context_compressor.threshold_tokens == 80_000
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=32_768)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_rejects_aux_below_minimum_context(mock_get_client, mock_ctx_len):
+    """Hard floor: aux context < MINIMUM_CONTEXT_LENGTH (64K) → session
+    refuses to start (ValueError), mirroring the main-model rejection."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "tiny-aux-model")
+
+    agent._emit_status = lambda msg: None
+
+    with pytest.raises(ValueError) as exc_info:
+        agent._check_compression_model_feasibility()
+
+    err = str(exc_info.value)
+    assert "tiny-aux-model" in err
+    assert "32,768" in err
+    assert "64,000" in err
+    assert "below the minimum" in err
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=200_000)
@@ -294,8 +322,9 @@ def test_exact_threshold_boundary_no_warning(mock_get_client, mock_ctx_len):
 
 @patch("agent.model_metadata.get_model_context_length", return_value=99_999)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_just_below_threshold_warns(mock_get_client, mock_ctx_len):
-    """Warning fires when aux context is one token below the threshold."""
+def test_just_below_threshold_auto_corrects(mock_get_client, mock_ctx_len):
+    """Auto-correct fires when aux context is one token below the threshold
+    (and above the 64K hard floor)."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
     mock_client = MagicMock()
     mock_client.base_url = "https://openrouter.ai/api/v1"
@@ -309,12 +338,14 @@ def test_just_below_threshold_warns(mock_get_client, mock_ctx_len):
 
     assert len(messages) == 1
     assert "small-model" in messages[0]
+    assert "Auto-lowered" in messages[0]
+    assert agent.context_compressor.threshold_tokens == 99_999
 
 
 # ── Two-phase: __init__ + run_conversation replay ───────────────────
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=32_768)
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
     """__init__ stores the warning; _replay sends it through status_callback."""
@@ -338,7 +369,7 @@ def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
     agent._replay_compression_warning()
 
     assert any(
-        ev == "lifecycle" and "will not be possible" in msg
+        ev == "lifecycle" and "Auto-lowered" in msg
         for ev, msg in callback_events
     )
 
@@ -375,7 +406,7 @@ def test_replay_without_callback_is_noop():
     agent._replay_compression_warning()
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=32_768)
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_len):
     """After replay in run_conversation, _compression_warning is cleared

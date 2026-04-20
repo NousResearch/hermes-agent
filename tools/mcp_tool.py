@@ -1794,6 +1794,13 @@ _stdio_pids: Dict[int, str] = {}  # pid -> server_name
 # sessions (e.g. concurrent cron jobs or live user chats).
 _orphan_stdio_pids: set = set()
 
+# PIDs that survived their session context exit (SDK teardown failed to
+# terminate them).  These are detected in _run_stdio's finally block and
+# can be cleaned up asynchronously by _kill_orphaned_mcp_children().
+# Separate from _stdio_pids so cleanup sweeps never race with active
+# sessions (e.g. concurrent cron jobs or live user chats).
+_orphan_stdio_pids: set = set()
+
 
 def _snapshot_child_pids() -> set:
     """Return a set of current child process PIDs.

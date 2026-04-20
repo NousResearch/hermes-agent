@@ -893,6 +893,43 @@ function selectionContentBounds(
   return { first, last }
 }
 
+function selectableCell(screen: Screen, row: number, col: number): boolean {
+  const cell = cellAt(screen, col, row)
+
+  return (
+    screen.noSelect[row * screen.width + col] !== 1 &&
+    isWrittenCellAt(screen, col, row) &&
+    !!cell &&
+    cell.width !== CellWidth.SpacerTail &&
+    cell.width !== CellWidth.SpacerHead
+  )
+}
+
+function selectionContentBounds(
+  screen: Screen,
+  row: number,
+  start: number,
+  end: number
+): { first: number; last: number } | null {
+  let first = start
+
+  while (first <= end && !selectableCell(screen, row, first)) {
+    first++
+  }
+
+  if (first > end) {
+    return null
+  }
+
+  let last = end
+
+  while (last >= first && !selectableCell(screen, row, last)) {
+    last--
+  }
+
+  return { first, last }
+}
+
 /** Extract text from one screen row. When the next row is a soft-wrap
  *  continuation (screen.softWrap[row+1]>0), clamp to that content-end
  *  column and skip the trailing trim so the word-separator space survives

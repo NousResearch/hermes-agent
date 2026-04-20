@@ -904,6 +904,21 @@ export const ToolTrail = memo(function ToolTrail({
     )
   }
 
+  const toolLabel = (group: Group) => {
+    const { duration, label } = splitToolDuration(String(group.content))
+
+    return duration ? (
+      <>
+        {label}
+        <Text color={t.color.statusFg} dim>
+          {duration}
+        </Text>
+      </>
+    ) : (
+      group.content
+    )
+  }
+
   // ── Backstop: floating alerts when every panel is hidden ─────────
   //
   // Per-section overrides win over the global details_mode (they're computed

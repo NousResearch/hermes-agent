@@ -9,7 +9,7 @@ import { PLACEHOLDER } from '../content/placeholders.js'
 import type { Theme } from '../theme.js'
 import type { DetailsMode } from '../types.js'
 
-import { GoodVibesHeart, IdleSinceLastMsg, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
+import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { MessageLine } from './messageLine.js'
@@ -194,6 +194,7 @@ const ComposerPane = memo(function ComposerPane({
             status={ui.status}
             statusColor={status.statusColor}
             t={ui.theme}
+            turnStartedAt={status.turnStartedAt}
             usage={ui.usage}
             voiceLabel={status.voiceLabel}
           />
@@ -242,9 +243,7 @@ const ComposerPane = memo(function ComposerPane({
                 value={composer.input}
               />
 
-              <Box flexDirection="row" position="absolute" right={0}>
-                {!ui.busy && status.lastUserAt ? <IdleSinceLastMsg lastUserAt={status.lastUserAt} t={ui.theme} /> : null}
-
+              <Box position="absolute" right={0}>
                 <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
               </Box>
             </Box>

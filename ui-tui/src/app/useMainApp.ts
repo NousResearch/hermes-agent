@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
-import { imageTokenMeta } from '../domain/messages.js'
+import { fmtDuration, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
@@ -102,7 +102,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
-  const [lastUserAt, setLastUserAt] = useState<null | number>(null)
+  const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
@@ -276,7 +276,6 @@ export function useMainApp(gw: GatewayClient) {
     rpc,
     scrollRef,
     setHistoryItems,
-    setLastUserAt,
     setLastUserMsg,
     setSessionStartedAt,
     setStickyPrompt,
@@ -284,6 +283,26 @@ export function useMainApp(gw: GatewayClient) {
     setVoiceRecording,
     sys
   })
+
+  // Drive turnStartedAt from the busy edge and emit a one-shot "done in Xs"
+  // line on the idle edge. Covers agent turns and `!shell` alike — only
+  // suppresses when the block is under ~1s (too quick to matter).
+  useEffect(() => {
+    if (ui.busy && turnStartedAt === null) {
+      setTurnStartedAt(Date.now())
+
+      return
+    }
+
+    if (!ui.busy && turnStartedAt !== null) {
+      const elapsed = Date.now() - turnStartedAt
+      setTurnStartedAt(null)
+
+      if (elapsed >= 1000) {
+        sys(`done in ${fmtDuration(elapsed)}`)
+      }
+    }
+  }, [sys, turnStartedAt, ui.busy])
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
@@ -376,7 +395,6 @@ export function useMainApp(gw: GatewayClient) {
     composerState,
     gw,
     maybeGoodVibes,
-    setLastUserAt,
     setLastUserMsg,
     slashRef,
     submitRef,
@@ -500,7 +518,6 @@ export function useMainApp(gw: GatewayClient) {
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,
           resumeById: session.resumeById,
-          setLastUserAt,
           setSessionStartedAt
         },
         slashFlightRef,
@@ -635,20 +652,20 @@ export function useMainApp(gw: GatewayClient) {
     () => ({
       cwdLabel: fmtCwdBranch(cwd, gitBranch),
       goodVibesTick,
-      lastUserAt: ui.sid ? lastUserAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,
+      turnStartedAt: ui.sid ? turnStartedAt : null,
       voiceLabel: voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
     [
       cwd,
       gitBranch,
       goodVibesTick,
-      lastUserAt,
       sessionStartedAt,
       stickyPrompt,
+      turnStartedAt,
       ui,
       voiceEnabled,
       voiceProcessing,

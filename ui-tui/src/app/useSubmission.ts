@@ -37,7 +37,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
     composerState,
     gw,
     maybeGoodVibes,
-    setLastUserAt,
     setLastUserMsg,
     slashRef,
     submitRef,
@@ -60,7 +59,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
         turnController.clearStatusTimer()
         maybeGoodVibes(submitText)
         setLastUserMsg(text)
-        setLastUserAt(Date.now())
         appendMessage({ role: 'user', text: displayText })
         patchUiState({ busy: true, status: 'running…' })
         turnController.bufRef = ''
@@ -96,7 +94,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         })
         .catch(() => startSubmit(text, expand(text)))
     },
-    [appendMessage, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserAt, setLastUserMsg, sys]
+    [appendMessage, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -298,7 +296,6 @@ export interface UseSubmissionOptions {
   composerState: ComposerState
   gw: GatewayClient
   maybeGoodVibes: (text: string) => void
-  setLastUserAt: (value: null | number) => void
   setLastUserMsg: (value: string) => void
   slashRef: MutableRefObject<(cmd: string) => boolean>
   submitRef: MutableRefObject<(value: string) => void>

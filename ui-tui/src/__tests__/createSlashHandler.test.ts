@@ -284,7 +284,6 @@ const buildSession = () => ({
   newSession: vi.fn(),
   resetVisibleHistory: vi.fn(),
   resumeById: vi.fn(),
-  setLastUserAt: vi.fn(),
   setSessionStartedAt: vi.fn()
 })
 

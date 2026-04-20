@@ -9179,23 +9179,51 @@ class HermesCLI:
             event.app.current_buffer.reset()
             event.app.invalidate()
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
+        # --- Smart arrow-key navigation for multiline input ---
+        # Up arrow:  move cursor to previous line; on first line, jump to start;
+        #            if already at start, browse previous history entry.
+        # Down arrow: move cursor to next line; on last line, jump to end;
+        #            if already at end, browse next history entry.
+        # This matches the behavior of Codex and Claude Code CLI.
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
         )
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
-            event.app.current_buffer.auto_up(count=event.arg)
+            """Up arrow: move up a line; on first line go to start, then history."""
+            buf = event.app.current_buffer
+            cursor_row = buf.document.cursor_position_row
+            if cursor_row > 0:
+                buf.cursor_up(count=event.arg)
+            else:
+                # On first (or only) line
+                col = buf.document.cursor_position_col
+                if col > 0:
+                    # Not at start yet — move cursor to beginning of line
+                    buf.cursor_position = buf.document.get_start_of_line_position(after_whitespace=False)
+                else:
+                    # Already at start of first line — browse history
+                    buf.history_backward()
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
-            event.app.current_buffer.auto_down(count=event.arg)
+            """Down arrow: move down a line; on last line go to end, then history."""
+            buf = event.app.current_buffer
+            cursor_row = buf.document.cursor_position_row
+            line_count = buf.document.line_count
+            if cursor_row < line_count - 1:
+                buf.cursor_down(count=event.arg)
+            else:
+                # On last (or only) line
+                col = buf.document.cursor_position_col
+                line_len = len(buf.document.current_line_after_cursor) + col
+                if col < line_len:
+                    # Not at end yet — move cursor to end of line
+                    buf.cursor_position = buf.document.get_end_of_line_position()
+                else:
+                    # Already at end of last line — browse history
+                    buf.history_forward()
 
         @kb.add('c-c')
         def handle_ctrl_c(event):

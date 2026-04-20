@@ -3,8 +3,16 @@
 Applies pattern matching to mask API keys, tokens, and credentials
 before they reach log files, verbose output, or gateway logs.
 
-Short tokens (< 18 chars) are fully masked. Longer tokens preserve
-the first 6 and last 4 characters for debuggability.
+All masks use the ``[REDACTED]`` marker so consumers — including
+LLMs reading tool output — can unambiguously distinguish a masked
+value from literal file content. Short tokens (< 18 chars) become
+``[REDACTED]``; longer tokens preserve the first 6 and last 4 chars
+inside the marker (``[REDACTED:sk-pro...jkl0]``) for debuggability.
+
+Prior versions used bare ``***`` which the LLM could reasonably
+mistake for literal asterisks in a file; this caused at least one
+observed agent loop where the agent concluded its own API key was
+missing because ``cat ~/.hermes/.env`` returned ``KEY=***``.
 """
 
 import logging
@@ -115,10 +123,17 @@ _PREFIX_RE = re.compile(
 
 
 def _mask_token(token: str) -> str:
-    """Mask a token, preserving prefix for long tokens."""
+    """Mask a token with an unambiguous ``[REDACTED]`` marker.
+
+    Short tokens (<18 chars) are fully masked as ``[REDACTED]``.
+    Longer tokens embed a first-6/last-4 hint as
+    ``[REDACTED:first6...last4]`` so the token type stays
+    recognizable in logs while never being mistaken for literal
+    file content.
+    """
     if len(token) < 18:
-        return "***"
-    return f"{token[:6]}...{token[-4:]}"
+        return "[REDACTED]"
+    return f"[REDACTED:{token[:6]}...{token[-4:]}]"
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -161,20 +176,20 @@ def redact_sensitive_text(text: str) -> str:
     def _redact_telegram(m):
         prefix = m.group(1) or ""
         digits = m.group(2)
-        return f"{prefix}{digits}:***"
+        return f"{prefix}{digits}:[REDACTED]"
     text = _TELEGRAM_RE.sub(_redact_telegram, text)
 
     # Private key blocks
-    text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    text = _PRIVATE_KEY_RE.sub("[REDACTED:PRIVATE_KEY]", text)
 
     # Database connection string passwords
-    text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+    text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}[REDACTED]{m.group(3)}", text)
 
     # JWT tokens (eyJ... — base64-encoded JSON headers)
     text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
 
     # Discord user/role mentions (<@snowflake_id>)
-    text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}***>", text)
+    text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}[REDACTED]>", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     def _redact_phone(m):

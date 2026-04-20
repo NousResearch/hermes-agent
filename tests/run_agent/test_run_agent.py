@@ -372,6 +372,91 @@ class TestStripThinkBlocks:
         assert "mixed" not in result
         assert "final" in result
 
+    # ─── Tool-call XML block stripping (openclaw/openclaw#67318) ─────────
+    # Some open models (notably Gemma variants via OpenRouter) emit
+    # standalone tool-call XML inside assistant content instead of via the
+    # structured `tool_calls` field. Left unstripped, raw XML leaks to
+    # gateway users (Discord/Telegram/Matrix) and the CLI.
+
+    def test_tool_call_block_stripped(self, agent):
+        text = '<tool_call>{"name": "read_file", "arguments": {"path": "/tmp/x"}}</tool_call> done'
+        result = agent._strip_think_blocks(text)
+        assert "<tool_call>" not in result
+        assert "read_file" not in result
+        assert "done" in result
+
+    def test_function_calls_block_stripped(self, agent):
+        text = '<function_calls>[{"name":"x"}]</function_calls>after'
+        result = agent._strip_think_blocks(text)
+        assert "<function_calls>" not in result
+        assert "after" in result
+
+    def test_gemma_function_name_block_stripped(self, agent):
+        """Gemma-style: <function name="read"><parameter>...</parameter></function>."""
+        text = (
+            'Let me check the file.\n'
+            '<function name="read_file"><parameter name="path">/tmp/x.md</parameter></function>\n'
+            'Here is the result.'
+        )
+        result = agent._strip_think_blocks(text)
+        assert '<function name="read_file">' not in result
+        assert "/tmp/x.md" not in result
+        assert "Let me check the file." in result
+        assert "Here is the result." in result
+
+    def test_gemma_function_multiline_payload_stripped(self, agent):
+        text = (
+            'Reading now.\n'
+            '<function name="read_file">\n'
+            '  <parameter name="path">/etc/passwd</parameter>\n'
+            '</function>\n'
+            'Done.'
+        )
+        result = agent._strip_think_blocks(text)
+        assert "/etc/passwd" not in result
+        assert "Reading now." in result
+        assert "Done." in result
+
+    def test_function_mention_in_prose_preserved(self, agent):
+        """'Use <function> in JavaScript.' — no name attr, not at block boundary
+        in a way that suggests tool call. Must survive."""
+        text = "In JS you can use <function> declarations for hoisting."
+        result = agent._strip_think_blocks(text)
+        # Prose mention has no name="..." attribute -> not stripped
+        assert "declarations for hoisting" in result
+
+    def test_function_with_attr_in_middle_of_sentence_preserved(self, agent):
+        """Docs example: 'Use <function name="x">...</function> in docs.'
+        The sentence-middle position without a preceding punctuation block
+        boundary means it is NOT stripped. Prose context remains."""
+        text = 'You can write <function name="x">y</function> inline.'
+        result = agent._strip_think_blocks(text)
+        # Without a leading block boundary (no punctuation before), leaves intact
+        assert "You can write" in result
+        assert "inline" in result
+
+    def test_stray_function_close_tag_removed(self, agent):
+        text = "answer</function> trailing"
+        result = agent._strip_think_blocks(text)
+        assert "</function>" not in result
+        assert "answer" in result
+        assert "trailing" in result
+
+    def test_dangling_function_open_tag_preserved(self, agent):
+        """A streamed-but-truncated <function name="..."> block with no close
+        is intentionally NOT stripped (OpenClaw's asymmetry). The tail of a
+        streaming reply may still be valuable to the user."""
+        text = 'Checking: <function name="read">'
+        result = agent._strip_think_blocks(text)
+        assert "Checking:" in result
+
+    def test_mixed_reasoning_and_tool_call_both_stripped(self, agent):
+        text = '<think>let me plan</think><tool_call>{"name":"x"}</tool_call>final answer'
+        result = agent._strip_think_blocks(text)
+        assert "let me plan" not in result
+        assert "<tool_call>" not in result
+        assert "final answer" in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):

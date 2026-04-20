@@ -108,6 +108,11 @@ def _strip_reasoning_tags(text: str) -> str:
     ``<thought>`` (Gemma 4).  Must stay in sync with
     ``run_agent.py::_strip_think_blocks`` and the stream consumer's
     ``_OPEN_THINK_TAGS`` / ``_CLOSE_THINK_TAGS`` tuples.
+
+    Also strips tool-call XML blocks some open models leak into visible
+    content (``<tool_call>``, ``<function_calls>``, Gemma-style
+    ``<function name="…">…</function>``). Ported from
+    openclaw/openclaw#67318.
     """
     cleaned = text
     for tag in _REASONING_TAGS:
@@ -132,6 +137,31 @@ def _strip_reasoning_tags(text: str) -> str:
             cleaned,
             flags=re.IGNORECASE,
         )
+    # Tool-call XML blocks (openclaw/openclaw#67318).
+    for tc_tag in ("tool_call", "tool_calls", "tool_result",
+                   "function_call", "function_calls"):
+        cleaned = re.sub(
+            rf"<{tc_tag}\b[^>]*>.*?</{tc_tag}>\s*",
+            "",
+            cleaned,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    # <function name="..."> — boundary + attribute gated to avoid prose FPs.
+    cleaned = re.sub(
+        r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
+        r'<function\b[^>]*\bname\s*=[^>]*>'
+        r'(?:(?:(?!</function>).)*)</function>\s*',
+        '',
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    # Stray tool-call close tags.
+    cleaned = re.sub(
+        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
+        '',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     return cleaned.strip()
 
 

@@ -284,19 +284,26 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # Raw names should only map to custom providers when they are not already
     # valid built-in providers or aliases. Explicit menu keys like
     # ``custom:local`` always target the saved custom provider.
+    # However, we still check the user's providers: dict even for resolved
+    # aliases (e.g. "lmstudio" → "custom") because users may have defined
+    # a custom provider under that alias name. See GitHub issue re: lmstudio
+    # provider alias shadowing user-defined providers: dict entries.
     if requested_norm == "auto":
         return None
+    built_in_match = False
     if not requested_norm.startswith("custom:"):
         try:
             auth_mod.resolve_provider(requested_norm)
         except AuthError:
             pass
         else:
-            return None
+            built_in_match = True
 
     config = load_config()
     
     # First check providers: dict (new-style user-defined providers)
+    # We check this regardless of built_in_match, because users can define
+    # custom providers under names that happen to be aliases (e.g. "lmstudio").
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():

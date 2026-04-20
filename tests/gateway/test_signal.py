@@ -771,6 +771,79 @@ class TestSignalMediaExtraction:
 
 
 # ---------------------------------------------------------------------------
+# Inbound attachment message type classification
+# ---------------------------------------------------------------------------
+
+def _make_dm_envelope(sender: str, attachments: list, text: str = "") -> dict:
+    """Build a minimal signal-cli DM envelope with the given attachments."""
+    return {
+        "envelope": {
+            "sourceNumber": sender,
+            "sourceName": "Test User",
+            "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+            "timestamp": 1700000000000,
+            "dataMessage": {
+                "timestamp": 1700000000000,
+                "message": text,
+                "expiresInSeconds": 0,
+                "viewOnce": False,
+                "attachments": attachments,
+            },
+        }
+    }
+
+
+class TestSignalInboundMessageTypeClassification:
+    """_handle_envelope must set MessageType.DOCUMENT for application/* attachments.
+
+    Before the fix, PDFs and other documents left msg_type as MessageType.TEXT,
+    so run.py's document-context injection (which gates on MessageType.DOCUMENT)
+    silently dropped the file and the agent never saw it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_sets_document_type(self, monkeypatch):
+        """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        envelope = _make_dm_envelope(
+            sender="+15559876543",
+            attachments=[{
+                "contentType": "application/pdf",
+                "id": "6zLO3b-6Yf3zVWeLDctA.pdf",
+                "size": 508237,
+                "filename": "report.pdf",
+                "width": None,
+                "height": None,
+                "caption": None,
+                "uploadTimestamp": 1700000000000,
+            }],
+            text="here's the doc",
+        )
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, _ = _stub_rpc(None)
+
+        dispatched = []
+
+        async def _fake_handle_message(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _fake_handle_message
+        adapter._fetch_attachment = AsyncMock(return_value=("/tmp/report.pdf", ".pdf"))
+
+        await adapter._handle_envelope(envelope)
+
+        assert dispatched, "_handle_envelope did not dispatch any event"
+        event = dispatched[0]
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "PDFs must be classified as DOCUMENT so run.py injects file context."
+        )
+        assert "/tmp/report.pdf" in event.media_urls
+
+
+# ---------------------------------------------------------------------------
 # send_document now routes through _send_attachment (#5105 bonus)
 # ---------------------------------------------------------------------------
 

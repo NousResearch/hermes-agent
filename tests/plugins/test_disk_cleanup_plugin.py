@@ -366,35 +366,62 @@ class TestSlashCommand:
 # ---------------------------------------------------------------------------
 
 class TestBundledDiscovery:
-    def test_disk_cleanup_is_discovered_as_bundled(self, _isolate_env, monkeypatch):
-        # The default hermetic conftest disables bundled plugin discovery.
-        # This test specifically exercises it, so clear the suppression.
-        monkeypatch.delenv("HERMES_DISABLE_BUNDLED_PLUGINS", raising=False)
+    def _write_enabled_config(self, hermes_home, names):
+        """Write plugins.enabled allow-list to config.yaml."""
+        import yaml
+        cfg_path = hermes_home / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump({"plugins": {"enabled": list(names)}}))
+
+    def test_disk_cleanup_discovered_but_not_loaded_by_default(self, _isolate_env):
+        """Bundled plugins are discovered but NOT loaded without opt-in."""
         from hermes_cli import plugins as pmod
         mgr = pmod.PluginManager()
         mgr.discover_and_load()
+        # Discovered — appears in the registry
         assert "disk-cleanup" in mgr._plugins
         loaded = mgr._plugins["disk-cleanup"]
         assert loaded.manifest.source == "bundled"
+        # But NOT enabled — no hooks or commands registered
+        assert not loaded.enabled
+        assert loaded.error and "not enabled" in loaded.error
+
+    def test_disk_cleanup_loads_when_enabled(self, _isolate_env):
+        """Adding to plugins.enabled activates the bundled plugin."""
+        self._write_enabled_config(_isolate_env, ["disk-cleanup"])
+        from hermes_cli import plugins as pmod
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        loaded = mgr._plugins["disk-cleanup"]
         assert loaded.enabled
         assert "post_tool_call" in loaded.hooks_registered
         assert "on_session_end" in loaded.hooks_registered
         assert "disk-cleanup" in loaded.commands_registered
 
-    def test_memory_and_context_engine_subdirs_skipped(self, _isolate_env, monkeypatch):
+    def test_disabled_beats_enabled(self, _isolate_env):
+        """plugins.disabled wins even if the plugin is also in plugins.enabled."""
+        import yaml
+        cfg_path = _isolate_env / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump({
+            "plugins": {
+                "enabled": ["disk-cleanup"],
+                "disabled": ["disk-cleanup"],
+            }
+        }))
+        from hermes_cli import plugins as pmod
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        loaded = mgr._plugins["disk-cleanup"]
+        assert not loaded.enabled
+        assert loaded.error == "disabled via config"
+
+    def test_memory_and_context_engine_subdirs_skipped(self, _isolate_env):
         """Bundled scan must NOT pick up plugins/memory or plugins/context_engine
         as top-level plugins — they have their own discovery paths."""
-        monkeypatch.delenv("HERMES_DISABLE_BUNDLED_PLUGINS", raising=False)
+        self._write_enabled_config(
+            _isolate_env, ["memory", "context_engine", "disk-cleanup"]
+        )
         from hermes_cli import plugins as pmod
         mgr = pmod.PluginManager()
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
-
-    def test_bundled_scan_suppressed_by_env_var(self, _isolate_env, monkeypatch):
-        """HERMES_DISABLE_BUNDLED_PLUGINS=1 suppresses bundled discovery."""
-        monkeypatch.setenv("HERMES_DISABLE_BUNDLED_PLUGINS", "1")
-        from hermes_cli import plugins as pmod
-        mgr = pmod.PluginManager()
-        mgr.discover_and_load()
-        assert "disk-cleanup" not in mgr._plugins

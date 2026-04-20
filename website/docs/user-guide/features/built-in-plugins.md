@@ -24,22 +24,30 @@ On name collision, later sources win — a user plugin named `disk-cleanup` woul
 
 `plugins/memory/` and `plugins/context_engine/` are deliberately excluded from bundled scanning. Those directories use their own discovery paths because memory providers and context engines are single-select providers configured through `hermes memory setup` / `context.engine` in config.
 
-Bundled plugins respect the same disable mechanism as any other plugin:
+## Bundled plugins are opt-in
+
+Bundled plugins ship disabled. Discovery finds them (they appear in `hermes plugins list` and the interactive `hermes plugins` UI), but none load until you explicitly enable them:
+
+```bash
+hermes plugins enable disk-cleanup
+```
+
+Or via `~/.hermes/config.yaml`:
 
 ```yaml
-# ~/.hermes/config.yaml
 plugins:
-  disabled:
+  enabled:
     - disk-cleanup
 ```
 
-Or suppress every bundled plugin at once with an env var:
+This is the same mechanism user-installed plugins use. Bundled plugins are never auto-enabled — not on fresh install, not for existing users upgrading to a newer Hermes. You always opt in explicitly.
+
+To turn a bundled plugin off again:
 
 ```bash
-HERMES_DISABLE_BUNDLED_PLUGINS=1 hermes chat
+hermes plugins disable disk-cleanup
+# or: remove it from plugins.enabled in config.yaml
 ```
-
-The test suite sets `HERMES_DISABLE_BUNDLED_PLUGINS=1` in its hermetic fixture — tests that exercise bundled discovery clear it explicitly.
 
 ## Currently shipped
 
@@ -87,14 +95,9 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 
 **Safety** — cleanup only ever touches paths under `HERMES_HOME` or `/tmp/hermes-*`. Windows mounts (`/mnt/c/...`) are rejected. Well-known top-level state dirs (`logs/`, `memories/`, `sessions/`, `cron/`, `cache/`, `skills/`, `plugins/`, `disk-cleanup/` itself) are never removed even when empty — a fresh install does not get gutted on first session end.
 
-To turn it off without uninstalling:
+**Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 
-```yaml
-# ~/.hermes/config.yaml
-plugins:
-  disabled:
-    - disk-cleanup
-```
+**Disabling again:** `hermes plugins disable disk-cleanup`.
 
 ## Adding a bundled plugin
 

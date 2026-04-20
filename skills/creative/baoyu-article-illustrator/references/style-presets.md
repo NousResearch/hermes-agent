@@ -1,12 +1,12 @@
 # Style Presets
 
-`--preset X` expands to a type + style + optional palette combination. Users can override any dimension.
+A preset expands to a type + style + optional palette combination. Users can override any dimension in their request.
 
 ## By Category
 
 ### Technical & Engineering
 
-| --preset | Type | Style | Palette | Best For |
+| Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
 | `tech-explainer` | `infographic` | `blueprint` | — | API docs, system metrics, technical deep-dives |
 | `system-design` | `framework` | `blueprint` | — | Architecture diagrams, system design |
@@ -15,7 +15,7 @@
 
 ### Knowledge & Education
 
-| --preset | Type | Style | Palette | Best For |
+| Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
 | `knowledge-base` | `infographic` | `vector-illustration` | — | Concept explainers, tutorials, how-to |
 | `saas-guide` | `infographic` | `notion` | — | Product guides, SaaS docs, tool walkthroughs |
@@ -30,7 +30,7 @@
 
 ### Data & Analysis
 
-| --preset | Type | Style | Palette | Best For |
+| Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
 | `data-report` | `infographic` | `editorial` | — | Data journalism, metrics reports, dashboards |
 | `versus` | `comparison` | `vector-illustration` | — | Tech comparisons, framework shootouts |
@@ -38,7 +38,7 @@
 
 ### Narrative & Creative
 
-| --preset | Type | Style | Palette | Best For |
+| Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
 | `storytelling` | `scene` | `warm` | — | Personal essays, reflections, growth stories |
 | `lifestyle` | `scene` | `watercolor` | — | Travel, wellness, lifestyle, creative |
@@ -47,7 +47,7 @@
 
 ### Editorial & Opinion
 
-| --preset | Type | Style | Palette | Best For |
+| Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
 | `opinion-piece` | `scene` | `screen-print` | — | Op-eds, commentary, critical essays |
 | `editorial-poster` | `comparison` | `screen-print` | — | Debate, contrasting viewpoints |
@@ -74,7 +74,7 @@ Use this table during Step 3 to recommend presets based on Step 2 content analys
 
 ## Override Examples
 
-- `--preset tech-explainer --style notion` = infographic type with notion style
-- `--preset storytelling --type timeline` = timeline type with warm style
+- "use the tech-explainer preset but swap the style for notion" = infographic type with notion style
+- "storytelling preset with timeline type" = timeline type with warm style
 
-Explicit `--type`/`--style` flags always override preset values.
+Explicit type/style/palette mentions in the user's request always override preset values.

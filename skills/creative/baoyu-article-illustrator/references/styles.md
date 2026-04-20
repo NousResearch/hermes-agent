@@ -201,7 +201,7 @@ Full specifications: `references/styles/<style>.md`
 
 ## Palette Gallery
 
-Palettes override a style's default colors. Combine any style with any palette: `--style vector-illustration --palette macaron`.
+Palettes override a style's default colors. Combine any style with any palette (e.g. `style=vector-illustration, palette=macaron`).
 
 | Palette | Description | Best For |
 |---------|-------------|----------|

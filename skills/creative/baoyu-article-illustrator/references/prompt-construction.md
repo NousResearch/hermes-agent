@@ -30,7 +30,7 @@ references:                    # ⚠️ ONLY if files EXIST in references/ direc
 
 | Usage | Description | Generation Action |
 |-------|-------------|-------------------|
-| `direct` | Primary visual reference | Pass to `--ref` parameter |
+| `direct` | Primary visual reference | Describe the reference (composition, subject, style, palette) in prompt text — `image_generate` does not accept reference-image inputs |
 | `style` | Style characteristics only | Describe style in prompt text |
 | `palette` | Color palette extraction | Include colors in prompt |
 
@@ -417,9 +417,9 @@ When no palette is specified, use the style's built-in Color Palette as before.
 - Missing concrete labels/annotations
 - Generic decorative elements
 
-## Watermark Integration
+## Watermark Integration (optional)
 
-If watermark enabled in preferences, append:
+If the user asks for a watermark, append:
 
 ```
 Include a subtle watermark "[content]" positioned at [position].

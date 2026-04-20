@@ -633,12 +633,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     if _other_bots_mentioned and not _self_mentioned:
                         return
                     # If humans are mentioned but we're not → not for us
-                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
+                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior).
+                    # BUT: don't gate out free_response_channels — those are
+                    # explicitly configured to receive messages without @mention.
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
                     ).lower() in ("true", "1", "yes")
                     if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        return
+                        _free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+                        _free_channels = {ch.strip() for ch in _free_channels_raw.split(",") if ch.strip()}
+                        _channel_id = str(message.channel.id)
+                        if _channel_id not in _free_channels:
+                            return
 
                 await self._handle_message(message)
 

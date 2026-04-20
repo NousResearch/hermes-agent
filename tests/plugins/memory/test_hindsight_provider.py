@@ -531,6 +531,22 @@ class TestSyncTurn:
         if provider._sync_thread:
             provider._sync_thread.join(timeout=5.0)
 
+    def test_sync_turn_preserves_unicode(self, provider_with_config):
+        """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        p.sync_turn("안녕 こんにちは 你好", "👨‍👩‍👧‍👦 family")
+        p._sync_thread.join(timeout=5.0)
+        p._client.aretain_batch.assert_called_once()
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        # ensure_ascii=False means non-ASCII chars appear as-is in the raw JSON,
+        # not as \uXXXX escape sequences.
+        raw_json = item["content"]
+        assert "안녕" in raw_json
+        assert "こんにちは" in raw_json
+        assert "你好" in raw_json
+        assert "👨‍👩‍👧‍👦" in raw_json
+
 
 # ---------------------------------------------------------------------------
 # System prompt tests

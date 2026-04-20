@@ -950,6 +950,7 @@ class MCPServerTask:
         url = config["url"]
         headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        ssl_verify = config.get("ssl_verify", True)
 
         # OAuth 2.1 PKCE: build httpx.Auth handler using the MCP SDK.
         # If OAuth setup fails (e.g. non-interactive environment without
@@ -978,6 +979,7 @@ class MCPServerTask:
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
+                "verify": ssl_verify,
             }
             if headers:
                 client_kwargs["headers"] = headers
@@ -1001,6 +1003,7 @@ class MCPServerTask:
             _http_kwargs: dict = {
                 "headers": headers,
                 "timeout": float(connect_timeout),
+                "verify": ssl_verify,
             }
             if _oauth_auth is not None:
                 _http_kwargs["auth"] = _oauth_auth

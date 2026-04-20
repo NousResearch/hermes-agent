@@ -3706,12 +3706,14 @@ class AIAgent:
         """
         # Layers (in order):
         #   1. Agent identity — SOUL.md when available, else DEFAULT_AGENT_IDENTITY
-        #   2. User / gateway system prompt (if provided)
-        #   3. Persistent memory (frozen snapshot)
-        #   4. Skills guidance (if skills tools are loaded)
-        #   5. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
-        #   6. Current date & time (frozen at build time)
-        #   7. Platform-specific formatting hint
+        #   2. Tool-aware guidance (memory/session_search/skills behavior)
+        #   3. Optional model/tool guidance (tool-use enforcement, model-specific ops prompts)
+        #   4. User / gateway system prompt (if provided)
+        #   5. Persistent snapshots (memory + user profile) and external memory-provider block
+        #   6. Skills index prompt (if skills tools are loaded)
+        #   7. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
+        #   8. Conversation metadata (time, optional session/model/provider)
+        #   9. Environment and platform hints
 
         # Try SOUL.md as primary identity (unless context files are skipped)
         _soul_loaded = False

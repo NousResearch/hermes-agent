@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -166,6 +167,9 @@ class NimAdapter(BasePlatformAdapter):
     def _ignore_reason(self, payload: dict[str, Any]) -> str | None:
         if payload.get("from_self"):
             return "self_message"
+        message_source = payload.get("message_source")
+        if message_source not in (None, "", 1, "1"):
+            return f"non_online_message_source:{message_source}"
         session_type = str(payload.get("session_type") or "p2p")
         sender_id = str(payload.get("sender_id") or "")
         if session_type == "p2p":
@@ -365,6 +369,8 @@ class NimAdapter(BasePlatformAdapter):
 
 
 class MultiNimAdapter(BasePlatformAdapter):
+    _QCHAT_DEDUPE_TTL_SECONDS = 15.0
+
     def __init__(
         self,
         config: PlatformConfig,
@@ -377,6 +383,7 @@ class MultiNimAdapter(BasePlatformAdapter):
         self._bridge_factory = bridge_factory
         self._instances: dict[str, NimAdapter] = {}
         self._default_instance_name: str | None = None
+        self._recent_qchat_events: dict[str, float] = {}
 
     async def connect(self) -> bool:
         if not self._resolved_instances:
@@ -429,6 +436,11 @@ class MultiNimAdapter(BasePlatformAdapter):
         self._default_instance_name = None
         self._mark_disconnected()
 
+    async def handle_message(self, event: MessageEvent) -> None:
+        if self._should_drop_duplicate_qchat_event(event):
+            return
+        await super().handle_message(event)
+
     async def send(
         self,
         chat_id: str,
@@ -476,6 +488,42 @@ class MultiNimAdapter(BasePlatformAdapter):
         if self._default_instance_name and self._default_instance_name in self._instances:
             return self._instances[self._default_instance_name], str(chat_id)
         return None, str(chat_id)
+
+    def _should_drop_duplicate_qchat_event(self, event: MessageEvent) -> bool:
+        raw_message = event.raw_message if isinstance(event.raw_message, dict) else {}
+        session_type = str(raw_message.get("session_type") or "")
+        if session_type != "qchat":
+            return False
+
+        server_id = str(raw_message.get("server_id") or raw_message.get("serverId") or "")
+        channel_id = str(raw_message.get("channel_id") or raw_message.get("channelId") or "")
+        sender_id = str(raw_message.get("sender_id") or raw_message.get("senderId") or event.source.user_id or "")
+        message_id = str(
+            event.message_id
+            or raw_message.get("message_id")
+            or raw_message.get("msgIdServer")
+            or raw_message.get("msg_server_id")
+            or raw_message.get("client_message_id")
+            or raw_message.get("msgIdClient")
+            or raw_message.get("msg_client_id")
+            or ""
+        )
+        if not message_id:
+            message_id = f"{sender_id}|{server_id}|{channel_id}|{event.text}"
+        dedupe_key = f"{sender_id}|{server_id}|{channel_id}|{message_id}"
+
+        now = time.monotonic()
+        cutoff = now - self._QCHAT_DEDUPE_TTL_SECONDS
+        expired = [key for key, ts in self._recent_qchat_events.items() if ts < cutoff]
+        for key in expired:
+            self._recent_qchat_events.pop(key, None)
+
+        if dedupe_key in self._recent_qchat_events:
+            logger.info("[nim] dropping duplicate qchat event: %s", dedupe_key)
+            return True
+
+        self._recent_qchat_events[dedupe_key] = now
+        return False
 
 
 PlatformAdapter = NimAdapter

@@ -407,6 +407,28 @@ class TestLoadGatewayConfig:
         assert nim_platform.extra["instances"][0]["nimToken"] == "app|bot|secret"
         assert nim_platform.extra["instances"][0]["team"]["allowFrom"] == ["team-1"]
 
+    def test_yaml_nim_instances_ignore_legacy_env_credentials(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "nim:\n"
+            "  instances:\n"
+            "    - enabled: true\n"
+            "      nimToken: app|yaml-bot|secret-yaml\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("NIM_CREDENTIALS", "app|legacy-bot|secret-legacy")
+
+        config = load_gateway_config()
+
+        nim_platform = config.platforms[Platform.NIM]
+        assert nim_platform.enabled is True
+        assert nim_platform.extra["instances"][0]["nimToken"] == "app|yaml-bot|secret-yaml"
+        assert "nim_token" not in nim_platform.extra
+
     def test_bridges_slack_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

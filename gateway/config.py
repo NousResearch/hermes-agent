@@ -505,8 +505,13 @@ def load_nim_instances(
     raw_instances = _coerce_nim_instances(base_extra.pop("instances", None))
     env_instances = env.get("NIM_INSTANCES")
     legacy_env = dict(env)
+    has_explicit_instances = bool(raw_instances)
+    if has_explicit_instances:
+        for key in ("NIM_CREDENTIALS", "NIM_APP_KEY", "NIM_ACCOUNT", "NIM_TOKEN", "NIM_HOME_CHANNEL"):
+            legacy_env.pop(key, None)
     if env_instances is not None and env_instances.strip():
         raw_instances = _coerce_nim_instances(env_instances)
+        has_explicit_instances = bool(raw_instances)
         for key in ("NIM_CREDENTIALS", "NIM_APP_KEY", "NIM_ACCOUNT", "NIM_TOKEN", "NIM_HOME_CHANNEL"):
             legacy_env.pop(key, None)
 
@@ -1911,17 +1916,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.NIM] = PlatformConfig()
         config.platforms[Platform.NIM].enabled = True
         extra = config.platforms[Platform.NIM].extra
+        existing_yaml_instances = _coerce_nim_instances(extra.get("instances"))
         if nim_instances:
             parsed_instances = _coerce_nim_instances(nim_instances)
             if parsed_instances:
                 extra["instances"] = parsed_instances
-        if nim_token and not nim_instances:
+        if nim_token and not nim_instances and not existing_yaml_instances:
             extra["nim_token"] = nim_token
-        if nim_app_key and not nim_instances:
+        if nim_app_key and not nim_instances and not existing_yaml_instances:
             extra["app_key"] = nim_app_key
-        if nim_account and not nim_instances:
+        if nim_account and not nim_instances and not existing_yaml_instances:
             extra["account"] = nim_account
-        if nim_secret and not nim_instances:
+        if nim_secret and not nim_instances and not existing_yaml_instances:
             extra["token"] = nim_secret
         nim_group_policy = os.getenv("NIM_GROUP_POLICY", "").strip().lower()
         if nim_group_policy:

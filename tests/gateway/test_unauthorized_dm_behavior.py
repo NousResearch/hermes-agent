@@ -23,6 +23,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOWED_USERS",
         "MATRIX_ALLOWED_USERS",
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
+        "NIM_ALLOWED_USERS",
         "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
@@ -35,6 +36,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOW_ALL_USERS",
         "MATRIX_ALLOW_ALL_USERS",
         "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
+        "NIM_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):
@@ -137,6 +139,46 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
         user_name="stranger",
         chat_type="dm",
     )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_nim_allow_all_users_authorizes_dm(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("NIM_ALLOW_ALL_USERS", "true")
+
+    runner, _adapter = _make_runner(
+        Platform.NIM,
+        GatewayConfig(platforms={Platform.NIM: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.NIM,
+        user_id="112649",
+        chat_id="user:112649",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_nim_allowed_users_authorizes_matching_user(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("NIM_ALLOWED_USERS", "112649,alice")
+
+    runner, _adapter = _make_runner(
+        Platform.NIM,
+        GatewayConfig(platforms={Platform.NIM: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.NIM,
+        user_id="112649",
+        chat_id="user:112649",
+        user_name="tester",
+        chat_type="dm",
+    )
+
     assert runner._is_user_authorized(source) is True
 
 

@@ -176,6 +176,38 @@ async def test_inbound_dm_respects_allowlist():
 
 
 @pytest.mark.asyncio
+async def test_inbound_non_online_message_is_ignored():
+    bridge = FakeBridge()
+    adapter = NimAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "nim_token": "app|bot|secret",
+            },
+        ),
+        bridge=bridge,
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._on_bridge_event(
+        {
+            "event": "message",
+            "payload": {
+                "message_id": "m-offline-1",
+                "message_source": 3,
+                "session_type": "p2p",
+                "sender_id": "allowed-user",
+                "sender_name": "Allowed",
+                "text": "history hello",
+                "message_type": "text",
+            },
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_group_message_requires_allowed_team_and_mention():
     bridge = FakeBridge()
     adapter = NimAdapter(
@@ -411,6 +443,38 @@ async def test_multi_instance_rejects_unknown_route_prefix():
 
     assert bridges["default"].sent == []
     assert bridges["work"].sent == []
+
+
+def test_multi_instance_dedupes_duplicate_qchat_events():
+    config = PlatformConfig(
+        enabled=True,
+        extra={
+            "instances": [
+                {
+                    "instance_name": "main",
+                    "nim_token": "app|main-bot|secret-main",
+                }
+            ],
+        },
+    )
+    instances = load_nim_instances(config)
+    adapter = MultiNimAdapter(config, resolved_instances=instances)
+
+    event = SimpleNamespace(
+        message_id="qchat-server-msg-1",
+        text="@bot 你是谁",
+        source=SimpleNamespace(user_id="user-1"),
+        raw_message={
+            "session_type": "qchat",
+            "server_id": "server-1",
+            "channel_id": "channel-2",
+            "sender_id": "user-1",
+            "message_id": "qchat-server-msg-1",
+        },
+    )
+
+    assert adapter._should_drop_duplicate_qchat_event(event) is False
+    assert adapter._should_drop_duplicate_qchat_event(event) is True
 
 
 def test_runner_uses_multi_adapter_for_single_explicit_instance(monkeypatch):

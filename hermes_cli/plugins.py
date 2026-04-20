@@ -2,13 +2,19 @@
 Hermes Plugin System
 ====================
 
-Discovers, loads, and manages plugins from three sources:
+Discovers, loads, and manages plugins from four sources:
 
-1. **User plugins**   – ``~/.hermes/plugins/<name>/``
-2. **Project plugins** – ``./.hermes/plugins/<name>/`` (opt-in via
+1. **Bundled plugins** – ``<repo>/plugins/<name>/`` (shipped with hermes-agent;
+   ``memory/`` and ``context_engine/`` subdirs are excluded — they have their
+   own discovery paths)
+2. **User plugins**   – ``~/.hermes/plugins/<name>/``
+3. **Project plugins** – ``./.hermes/plugins/<name>/`` (opt-in via
    ``HERMES_ENABLE_PROJECT_PLUGINS``)
-3. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
+4. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
    entry-point group.
+
+Later sources override earlier ones on name collision, so a user or project
+plugin with the same name as a bundled plugin replaces it.
 
 Each directory plugin must contain a ``plugin.yaml`` manifest **and** an
 ``__init__.py`` with a ``register(ctx)`` function.
@@ -422,21 +428,42 @@ class PluginManager:
 
         manifests: List[PluginManifest] = []
 
-        # 1. User plugins (~/.hermes/plugins/)
+        # 1. Bundled plugins (<repo>/plugins/<name>/)
+        # Repo-shipped generic plugins live next to hermes_cli/.  Memory and
+        # context_engine subdirs are handled by their own discovery paths, so
+        # skip those names here.
+        # Tests can set HERMES_DISABLE_BUNDLED_PLUGINS=1 to get a clean slate.
+        if not _env_enabled("HERMES_DISABLE_BUNDLED_PLUGINS"):
+            repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+            manifests.extend(
+                self._scan_directory(
+                    repo_plugins,
+                    source="bundled",
+                    skip_names={"memory", "context_engine"},
+                )
+            )
+
+        # 2. User plugins (~/.hermes/plugins/)
         user_dir = get_hermes_home() / "plugins"
         manifests.extend(self._scan_directory(user_dir, source="user"))
 
-        # 2. Project plugins (./.hermes/plugins/)
+        # 3. Project plugins (./.hermes/plugins/)
         if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
             project_dir = Path.cwd() / ".hermes" / "plugins"
             manifests.extend(self._scan_directory(project_dir, source="project"))
 
-        # 3. Pip / entry-point plugins
+        # 4. Pip / entry-point plugins
         manifests.extend(self._scan_entry_points())
 
-        # Load each manifest (skip user-disabled plugins)
+        # Load each manifest (skip user-disabled plugins).
+        # Later sources override earlier ones on name collision — user plugins
+        # take precedence over bundled, project plugins take precedence over
+        # user.  Dedup here so we only load the final winner.
         disabled = _get_disabled_plugins()
+        winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
+            winners[manifest.name] = manifest
+        for manifest in winners.values():
             if manifest.name in disabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = "disabled via config"
@@ -456,14 +483,26 @@ class PluginManager:
     # Directory scanning
     # -----------------------------------------------------------------------
 
-    def _scan_directory(self, path: Path, source: str) -> List[PluginManifest]:
-        """Read ``plugin.yaml`` manifests from subdirectories of *path*."""
+    def _scan_directory(
+        self,
+        path: Path,
+        source: str,
+        skip_names: Optional[Set[str]] = None,
+    ) -> List[PluginManifest]:
+        """Read ``plugin.yaml`` manifests from subdirectories of *path*.
+
+        *skip_names* is an optional allow-list of names to ignore (used
+        for the bundled scan to exclude ``memory`` / ``context_engine``
+        subdirs that have their own discovery path).
+        """
         manifests: List[PluginManifest] = []
         if not path.is_dir():
             return manifests
 
         for child in sorted(path.iterdir()):
             if not child.is_dir():
+                continue
+            if skip_names and child.name in skip_names:
                 continue
             manifest_file = child / "plugin.yaml"
             if not manifest_file.exists():
@@ -532,7 +571,7 @@ class PluginManager:
         loaded = LoadedPlugin(manifest=manifest)
 
         try:
-            if manifest.source in ("user", "project"):
+            if manifest.source in ("user", "project", "bundled"):
                 module = self._load_directory_module(manifest)
             else:
                 module = self._load_entrypoint_module(manifest)

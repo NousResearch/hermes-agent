@@ -92,6 +92,9 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     
+    # Signal-specific metadata for emoji reactions on incoming messages.
+    signal_react_to: Optional[Dict[str, Any]] = None
+
     @property
     def description(self) -> str:
         """Human-readable description of the source."""

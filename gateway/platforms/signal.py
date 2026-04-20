@@ -534,6 +534,17 @@ class SignalAdapter(BasePlatformAdapter):
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
 
+        # Parse timestamp from envelope data (milliseconds since epoch)
+        ts_ms = envelope_data.get("timestamp", 0)
+        if ts_ms:
+            signal_react_to = dict(author=sender, timestamp=ts_ms, group_id= group_id if is_group else None)
+            try:
+                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            except (ValueError, OSError):
+                timestamp = datetime.now(tz=timezone.utc)
+        else:
+            timestamp = datetime.now(tz=timezone.utc)
+
         # Build session source
         source = self.build_source(
             chat_id=chat_id,
@@ -543,6 +554,8 @@ class SignalAdapter(BasePlatformAdapter):
             user_name=sender_name or sender,
             user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None,
+            # Store signal-cli message targeting info for emoji reactions
+            signal_react_to=signal_react_to,
         )
 
         # Determine message type from media
@@ -1313,6 +1326,58 @@ class SignalAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a video file as a Signal attachment."""
         return await self._send_attachment(chat_id, video_path, "Video", caption)
+
+    # ------------------------------------------------------------------
+    # Emoji Reactions
+    # ------------------------------------------------------------------
+
+    async def _send_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        target_author: str = None,
+        target_timestamp: int = None,
+        *,
+        remove: bool = False,
+    ) -> SendResult:
+        """Send an emoji reaction to a message via signal-cli's sendReaction endpoint.
+
+        Args:
+            chat_id: Chat/channel to react in (phone number or group ID).
+            emoji: Unicode emoji to react with (e.g., "📖", "❤️").
+            target_author: Author of the message being reacted to (source phone/UUID).
+            target_timestamp: Timestamp of the message being reacted to (milliseconds since epoch).
+            remove: If True, removes the reaction instead of adding it.
+
+        Returns:
+            SendResult indicating success or failure.
+        """
+        if not self.client:
+            logger.warning("Signal: cannot send reaction — client not connected")
+            return SendResult(success=False, error="Not connected")
+
+        params: Dict[str, Any] = {
+            "account": self.account,
+            "emoji": emoji,
+        }
+
+        # For group chats, targetAuthor and targetTimestamp may be omitted
+        if chat_id.startswith("group:"):
+            params["groupId"] = chat_id[6:]
+        else:
+            resolved = await self._resolve_recipient(chat_id)
+            params["recipient"] = [resolved]
+
+        # Reaction targeting — identify which message to react to
+        if target_author:
+            params["targetAuthor"] = target_author
+        if target_timestamp:
+            params["targetTimestamp"] = int(target_timestamp)
+        if remove:
+            params["remove"] = True
+
+        result = await self._rpc("sendReaction", params)
+        return SendResult(success=result is not None)
 
     # ------------------------------------------------------------------
     # Typing Indicators

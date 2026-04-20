@@ -11189,6 +11189,12 @@ class GatewayRunner:
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
+
+        # Capture gateway loop BEFORE the agent runs in an executor thread,
+        # so progress_callback can use run_coroutine_threadsafe to schedule
+        # async work back on the main event loop.
+        self_loop = asyncio.get_running_loop()
+
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -11248,6 +11254,40 @@ class GatewayRunner:
                     return
             except Exception:
                 pass
+
+            # Signal emoji reactions: instead of text messages, react with emoji to user's message
+            # This provides "/verbose new"-like feedback without creating separate bubbles.
+            if source.platform.value == "signal" and hasattr(source, 'signal_react_to') and source.signal_react_to:
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(tool_name, default="👀")
+                react_info = source.signal_react_to
+
+                # For group chats, signal-cli only needs groupId (no targetAuthor/targetTimestamp)
+                if source.chat_id.startswith("group:") and isinstance(react_info.get("group_id"), str):
+                    asyncio.run_coroutine_threadsafe(
+                        self.adapters[source.platform]._send_reaction(
+                            chat_id=source.chat_id,
+                            emoji=emoji,
+                            target_author=None,
+                            target_timestamp=None,
+                        ),
+                        self_loop,
+                    )
+                else:
+                    # DM: need targetAuthor and targetTimestamp (ms) for signal-cli sendReaction
+                    target_ts = react_info.get("timestamp")
+                    target_author = react_info.get("author")
+                    if target_ts is not None and target_author:
+                        asyncio.run_coroutine_threadsafe(
+                            self.adapters[source.platform]._send_reaction(
+                                chat_id=source.chat_id,
+                                emoji=emoji,
+                                target_author=target_author,
+                                target_timestamp=int(target_ts),
+                            ),
+                            self_loop,
+                        )
+                # Signal emoji reactions happen alongside normal progress messages below
 
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:

@@ -154,10 +154,29 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
-def _normalize_local_command_model(model_name: Optional[str]) -> str:
+def _normalize_local_model(model_name: Optional[str]) -> str:
+    """Return a valid faster-whisper model size, mapping cloud-only names to the default.
+
+    Cloud providers like OpenAI use names such as ``whisper-1`` which are not
+    valid for faster-whisper (which expects ``tiny``, ``base``, ``small``,
+    ``medium``, or ``large-v*``).  When such a name is detected we fall back to
+    the default local model and emit a warning so the user knows what happened.
+    """
     if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        if model_name and (model_name in OPENAI_MODELS or model_name in GROQ_MODELS):
+            logger.warning(
+                "STT model '%s' is a cloud-only name and cannot be used with the local "
+                "provider. Falling back to '%s'. Set stt.local.model to a valid "
+                "faster-whisper size (tiny, base, small, medium, large-v3).",
+                model_name,
+                DEFAULT_LOCAL_MODEL,
+            )
         return DEFAULT_LOCAL_MODEL
     return model_name
+
+
+def _normalize_local_command_model(model_name: Optional[str]) -> str:
+    return _normalize_local_model(model_name)
 
 
 def _get_provider(stt_config: dict) -> str:
@@ -596,7 +615,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "local":
         local_cfg = stt_config.get("local", {})
-        model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        model_name = _normalize_local_model(
+            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        )
         return _transcribe_local(file_path, model_name)
 
     if provider == "local_command":

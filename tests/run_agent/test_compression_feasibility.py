@@ -90,7 +90,7 @@ def test_no_warning_when_aux_context_sufficient(mock_get_client, mock_ctx_len):
     mock_client = MagicMock()
     mock_client.base_url = "https://openrouter.ai/api/v1"
     mock_client.api_key = "sk-aux"
-    mock_get_client.return_value = (mock_client, "google/gemini-2.5-flash")
+    mock_get_client.return_value = (mock_client, "google/gemini-1.5-flash-latest")
 
     messages = []
     agent._emit_status = lambda msg: messages.append(msg)

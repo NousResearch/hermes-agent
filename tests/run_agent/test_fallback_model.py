@@ -232,7 +232,7 @@ class TestTryActivateFallback:
 
     def test_prompt_caching_disabled_for_non_claude(self):
         agent = _make_agent(
-            fallback_model={"provider": "openrouter", "model": "google/gemini-2.5-flash"},
+            fallback_model={\"provider\": \"openrouter\", \"model\": \"google/gemini-1.5-flash-latest\"},
         )
         mock_client = _mock_resolve(
             api_key="sk-or-key",

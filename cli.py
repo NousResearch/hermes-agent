@@ -5490,6 +5490,16 @@ class HermesCLI:
                     user_args = cmd_original[len(base_cmd):].strip()
                     try:
                         result = plugin_handler(user_args)
+                        import inspect as _inspect
+                        if _inspect.iscoroutine(result):
+                            import asyncio as _asyncio
+                            try:
+                                _loop = _asyncio.get_running_loop()
+                                import concurrent.futures as _cf
+                                _fut = _asyncio.run_coroutine_threadsafe(result, _loop)
+                                result = _fut.result(timeout=30)
+                            except RuntimeError:
+                                result = _asyncio.run(result)
                         if result:
                             _cprint(str(result))
                     except Exception as e:

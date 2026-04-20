@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { getHeapSnapshot, getHeapSpaceStatistics, getHeapStatistics } from 'node:v8'
 
-export type MemoryTrigger = 'auto-high' | 'auto-critical' | 'manual'
+export type MemoryTrigger = 'auto-critical' | 'auto-high' | 'manual'
 
 export interface MemoryDiagnostics {
   activeHandles: number
@@ -54,74 +54,43 @@ export interface HeapDumpResult {
   success: boolean
 }
 
-const heapDumpRoot = () =>
-  process.env.HERMES_HEAPDUMP_DIR?.trim() || join(homedir() || tmpdir(), '.hermes', 'heapdumps')
-
-const processInternals = process as unknown as {
-  _getActiveHandles: () => unknown[]
-  _getActiveRequests: () => unknown[]
-}
-
 export async function captureMemoryDiagnostics(trigger: MemoryTrigger): Promise<MemoryDiagnostics> {
   const usage = process.memoryUsage()
   const heapStats = getHeapStatistics()
   const resourceUsage = process.resourceUsage()
   const uptimeSeconds = process.uptime()
 
+  // Not available on Bun / older Node.
   let heapSpaces: ReturnType<typeof getHeapSpaceStatistics> | undefined
 
   try {
     heapSpaces = getHeapSpaceStatistics()
   } catch {
-    /* Bun / older Node — ignore */
+    /* noop */
   }
 
-  const activeHandles = processInternals._getActiveHandles().length
-  const activeRequests = processInternals._getActiveRequests().length
-
-  let openFileDescriptors: number | undefined
-
-  try {
-    openFileDescriptors = (await readdir('/proc/self/fd')).length
-  } catch {
-    /* non-Linux */
+  const internals = process as unknown as {
+    _getActiveHandles: () => unknown[]
+    _getActiveRequests: () => unknown[]
   }
 
-  let smapsRollup: string | undefined
-
-  try {
-    smapsRollup = await readFile('/proc/self/smaps_rollup', 'utf8')
-  } catch {
-    /* non-Linux / no access */
-  }
+  const activeHandles = internals._getActiveHandles().length
+  const activeRequests = internals._getActiveRequests().length
+  const openFileDescriptors = await swallow(async () => (await readdir('/proc/self/fd')).length)
+  const smapsRollup = await swallow(() => readFile('/proc/self/smaps_rollup', 'utf8'))
 
   const nativeMemory = usage.rss - usage.heapUsed
   const bytesPerSecond = uptimeSeconds > 0 ? usage.rss / uptimeSeconds : 0
   const mbPerHour = (bytesPerSecond * 3600) / (1024 * 1024)
 
-  const potentialLeaks: string[] = []
-
-  if (heapStats.number_of_detached_contexts > 0) {
-    potentialLeaks.push(
-      `${heapStats.number_of_detached_contexts} detached context(s) — possible component/closure leak`
-    )
-  }
-
-  if (activeHandles > 100) {
-    potentialLeaks.push(`${activeHandles} active handles — possible timer/socket leak`)
-  }
-
-  if (nativeMemory > usage.heapUsed) {
-    potentialLeaks.push('Native memory > heap — leak may be in native addons')
-  }
-
-  if (mbPerHour > 100) {
-    potentialLeaks.push(`High memory growth rate: ${mbPerHour.toFixed(1)} MB/hour`)
-  }
-
-  if (openFileDescriptors && openFileDescriptors > 500) {
-    potentialLeaks.push(`${openFileDescriptors} open FDs — possible file/socket leak`)
-  }
+  const potentialLeaks = [
+    heapStats.number_of_detached_contexts > 0 &&
+      `${heapStats.number_of_detached_contexts} detached context(s) — possible component/closure leak`,
+    activeHandles > 100 && `${activeHandles} active handles — possible timer/socket leak`,
+    nativeMemory > usage.heapUsed && 'Native memory > heap — leak may be in native addons',
+    mbPerHour > 100 && `High memory growth rate: ${mbPerHour.toFixed(1)} MB/hour`,
+    openFileDescriptors && openFileDescriptors > 500 && `${openFileDescriptors} open FDs — possible file/socket leak`
+  ].filter((s): s is string => typeof s === 'string')
 
   return {
     activeHandles,
@@ -170,18 +139,19 @@ export async function captureMemoryDiagnostics(trigger: MemoryTrigger): Promise<
 
 export async function performHeapDump(trigger: MemoryTrigger = 'manual'): Promise<HeapDumpResult> {
   try {
+    // Diagnostics first — heap-snapshot serialization can crash on very large
+    // heaps, and the JSON sidecar is the most actionable artifact if so.
     const diagnostics = await captureMemoryDiagnostics(trigger)
-    const dir = heapDumpRoot()
+    const dir = process.env.HERMES_HEAPDUMP_DIR?.trim() || join(homedir() || tmpdir(), '.hermes', 'heapdumps')
 
     await mkdir(dir, { recursive: true })
 
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const base = `hermes-${stamp}-${process.pid}-${trigger}`
+    const base = `hermes-${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}-${trigger}`
     const heapPath = join(dir, `${base}.heapsnapshot`)
     const diagPath = join(dir, `${base}.diagnostics.json`)
 
     await writeFile(diagPath, JSON.stringify(diagnostics, null, 2), { mode: 0o600 })
-    await writeSnapshot(heapPath)
+    await pipeline(getHeapSnapshot(), createWriteStream(heapPath, { mode: 0o600 }))
 
     return { diagPath, heapPath, success: true }
   } catch (e) {
@@ -194,15 +164,19 @@ export function formatBytes(bytes: number): string {
     return '0B'
   }
 
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const exp = Math.min(units.length - 1, Math.floor(Math.log10(bytes) / 3))
+  const exp = Math.min(UNITS.length - 1, Math.floor(Math.log10(bytes) / 3))
   const value = bytes / 1024 ** exp
 
-  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)}${units[exp]}`
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)}${UNITS[exp]}`
 }
 
-async function writeSnapshot(filepath: string) {
-  const stream = createWriteStream(filepath, { mode: 0o600 })
+const UNITS = ['B', 'KB', 'MB', 'GB', 'TB']
 
-  await pipeline(getHeapSnapshot(), stream)
+// Returns undefined when the probe isn't available (non-Linux paths, sandboxed FS).
+const swallow = async <T>(fn: () => Promise<T>): Promise<T | undefined> => {
+  try {
+    return await fn()
+  } catch {
+    return undefined
+  }
 }

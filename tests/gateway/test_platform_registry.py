@@ -38,9 +38,28 @@ class TestPlatformEnumDynamic:
         assert a.value == "irc"
 
     def test_dynamic_member_with_hyphens(self):
-        p = Platform("my-platform")
-        assert p.value == "my-platform"
-        assert p.name == "MY_PLATFORM"
+        """Registered plugin platforms with hyphens work once registered."""
+        from gateway.platform_registry import platform_registry as _reg
+
+        entry = PlatformEntry(
+            name="my-platform",
+            label="My Platform",
+            adapter_factory=lambda cfg: MagicMock(),
+            check_fn=lambda: True,
+            source="plugin",
+        )
+        _reg.register(entry)
+        try:
+            p = Platform("my-platform")
+            assert p.value == "my-platform"
+            assert p.name == "MY_PLATFORM"
+        finally:
+            _reg.unregister("my-platform")
+
+    def test_dynamic_member_rejects_unregistered(self):
+        """Arbitrary strings are rejected to prevent enum pollution."""
+        with pytest.raises(ValueError):
+            Platform("totally-fake-platform")
 
     def test_dynamic_member_rejects_non_string(self):
         with pytest.raises(ValueError):

@@ -13,7 +13,7 @@ import os
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
@@ -43,6 +43,11 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
         if normalized in {"pair", "ignore"}:
             return normalized
     return default
+
+
+# Module-level cache for bundled platform plugin names (lives outside the
+# enum so it doesn't become an accidental enum member).
+_Platform__bundled_plugin_names: Optional[set] = None
 
 
 class Platform(Enum):
@@ -76,10 +81,11 @@ class Platform(Enum):
     YUANBAO = "yuanbao"
     @classmethod
     def _missing_(cls, value):
-        """Accept unknown platform names for plugin-registered adapters.
+        """Accept unknown platform names only for known plugin adapters.
 
         Creates a pseudo-member cached in ``_value2member_map_`` so that
         ``Platform("irc") is Platform("irc")`` holds True (identity-stable).
+        Arbitrary strings are rejected to prevent enum pollution.
         """
         if not isinstance(value, str) or not value.strip():
             return None
@@ -88,13 +94,61 @@ class Platform(Enum):
         # Check cache first (another call may have created it already)
         if value in cls._value2member_map_:
             return cls._value2member_map_[value]
-        pseudo = object.__new__(cls)
-        pseudo._value_ = value
-        pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
-        # Cache so future lookups return the same object
-        cls._value2member_map_[value] = pseudo
-        cls._member_map_[pseudo._name_] = pseudo
-        return pseudo
+
+        # Only create pseudo-members for bundled plugin platforms (discovered
+        # via filesystem scan) or runtime-registered plugin platforms.
+        global _Platform__bundled_plugin_names
+        if _Platform__bundled_plugin_names is None:
+            _Platform__bundled_plugin_names = cls._scan_bundled_plugin_platforms()
+        if value in _Platform__bundled_plugin_names:
+            pseudo = object.__new__(cls)
+            pseudo._value_ = value
+            pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
+            cls._value2member_map_[value] = pseudo
+            cls._member_map_[pseudo._name_] = pseudo
+            return pseudo
+
+        # Runtime-registered plugins (e.g. user-installed, discovered after
+        # the enum was defined).
+        try:
+            from gateway.platform_registry import platform_registry
+            if platform_registry.is_registered(value):
+                pseudo = object.__new__(cls)
+                pseudo._value_ = value
+                pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
+                cls._value2member_map_[value] = pseudo
+                cls._member_map_[pseudo._name_] = pseudo
+                return pseudo
+        except Exception:
+            pass
+
+        return None
+
+    @classmethod
+    def _scan_bundled_plugin_platforms(cls) -> set:
+        """Return names of bundled platform plugins under ``plugins/platforms/``."""
+        names: set = set()
+        try:
+            platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
+            if platforms_dir.is_dir():
+                for child in platforms_dir.iterdir():
+                    if (
+                        child.is_dir()
+                        and (child / "__init__.py").exists()
+                        and (
+                            (child / "plugin.yaml").exists()
+                            or (child / "plugin.yml").exists()
+                        )
+                    ):
+                        names.add(child.name.lower())
+        except Exception:
+            pass
+        return names
+
+
+# Snapshot of built-in platform values before any dynamic _missing_ lookups.
+# Used to distinguish real platforms from arbitrary strings.
+_BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
 
 @dataclass
@@ -258,6 +312,44 @@ class StreamingConfig:
         )
 
 
+# -----------------------------------------------------------------------------
+# Built-in platform connection checkers
+# -----------------------------------------------------------------------------
+# Each callable receives a ``PlatformConfig`` and returns ``True`` when the
+# platform is sufficiently configured to be considered "connected".  Platforms
+# that rely on the generic ``token or api_key`` check (Telegram, Discord,
+# Slack, Matrix, Mattermost, HomeAssistant) do not need an entry here.
+_PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
+    Platform.WEIXIN: lambda cfg: bool(
+        cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
+    ),
+    Platform.WHATSAPP: lambda cfg: True,  # bridge handles auth
+    Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
+    Platform.EMAIL: lambda cfg: bool(cfg.extra.get("address")),
+    Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
+    Platform.API_SERVER: lambda cfg: True,
+    Platform.WEBHOOK: lambda cfg: True,
+    Platform.FEISHU: lambda cfg: bool(cfg.extra.get("app_id")),
+    Platform.WECOM: lambda cfg: bool(cfg.extra.get("bot_id")),
+    Platform.WECOM_CALLBACK: lambda cfg: bool(
+        cfg.extra.get("corp_id") or cfg.extra.get("apps")
+    ),
+    Platform.BLUEBUBBLES: lambda cfg: bool(
+        cfg.extra.get("server_url") and cfg.extra.get("password")
+    ),
+    Platform.QQBOT: lambda cfg: bool(
+        cfg.extra.get("app_id") and cfg.extra.get("client_secret")
+    ),
+    Platform.YUANBAO: lambda cfg: bool(
+        cfg.extra.get("app_id") and cfg.extra.get("app_secret")
+    ),
+    Platform.DINGTALK: lambda cfg: bool(
+        (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
+        and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
+    ),
+}
+
+
 @dataclass
 class GatewayConfig:
     """
@@ -311,72 +403,43 @@ class GatewayConfig:
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
-            # Weixin requires both a token and an account_id
-            if platform == Platform.WEIXIN:
-                if config.extra.get("account_id") and (config.token or config.extra.get("token")):
-                    connected.append(platform)
-                continue
-            # Platforms that use token/api_key auth
-            if config.token or config.api_key:
+            if self._is_platform_connected(platform, config):
                 connected.append(platform)
-            # WhatsApp uses enabled flag only (bridge handles auth)
-            elif platform == Platform.WHATSAPP:
-                connected.append(platform)
-            # Signal uses extra dict for config (http_url + account)
-            elif platform == Platform.SIGNAL and config.extra.get("http_url"):
-                connected.append(platform)
-            # Email uses extra dict for config (address + imap_host + smtp_host)
-            elif platform == Platform.EMAIL and config.extra.get("address"):
-                connected.append(platform)
-            # SMS uses api_key (Twilio auth token) — SID checked via env
-            elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
-                connected.append(platform)
-            # API Server uses enabled flag only (no token needed)
-            elif platform == Platform.API_SERVER:
-                connected.append(platform)
-            # Webhook uses enabled flag only (secrets are per-route)
-            elif platform == Platform.WEBHOOK:
-                connected.append(platform)
-            # Feishu uses extra dict for app credentials
-            elif platform == Platform.FEISHU and config.extra.get("app_id"):
-                connected.append(platform)
-            # WeCom bot mode uses extra dict for bot credentials
-            elif platform == Platform.WECOM and config.extra.get("bot_id"):
-                connected.append(platform)
-            # WeCom callback mode uses corp_id or apps list
-            elif platform == Platform.WECOM_CALLBACK and (
-                config.extra.get("corp_id") or config.extra.get("apps")
-            ):
-                connected.append(platform)
-            # BlueBubbles uses extra dict for local server config
-            elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
-                connected.append(platform)
-            # QQBot uses extra dict for app credentials
-            elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
-                connected.append(platform)
-            # Yuanbao uses extra dict for app credentials
-            elif platform == Platform.YUANBAO and config.extra.get("app_id") and config.extra.get("app_secret"):
-                connected.append(platform)
-            # DingTalk uses client_id/client_secret from config.extra or env vars
-            elif platform == Platform.DINGTALK and (
-                config.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
-            ) and (
-                config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
-            ):
-                connected.append(platform)
-            else:
-                # Plugin-registered platform — delegate validation to the
-                # registry entry's validate_config if available.
-                try:
-                    from gateway.platform_registry import platform_registry
-                    entry = platform_registry.get(platform.value)
-                    if entry:
-                        if entry.validate_config is None or entry.validate_config(config):
-                            connected.append(platform)
-                except Exception:
-                    pass  # Registry not yet initialised during early import
-        
         return connected
+
+    def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
+        """Check whether a single platform is sufficiently configured."""
+        # Weixin requires both a token and an account_id (checked first so
+        # the generic token branch doesn't let it through without account_id).
+        if platform == Platform.WEIXIN:
+            return bool(
+                config.extra.get("account_id")
+                and (config.token or config.extra.get("token"))
+            )
+
+        # Generic token/api_key auth covers Telegram, Discord, Slack, etc.
+        if config.token or config.api_key:
+            return True
+
+        # Platform-specific check
+        checker = _PLATFORM_CONNECTED_CHECKERS.get(platform)
+        if checker is not None:
+            return checker(config)
+
+        # Plugin-registered platforms
+        try:
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(platform.value)
+            if entry:
+                if entry.is_connected is not None:
+                    return entry.is_connected(config)
+                if entry.validate_config is not None:
+                    return entry.validate_config(config)
+                return True
+        except Exception:
+            pass  # Registry not yet initialised during early import
+
+        return False
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform."""
@@ -1419,3 +1482,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
+
+    # Registry-driven enable for plugin platforms.  Built-ins have explicit
+    # blocks above; plugins expose check_fn() which is the single source of
+    # truth for "are my env vars set?".  When it returns True, ensure the
+    # platform is enabled so start() will create its adapter.
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()  # idempotent
+        from gateway.platform_registry import platform_registry
+        for entry in platform_registry.plugin_entries():
+            try:
+                if not entry.check_fn():
+                    continue
+            except Exception as e:
+                logger.debug("check_fn for %s raised: %s", entry.name, e)
+                continue
+            platform = Platform(entry.name)
+            if platform not in config.platforms:
+                config.platforms[platform] = PlatformConfig()
+            config.platforms[platform].enabled = True
+    except Exception as e:
+        logger.debug("Plugin platform enable pass failed: %s", e)

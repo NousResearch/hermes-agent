@@ -242,6 +242,7 @@ AUTHOR_MAP = {
     "LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "Lubrsy706@users.noreply.github.com": "Lubrsy706",
+    "HiddenPuppy@users.noreply.github.com": "HiddenPuppy",
     "niyant@spicefi.xyz": "spniyant",
     "olafthiele@gmail.com": "olafthiele",
     "oncuevtv@gmail.com": "sprmn24",

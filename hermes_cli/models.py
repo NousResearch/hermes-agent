@@ -127,6 +127,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "grok-code-fast-1",
     ],
     "gemini": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",

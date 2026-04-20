@@ -2212,7 +2212,10 @@ class AIAgent:
         explicitly configured a stale timeout, such as auto-disabling the
         detector for local endpoints.
         """
-        cfg = get_provider_stale_timeout(self.provider, self.model)
+        cfg = get_provider_stale_timeout(
+            getattr(self, "provider", "") or "",
+            getattr(self, "model", "") or "",
+        )
         if cfg is not None:
             return cfg, False
 
@@ -2225,7 +2228,7 @@ class AIAgent:
     def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
         """Compute the effective non-stream stale timeout for this request."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
-        base_url = getattr(self, "_base_url", None) or self.base_url or ""
+        base_url = getattr(self, "_base_url", "") or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 

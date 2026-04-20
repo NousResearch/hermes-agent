@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,18 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _is_direct_openai_base_url(base_url: str) -> bool:
+    """Return True only for native OpenAI API hosts, not proxy paths."""
+    normalized = (base_url or "").strip()
+    if not normalized:
+        return False
+    try:
+        host = (urlparse(normalized).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.openai.com"
+
+
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """Auto-detect api_mode from the resolved base URL.
 
@@ -49,7 +62,7 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     normalized = (base_url or "").strip().lower().rstrip("/")
     if "api.x.ai" in normalized:
         return "codex_responses"
-    if "api.openai.com" in normalized and "openrouter" not in normalized:
+    if _is_direct_openai_base_url(base_url):
         return "codex_responses"
     if normalized.endswith("/anthropic"):
         return "anthropic_messages"
@@ -511,11 +524,14 @@ def _resolve_openrouter_runtime(
     # Also provide a placeholder API key for local servers that don't require
     # authentication — the OpenAI SDK requires a non-empty api_key string.
     effective_provider = "custom" if requested_norm == "custom" else "openrouter"
+    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    if not _provider_supports_explicit_api_mode(effective_provider, cfg_provider):
+        configured_mode = None
 
     # For custom endpoints, check if a credential pool exists
     if effective_provider == "custom" and base_url:
         pool_result = _try_resolve_from_custom_pool(
-            base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
+            base_url, effective_provider, configured_mode,
         )
         if pool_result:
             return pool_result
@@ -525,9 +541,7 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": effective_provider,
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": configured_mode or _detect_api_mode_for_url(base_url) or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
@@ -650,8 +664,9 @@ def _resolve_explicit_runtime(
         elif provider == "xai":
             api_mode = "codex_responses"
         else:
+            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode:
+            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
                 api_mode = configured_mode
             else:
                 # Auto-detect Anthropic-compatible endpoints (/anthropic suffix).

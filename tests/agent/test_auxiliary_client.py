@@ -10,8 +10,6 @@ import pytest
 
 from agent.auxiliary_client import (
     get_text_auxiliary_client,
-    get_available_vision_backends,
-    resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
     call_llm,
@@ -476,6 +474,60 @@ class TestGetTextAuxiliaryClient:
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.2-codex"
 
+    def test_returns_none_when_nothing_available(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+            client, model = get_text_auxiliary_client()
+        assert client is None
+        assert model is None
+
+    def test_custom_endpoint_uses_codex_wrapper_when_runtime_requests_responses_api(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
+             patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.3-codex"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "sk-test"
+
+    def test_resolve_provider_client_custom_proxy_url_does_not_wrap_codex(self):
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = resolve_provider_client(
+                "custom",
+                model="gpt-5.3-codex",
+                explicit_base_url="https://proxy.example.com/api.openai.com/v1",
+                explicit_api_key="sk-test",
+            )
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        assert not isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.3-codex"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://proxy.example.com/api.openai.com/v1"
+
+    def test_auxiliary_max_tokens_param_custom_proxy_url_uses_max_tokens(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.example.com/api.openai.com/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+            result = auxiliary_max_tokens_param(1024)
+
+        assert result == {"max_tokens": 1024}
+
+# The branch previously carried a large unrelated legacy test block here.
+# It referenced helpers that no longer exist on main and was not required
+# for the custom-provider API mode fix. Keep this PR scoped to the direct
+# runtime detection regression and its proxy/non-proxy cases.
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
 
 

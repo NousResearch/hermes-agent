@@ -142,3 +142,15 @@ class TestStrictApiValidation:
 
         # Should NOT sanitize for Codex
         assert agent._should_sanitize_tool_calls() is False
+
+    def test_custom_proxy_url_is_not_treated_as_direct_openai(self, monkeypatch):
+        """Reverse proxies with api.openai.com in the path must stay on chat completions."""
+        agent = _make_agent(
+            monkeypatch,
+            "custom",
+            api_mode="chat_completions",
+            base_url="https://proxy.example.com/api.openai.com/v1",
+        )
+
+        assert agent._is_direct_openai_url() is False
+        assert agent.api_mode == "chat_completions"

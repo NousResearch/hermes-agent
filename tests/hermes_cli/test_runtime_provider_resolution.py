@@ -833,6 +833,32 @@ def test_model_config_api_mode_ignored_when_provider_differs(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
 
 
+def test_custom_endpoint_stale_api_mode_ignored_when_provider_differs(monkeypatch):
+    """Custom endpoints must not inherit codex_responses from a previous provider."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom",
+        explicit_api_key="test-key",
+        explicit_base_url="http://127.0.0.1:9208/v1",
+    )
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
+
+
 def test_invalid_api_mode_ignored(monkeypatch):
     """Invalid api_mode values should fall back to chat_completions."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -845,6 +871,29 @@ def test_invalid_api_mode_ignored(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="custom")
 
     assert resolved["api_mode"] == "chat_completions"
+
+
+def test_custom_proxy_url_with_openai_path_does_not_auto_detect_codex(monkeypatch):
+    """Proxy paths containing api.openai.com must still use chat_completions."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://proxy.example.com/api.openai.com/v1",
+        },
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://proxy.example.com/api.openai.com/v1"
 
 
 def test_named_custom_provider_api_mode(monkeypatch):
@@ -913,6 +962,24 @@ def test_api_key_provider_explicit_api_mode_config(monkeypatch):
 
     assert resolved["provider"] == "minimax"
     assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_explicit_api_key_provider_stale_api_mode_ignored_when_provider_differs(monkeypatch):
+    """Explicit API-key providers must not inherit api_mode from a different provider."""
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "opencode-go",
+        "api_mode": "anthropic_messages",
+    })
+
+    resolved = rp.resolve_runtime_provider(
+        requested="zai",
+        explicit_api_key="test-key",
+        explicit_base_url="https://api.z.ai/api/paas/v4",
+    )
+
+    assert resolved["provider"] == "zai"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.z.ai/api/paas/v4"
 
 
 def test_minimax_default_url_uses_anthropic_messages(monkeypatch):

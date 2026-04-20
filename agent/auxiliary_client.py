@@ -42,6 +42,7 @@ import time
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -53,6 +54,18 @@ logger = logging.getLogger(__name__)
 
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
+
+
+def _is_direct_openai_base_url(base_url: str) -> bool:
+    """Return True only for native OpenAI API hosts, not proxy paths."""
+    normalized = (base_url or "").strip()
+    if not normalized:
+        return False
+    try:
+        host = (urlparse(normalized).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.openai.com"
 
 _PROVIDER_ALIASES = {
     "google": "gemini",
@@ -1506,8 +1519,7 @@ def resolve_provider_client(
         # Auto-detect: api.openai.com + codex model name pattern
         if api_mode and api_mode != "codex_responses":
             return False  # explicit non-codex mode
-        normalized_base = (base_url_str or "").strip().lower()
-        if "api.openai.com" in normalized_base and "openrouter" not in normalized_base:
+        if _is_direct_openai_base_url(base_url_str):
             model_lower = (model_str or "").lower()
             if "codex" in model_lower:
                 return True
@@ -2015,7 +2027,7 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     # Only use max_completion_tokens for direct OpenAI custom endpoints
     if (not or_key
             and _read_nous_auth() is None
-            and "api.openai.com" in custom_base.lower()):
+            and _is_direct_openai_base_url(custom_base)):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
 
@@ -2450,7 +2462,7 @@ def _build_call_kwargs(
         # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
         if provider == "custom":
             custom_base = base_url or _current_custom_base_url()
-            if "api.openai.com" in custom_base.lower():
+            if _is_direct_openai_base_url(custom_base):
                 kwargs["max_completion_tokens"] = max_tokens
             else:
                 kwargs["max_tokens"] = max_tokens

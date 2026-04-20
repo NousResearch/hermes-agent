@@ -36,6 +36,7 @@ import tempfile
 import time
 import threading
 from types import SimpleNamespace
+from urllib.parse import urlparse
 import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
@@ -2259,8 +2260,14 @@ class AIAgent:
 
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
-        url = (base_url or self._base_url_lower).lower()
-        return "api.openai.com" in url and "openrouter" not in url
+        raw_url = base_url if base_url is not None else self._base_url
+        if not raw_url:
+            return False
+        try:
+            host = (urlparse(raw_url).hostname or "").lower()
+        except Exception:
+            return False
+        return host == "api.openai.com"
 
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.

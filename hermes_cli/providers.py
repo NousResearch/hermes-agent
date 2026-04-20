@@ -22,8 +22,21 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def _is_direct_openai_base_url(base_url: str) -> bool:
+    """Return True only for native OpenAI API hosts, not proxy paths."""
+    normalized = (base_url or "").strip()
+    if not normalized:
+        return False
+    try:
+        host = (urlparse(normalized).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.openai.com"
 
 
 # -- Hermes overlay ----------------------------------------------------------
@@ -436,7 +449,7 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
         url_lower = base_url.rstrip("/").lower()
         if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
             return "anthropic_messages"
-        if "api.openai.com" in url_lower:
+        if _is_direct_openai_base_url(base_url):
             return "codex_responses"
         if "bedrock-runtime" in url_lower and "amazonaws.com" in url_lower:
             return "bedrock_converse"

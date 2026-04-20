@@ -245,6 +245,11 @@ class TestMinimaxApiMode:
         result = determine_api_mode("deepseek")
         assert result == "chat_completions"
 
+    def test_proxy_path_containing_openai_does_not_force_responses(self):
+        from hermes_cli.providers import determine_api_mode
+        result = determine_api_mode("totally-unknown", "https://proxy.example.com/api.openai.com/v1")
+        assert result == "chat_completions"
+
 
 class TestMinimaxMaxOutput:
     """Verify _get_anthropic_max_output returns correct limits for MiniMax models.

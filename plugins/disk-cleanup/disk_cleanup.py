@@ -1,4 +1,4 @@
-"""disk_guardian — ephemeral file cleanup for Hermes Agent.
+"""disk_cleanup — ephemeral file cleanup for Hermes Agent.
 
 Library module wrapping the deterministic cleanup rules written by
 @LVT382009 in PR #12212. The plugin ``__init__.py`` wires these
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 def get_state_dir() -> Path:
     """State dir — separate from ``$HERMES_HOME/logs/``."""
-    return get_hermes_home() / "disk-guardian"
+    return get_hermes_home() / "disk-cleanup"
 
 
 def get_tracked_file() -> Path:
@@ -297,7 +297,7 @@ def quick() -> Dict[str, Any]:
     hermes_home = get_hermes_home()
     _PROTECTED_TOP_LEVEL = {
         "logs", "memories", "sessions", "cron", "cronjobs",
-        "cache", "skills", "plugins", "disk-guardian", "optional-skills",
+        "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
         "hermes-agent", "backups", "profiles", ".worktrees",
     }
     empty_removed = 0
@@ -475,7 +475,7 @@ def guess_category(path: Path) -> Optional[str]:
         rel = path.resolve().relative_to(hermes_home)
         top = rel.parts[0] if rel.parts else ""
         if top in {
-            "disk-guardian", "logs", "memories", "sessions", "config.yaml",
+            "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
         }:

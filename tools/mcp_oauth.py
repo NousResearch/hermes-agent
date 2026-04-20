@@ -563,7 +563,7 @@ def build_oauth_auth(
     _maybe_preregister_client(storage, cfg, client_metadata)
 
     return OAuthClientProvider(
-        server_url=_parse_base_url(server_url),
+        server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
         redirect_handler=_redirect_handler,

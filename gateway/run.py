@@ -9187,6 +9187,34 @@ class GatewayRunner:
             if event_type not in ("tool.started",):
                 return
 
+            # Signal emoji reactions: instead of text messages, react with emoji to user's message
+            # This provides "/verbose new"-like feedback without creating separate bubbles.
+            if source.platform.value == "signal" and hasattr(source, 'signal_react_to') and source.signal_react_to:
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(tool_name, default="⚙️")
+                react_info = source.signal_react_to
+                
+                # For group chats, signal-cli only needs groupId (no targetAuthor/targetTimestamp)
+                if source.chat_id.startswith("group:") and isinstance(react_info.get("group_id"), str):
+                    asyncio.create_task(self.adapters[source.platform]._send_reaction(
+                        chat_id=source.chat_id,
+                        emoji=emoji,
+                        target_author=None,
+                        target_timestamp=None,
+                    ))
+                else:
+                    # DM: need targetAuthor and targetTimestamp (ms) for signal-cli sendReaction
+                    target_ts = react_info.get("timestamp")
+                    target_author = react_info.get("author")
+                    if target_ts is not None and target_author:
+                        asyncio.create_task(self.adapters[source.platform]._send_reaction(
+                            chat_id=source.chat_id,
+                            emoji=emoji,
+                            target_author=target_author,
+                            target_timestamp=int(target_ts),
+                        ))
+                return
+
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return

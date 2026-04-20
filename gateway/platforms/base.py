@@ -2201,6 +2201,7 @@ class BasePlatformAdapter(ABC):
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
         is_bot: bool = False,
+        signal_react_to: Optional[Dict[str, Any]] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -2218,6 +2219,7 @@ class BasePlatformAdapter(ABC):
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
             is_bot=is_bot,
+            signal_react_to=signal_react_to,
         )
     
     @abstractmethod

@@ -84,6 +84,9 @@ class SessionSource:
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
     
+    # Signal-specific metadata for emoji reactions on incoming messages.
+    signal_react_to: Optional[Dict[str, Any]] = None
+    
     @property
     def description(self) -> str:
         """Human-readable description of the source."""

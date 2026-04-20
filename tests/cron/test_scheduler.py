@@ -772,9 +772,10 @@ class TestRunJobSessionPersistence:
                 pass
 
             def run_conversation(self, *args, **kwargs):
-                seen["platform"] = os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM")
-                seen["chat_id"] = os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID")
-                seen["thread_id"] = os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID")
+                from gateway.session_context import get_session_env
+                seen["platform"] = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM") or None
+                seen["chat_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID") or None
+                seen["thread_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID") or None
                 return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
@@ -1457,3 +1458,125 @@ class TestSendMediaViaAdapter:
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
+
+
+class TestParallelTick:
+    """Verify that tick() runs due jobs concurrently and isolates ContextVars."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_tick_lock(self, tmp_path):
+        """Point the tick file lock at a per-test temp dir to avoid xdist contention."""
+        lock_dir = tmp_path / "cron"
+        lock_dir.mkdir()
+        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
+             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+            yield
+
+    def test_parallel_jobs_run_concurrently(self):
+        """Two jobs launched in the same tick should overlap in time."""
+        import threading
+        import time
+
+        barrier = threading.Barrier(2, timeout=5)
+        call_order = []
+
+        def mock_run_job(job):
+            """Each job hits a barrier — both must be active simultaneously."""
+            call_order.append(("start", job["id"]))
+            barrier.wait()  # blocks until both threads reach here
+            call_order.append(("end", job["id"]))
+            return (True, "output", "response", None)
+
+        jobs = [
+            {"id": "job-a", "name": "a", "deliver": "local"},
+            {"id": "job-b", "name": "b", "deliver": "local"},
+        ]
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+
+        assert result == 2
+        # Both starts happened before both ends — proof of concurrency
+        starts = [i for i, (action, _) in enumerate(call_order) if action == "start"]
+        ends = [i for i, (action, _) in enumerate(call_order) if action == "end"]
+        assert len(starts) == 2
+        assert len(ends) == 2
+        assert max(starts) < min(ends), f"Jobs not concurrent: {call_order}"
+
+    def test_parallel_jobs_isolated_contextvars(self):
+        """Each job's ContextVars must be isolated — no cross-contamination."""
+        from gateway.session_context import get_session_env
+        seen = {}
+
+        def mock_run_job(job):
+            origin = job.get("origin", {})
+            # run_job sets ContextVars — verify each job sees its own
+            from gateway.session_context import set_session_vars, clear_session_vars
+            tokens = set_session_vars(
+                platform=origin.get("platform", ""),
+                chat_id=str(origin.get("chat_id", "")),
+            )
+            import time
+            time.sleep(0.05)  # give other thread time to set its vars
+            platform = get_session_env("HERMES_SESSION_PLATFORM")
+            chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
+            seen[job["id"]] = {"platform": platform, "chat_id": chat_id}
+            clear_session_vars(tokens)
+            return (True, "output", "response", None)
+
+        jobs = [
+            {"id": "tg-job", "name": "tg", "deliver": "local",
+             "origin": {"platform": "telegram", "chat_id": "111"}},
+            {"id": "dc-job", "name": "dc", "deliver": "local",
+             "origin": {"platform": "discord", "chat_id": "222"}},
+        ]
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
+        assert seen["dc-job"] == {"platform": "discord", "chat_id": "222"}
+
+    def test_max_parallel_env_var(self, monkeypatch):
+        """HERMES_CRON_MAX_PARALLEL=1 should restore serial behaviour."""
+        monkeypatch.setenv("HERMES_CRON_MAX_PARALLEL", "1")
+        call_times = []
+
+        def mock_run_job(job):
+            import time
+            call_times.append(("start", job["id"], time.monotonic()))
+            time.sleep(0.05)
+            call_times.append(("end", job["id"], time.monotonic()))
+            return (True, "output", "response", None)
+
+        jobs = [
+            {"id": "s1", "name": "s1", "deliver": "local"},
+            {"id": "s2", "name": "s2", "deliver": "local"},
+        ]
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+
+        assert result == 2
+        # With max_workers=1, second job starts after first ends
+        end_s1 = [t for action, jid, t in call_times if action == "end" and jid == "s1"][0]
+        start_s2 = [t for action, jid, t in call_times if action == "start" and jid == "s2"][0]
+        assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"

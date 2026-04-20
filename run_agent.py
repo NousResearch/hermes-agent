@@ -4994,11 +4994,13 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.auxiliary_client import _OR_HEADERS
+        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _OR_HEADERS
 
         normalized = (base_url or "").lower()
         if "openrouter" in normalized:
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
+        elif "ai-gateway.vercel.sh" in normalized:
+            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif "api.githubcopilot.com" in normalized:
             from hermes_cli.models import copilot_default_headers
 

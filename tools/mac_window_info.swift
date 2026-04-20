@@ -24,16 +24,26 @@ let bundleName = app?.bundleURL?.deletingPathExtension().lastPathComponent ?? ""
 
 let rawInfo = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
 
-let candidate = rawInfo.first { item in
-    guard cgWindowInt(item[kCGWindowOwnerPID as String]) == Int(pid) else { return false }
+let windows: [[String: Any]] = rawInfo.compactMap { item in
+    guard cgWindowInt(item[kCGWindowOwnerPID as String]) == Int(pid) else { return nil }
     let layer = cgWindowInt(item[kCGWindowLayer as String]) ?? 0
-    guard layer == 0 else { return false }
+    guard layer == 0 else { return nil }
     let alpha = cgWindowDouble(item[kCGWindowAlpha as String]) ?? 1.0
-    guard alpha > 0 else { return false }
-    guard let bounds = item[kCGWindowBounds as String] as? [String: Any] else { return false }
+    guard alpha > 0 else { return nil }
+    guard let bounds = item[kCGWindowBounds as String] as? [String: Any] else { return nil }
     let width = cgWindowDouble(bounds["Width"]) ?? 0
     let height = cgWindowDouble(bounds["Height"]) ?? 0
-    return width > 1 && height > 1
+    guard width > 1 && height > 1 else { return nil }
+    return [
+        "window_title": (item[kCGWindowName as String] as? String) ?? "",
+        "window_id": cgWindowInt(item[kCGWindowNumber as String]) ?? NSNull(),
+        "window_bounds": [
+            "x": Int(cgWindowDouble(bounds["X"]) ?? 0),
+            "y": Int(cgWindowDouble(bounds["Y"]) ?? 0),
+            "width": Int(width),
+            "height": Int(height),
+        ],
+    ]
 }
 
 var payload: [String: Any] = [
@@ -44,21 +54,13 @@ var payload: [String: Any] = [
     "window_title": "",
     "window_id": NSNull(),
     "window_bounds": NSNull(),
+    "windows": windows,
 ]
 
-if let item = candidate {
-    payload["window_title"] = (item[kCGWindowName as String] as? String) ?? ""
-    if let windowID = cgWindowInt(item[kCGWindowNumber as String]) {
-        payload["window_id"] = windowID
-    }
-    if let bounds = item[kCGWindowBounds as String] as? [String: Any] {
-        payload["window_bounds"] = [
-            "x": Int(cgWindowDouble(bounds["X"]) ?? 0),
-            "y": Int(cgWindowDouble(bounds["Y"]) ?? 0),
-            "width": Int(cgWindowDouble(bounds["Width"]) ?? 0),
-            "height": Int(cgWindowDouble(bounds["Height"]) ?? 0),
-        ]
-    }
+if let first = windows.first {
+    payload["window_title"] = first["window_title"] ?? ""
+    payload["window_id"] = first["window_id"] ?? NSNull()
+    payload["window_bounds"] = first["window_bounds"] ?? NSNull()
 }
 
 let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])

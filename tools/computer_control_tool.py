@@ -195,13 +195,112 @@ def _ensure_window_helper_binary() -> Path:
     return binary
 
 
+def _coerce_int(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_window_bounds(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    x = _coerce_int(value.get("x"))
+    if x is None:
+        x = _coerce_int(value.get("X"))
+    y = _coerce_int(value.get("y"))
+    if y is None:
+        y = _coerce_int(value.get("Y"))
+    width = _coerce_int(value.get("width"))
+    if width is None:
+        width = _coerce_int(value.get("Width"))
+    height = _coerce_int(value.get("height"))
+    if height is None:
+        height = _coerce_int(value.get("Height"))
+    if width is None or height is None:
+        return None
+    return {
+        "x": x or 0,
+        "y": y or 0,
+        "width": width,
+        "height": height,
+    }
+
+
+def _normalize_helper_window(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    window_id = _coerce_int(value.get("window_id"))
+    if window_id is None:
+        window_id = _coerce_int(value.get("id"))
+    bounds = _normalize_window_bounds(value.get("window_bounds") or value.get("bounds"))
+    if window_id is None or not bounds:
+        return None
+    return {
+        "window_title": str(value.get("window_title") or value.get("title") or ""),
+        "window_id": window_id,
+        "window_bounds": bounds,
+    }
+
+
+def _window_area(window: dict[str, object]) -> int:
+    bounds = window.get("window_bounds")
+    if not isinstance(bounds, dict):
+        return 0
+    width = _coerce_int(bounds.get("width")) or 0
+    height = _coerce_int(bounds.get("height")) or 0
+    return max(width, 0) * max(height, 0)
+
+
+def _window_looks_fragmentary(window: dict[str, object]) -> bool:
+    bounds = window.get("window_bounds")
+    if not isinstance(bounds, dict):
+        return True
+    width = _coerce_int(bounds.get("width")) or 0
+    height = _coerce_int(bounds.get("height")) or 0
+    area = _window_area(window)
+    title = str(window.get("window_title") or "").strip()
+    return not title and (width < 120 or height < 80 or area < 10_000)
+
+
+def _select_frontmost_window(windows: object) -> dict[str, object] | None:
+    if not isinstance(windows, list):
+        return None
+    candidates = [candidate for candidate in (_normalize_helper_window(item) for item in windows) if candidate]
+    if not candidates:
+        return None
+    if not _window_looks_fragmentary(candidates[0]):
+        return candidates[0]
+    for candidate in candidates[1:]:
+        if not _window_looks_fragmentary(candidate):
+            return candidate
+    titled = [candidate for candidate in candidates if str(candidate.get("window_title") or "").strip()]
+    if titled:
+        return titled[0]
+    return candidates[0]
+
+
 def _frontmost_window_info() -> dict[str, object]:
     try:
         helper = _ensure_window_helper_binary()
         raw = _run_command([str(helper)])
         data = json.loads(raw)
         if isinstance(data, dict):
-            return data
+            info: dict[str, object] = {
+                "app_name": str(data.get("app_name") or ""),
+                "bundle_id": str(data.get("bundle_id") or ""),
+                "bundle_name": str(data.get("bundle_name") or ""),
+                "process_id": _coerce_int(data.get("process_id")),
+                "window_title": str(data.get("window_title") or ""),
+                "window_id": _coerce_int(data.get("window_id")),
+                "window_bounds": _normalize_window_bounds(data.get("window_bounds")),
+            }
+            selected = _select_frontmost_window(data.get("windows"))
+            if selected:
+                info.update(selected)
+            return info
     except Exception:
         pass
 

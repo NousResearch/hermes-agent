@@ -109,6 +109,92 @@ class TestHandlers:
         assert result["window_id"] == 222
         assert result["window_bounds"] == {"x": 10, "y": 20, "width": 300, "height": 200}
 
+    def test_frontmost_window_info_prefers_large_titled_window_from_helper(self, monkeypatch):
+        helper_payload = {
+            "app_name": "文本编辑",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "process_id": 111,
+            "windows": [
+                {"window_title": "", "window_id": 226068, "window_bounds": {"x": 769, "y": 183, "width": 79, "height": 22}},
+                {"window_title": "Notes", "window_id": 226062, "window_bounds": {"x": 834, "y": 40, "width": 673, "height": 439}},
+            ],
+        }
+
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: json.dumps(helper_payload, ensure_ascii=False))
+
+        result = cct._frontmost_window_info()
+
+        assert result["app_name"] == "文本编辑"
+        assert result["bundle_id"] == "com.apple.TextEdit"
+        assert result["window_title"] == "Notes"
+        assert result["window_id"] == 226062
+        assert result["window_bounds"] == {"x": 834, "y": 40, "width": 673, "height": 439}
+
+    def test_frontmost_window_info_keeps_first_large_window_even_if_later_window_has_title(self, monkeypatch):
+        helper_payload = {
+            "app_name": "文本编辑",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "process_id": 111,
+            "windows": [
+                {"window_title": "", "window_id": 226810, "window_bounds": {"x": 833, "y": 264, "width": 673, "height": 439}},
+                {"window_title": "Background Notes", "window_id": 226062, "window_bounds": {"x": 834, "y": 40, "width": 640, "height": 420}},
+            ],
+        }
+
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: json.dumps(helper_payload, ensure_ascii=False))
+
+        result = cct._frontmost_window_info()
+
+        assert result["window_title"] == ""
+        assert result["window_id"] == 226810
+        assert result["window_bounds"] == {"x": 833, "y": 264, "width": 673, "height": 439}
+
+    def test_frontmost_window_info_keeps_smaller_frontmost_dialog_instead_of_larger_background_window(self, monkeypatch):
+        helper_payload = {
+            "app_name": "文本编辑",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "process_id": 111,
+            "windows": [
+                {"window_title": "Save", "window_id": 300001, "window_bounds": {"x": 900, "y": 220, "width": 320, "height": 180}},
+                {"window_title": "Document", "window_id": 300002, "window_bounds": {"x": 833, "y": 264, "width": 673, "height": 439}},
+            ],
+        }
+
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: json.dumps(helper_payload, ensure_ascii=False))
+
+        result = cct._frontmost_window_info()
+
+        assert result["window_title"] == "Save"
+        assert result["window_id"] == 300001
+        assert result["window_bounds"] == {"x": 900, "y": 220, "width": 320, "height": 180}
+
+    def test_frontmost_window_info_keeps_compact_titled_frontmost_window(self, monkeypatch):
+        helper_payload = {
+            "app_name": "文本编辑",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "process_id": 111,
+            "windows": [
+                {"window_title": "Quick Find", "window_id": 300101, "window_bounds": {"x": 920, "y": 200, "width": 150, "height": 60}},
+                {"window_title": "Document", "window_id": 300102, "window_bounds": {"x": 833, "y": 264, "width": 673, "height": 439}},
+            ],
+        }
+
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: json.dumps(helper_payload, ensure_ascii=False))
+
+        result = cct._frontmost_window_info()
+
+        assert result["window_title"] == "Quick Find"
+        assert result["window_id"] == 300101
+        assert result["window_bounds"] == {"x": 920, "y": 200, "width": 150, "height": 60}
+
     def test_keystroke_requires_text_or_key(self):
         result = json.loads(cct._handle_computer_control({"action": "keystroke"}))
         assert "error" in result

@@ -304,6 +304,54 @@ def test_list_authenticated_providers_dedupes_when_user_and_custom_overlap(monke
     assert matches[0]["models"] == ["gpt-5.4", "grok-4.20-beta"]
 
 
+def test_list_authenticated_providers_no_duplicate_labels_across_schemas(monkeypatch):
+    """Regression: same endpoint in both ``providers:`` dict AND ``custom_providers:``
+    list (e.g. via ``get_compatible_custom_providers()``) must not emit two picker
+    rows with identical display names.
+
+    Before the fix, section 3 emitted bare-slug rows ("openrouter") and section 4
+    emitted ``custom:openrouter`` rows for the same endpoint — both labelled
+    identically, bypassing ``seen_slugs`` dedup because the slug shapes differ.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    shared_entries = [
+        ("endpoint-a", "http://a.local/v1"),
+        ("endpoint-b", "http://b.local/v1"),
+        ("endpoint-c", "http://c.local/v1"),
+    ]
+
+    user_providers = {
+        name: {"name": name, "base_url": url, "model": "m1"}
+        for name, url in shared_entries
+    }
+    custom_providers = [
+        {"name": name, "base_url": url, "model": "m1"}
+        for name, url in shared_entries
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="none",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    user_rows = [p for p in providers if p.get("source") == "user-config"]
+    # Expect one row per shared entry — not two.
+    assert len(user_rows) == len(shared_entries), (
+        f"Expected {len(shared_entries)} rows, got {len(user_rows)}: "
+        f"{[(p['slug'], p['name']) for p in user_rows]}"
+    )
+
+    # And zero duplicate display labels.
+    labels = [p["name"].lower() for p in user_rows]
+    assert len(labels) == len(set(labels)), (
+        f"Duplicate labels across picker rows: {labels}"
+    )
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

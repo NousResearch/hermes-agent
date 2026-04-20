@@ -946,6 +946,70 @@ class TestStaleBaseUrlWarning:
             "Expected a warning about stale OPENAI_BASE_URL"
         assert mod._stale_base_url_warned is True
 
+
+class TestAuxiliaryTaskExtraBody:
+    def test_sync_call_merges_task_extra_body_from_config(self):
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        config = {
+            "auxiliary": {
+                "session_search": {
+                    "extra_body": {
+                        "enable_thinking": False,
+                        "reasoning": {"effort": "none"},
+                    }
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                extra_body={"metadata": {"source": "test"}},
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["enable_thinking"] is False
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "none"}
+        assert kwargs["extra_body"]["metadata"] == {"source": "test"}
+
+    @pytest.mark.asyncio
+    async def test_async_call_explicit_extra_body_overrides_task_config(self):
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
+
+        config = {
+            "auxiliary": {
+                "session_search": {
+                    "extra_body": {"enable_thinking": False}
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                extra_body={"enable_thinking": True},
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["enable_thinking"] is True
+
     def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
         """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""
         import agent.auxiliary_client as mod

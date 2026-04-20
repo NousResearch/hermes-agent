@@ -44,6 +44,7 @@ export interface UseSessionLifecycleOptions {
   rpc: GatewayRpc
   scrollRef: RefObject<null | ScrollBoxHandle>
   setHistoryItems: StateSetter<Msg[]>
+  setLastUserAt: StateSetter<null | number>
   setLastUserMsg: StateSetter<string>
   setSessionStartedAt: StateSetter<number>
   setStickyPrompt: StateSetter<string>
@@ -61,6 +62,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     rpc,
     scrollRef,
     setHistoryItems,
+    setLastUserAt,
     setLastUserMsg,
     setSessionStartedAt,
     setStickyPrompt,
@@ -82,9 +84,18 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     patchUiState({ bgTasks: new Set(), info: null, sid: null, usage: ZERO })
     setHistoryItems([])
     setLastUserMsg('')
+    setLastUserAt(null)
     setStickyPrompt('')
     composerActions.setPasteSnips([])
-  }, [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt, setVoiceProcessing, setVoiceRecording])
+  }, [
+    composerActions,
+    setHistoryItems,
+    setLastUserAt,
+    setLastUserMsg,
+    setStickyPrompt,
+    setVoiceProcessing,
+    setVoiceRecording
+  ])
 
   const resetVisibleHistory = useCallback(
     (info: null | SessionInfo = null) => {
@@ -96,11 +107,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       setHistoryItems(info ? [introMsg(info)] : [])
       setStickyPrompt('')
       setLastUserMsg('')
+      setLastUserAt(null)
       composerActions.setPasteSnips([])
       patchTurnState({ activity: [] })
       patchUiState({ info, usage: usageFrom(info) })
     },
-    [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt]
+    [composerActions, setHistoryItems, setLastUserAt, setLastUserMsg, setStickyPrompt]
   )
 
   const newSession = useCallback(

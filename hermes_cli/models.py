@@ -68,6 +68,29 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 
+# Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
+# OSS / open-weight models prioritized first, then closed-source by family.
+AI_GATEWAY_MODELS: list[tuple[str, str]] = [
+    ("moonshotai/kimi-k2.5",                 "recommended"),
+    ("qwen/qwen3.6-plus",                    ""),
+    ("z-ai/glm-5.1",                         ""),
+    ("minimax/minimax-m2.7",                 ""),
+    ("anthropic/claude-sonnet-4.6",          ""),
+    ("anthropic/claude-opus-4.7",            ""),
+    ("anthropic/claude-opus-4.6",            ""),
+    ("anthropic/claude-haiku-4.5",           ""),
+    ("openai/gpt-5.4",                       ""),
+    ("openai/gpt-5.4-mini",                  ""),
+    ("openai/gpt-5.3-codex",                 ""),
+    ("google/gemini-3.1-pro-preview",        ""),
+    ("google/gemini-3-flash-preview",        ""),
+    ("google/gemini-3.1-flash-lite-preview", ""),
+    ("x-ai/grok-4.20",                       ""),
+]
+
+_ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
+
+
 def _codex_curated_models() -> list[str]:
     """Derive the openai-codex curated list from codex_models.py.
 
@@ -729,6 +752,77 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
 
+def _ai_gateway_model_is_free(pricing: Any) -> bool:
+    """Return True if an AI Gateway model has $0 input AND output pricing."""
+    if not isinstance(pricing, dict):
+        return False
+    try:
+        return float(pricing.get("input", "0")) == 0 and float(pricing.get("output", "0")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def fetch_ai_gateway_models(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, str]]:
+    """Return the curated AI Gateway picker list, refreshed from the live catalog when possible."""
+    global _ai_gateway_catalog_cache
+
+    if _ai_gateway_catalog_cache is not None and not force_refresh:
+        return list(_ai_gateway_catalog_cache)
+
+    from hermes_constants import AI_GATEWAY_BASE_URL
+
+    fallback = list(AI_GATEWAY_MODELS)
+    preferred_ids = [mid for mid, _ in fallback]
+
+    try:
+        req = urllib.request.Request(
+            f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    live_items = payload.get("data", [])
+    if not isinstance(live_items, list):
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    live_by_id: dict[str, dict[str, Any]] = {}
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        live_by_id[mid] = item
+
+    curated: list[tuple[str, str]] = []
+    for preferred_id in preferred_ids:
+        live_item = live_by_id.get(preferred_id)
+        if live_item is None:
+            continue
+        desc = "free" if _ai_gateway_model_is_free(live_item.get("pricing")) else ""
+        curated.append((preferred_id, desc))
+
+    if not curated:
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    first_id, _ = curated[0]
+    curated[0] = (first_id, "recommended")
+    _ai_gateway_catalog_cache = curated
+    return list(curated)
+
+
+def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
+    """Return just the AI Gateway model-id strings."""
+    return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -873,6 +967,56 @@ def fetch_models_with_pricing(
     return result
 
 
+def fetch_ai_gateway_pricing(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Fetch Vercel AI Gateway /v1/models and return hermes-shaped pricing.
+
+    Vercel uses ``input`` / ``output`` field names; hermes's picker expects
+    ``prompt`` / ``completion``. This translates. Cache read/write field names
+    already match.
+    """
+    from hermes_constants import AI_GATEWAY_BASE_URL
+
+    cache_key = AI_GATEWAY_BASE_URL.rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    try:
+        req = urllib.request.Request(
+            f"{cache_key}/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _pricing_cache[cache_key] = {}
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id")
+        pricing = item.get("pricing")
+        if not (mid and isinstance(pricing, dict)):
+            continue
+        entry: dict[str, str] = {
+            "prompt": str(pricing.get("input", "")),
+            "completion": str(pricing.get("output", "")),
+        }
+        if pricing.get("input_cache_read"):
+            entry["input_cache_read"] = str(pricing["input_cache_read"])
+        if pricing.get("input_cache_write"):
+            entry["input_cache_write"] = str(pricing["input_cache_write"])
+        result[mid] = entry
+
+    _pricing_cache[cache_key] = result
+    return result
+
+
 def _resolve_openrouter_api_key() -> str:
     """Best-effort OpenRouter API key for pricing fetch."""
     return os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -891,7 +1035,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous)."""
+    """Return live pricing for providers that support it (openrouter, nous, ai-gateway)."""
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_models_with_pricing(
@@ -899,6 +1043,8 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
             base_url="https://openrouter.ai/api",
             force_refresh=force_refresh,
         )
+    if normalized == "ai-gateway":
+        return fetch_ai_gateway_pricing(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:

@@ -2313,7 +2313,6 @@ def _resolve_task_provider_model(
     to "custom" and the task uses that direct endpoint. api_mode is one of
     "chat_completions", "codex_responses", or None (auto-detect).
     """
-    config = {}
     cfg_provider = None
     cfg_model = None
     cfg_base_url = None
@@ -2321,16 +2320,7 @@ def _resolve_task_provider_model(
     cfg_api_mode = None
 
     if task:
-        try:
-            from hermes_cli.config import load_config
-            config = load_config()
-        except ImportError:
-            config = {}
-
-        aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-        task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-        if not isinstance(task_config, dict):
-            task_config = {}
+        task_config = _get_auxiliary_task_config(task)
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
@@ -2360,17 +2350,25 @@ def _resolve_task_provider_model(
 _DEFAULT_AUX_TIMEOUT = 30.0
 
 
-def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
+    """Return the config dict for auxiliary.<task>, or {} when unavailable."""
     if not task:
-        return default
+        return {}
     try:
         from hermes_cli.config import load_config
         config = load_config()
     except ImportError:
-        return default
+        return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
+    return task_config if isinstance(task_config, dict) else {}
+
+
+def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
+    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+    if not task:
+        return default
+    task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("timeout")
     if raw is not None:
         try:
@@ -2378,6 +2376,15 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
         except (ValueError, TypeError):
             pass
     return default
+
+
+def _get_task_extra_body(task: str) -> Dict[str, Any]:
+    """Read auxiliary.<task>.extra_body and return a shallow copy when valid."""
+    task_config = _get_auxiliary_task_config(task)
+    raw = task_config.get("extra_body")
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -2580,6 +2587,8 @@ def call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    effective_extra_body = _get_task_extra_body(task)
+    effective_extra_body.update(extra_body or {})
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -2654,7 +2663,7 @@ def call_llm(
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout, extra_body=extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_base_info or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -2709,7 +2718,7 @@ def call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body,
+                    extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
@@ -2792,6 +2801,8 @@ async def async_call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    effective_extra_body = _get_task_extra_body(task)
+    effective_extra_body.update(extra_body or {})
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -2852,7 +2863,7 @@ async def async_call_llm(
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout, extra_body=extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_client_base or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -2891,7 +2902,7 @@ async def async_call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body,
+                    extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")

@@ -254,13 +254,14 @@ def build_session_context_prompt(
             "**Session type:** Multi-user thread — messages are prefixed "
             "with [sender name]. Multiple users may participate."
         )
-    elif context.source.user_name:
-        lines.append(f"**User:** {context.source.user_name}")
-    elif context.source.user_id:
-        uid = context.source.user_id
-        if redact_pii:
-            uid = _hash_sender_id(uid)
-        lines.append(f"**User ID:** {uid}")
+    else:
+        if context.source.user_name:
+            lines.append(f"**User:** {context.source.user_name}")
+        if context.source.user_id:
+            uid = context.source.user_id
+            if redact_pii:
+                uid = _hash_sender_id(uid)
+            lines.append(f"**User ID:** {uid}")
     
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:

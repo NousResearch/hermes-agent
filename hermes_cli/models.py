@@ -1902,6 +1902,51 @@ def fetch_github_model_catalog(
     return None
 
 
+# ─── Copilot catalog context-window helpers ─────────────────────────────────
+
+# Module-level cache: {model_id: max_prompt_tokens}
+_copilot_context_cache: dict[str, int] = {}
+_copilot_context_cache_time: float = 0.0
+_COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
+
+
+def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
+    """Look up max_prompt_tokens for a Copilot model from the live /models API.
+
+    Results are cached in-process for 1 hour to avoid repeated API calls.
+    Returns the token limit or None if not found.
+    """
+    global _copilot_context_cache, _copilot_context_cache_time
+
+    # Serve from cache if fresh
+    if _copilot_context_cache and (time.time() - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL):
+        if model_id in _copilot_context_cache:
+            return _copilot_context_cache[model_id]
+        # Cache is fresh but model not in it — don't re-fetch
+        return None
+
+    # Fetch and populate cache
+    catalog = fetch_github_model_catalog(api_key=api_key)
+    if not catalog:
+        return None
+
+    cache: dict[str, int] = {}
+    for item in catalog:
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        caps = item.get("capabilities") or {}
+        limits = caps.get("limits") or {}
+        max_prompt = limits.get("max_prompt_tokens")
+        if isinstance(max_prompt, int) and max_prompt > 0:
+            cache[mid] = max_prompt
+
+    _copilot_context_cache = cache
+    _copilot_context_cache_time = time.time()
+
+    return cache.get(model_id)
+
+
 def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     normalized = (base_url or "").strip().rstrip("/").lower()
     return (

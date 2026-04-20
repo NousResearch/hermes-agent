@@ -2522,17 +2522,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(doc.mime_type, "")
 
-                # Check file size (Telegram Bot API limit: 20 MB)
-                MAX_DOC_BYTES = 20 * 1024 * 1024
-                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
-                    event.text = (
-                        "The document is too large or its size could not be verified. "
-                        "Maximum: 20 MB."
-                    )
-                    logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                    await self.handle_message(event)
-                    return
-
                 # Download and cache
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()

@@ -248,25 +248,37 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
-    async def test_oversized_file_rejected(self, adapter):
-        doc = _make_document(file_name="huge.pdf", file_size=25 * 1024 * 1024)
+    async def test_oversized_file_is_cached(self, adapter):
+        content = b"%PDF-1.4 big fake" + b"x" * 128
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="huge.pdf",
+            file_size=25 * 1024 * 1024,
+            file_obj=file_obj,
+        )
         msg = _make_message(document=doc)
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        assert "too large" in event.text
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["application/pdf"]
+        assert "too large" not in (event.text or "")
 
     @pytest.mark.asyncio
-    async def test_none_file_size_rejected(self, adapter):
-        """Security fix: file_size=None must be rejected (not silently allowed)."""
-        doc = _make_document(file_name="tricky.pdf", file_size=None)
+    async def test_none_file_size_is_cached(self, adapter):
+        content = b"%PDF-1.4 unknown size" + b"x" * 64
+        file_obj = _make_file_obj(content)
+        doc = _make_document(file_name="tricky.pdf", file_size=None, file_obj=file_obj)
         msg = _make_message(document=doc)
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        assert "too large" in event.text or "could not be verified" in event.text
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["application/pdf"]
 
     @pytest.mark.asyncio
     async def test_missing_filename_uses_mime_lookup(self, adapter):

@@ -935,7 +935,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 8
+        assert version == 9
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -991,12 +991,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v7
+        # Open with SessionDB — should migrate to the current schema.
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 7
+        assert cursor.fetchone()[0] == 9
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1382,9 +1382,9 @@ class TestConcurrentWriteSafety:
 # =========================================================================
 
 class TestCopilotJobLifecycle:
-    def test_schema_version_is_8(self, db):
+    def test_schema_version_is_9(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 8
+        assert cursor.fetchone()[0] == 9
 
     def test_copilot_tables_exist(self, db):
         cursor = db._conn.execute(
@@ -1443,12 +1443,10 @@ class TestCopilotJobLifecycle:
         )
         db.finish_copilot_job(
             "cj_1", state="done",
-            copilot_session_id="ses_abc",
             exit_code=0,
         )
         job = db.get_copilot_job("cj_1")
         assert job["state"] == "done"
-        assert job["copilot_session_id"] == "ses_abc"
         assert job["exit_code"] == 0
         assert job["finished_at"] is not None
 
@@ -1478,7 +1476,7 @@ class TestCopilotJobLifecycle:
 
 class TestCopilotJobMigrationFromV6:
     def test_migration_from_v6(self, tmp_path):
-        """Simulate a v6 database and verify migration to v7 adds copilot tables."""
+        """Simulate a v6 database and verify migration to the current schema adds copilot tables."""
         import sqlite3
 
         db_path = tmp_path / "migrate_v6_test.db"
@@ -1535,11 +1533,11 @@ class TestCopilotJobMigrationFromV6:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v8
+        # Open with SessionDB — should migrate to the current schema.
         migrated_db = SessionDB(db_path=db_path)
 
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 8
+        assert cursor.fetchone()[0] == 9
 
         # Verify copilot tables exist
         cursor = migrated_db._conn.execute(

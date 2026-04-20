@@ -328,10 +328,11 @@ def _prompt_api_key(var: dict):
         print_info(f"  Get your key at: {var['url']}")
     print()
 
-    if var.get("password"):
-        value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
-    else:
-        value = prompt(f"  {var.get('prompt', var['name'])}")
+    # Don't use getpass/password mode for API keys — it can corrupt terminal
+    # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+    # API keys aren't sensitive enough to warrant hidden input, and showing them
+    # briefly is acceptable.
+    value = prompt(f"  {var.get('prompt', var['name'])}")
 
     if value:
         save_env_value(var["name"], value)
@@ -794,7 +795,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
 
         if _vision_idx == 0:  # OpenRouter
-            _or_key = prompt("  OpenRouter API key", password=True).strip()
+            _or_key = prompt("  OpenRouter API key").strip()
             if _or_key:
                 save_env_value("OPENROUTER_API_KEY", _or_key)
                 print_success("OpenRouter key saved — vision will use Gemini")
@@ -805,7 +806,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             _api_key_label = "  API key"
             if "api.openai.com" in _base_url.lower():
                 _api_key_label = "  OpenAI API key"
-            _oai_key = prompt(_api_key_label, password=True).strip()
+            _oai_key = prompt(_api_key_label).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
                 # Save vision base URL to config (not .env — only secrets go there)
@@ -987,7 +988,7 @@ def _setup_tts_provider(config: dict):
         existing = get_env_value("ELEVENLABS_API_KEY")
         if not existing:
             print()
-            api_key = prompt("ElevenLabs API key", password=True)
+            api_key = prompt("ElevenLabs API key")
             if api_key:
                 save_env_value("ELEVENLABS_API_KEY", api_key)
                 print_success("ElevenLabs API key saved")
@@ -999,7 +1000,7 @@ def _setup_tts_provider(config: dict):
         existing = get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
         if not existing:
             print()
-            api_key = prompt("OpenAI API key for TTS", password=True)
+            api_key = prompt("OpenAI API key for TTS")
             if api_key:
                 save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
                 print_success("OpenAI TTS API key saved")
@@ -1011,7 +1012,7 @@ def _setup_tts_provider(config: dict):
         existing = get_env_value("XAI_API_KEY")
         if not existing:
             print()
-            api_key = prompt("xAI API key for TTS", password=True)
+            api_key = prompt("xAI API key for TTS")
             if api_key:
                 save_env_value("XAI_API_KEY", api_key)
                 print_success("xAI TTS API key saved")
@@ -1028,7 +1029,7 @@ def _setup_tts_provider(config: dict):
         existing = get_env_value("MINIMAX_API_KEY")
         if not existing:
             print()
-            api_key = prompt("MiniMax API key for TTS", password=True)
+            api_key = prompt("MiniMax API key for TTS")
             if api_key:
                 save_env_value("MINIMAX_API_KEY", api_key)
                 print_success("MiniMax TTS API key saved")
@@ -1040,7 +1041,7 @@ def _setup_tts_provider(config: dict):
         existing = get_env_value("MISTRAL_API_KEY")
         if not existing:
             print()
-            api_key = prompt("Mistral API key for TTS", password=True)
+            api_key = prompt("Mistral API key for TTS")
             if api_key:
                 save_env_value("MISTRAL_API_KEY", api_key)
                 print_success("Mistral TTS API key saved")
@@ -1053,7 +1054,7 @@ def _setup_tts_provider(config: dict):
         if not existing:
             print()
             print_info("Get a free API key at https://aistudio.google.com/app/apikey")
-            api_key = prompt("Gemini API key for TTS", password=True)
+            api_key = prompt("Gemini API key for TTS")
             if api_key:
                 save_env_value("GEMINI_API_KEY", api_key)
                 print_success("Gemini TTS API key saved")
@@ -1339,12 +1340,16 @@ def setup_terminal_backend(config: dict):
         if existing_key:
             print_info("  Daytona API key: already configured")
             if prompt_yes_no("  Update API key?", False):
-                api_key = prompt("    Daytona API key", password=True)
+                # Don't use getpass/password mode for API keys — it can corrupt terminal
+                # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+                # API keys aren't sensitive enough to warrant hidden input, and showing them
+                # briefly is acceptable.
+                api_key = prompt("    Daytona API key")
                 if api_key:
                     save_env_value("DAYTONA_API_KEY", api_key)
                     print_success("    Updated")
         else:
-            api_key = prompt("    Daytona API key", password=True)
+            api_key = prompt("    Daytona API key")
             if api_key:
                 save_env_value("DAYTONA_API_KEY", api_key)
                 print_success("    Configured")
@@ -1641,7 +1646,7 @@ def _setup_telegram():
     import re
 
     while True:
-        token = prompt("Telegram bot token", password=True)
+        token = prompt("Telegram bot token")
         if not token:
             return
         if not re.match(r"^\d+:[A-Za-z0-9_-]{30,}$", token):
@@ -1709,7 +1714,7 @@ def _setup_discord():
             return
 
     print_info("Create a bot at https://discord.com/developers/applications")
-    token = prompt("Discord bot token", password=True)
+    token = prompt("Discord bot token")
     if not token:
         return
     save_env_value("DISCORD_BOT_TOKEN", token)
@@ -1787,11 +1792,11 @@ def _setup_slack():
     print()
     print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/")
     print()
-    bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
+    bot_token = prompt("Slack Bot Token (xoxb-...)")
     if not bot_token:
         return
     save_env_value("SLACK_BOT_TOKEN", bot_token)
-    app_token = prompt("Slack App Token (xapp-...)", password=True)
+    app_token = prompt("Slack App Token (xapp-...)")
     if app_token:
         save_env_value("SLACK_APP_TOKEN", app_token)
     print_success("Slack tokens saved")
@@ -1830,7 +1835,7 @@ def _setup_matrix():
 
     print()
     print_info("Auth: provide an access token (recommended), or user ID + password.")
-    token = prompt("Access token (leave empty for password login)", password=True)
+    token = prompt("Access token (leave empty for password login)")
     if token:
         save_env_value("MATRIX_ACCESS_TOKEN", token)
         user_id = prompt("User ID (@bot:server — optional, will be auto-detected)")
@@ -1913,7 +1918,7 @@ def _setup_mattermost():
     mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
     if mm_url:
         save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
-    token = prompt("Bot token", password=True)
+    token = prompt("Bot token")
     if not token:
         return
     save_env_value("MATTERMOST_TOKEN", token)
@@ -3079,10 +3084,11 @@ def _run_quick_setup(config: dict, hermes_home):
             if var.get("url"):
                 print_info(f"  Get key at: {var['url']}")
 
-            if var.get("password"):
-                value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
-            else:
-                value = prompt(f"  {var.get('prompt', var['name'])}")
+            # Don't use getpass/password mode for API keys — it can corrupt terminal
+            # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+            # API keys aren't sensitive enough to warrant hidden input, and showing them
+            # briefly is acceptable.
+            value = prompt(f"  {var.get('prompt', var['name'])}")
 
             if value:
                 save_env_value(var["name"], value)
@@ -3167,10 +3173,11 @@ def _run_quick_setup(config: dict, hermes_home):
                 print_info(f"  {var.get('description', '')}")
                 if var.get("url"):
                     print_info(f"  {var['url']}")
-                if var.get("password"):
-                    value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
-                else:
-                    value = prompt(f"  {var.get('prompt', var['name'])}")
+                # Don't use getpass/password mode for API keys — it can corrupt terminal
+                # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+                # API keys aren't sensitive enough to warrant hidden input, and showing them
+                # briefly is acceptable.
+                value = prompt(f"  {var.get('prompt', var['name'])}")
                 if value:
                     save_env_value(var["name"], value)
                     print_success("  ✓ Saved")

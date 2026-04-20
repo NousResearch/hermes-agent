@@ -1131,7 +1131,11 @@ def _configure_provider(provider: dict, config: dict):
             if default_val:
                 value = _prompt(f"    {var.get('prompt', var['key'])}", default_val)
             else:
-                value = _prompt(f"    {var.get('prompt', var['key'])}", password=True)
+                # Don't use getpass/password mode for API keys — it can corrupt terminal
+                # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+                # API keys aren't sensitive enough to warrant hidden input, and showing them
+                # briefly is acceptable.
+                value = _prompt(f"    {var.get('prompt', var['key'])}")
 
             if value:
                 save_env_value(var["key"], value)
@@ -1167,7 +1171,11 @@ def _configure_simple_requirements(ts_key: str):
         idx = _prompt_choice("  Configure vision backend", choices, 2)
         if idx == 0:
             _print_info("  Get key at: https://openrouter.ai/keys")
-            value = _prompt("    OPENROUTER_API_KEY", password=True)
+            # Don't use getpass/password mode for API keys — it can corrupt terminal
+            # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+            # API keys aren't sensitive enough to warrant hidden input, and showing them
+            # briefly is acceptable.
+            value = _prompt("    OPENROUTER_API_KEY")
             if value and value.strip():
                 save_env_value("OPENROUTER_API_KEY", value.strip())
                 _print_success("    Saved")
@@ -1176,7 +1184,7 @@ def _configure_simple_requirements(ts_key: str):
         elif idx == 1:
             base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
             key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
-            api_key = _prompt(key_label, password=True)
+            api_key = _prompt(key_label)
             if api_key and api_key.strip():
                 save_env_value("OPENAI_API_KEY", api_key.strip())
                 # Save vision base URL to config (not .env — only secrets go there)
@@ -1207,7 +1215,11 @@ def _configure_simple_requirements(ts_key: str):
     for var, url in missing:
         if url:
             _print_info(f"  Get key at: {url}")
-        value = _prompt(f"    {var}", password=True)
+        # Don't use getpass/password mode for API keys — it can corrupt terminal
+        # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+        # API keys aren't sensitive enough to warrant hidden input, and showing them
+        # briefly is acceptable.
+        value = _prompt(f"    {var}")
         if value and value.strip():
             save_env_value(var, value.strip())
             _print_success("    Saved")
@@ -1334,8 +1346,9 @@ def _reconfigure_provider(provider: dict, config: dict):
         url = var.get("url", "")
         if url:
             _print_info(f"  Get yours at: {url}")
-        default_val = var.get("default", "")
-        value = _prompt(f"    {var.get('prompt', var['key'])} (Enter to keep current)", password=not default_val)
+        # Don't use getpass/password mode for API keys — it can corrupt terminal
+        # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+        value = _prompt(f"    {var.get('prompt', var['key'])} (Enter to keep current)")
         if value and value.strip():
             save_env_value(var["key"], value.strip())
             _print_success("    Updated")
@@ -1364,7 +1377,11 @@ def _reconfigure_simple_requirements(ts_key: str):
             _print_info(f"  {var}: configured ({existing[:8]}...)")
         if url:
             _print_info(f"  Get key at: {url}")
-        value = _prompt(f"    {var} (Enter to keep current)", password=True)
+        # Don't use getpass/password mode for API keys — it can corrupt terminal
+        # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+        # API keys aren't sensitive enough to warrant hidden input, and showing them
+        # briefly is acceptable.
+        value = _prompt(f"    {var} (Enter to keep current)")
         if value and value.strip():
             save_env_value(var, value.strip())
             _print_success("    Updated")

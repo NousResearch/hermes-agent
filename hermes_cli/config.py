@@ -2493,11 +2493,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if var.get("url"):
                 print(f"  Get your key at: {var['url']}")
             
-            if var.get("password"):
-                import getpass
-                value = getpass.getpass(f"  {var['prompt']}: ")
-            else:
-                value = input(f"  {var['prompt']}: ").strip()
+            # Don't use getpass/password mode for API keys — it can corrupt terminal
+            # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+            # API keys aren't sensitive enough to warrant hidden input, and showing them
+            # briefly is acceptable.
+            value = input(f"  {var['prompt']}: ").strip()
             
             if value:
                 save_env_value(var["name"], value)
@@ -2545,11 +2545,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  Get your key at: {info['url']}")
                     else:
                         print(f"  {info.get('description', name)}")
-                    if info.get("password"):
-                        import getpass
-                        value = getpass.getpass(f"  {info.get('prompt', name)} (Enter to skip): ")
-                    else:
-                        value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
+                    # Don't use getpass/password mode for API keys — it can corrupt terminal
+                    # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+                    # API keys aren't sensitive enough to warrant hidden input, and showing them
+                    # briefly is acceptable.
+                    value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
                     if value:
                         save_env_value(name, value)
                         results["env_added"].append(name)

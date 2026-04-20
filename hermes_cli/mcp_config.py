@@ -312,7 +312,11 @@ def cmd_mcp_add(args):
                     _success(f"{env_key}: already configured")
                     api_key = existing_key
                 else:
-                    api_key = _prompt("API key / Bearer token", password=True)
+                    # Don't use getpass/password mode for API keys — it can corrupt terminal
+                    # state on Linux when pasting, leaving echo disabled and the terminal frozen.
+                    # API keys aren't sensitive enough to warrant hidden input, and showing them
+                    # briefly is acceptable.
+                    api_key = _prompt("API key / Bearer token")
                     if api_key:
                         save_env_value(env_key, api_key)
                         _success(f"Saved to {display_hermes_home()}/.env as {env_key}")

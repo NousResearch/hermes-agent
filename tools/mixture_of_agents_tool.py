@@ -52,6 +52,7 @@ import asyncio
 import datetime
 from typing import Dict, Any, List, Optional
 from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
+from agent.auxiliary_client import extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,13 @@ async def _run_reference_model_safe(
             
             response = await _get_openrouter_client().chat.completions.create(**api_params)
             
-            content = response.choices[0].message.content.strip()
+            content = extract_content_or_reasoning(response)
+            if not content:
+                # Reasoning-only response — let the retry loop handle it
+                logger.warning("%s returned empty content (attempt %s/%s), retrying", model, attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(min(2 ** (attempt + 1), 60))
+                    continue
             logger.info("%s responded (%s characters)", model, len(content))
             return model, content, True
             
@@ -211,7 +218,14 @@ async def _run_aggregator_model(
 
     response = await _get_openrouter_client().chat.completions.create(**api_params)
 
-    content = response.choices[0].message.content.strip()
+    content = extract_content_or_reasoning(response)
+
+    # Retry once on empty content (reasoning-only response)
+    if not content:
+        logger.warning("Aggregator returned empty content, retrying once")
+        response = await _get_openrouter_client().chat.completions.create(**api_params)
+        content = extract_content_or_reasoning(response)
+
     logger.info("Aggregation complete (%s characters)", len(content))
     return content
 
@@ -401,29 +415,6 @@ def check_moa_requirements() -> bool:
     """
     return check_openrouter_api_key()
 
-
-def get_debug_session_info() -> Dict[str, Any]:
-    """
-    Get information about the current debug session.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing debug session information
-    """
-    return _debug.get_session_info()
-
-
-def get_available_models() -> Dict[str, List[str]]:
-    """
-    Get information about available models for MoA processing.
-    
-    Returns:
-        Dict[str, List[str]]: Dictionary with reference and aggregator models
-    """
-    return {
-        "reference_models": REFERENCE_MODELS,
-        "aggregator_models": [AGGREGATOR_MODEL],
-        "supported_models": REFERENCE_MODELS + [AGGREGATOR_MODEL]
-    }
 
 
 def get_moa_configuration() -> Dict[str, Any]:

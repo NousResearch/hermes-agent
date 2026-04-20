@@ -5,23 +5,31 @@ import importlib
 import logging
 import sys
 
+import pytest
+
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
     _parse_skill_file,
-    _read_skill_conditions,
     _skill_should_show,
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
+    build_nous_subscription_prompt,
     build_context_files_prompt,
+    build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS,
+    OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
+    WSL_ENVIRONMENT_HINT,
 )
+from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
 
 # =========================================================================
@@ -192,7 +200,7 @@ class TestParseSkillFile:
         )
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             is_compat, _, _ = _parse_skill_file(skill_file)
         assert is_compat is False
@@ -233,6 +241,14 @@ class TestPromptBuilderImports:
 
 
 class TestBuildSkillsSystemPrompt:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        """Ensure the in-process skills prompt cache doesn't leak between tests."""
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
     def test_empty_when_no_skills_dir(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         result = build_skills_system_prompt()
@@ -283,7 +299,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = build_skills_system_prompt()
 
@@ -302,7 +318,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             result = build_skills_system_prompt()
 
@@ -330,13 +346,31 @@ class TestBuildSkillsSystemPrompt:
         from unittest.mock import patch
 
         with patch(
-            "tools.skills_tool._get_disabled_skill_names",
+            "agent.prompt_builder.get_disabled_skill_names",
             return_value={"old-tool"},
         ):
             result = build_skills_system_prompt()
 
         assert "web-search" in result
         assert "old-tool" not in result
+
+    def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: cached-skill\ndescription: Cached skill\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "cached-skill" in first
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  disabled: [cached-skill]\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "cached-skill" not in second
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -393,6 +427,62 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
         assert "backend-skill" in result
+
+
+class TestBuildNousSubscriptionPrompt:
+    def test_includes_active_subscription_features(self, monkeypatch):
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_subscription_features",
+            lambda config=None: NousSubscriptionFeatures(
+                subscribed=True,
+                nous_auth_present=True,
+                provider_is_nous=True,
+                features={
+                    "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
+                    "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                    "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                    "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
+                    "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
+                },
+            ),
+        )
+
+        prompt = build_nous_subscription_prompt({"web_search", "browser_navigate"})
+
+        assert "Browser Use" in prompt
+        assert "Modal execution is optional" in prompt
+        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
+
+    def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_subscription_features",
+            lambda config=None: NousSubscriptionFeatures(
+                subscribed=False,
+                nous_auth_present=False,
+                provider_is_nous=False,
+                features={
+                    "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                    "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                    "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                    "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
+                    "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
+                },
+            ),
+        )
+
+        prompt = build_nous_subscription_prompt({"image_generate"})
+
+        assert "suggest Nous subscription as one option" in prompt
+        assert "Do not mention subscription unless" in prompt
+
+    def test_feature_flag_off_returns_empty_prompt(self, monkeypatch):
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: False)
+
+        prompt = build_nous_subscription_prompt({"web_search"})
+
+        assert prompt == ""
 
 
 # =========================================================================
@@ -561,9 +651,17 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Lowercase claude rules" in result
 
+    @pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="APFS default volume is case-insensitive; CLAUDE.md and claude.md alias the same path",
+    )
     def test_claude_md_uppercase_takes_priority(self, tmp_path):
-        (tmp_path / "CLAUDE.md").write_text("From uppercase.")
-        (tmp_path / "claude.md").write_text("From lowercase.")
+        uppercase = tmp_path / "CLAUDE.md"
+        lowercase = tmp_path / "claude.md"
+        uppercase.write_text("From uppercase.")
+        lowercase.write_text("From lowercase.")
+        if uppercase.samefile(lowercase):
+            pytest.skip("filesystem is case-insensitive")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "From uppercase" in result
         assert "From lowercase" not in result
@@ -693,63 +791,31 @@ class TestPromptBuilderConstants:
 
 
 # =========================================================================
-# Conditional skill activation
+# Environment hints
 # =========================================================================
 
-class TestReadSkillConditions:
-    def test_no_conditions_returns_empty_lists(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: test\ndescription: A skill\n---\n")
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == []
-        assert conditions["requires_toolsets"] == []
-        assert conditions["fallback_for_tools"] == []
-        assert conditions["requires_tools"] == []
+class TestEnvironmentHints:
+    def test_wsl_hint_constant_mentions_mnt(self):
+        assert "/mnt/c/" in WSL_ENVIRONMENT_HINT
+        assert "WSL" in WSL_ENVIRONMENT_HINT
 
-    def test_reads_fallback_for_toolsets(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == ["web"]
+    def test_build_environment_hints_on_wsl(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        result = _pb.build_environment_hints()
+        assert "/mnt/" in result
+        assert "WSL" in result
 
-    def test_reads_requires_toolsets(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["requires_toolsets"] == ["terminal"]
+    def test_build_environment_hints_not_wsl(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        result = _pb.build_environment_hints()
+        assert result == ""
 
-    def test_reads_multiple_conditions(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: test\ndescription: Test\nmetadata:\n  hermes:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == ["browser"]
-        assert conditions["requires_tools"] == ["terminal"]
 
-    def test_missing_file_returns_empty(self, tmp_path):
-        conditions = _read_skill_conditions(tmp_path / "missing.md")
-        assert conditions == {}
-
-    def test_logs_condition_read_failures_and_returns_empty(self, tmp_path, monkeypatch, caplog):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: broken\n---\n")
-
-        def boom(*args, **kwargs):
-            raise OSError("read exploded")
-
-        monkeypatch.setattr(type(skill_file), "read_text", boom)
-        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
-            conditions = _read_skill_conditions(skill_file)
-
-        assert conditions == {}
-        assert "Failed to read skill conditions" in caplog.text
-        assert str(skill_file) in caplog.text
-
+# =========================================================================
+# Conditional skill activation
+# =========================================================================
 
 class TestSkillShouldShow:
     def test_no_filter_info_always_shows(self):
@@ -804,6 +870,13 @@ class TestSkillShouldShow:
 
 
 class TestBuildSkillsSystemPromptConditional:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
     def test_fallback_skill_hidden_when_primary_available(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
@@ -908,3 +981,75 @@ class TestBuildSkillsSystemPromptConditional:
             available_toolsets=set(),
         )
         assert "nested-null" in result
+
+
+# =========================================================================
+# Tool-use enforcement guidance
+# =========================================================================
+
+
+class TestToolUseEnforcementGuidance:
+    def test_guidance_mentions_tool_calls(self):
+        assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+
+    def test_guidance_forbids_description_only(self):
+        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+
+    def test_guidance_requires_action(self):
+        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+
+    def test_enforcement_models_includes_gpt(self):
+        assert "gpt" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_codex(self):
+        assert "codex" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_grok(self):
+        assert "grok" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_is_tuple(self):
+        assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
+
+
+class TestOpenAIModelExecutionGuidance:
+    """Tests for GPT/Codex-specific execution discipline guidance."""
+
+    def test_guidance_covers_tool_persistence(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "tool_persistence" in text
+        assert "retry" in text
+        assert "empty" in text or "partial" in text
+
+    def test_guidance_covers_prerequisite_checks(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "prerequisite" in text
+        assert "dependency" in text
+
+    def test_guidance_covers_verification(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "verification" in text or "verify" in text
+        assert "correctness" in text
+
+    def test_guidance_covers_missing_context(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "missing_context" in text or "missing context" in text
+        assert "hallucinate" in text or "guess" in text
+
+    def test_guidance_uses_xml_tags(self):
+        assert "<tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "</tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "<verification>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "</verification>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+
+    def test_guidance_is_string(self):
+        assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
+        assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
+
+
+# =========================================================================
+# Budget warning history stripping
+# =========================================================================
+
+
+

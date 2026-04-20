@@ -6,32 +6,303 @@ and implement the required methods.
 """
 
 import asyncio
+import inspect
+import ipaddress
 import logging
 import os
+import random
 import re
+import socket as _socket
+import subprocess
+import sys
 import uuid
 from abc import ABC, abstractmethod
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+
+
+def utf16_len(s: str) -> int:
+    """Count UTF-16 code units in *s*.
+
+    Telegram's message-length limit (4 096) is measured in UTF-16 code units,
+    **not** Unicode code-points.  Characters outside the Basic Multilingual
+    Plane (emoji like 😀, CJK Extension B, musical symbols, …) are encoded as
+    surrogate pairs and therefore consume **two** UTF-16 code units each, even
+    though Python's ``len()`` counts them as one.
+
+    Ported from nearai/ironclaw#2304 which discovered the same discrepancy in
+    Rust's ``chars().count()``.
+    """
+    return len(s.encode("utf-16-le")) // 2
+
+
+def _prefix_within_utf16_limit(s: str, limit: int) -> str:
+    """Return the longest prefix of *s* whose UTF-16 length ≤ *limit*.
+
+    Unlike a plain ``s[:limit]``, this respects surrogate-pair boundaries so
+    we never slice a multi-code-unit character in half.
+    """
+    if utf16_len(s) <= limit:
+        return s
+    # Binary search for the longest safe prefix
+    lo, hi = 0, len(s)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if utf16_len(s[:mid]) <= limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    return s[:lo]
+
+
+def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
+    """Return the largest codepoint offset *n* such that ``len_fn(s[:n]) <= budget``.
+
+    Used by :meth:`BasePlatformAdapter.truncate_message` when *len_fn* measures
+    length in units different from Python codepoints (e.g. UTF-16 code units).
+    Falls back to binary search which is O(log n) calls to *len_fn*.
+    """
+    if len_fn(s) <= budget:
+        return len(s)
+    lo, hi = 0, len(s)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len_fn(s[:mid]) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def is_network_accessible(host: str) -> bool:
+    """Return True if *host* would expose the server beyond loopback.
+
+    Loopback addresses (127.0.0.1, ::1, IPv4-mapped ::ffff:127.0.0.1)
+    are local-only.  Unspecified addresses (0.0.0.0, ::) bind all
+    interfaces.  Hostnames are resolved; DNS failure fails closed.
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback:
+            return False
+        # ::ffff:127.0.0.1 — Python reports is_loopback=False for mapped
+        # addresses, so check the underlying IPv4 explicitly.
+        if getattr(addr, "ipv4_mapped", None) and addr.ipv4_mapped.is_loopback:
+            return False
+        return True
+    except ValueError:
+        # when host variable is a hostname, we should try to resolve below
+        pass
+
+    try:
+        resolved = _socket.getaddrinfo(
+            host, None, _socket.AF_UNSPEC, _socket.SOCK_STREAM,
+        )
+        # if the hostname resolves into at least one non-loopback address,
+        # then we consider it to be network accessible
+        for _family, _type, _proto, _canonname, sockaddr in resolved:
+            addr = ipaddress.ip_address(sockaddr[0])
+            if not addr.is_loopback:
+                return True
+        return False
+    except (_socket.gaierror, OSError):
+        return True
+
+
+def _detect_macos_system_proxy() -> str | None:
+    """Read the macOS system HTTP(S) proxy via ``scutil --proxy``.
+
+    Returns an ``http://host:port`` URL string if an HTTP or HTTPS proxy is
+    enabled, otherwise *None*.  Falls back silently on non-macOS or on any
+    subprocess error.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.check_output(
+            ["scutil", "--proxy"], timeout=3, text=True, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+
+    props: dict[str, str] = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if " : " in line:
+            key, _, val = line.partition(" : ")
+            props[key.strip()] = val.strip()
+
+    # Prefer HTTPS, fall back to HTTP
+    for enable_key, host_key, port_key in (
+        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+        ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+    ):
+        if props.get(enable_key) == "1":
+            host = props.get(host_key)
+            port = props.get(port_key)
+            if host and port:
+                return f"http://{host}:{port}"
+    return None
+
+
+def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
+    """Return a proxy URL from env vars, or macOS system proxy.
+
+    Check order:
+      0. *platform_env_var* (e.g. ``DISCORD_PROXY``) — highest priority
+      1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
+      2. macOS system proxy via ``scutil --proxy`` (auto-detect)
+
+    Returns *None* if no proxy is found.
+    """
+    if platform_env_var:
+        value = (os.environ.get(platform_env_var) or "").strip()
+        if value:
+            return value
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return _detect_macos_system_proxy()
+
+
+def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
+    """Build kwargs for ``commands.Bot()`` / ``discord.Client()`` with proxy.
+
+    Returns:
+      - SOCKS URL  → ``{"connector": ProxyConnector(..., rdns=True)}``
+      - HTTP URL   → ``{"proxy": url}``
+      - *None*     → ``{}``
+
+    ``rdns=True`` forces remote DNS resolution through the proxy — required
+    by many SOCKS implementations (Shadowrocket, Clash) and essential for
+    bypassing DNS pollution behind the GFW.
+    """
+    if not proxy_url:
+        return {}
+    if proxy_url.lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+
+            connector = ProxyConnector.from_url(proxy_url, rdns=True)
+            return {"connector": connector}
+        except ImportError:
+            logger.warning(
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
+            return {}
+    return {"proxy": proxy_url}
+
+
+def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
+    """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
+
+    Returns ``(session_kwargs, request_kwargs)`` where:
+      - SOCKS → ``({"connector": ProxyConnector(...)}, {})``
+      - HTTP  → ``({}, {"proxy": url})``
+      - None  → ``({}, {})``
+
+    Usage::
+
+        sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
+        async with aiohttp.ClientSession(**sess_kw) as session:
+            async with session.get(url, **req_kw) as resp:
+                ...
+    """
+    if not proxy_url:
+        return {}, {}
+    if proxy_url.lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+
+            connector = ProxyConnector.from_url(proxy_url, rdns=True)
+            return {"connector": connector}, {}
+        except ImportError:
+            logger.warning(
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
+            return {}, {}
+    return {}, {"proxy": proxy_url}
+
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
 
-import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_hermes_dir
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
 )
+
+
+def safe_url_for_log(url: str, max_len: int = 80) -> str:
+    """Return a URL string safe for logs (no query/fragment/userinfo)."""
+    if max_len <= 0:
+        return ""
+
+    if url is None:
+        return ""
+
+    raw = str(url)
+    if not raw:
+        return ""
+
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return raw[:max_len]
+
+    if parsed.scheme and parsed.netloc:
+        # Strip potential embedded credentials (user:pass@host).
+        netloc = parsed.netloc.rsplit("@", 1)[-1]
+        base = f"{parsed.scheme}://{netloc}"
+        path = parsed.path or ""
+        if path and path != "/":
+            basename = path.rsplit("/", 1)[-1]
+            safe = f"{base}/.../{basename}" if basename else f"{base}/..."
+        else:
+            safe = base
+    else:
+        safe = raw
+
+    if len(safe) <= max_len:
+        return safe
+    if max_len <= 3:
+        return "." * max_len
+    return f"{safe[:max_len - 3]}..."
+
+
+async def _ssrf_redirect_guard(response):
+    """Re-validate each redirect target to prevent redirect-based SSRF.
+
+    Without this, an attacker can host a public URL that 302-redirects to
+    http://169.254.169.254/ and bypass the pre-flight is_safe_url() check.
+
+    Must be async because httpx.AsyncClient awaits response event hooks.
+    """
+    if response.is_redirect and response.next_request:
+        redirect_url = str(response.next_request.url)
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(redirect_url):
+            raise ValueError(
+                f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -43,14 +314,31 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
 # (e.g. Telegram file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# Default location: {HERMES_HOME}/image_cache/
-IMAGE_CACHE_DIR = get_hermes_home() / "image_cache"
+# Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
+IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
 
 
 def get_image_cache_dir() -> Path:
     """Return the image cache directory, creating it if it doesn't exist."""
     IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     return IMAGE_CACHE_DIR
+
+
+def _looks_like_image(data: bytes) -> bool:
+    """Return True if *data* starts with a known image magic-byte sequence."""
+    if len(data) < 4:
+        return False
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return True
+    if data[:3] == b"\xff\xd8\xff":
+        return True
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return True
+    if data[:2] == b"BM":
+        return True
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return True
+    return False
 
 
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
@@ -63,7 +351,17 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
 
     Returns:
         Absolute path to the cached image file as a string.
+
+    Raises:
+        ValueError: If *data* does not look like a valid image (e.g. an HTML
+            error page returned by the upstream server).
     """
+    if not _looks_like_image(data):
+        snippet = data[:80].decode("utf-8", errors="replace")
+        raise ValueError(
+            f"Refusing to cache non-image data as {ext} "
+            f"(starts with: {snippet!r})"
+        )
     cache_dir = get_image_cache_dir()
     filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename
@@ -71,31 +369,68 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg") -> str:
+async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
     Download an image from a URL and save it to the local cache.
 
-    Uses httpx for async download with a reasonable timeout.
+    Retries on transient failures (timeouts, 429, 5xx) with exponential
+    backoff so a single slow CDN response doesn't lose the media.
 
     Args:
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".jpg", ".png").
+        retries: Number of retry attempts on transient failures.
 
     Returns:
         Absolute path to the cached image file as a string.
-    """
-    import httpx
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        response = await client.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                "Accept": "image/*,*/*;q=0.8",
-            },
-        )
-        response.raise_for_status()
-        return cache_image_from_bytes(response.content, ext)
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
+    """
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
+
+    import asyncio
+    import httpx
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    last_exc = None
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_ssrf_redirect_guard]},
+    ) as client:
+        for attempt in range(retries + 1):
+            try:
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                        "Accept": "image/*,*/*;q=0.8",
+                    },
+                )
+                response.raise_for_status()
+                return cache_image_from_bytes(response.content, ext)
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                    raise
+                if attempt < retries:
+                    wait = 1.5 * (attempt + 1)
+                    _log.debug(
+                        "Media cache retry %d/%d for %s (%.1fs): %s",
+                        attempt + 1,
+                        retries,
+                        safe_url_for_log(url),
+                        wait,
+                        exc,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+    raise last_exc
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -126,7 +461,7 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
 # here so the STT tool (OpenAI Whisper) can transcribe them from local files.
 # ---------------------------------------------------------------------------
 
-AUDIO_CACHE_DIR = get_hermes_home() / "audio_cache"
+AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 
 
 def get_audio_cache_dir() -> Path:
@@ -153,29 +488,68 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     return str(filepath)
 
 
-async def cache_audio_from_url(url: str, ext: str = ".ogg") -> str:
+async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
     """
     Download an audio file from a URL and save it to the local cache.
+
+    Retries on transient failures (timeouts, 429, 5xx) with exponential
+    backoff so a single slow CDN response doesn't lose the media.
 
     Args:
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".ogg", ".mp3").
+        retries: Number of retry attempts on transient failures.
 
     Returns:
         Absolute path to the cached audio file as a string.
-    """
-    import httpx
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        response = await client.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                "Accept": "audio/*,*/*;q=0.8",
-            },
-        )
-        response.raise_for_status()
-        return cache_audio_from_bytes(response.content, ext)
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
+    """
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
+
+    import asyncio
+    import httpx
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    last_exc = None
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_ssrf_redirect_guard]},
+    ) as client:
+        for attempt in range(retries + 1):
+            try:
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                        "Accept": "audio/*,*/*;q=0.8",
+                    },
+                )
+                response.raise_for_status()
+                return cache_audio_from_bytes(response.content, ext)
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                    raise
+                if attempt < retries:
+                    wait = 1.5 * (attempt + 1)
+                    _log.debug(
+                        "Audio cache retry %d/%d for %s (%.1fs): %s",
+                        attempt + 1,
+                        retries,
+                        safe_url_for_log(url),
+                        wait,
+                        exc,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+    raise last_exc
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +559,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg") -> str:
 # here so the agent can reference them by local file path.
 # ---------------------------------------------------------------------------
 
-DOCUMENT_CACHE_DIR = get_hermes_home() / "document_cache"
+DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".log": "text/plain",
+    ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -269,6 +645,14 @@ class MessageType(Enum):
     COMMAND = "command"  # /command style
 
 
+class ProcessingOutcome(Enum):
+    """Result classification for message-processing lifecycle hooks."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
+
+
 @dataclass
 class MessageEvent:
     """
@@ -286,6 +670,15 @@ class MessageEvent:
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
+
+    # Platform-specific update identifier.  For Telegram this is the
+    # ``update_id`` from the PTB Update wrapper; other platforms currently
+    # ignore it.  Used by ``/restart`` to record the triggering update so the
+    # new gateway can advance the Telegram offset past it and avoid processing
+    # the same ``/restart`` twice if PTB's graceful-shutdown ACK times out
+    # ("Error while calling `get_updates` one more time to mark all fetched
+    # updates" in gateway.log).
+    platform_update_id: Optional[int] = None
     
     # Media attachments
     # media_urls: local file paths (for vision tool access)
@@ -296,9 +689,18 @@ class MessageEvent:
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
     
-    # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
-    auto_skill: Optional[str] = None
+    # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
+    # Discord channel_skill_bindings).  A single name or ordered list.
+    auto_skill: Optional[str | list[str]] = None
+
+    # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
+    # Applied at API call time and never persisted to transcript history.
+    channel_prompt: Optional[str] = None
     
+    # Internal flag — set for synthetic events (e.g. background process
+    # completion notifications) that must bypass user authorization checks.
+    internal: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -312,7 +714,13 @@ class MessageEvent:
             return None
         # Split on space and get first word, strip the /
         parts = self.text.split(maxsplit=1)
-        return parts[0][1:].lower() if parts else None
+        raw = parts[0][1:].lower() if parts else None
+        if raw and "@" in raw:
+            raw = raw.split("@", 1)[0]
+        # Reject file paths: valid command names never contain /
+        if raw and "/" in raw:
+            return None
+        return raw
     
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
@@ -329,10 +737,118 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
+    retryable: bool = False  # True for transient connection errors — base will retry automatically
+
+
+def merge_pending_message_event(
+    pending_messages: Dict[str, MessageEvent],
+    session_key: str,
+    event: MessageEvent,
+    *,
+    merge_text: bool = False,
+) -> None:
+    """Store or merge a pending event for a session.
+
+    Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
+    events. Merge those into the existing queued event so the next turn sees
+    the whole burst.
+
+    When ``merge_text`` is enabled, rapid follow-up TEXT events are appended
+    instead of replacing the pending turn. This is used for Telegram bursty
+    follow-ups so a multi-part user thought is not silently truncated to only
+    the last queued fragment.
+    """
+    existing = pending_messages.get(session_key)
+    if existing:
+        existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
+        incoming_is_photo = event.message_type == MessageType.PHOTO
+        existing_has_media = bool(existing.media_urls)
+        incoming_has_media = bool(event.media_urls)
+
+        if existing_is_photo and incoming_is_photo:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            return
+
+        if existing_has_media or incoming_has_media:
+            if incoming_has_media:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+            if event.text:
+                if existing.text:
+                    existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+                else:
+                    existing.text = event.text
+            if existing_is_photo or incoming_is_photo:
+                existing.message_type = MessageType.PHOTO
+            return
+
+        if (
+            merge_text
+            and getattr(existing, "message_type", None) == MessageType.TEXT
+            and event.message_type == MessageType.TEXT
+        ):
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            return
+
+    pending_messages[session_key] = event
+
+
+# Error substrings that indicate a transient *connection* failure worth retrying.
+# "timeout" / "timed out" / "readtimeout" / "writetimeout" are intentionally
+# excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
+# means the request may have reached the server — retrying risks duplicate
+# delivery.  "connecttimeout" is safe because the connection was never
+# established.  Platforms that know a timeout is safe to retry should set
+# SendResult.retryable = True explicitly.
+_RETRYABLE_ERROR_PATTERNS = (
+    "connecterror",
+    "connectionerror",
+    "connectionreset",
+    "connectionrefused",
+    "connecttimeout",
+    "network",
+    "broken pipe",
+    "remotedisconnected",
+    "eoferror",
+)
 
 
 # Type for message handlers
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
+
+
+def resolve_channel_prompt(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel ephemeral prompt from platform config.
+
+    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / child channels inheriting a parent prompt).
+
+    Returns the prompt string, or None if no match is found.  Blank/whitespace-
+    only prompts are treated as absent.
+    """
+    prompts = config_extra.get("channel_prompts") or {}
+    if not isinstance(prompts, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        prompt = prompts.get(key)
+        if prompt is None:
+            continue
+        prompt = str(prompt).strip()
+        if prompt:
+            return prompt
+    return None
 
 
 class BasePlatformAdapter(ABC):
@@ -364,8 +880,19 @@ class BasePlatformAdapter(ABC):
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
         self._background_tasks: set[asyncio.Task] = set()
+        # One-shot callbacks to fire after the main response is delivered.
+        # Keyed by session_key. Values are either a bare callback (legacy) or
+        # a ``(generation, callback)`` tuple so GatewayRunner can make deferred
+        # deliveries generation-aware and avoid stale runs clearing callbacks
+        # registered by a fresher run for the same session.
+        self._post_delivery_callbacks: Dict[str, Any] = {}
+        self._expected_cancelled_tasks: set[asyncio.Task] = set()
+        self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
+        # Chats where typing indicator is paused (e.g. during approval waits).
+        # _keep_typing skips send_typing when the chat_id is in this set.
+        self._typing_paused: set = set()
 
     @property
     def has_fatal_error(self) -> bool:
@@ -430,7 +957,36 @@ class BasePlatformAdapter(ABC):
         result = handler(self)
         if asyncio.iscoroutine(result):
             await result
-    
+
+    def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
+        """Acquire a scoped lock for this adapter. Returns True on success."""
+        from gateway.status import acquire_scoped_lock
+        self._platform_lock_scope = scope
+        self._platform_lock_identity = identity
+        acquired, existing = acquire_scoped_lock(
+            scope, identity, metadata={'platform': self.platform.value}
+        )
+        if acquired:
+            return True
+        owner_pid = existing.get('pid') if isinstance(existing, dict) else None
+        message = (
+            f'{resource_desc} already in use'
+            + (f' (PID {owner_pid})' if owner_pid else '')
+            + '. Stop the other gateway first.'
+        )
+        logger.error('[%s] %s', self.name, message)
+        self._set_fatal_error(f'{scope}_lock', message, retryable=False)
+        return False
+
+    def _release_platform_lock(self) -> None:
+        """Release the scoped lock acquired by _acquire_platform_lock."""
+        identity = getattr(self, '_platform_lock_identity', None)
+        if not identity:
+            return
+        from gateway.status import release_scoped_lock
+        release_scoped_lock(self._platform_lock_scope, identity)
+        self._platform_lock_identity = None
+
     @property
     def name(self) -> str:
         """Human-readable name for this adapter."""
@@ -449,6 +1005,20 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
+        """Set an optional handler for messages arriving during active sessions."""
+        self._busy_session_handler = handler
+    
+    def set_session_store(self, session_store: Any) -> None:
+        """
+        Set the session store for checking active sessions.
+        
+        Used by adapters that need to check if a thread/conversation
+        has an active session before processing messages (e.g., Slack
+        thread replies without explicit mentions).
+        """
+        self._session_store = session_store
     
     @abstractmethod
     async def connect(self) -> bool:
@@ -486,16 +1056,40 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    # Default: the adapter treats ``finalize=True`` on edit_message as a
+    # no-op and is happy to have the stream consumer skip redundant final
+    # edits.  Subclasses that *require* an explicit finalize call to close
+    # out the message lifecycle (e.g. rich card / AI assistant surfaces
+    # such as DingTalk AI Cards) override this to True (class attribute or
+    # property) so the stream consumer knows not to short-circuit.
+    REQUIRES_EDIT_FINALIZE: bool = False
+
     async def edit_message(
         self,
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't
         support editing return success=False and callers fall back to
         sending a new message.
+
+        ``finalize`` signals that this is the last edit in a streaming
+        sequence.  Most platforms (Telegram, Slack, Discord, Matrix,
+        etc.) treat it as a no-op because their edit APIs have no notion
+        of message lifecycle state — an edit is an edit.  Platforms that
+        render streaming updates with a distinct "in progress" state and
+        require explicit closure (e.g. rich card / AI assistant surfaces
+        such as DingTalk AI Cards) use it to finalize the message and
+        transition the UI out of the streaming indicator — those should
+        also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
+        final edit through even when content is unchanged.  Callers
+        should set ``finalize=True`` on the final edit of a streamed
+        response (typically when ``got_done`` fires in the stream
+        consumer) and leave it ``False`` on intermediate edits.
         """
         return SendResult(success=False, error="Not supported")
 
@@ -732,7 +1326,7 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((path, has_voice_tag))
+                media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
@@ -809,17 +1403,38 @@ class BasePlatformAdapter(ABC):
 
         return paths, cleaned
 
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata=None,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
         """
         Continuously send typing indicator until cancelled.
         
         Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
         to recover quickly after progress messages interrupt it.
+        
+        Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
+        the agent is waiting for dangerous-command approval).  This is critical
+        for Slack's Assistant API where ``assistant_threads_setStatus`` disables
+        the compose box — pausing lets the user type ``/approve`` or ``/deny``.
         """
         try:
             while True:
-                await self.send_typing(chat_id, metadata=metadata)
-                await asyncio.sleep(interval)
+                if stop_event is not None and stop_event.is_set():
+                    return
+                if chat_id not in self._typing_paused:
+                    await self.send_typing(chat_id, metadata=metadata)
+                if stop_event is None:
+                    await asyncio.sleep(interval)
+                    continue
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+                return
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
@@ -832,7 +1447,211 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(chat_id)
                 except Exception:
                     pass
-    
+            self._typing_paused.discard(chat_id)
+
+    def pause_typing_for_chat(self, chat_id: str) -> None:
+        """Pause typing indicator for a chat (e.g. during approval waits).
+
+        Thread-safe (CPython GIL) — can be called from the sync agent thread
+        while ``_keep_typing`` runs on the async event loop.
+        """
+        self._typing_paused.add(chat_id)
+
+    def resume_typing_for_chat(self, chat_id: str) -> None:
+        """Resume typing indicator for a chat after approval resolves."""
+        self._typing_paused.discard(chat_id)
+
+    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
+        """Signal the active session loop to stop and clear typing immediately."""
+        if session_key:
+            interrupt_event = self._active_sessions.get(session_key)
+            if interrupt_event is not None:
+                interrupt_event.set()
+        try:
+            await self.stop_typing(chat_id)
+        except Exception:
+            pass
+
+    def register_post_delivery_callback(
+        self,
+        session_key: str,
+        callback: Callable,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        """Register a deferred callback to fire after the main response.
+
+        ``generation`` lets callers tie the callback to a specific gateway run
+        generation so stale runs cannot clear callbacks owned by a fresher run.
+        """
+        if not session_key or not callable(callback):
+            return
+        if generation is None:
+            self._post_delivery_callbacks[session_key] = callback
+        else:
+            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+
+    def pop_post_delivery_callback(
+        self,
+        session_key: str,
+        *,
+        generation: int | None = None,
+    ) -> Callable | None:
+        """Pop a deferred callback, optionally requiring generation ownership."""
+        if not session_key:
+            return None
+        entry = self._post_delivery_callbacks.get(session_key)
+        if entry is None:
+            return None
+        if isinstance(entry, tuple) and len(entry) == 2:
+            entry_generation, callback = entry
+            if generation is not None and int(entry_generation) != int(generation):
+                return None
+            self._post_delivery_callbacks.pop(session_key, None)
+            return callback if callable(callback) else None
+        if generation is not None:
+            return None
+        self._post_delivery_callbacks.pop(session_key, None)
+        return entry if callable(entry) else None
+
+    # ── Processing lifecycle hooks ──────────────────────────────────────────
+    # Subclasses override these to react to message processing events
+    # (e.g. Discord adds 👀/✅/❌ reactions).
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Hook called when background processing begins."""
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Hook called when background processing completes."""
+
+    async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
+        """Run a lifecycle hook without letting failures break message flow."""
+        hook = getattr(self, hook_name, None)
+        if not callable(hook):
+            return
+        try:
+            await hook(*args, **kwargs)
+        except Exception as e:
+            logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+
+    @staticmethod
+    def _is_retryable_error(error: Optional[str]) -> bool:
+        """Return True if the error string looks like a transient network failure."""
+        if not error:
+            return False
+        lowered = error.lower()
+        return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
+
+    @staticmethod
+    def _is_timeout_error(error: Optional[str]) -> bool:
+        """Return True if the error string indicates a read/write timeout.
+
+        Timeout errors are NOT retryable and should NOT trigger plain-text
+        fallback — the request may have already been delivered.
+        """
+        if not error:
+            return False
+        lowered = error.lower()
+        return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> "SendResult":
+        """
+        Send a message with automatic retry for transient network errors.
+
+        On permanent failures (e.g. formatting / permission errors) falls back
+        to a plain-text version before giving up. If all attempts fail due to
+        network errors, sends the user a brief delivery-failure notice so they
+        know to retry rather than waiting indefinitely.
+        """
+
+        result = await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+        if result.success:
+            return result
+
+        error_str = result.error or ""
+        is_network = result.retryable or self._is_retryable_error(error_str)
+
+        # Timeout errors are not safe to retry (message may have been
+        # delivered) and not formatting errors — return the failure as-is.
+        if not is_network and self._is_timeout_error(error_str):
+            return result
+
+        if is_network:
+            # Retry with exponential backoff for transient errors
+            for attempt in range(1, max_retries + 1):
+                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                logger.warning(
+                    "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
+                    self.name, attempt, max_retries, delay, error_str,
+                )
+                await asyncio.sleep(delay)
+                result = await self.send(
+                    chat_id=chat_id,
+                    content=content,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if result.success:
+                    logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                error_str = result.error or ""
+                if not (result.retryable or self._is_retryable_error(error_str)):
+                    break  # error switched to non-transient — fall through to plain-text fallback
+            else:
+                # All retries exhausted (loop completed without break) — notify user
+                logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                notice = (
+                    "\u26a0\ufe0f Message delivery failed after multiple attempts. "
+                    "Please try again \u2014 your request was processed but the response could not be sent."
+                )
+                try:
+                    await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
+                except Exception as notify_err:
+                    logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
+                return result
+
+        # Non-network / post-retry formatting failure: try plain text as fallback
+        logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
+        fallback_result = await self.send(
+            chat_id=chat_id,
+            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if not fallback_result.success:
+            logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
+        return fallback_result
+
+    @staticmethod
+    def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
+        """Merge a new caption into existing text, avoiding duplicates.
+
+        Uses line-by-line exact match (not substring) to prevent false positives
+        where a shorter caption is silently dropped because it appears as a
+        substring of a longer one (e.g. "Meeting" inside "Meeting agenda").
+        Whitespace is normalised for comparison.
+        """
+        if not existing_text:
+            return new_text
+        existing_captions = [c.strip() for c in existing_text.split("\n\n")]
+        if new_text.strip() not in existing_captions:
+            return f"{existing_text}\n\n{new_text}".strip()
+        return existing_text
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -847,35 +1666,72 @@ class BasePlatformAdapter(ABC):
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            # Certain commands must bypass the active-session guard and be
+            # dispatched directly to the gateway runner.  Without this, they
+            # are queued as pending messages and either:
+            #   - leak into the conversation as user text (/stop, /new), or
+            #   - deadlock (/approve, /deny — agent is blocked on Event.wait)
+            #
+            # Dispatch inline: call the message handler directly and send the
+            # response.  Do NOT use _process_message_background — it manages
+            # session lifecycle and its cleanup races with the running task
+            # (see PR #4926).
+            cmd = event.get_command()
+            from hermes_cli.commands import should_bypass_active_session
+
+            if should_bypass_active_session(cmd):
+                logger.debug(
+                    "[%s] Command '/%s' bypassing active-session guard for %s",
+                    self.name, cmd, session_key,
+                )
+                try:
+                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    response = await self._message_handler(event)
+                    if response:
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=response,
+                            reply_to=event.message_id,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
+                return
+
+            if self._busy_session_handler is not None:
+                try:
+                    if await self._busy_session_handler(event, session_key):
+                        return
+                except Exception as e:
+                    logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
-                print(f"[{self.name}] 🖼️ Queuing photo follow-up for session {session_key} without interrupt")
-                existing = self._pending_messages.get(session_key)
-                if existing and existing.message_type == MessageType.PHOTO:
-                    existing.media_urls.extend(event.media_urls)
-                    existing.media_types.extend(event.media_types)
-                    if event.text:
-                        if not existing.text:
-                            existing.text = event.text
-                        elif event.text not in existing.text:
-                            existing.text = f"{existing.text}\n\n{event.text}".strip()
-                else:
-                    self._pending_messages[session_key] = event
+                logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
+                merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
-            print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
+            logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
             self._pending_messages[session_key] = event
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes
         
+        # Mark session as active BEFORE spawning background task to close
+        # the race window where a second message arriving before the task
+        # starts would also pass the _active_sessions check and spawn a
+        # duplicate task.  (grammY sequentialize / aiogram EventIsolation
+        # pattern — set the guard synchronously, not inside the task.)
+        self._active_sessions[session_key] = asyncio.Event()
+
         # Spawn background task to process this message
         task = asyncio.create_task(self._process_message_background(event, session_key))
         try:
@@ -886,6 +1742,7 @@ class BasePlatformAdapter(ABC):
             return
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(self._expected_cancelled_tasks.discard)
     
     @staticmethod
     def _get_human_delay() -> float:
@@ -910,21 +1767,68 @@ class BasePlatformAdapter(ABC):
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
-        # Create interrupt event for this session
-        interrupt_event = asyncio.Event()
+        # Track delivery outcomes for the processing-complete hook
+        delivery_attempted = False
+        delivery_succeeded = False
+
+        def _record_delivery(result):
+            nonlocal delivery_attempted, delivery_succeeded
+            if result is None:
+                return
+            delivery_attempted = True
+            if getattr(result, "success", False):
+                delivery_succeeded = True
+
+        # Reuse the interrupt event set by handle_message() (which marks
+        # the session active before spawning this task to prevent races).
+        # Fall back to a new Event only if the entry was removed externally.
+        interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
+        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        try:
+            _keep_typing_sig = inspect.signature(self._keep_typing)
+        except (TypeError, ValueError):
+            _keep_typing_sig = None
+        if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+            _keep_typing_kwargs["stop_event"] = interrupt_event
+        typing_task = asyncio.create_task(
+            self._keep_typing(
+                event.source.chat_id,
+                **_keep_typing_kwargs,
+            )
+        )
         
         try:
+            await self._run_processing_hook("on_processing_start", event)
+
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             
-            # Send response if any
+            # Send response if any.  A None/empty response is normal when
+            # streaming already delivered the text (already_sent=True) or
+            # when the message was queued behind an active agent.  Log at
+            # DEBUG to avoid noisy warnings for expected behavior.
+            #
+            # Suppress stale response when the session was interrupted by a
+            # new message that hasn't been consumed yet.  The pending message
+            # is processed by the pending-message handler below (#8221/#2483).
+            if (
+                response
+                and interrupt_event.is_set()
+                and session_key in self._pending_messages
+            ):
+                logger.info(
+                    "[%s] Suppressing stale response for interrupted session %s",
+                    self.name,
+                    session_key,
+                )
+                response = None
             if not response:
-                logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
@@ -982,25 +1886,13 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    result = await self.send(
+                    result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=event.message_id,
                         metadata=_thread_metadata,
                     )
-
-                    # Log send failures (don't raise - user already saw tool progress)
-                    if not result.success:
-                        print(f"[{self.name}] Failed to send response: {result.error}")
-                        # Try sending without markdown as fallback
-                        fallback_result = await self.send(
-                            chat_id=event.source.chat_id,
-                            content=f"(Response formatting failed, plain text:)\n\n{text_content[:3500]}",
-                            reply_to=event.message_id,
-                            metadata=_thread_metadata,
-                        )
-                        if not fallback_result.success:
-                            print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
+                    _record_delivery(result)
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -1012,7 +1904,12 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        logger.info("[%s] Sending image: %s (alt=%s)", self.name, image_url[:80], alt_text[:30] if alt_text else "")
+                        logger.info(
+                            "[%s] Sending image: %s (alt=%s)",
+                            self.name,
+                            safe_url_for_log(image_url),
+                            alt_text[:30] if alt_text else "",
+                        )
                         # Route animated GIFs through send_animation for proper playback
                         if self._is_animation_url(image_url):
                             img_result = await self.send_animation(
@@ -1069,9 +1966,9 @@ class BasePlatformAdapter(ABC):
                             )
 
                         if not media_result.success:
-                            print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
+                            logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                     except Exception as media_err:
-                        print(f"[{self.name}] Error sending media: {media_err}")
+                        logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
                 # Send auto-detected local files as native attachments
                 for file_path in local_files:
@@ -1100,13 +1997,30 @@ class BasePlatformAdapter(ABC):
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 
+            # Determine overall success for the processing hook
+            processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            await self._run_processing_hook(
+                "on_processing_complete",
+                event,
+                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+            )
+
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
-                print(f"[{self.name}] 📨 Processing queued message from interrupt")
-                # Clean up current session before processing pending
-                if session_key in self._active_sessions:
-                    del self._active_sessions[session_key]
+                logger.debug("[%s] Processing queued message from interrupt", self.name)
+                # Keep the _active_sessions entry live across the turn chain
+                # and only CLEAR the interrupt Event — do NOT delete the entry.
+                # If we deleted here, a concurrent inbound message arriving
+                # during the awaits below would pass the Level-1 guard, spawn
+                # its own _process_message_background, and run simultaneously
+                # with the recursive drain below.  Two agents on one
+                # session_key = duplicate responses, duplicate tool calls.
+                # Clearing the Event keeps the guard live so follow-ups take
+                # the busy-handler path (queue + interrupt) as intended.
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
                 typing_task.cancel()
                 try:
                     await typing_task
@@ -1116,10 +2030,16 @@ class BasePlatformAdapter(ABC):
                 await self._process_message_background(pending_event, session_key)
                 return  # Already cleaned up
                 
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            outcome = ProcessingOutcome.CANCELLED
+            if current_task is None or current_task not in self._expected_cancelled_tasks:
+                outcome = ProcessingOutcome.FAILURE
+            await self._run_processing_hook("on_processing_complete", event, outcome)
+            raise
         except Exception as e:
-            print(f"[{self.name}] Error handling message: {e}")
-            import traceback
-            traceback.print_exc()
+            await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:
                 error_type = type(e).__name__
@@ -1137,6 +2057,21 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Fire any one-shot post-delivery callback registered for this
+            # session (e.g. deferred background-review notifications).
+            _callback_generation = callback_generation
+            if hasattr(self, "pop_post_delivery_callback"):
+                _post_cb = self.pop_post_delivery_callback(
+                    session_key,
+                    generation=_callback_generation,
+                )
+            else:
+                _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
+            if callable(_post_cb):
+                try:
+                    _post_cb()
+                except Exception:
+                    pass
             # Stop typing indicator
             typing_task.cancel()
             try:
@@ -1150,9 +2085,37 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
-            # Clean up session tracking
-            if session_key in self._active_sessions:
-                del self._active_sessions[session_key]
+            # Late-arrival drain: a message may have arrived during the
+            # cleanup awaits above (typing_task cancel, stop_typing).  Such
+            # messages passed the Level-1 guard (entry still live, Event
+            # possibly set) and landed in _pending_messages via the
+            # busy-handler path.  Without this block, we would delete the
+            # active-session entry and the queued message would be silently
+            # dropped (user never gets a reply).
+            late_pending = self._pending_messages.pop(session_key, None)
+            if late_pending is not None:
+                logger.debug(
+                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                    self.name,
+                )
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
+                drain_task = asyncio.create_task(
+                    self._process_message_background(late_pending, session_key)
+                )
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
+                    pass
+                # Leave _active_sessions[session_key] populated — the drain
+                # task's own lifecycle will clean it up.
+            else:
+                # Clean up session tracking
+                if session_key in self._active_sessions:
+                    del self._active_sessions[session_key]
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
@@ -1160,12 +2123,28 @@ class BasePlatformAdapter(ABC):
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
         """
-        tasks = [task for task in self._background_tasks if not task.done()]
-        for task in tasks:
-            task.cancel()
-        if tasks:
+        # Loop until no new tasks appear.  Without this, a message
+        # arriving during the `await asyncio.gather` below would spawn
+        # a fresh _process_message_background task (added to
+        # self._background_tasks at line ~1668 via handle_message),
+        # and the _background_tasks.clear() at the end of this method
+        # would drop the reference — the task runs untracked against a
+        # disconnecting adapter, logs send-failures, and may linger
+        # until it completes on its own.  Retrying the drain until the
+        # task set stabilizes closes the window.
+        MAX_DRAIN_ROUNDS = 5
+        for _ in range(MAX_DRAIN_ROUNDS):
+            tasks = [task for task in self._background_tasks if not task.done()]
+            if not tasks:
+                break
+            for task in tasks:
+                self._expected_cancelled_tasks.add(task)
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Loop: late-arrival tasks spawned during the gather above
+            # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()
+        self._expected_cancelled_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
 
@@ -1188,6 +2167,7 @@ class BasePlatformAdapter(ABC):
         chat_topic: Optional[str] = None,
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
+        is_bot: bool = False,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -1204,6 +2184,7 @@ class BasePlatformAdapter(ABC):
             chat_topic=chat_topic.strip() if chat_topic else None,
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
+            is_bot=is_bot,
         )
     
     @abstractmethod
@@ -1229,7 +2210,11 @@ class BasePlatformAdapter(ABC):
         return content
     
     @staticmethod
-    def truncate_message(content: str, max_length: int = 4096) -> List[str]:
+    def truncate_message(
+        content: str,
+        max_length: int = 4096,
+        len_fn: Optional["Callable[[str], int]"] = None,
+    ) -> List[str]:
         """
         Split a long message into chunks, preserving code block boundaries.
 
@@ -1241,11 +2226,16 @@ class BasePlatformAdapter(ABC):
         Args:
             content: The full message content
             max_length: Maximum length per chunk (platform-specific)
+            len_fn: Optional length function for measuring string length.
+                     Defaults to ``len`` (Unicode code-points).  Pass
+                     ``utf16_len`` for platforms that measure message
+                     length in UTF-16 code units (e.g. Telegram).
 
         Returns:
             List of message chunks
         """
-        if len(content) <= max_length:
+        _len = len_fn or len
+        if _len(content) <= max_length:
             return [content]
 
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
@@ -1264,22 +2254,33 @@ class BasePlatformAdapter(ABC):
 
             # How much body text we can fit after accounting for the prefix,
             # a potential closing fence, and the chunk indicator.
-            headroom = max_length - INDICATOR_RESERVE - len(prefix) - len(FENCE_CLOSE)
+            headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
             if headroom < 1:
                 headroom = max_length // 2
 
             # Everything remaining fits in one final chunk
-            if len(prefix) + len(remaining) <= max_length - INDICATOR_RESERVE:
+            if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
                 chunks.append(prefix + remaining)
                 break
 
-            # Find a natural split point (prefer newlines, then spaces)
-            region = remaining[:headroom]
+            # Find a natural split point (prefer newlines, then spaces).
+            # When _len != len (e.g. utf16_len for Telegram), headroom is
+            # measured in the custom unit.  We need codepoint-based slice
+            # positions that stay within the custom-unit budget.
+            #
+            # _safe_slice_pos() maps a custom-unit budget to the largest
+            # codepoint offset whose custom length ≤ budget.
+            if _len is not len:
+                # Map headroom (custom units) → codepoint slice length
+                _cp_limit = _custom_unit_to_cp(remaining, headroom, _len)
+            else:
+                _cp_limit = headroom
+            region = remaining[:_cp_limit]
             split_at = region.rfind("\n")
-            if split_at < headroom // 2:
+            if split_at < _cp_limit // 2:
                 split_at = region.rfind(" ")
             if split_at < 1:
-                split_at = headroom
+                split_at = _cp_limit
 
             # Avoid splitting inside an inline code span (`...`).
             # If the text before split_at has an odd number of unescaped
@@ -1299,7 +2300,7 @@ class BasePlatformAdapter(ABC):
                     safe_split = candidate.rfind(" ", 0, last_bt)
                     nl_split = candidate.rfind("\n", 0, last_bt)
                     safe_split = max(safe_split, nl_split)
-                    if safe_split > headroom // 4:
+                    if safe_split > _cp_limit // 4:
                         split_at = safe_split
 
             chunk_body = remaining[:split_at]

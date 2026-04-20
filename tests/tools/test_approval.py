@@ -1,17 +1,18 @@
 """Tests for the dangerous command approval module."""
 
+import ast
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
+    _smart_approve,
     approve_session,
-    clear_session,
     detect_dangerous_command,
-    has_pending,
     is_approved,
     load_permanent,
-    pop_pending,
     prompt_dangerous_approval,
     submit_pending,
 )
@@ -25,6 +26,21 @@ class TestApprovalModeParsing:
     def test_string_off_still_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "off"}}):
             assert _get_approval_mode() == "off"
+
+
+class TestSmartApproval:
+    def test_smart_approval_uses_call_llm(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+        )
+        with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
+
+        assert result == "approve"
+        mock_call.assert_called_once()
+        assert mock_call.call_args.kwargs["task"] == "approval"
+        assert mock_call.call_args.kwargs["temperature"] == 0
+        assert mock_call.call_args.kwargs["max_tokens"] == 16
 
 
 class TestDetectDangerousRm:
@@ -111,41 +127,52 @@ class TestSafeCommand:
         assert desc is None
 
 
-class TestSubmitAndPopPending:
-    def test_submit_and_pop(self):
-        key = "test_session_pending"
-        clear_session(key)
-
-        submit_pending(key, {"command": "rm -rf /", "pattern_key": "rm"})
-        assert has_pending(key) is True
-
-        approval = pop_pending(key)
-        assert approval["command"] == "rm -rf /"
-        assert has_pending(key) is False
-
-    def test_pop_empty_returns_none(self):
-        key = "test_session_empty"
-        clear_session(key)
-        assert pop_pending(key) is None
-        assert has_pending(key) is False
+def _clear_session(key):
+    """Replace for removed clear_session() — directly clear internal state."""
+    approval_module._session_approved.pop(key, None)
+    approval_module._pending.pop(key, None)
 
 
 class TestApproveAndCheckSession:
     def test_session_approval(self):
         key = "test_session_approve"
-        clear_session(key)
+        _clear_session(key)
 
         assert is_approved(key, "rm") is False
         approve_session(key, "rm")
         assert is_approved(key, "rm") is True
 
-    def test_clear_session_removes_approvals(self):
-        key = "test_session_clear"
-        approve_session(key, "rm")
-        assert is_approved(key, "rm") is True
-        clear_session(key)
-        assert is_approved(key, "rm") is False
-        assert has_pending(key) is False
+
+class TestSessionKeyContext:
+    def test_context_session_key_overrides_process_env(self):
+        token = approval_module.set_current_session_key("alice")
+        try:
+            with mock_patch.dict("os.environ", {"HERMES_SESSION_KEY": "bob"}, clear=False):
+                assert approval_module.get_current_session_key() == "alice"
+        finally:
+            approval_module.reset_current_session_key(token)
+
+    def test_gateway_runner_binds_session_key_to_context_before_agent_run(self):
+        run_py = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
+        module = ast.parse(run_py.read_text(encoding="utf-8"))
+
+        run_sync = None
+        for node in ast.walk(module):
+            if isinstance(node, ast.FunctionDef) and node.name == "run_sync":
+                run_sync = node
+                break
+
+        assert run_sync is not None, "gateway.run.run_sync not found"
+
+        called_names = set()
+        for node in ast.walk(run_sync):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                called_names.add(node.func.id)
+
+        assert "set_current_session_key" in called_names
+        assert "reset_current_session_key" in called_names
+
+
 
 
 class TestRmFalsePositiveFix:
@@ -339,6 +366,16 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
+    def test_tee_custom_hermes_home_env(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
+        assert dangerous is True
+        assert key is not None
+
+    def test_tee_quoted_custom_hermes_home_env(self):
+        dangerous, key, desc = detect_dangerous_command('echo x | tee "$HERMES_HOME/.env"')
+        assert dangerous is True
+        assert key is not None
+
     def test_tee_tmp_safe(self):
         dangerous, key, desc = detect_dangerous_command("echo hello | tee /tmp/output.txt")
         assert dangerous is False
@@ -374,6 +411,30 @@ class TestFindExecFullPathRm:
         assert key is None
 
 
+class TestSensitiveRedirectPattern:
+    """Detect shell redirection writes to sensitive user-managed paths."""
+
+    def test_redirect_to_custom_hermes_home_env(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > $HERMES_HOME/.env")
+        assert dangerous is True
+        assert key is not None
+
+    def test_append_to_home_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command("cat key >> $HOME/.ssh/authorized_keys")
+        assert dangerous is True
+        assert key is not None
+
+    def test_append_to_tilde_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command("cat key >> ~/.ssh/authorized_keys")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_safe_tmp_file(self):
+        dangerous, key, desc = detect_dangerous_command("echo hello > /tmp/output.txt")
+        assert dangerous is False
+        assert key is None
+
+
 class TestPatternKeyUniqueness:
     """Bug: pattern_key is derived by splitting on \\b and taking [1], so
     patterns starting with the same word (e.g. find -exec rm and find -delete)
@@ -392,13 +453,13 @@ class TestPatternKeyUniqueness:
         _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
         _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
         session = "test_find_collision"
-        clear_session(session)
+        _clear_session(session)
         approve_session(session, key_exec)
         assert is_approved(session, key_exec) is True
         assert is_approved(session, key_delete) is False, (
             "approving find -exec rm should not auto-approve find -delete"
         )
-        clear_session(session)
+        _clear_session(session)
 
     def test_legacy_find_key_still_approves_find_exec(self):
         """Old allowlist entry 'find' should keep approving the matching command."""
@@ -506,9 +567,273 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
-    def test_systemctl_restart_not_flagged(self):
-        """Using systemctl to manage the gateway is the correct approach."""
+    def test_systemctl_restart_flagged(self):
+        """systemctl restart kills running agents and should require approval."""
         cmd = "systemctl --user restart hermes-gateway"
         dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "stop/restart" in desc
+
+    def test_pkill_hermes_detected(self):
+        """pkill targeting hermes/gateway processes must be caught."""
+        cmd = 'pkill -f "cli.py --gateway"'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_killall_hermes_detected(self):
+        cmd = "killall hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_pkill_gateway_detected(self):
+        cmd = "pkill -f gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pkill_unrelated_not_flagged(self):
+        """pkill targeting unrelated processes should not be flagged."""
+        cmd = "pkill -f nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestNormalizationBypass:
+    """Obfuscation techniques must not bypass dangerous command detection."""
+
+    def test_fullwidth_unicode_rm(self):
+        """Fullwidth Unicode 'ｒｍ -ｒｆ /' must be caught after NFKC normalization."""
+        cmd = "\uff52\uff4d -\uff52\uff46 /"  # ｒｍ -ｒｆ /
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Fullwidth 'rm -rf /' was not detected: {cmd!r}"
+
+    def test_fullwidth_unicode_dd(self):
+        """Fullwidth 'ｄｄ if=/dev/zero' must be caught."""
+        cmd = "\uff44\uff44 if=/dev/zero of=/dev/sda"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_fullwidth_unicode_chmod(self):
+        """Fullwidth 'ｃｈｍｏｄ 777' must be caught."""
+        cmd = "\uff43\uff48\uff4d\uff4f\uff44 777 /tmp/test"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_ansi_csi_wrapped_rm(self):
+        """ANSI CSI color codes wrapping 'rm' must be stripped and caught."""
+        cmd = "\x1b[31mrm\x1b[0m -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"ANSI-wrapped 'rm -rf /' was not detected"
+
+    def test_ansi_osc_embedded_rm(self):
+        """ANSI OSC sequences embedded in command must be stripped."""
+        cmd = "\x1b]0;title\x07rm -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_ansi_8bit_c1_wrapped_rm(self):
+        """8-bit C1 CSI (0x9b) wrapping 'rm' must be stripped and caught."""
+        cmd = "\x9b31mrm\x9b0m -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, "8-bit C1 CSI bypass was not caught"
+
+    def test_null_byte_in_rm(self):
+        """Null bytes injected into 'rm' must be stripped and caught."""
+        cmd = "r\x00m -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Null-byte 'rm' was not detected: {cmd!r}"
+
+    def test_null_byte_in_dd(self):
+        """Null bytes in 'dd' must be stripped."""
+        cmd = "d\x00d if=/dev/sda"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_mixed_fullwidth_and_ansi(self):
+        """Combined fullwidth + ANSI obfuscation must still be caught."""
+        cmd = "\x1b[1m\uff52\uff4d\x1b[0m -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_command_after_normalization(self):
+        """Normal safe commands must not be flagged after normalization."""
+        cmd = "ls -la /tmp"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_fullwidth_safe_command_not_flagged(self):
+        """Fullwidth 'ｌｓ -ｌａ' is safe and must not be flagged."""
+        cmd = "\uff4c\uff53 -\uff4c\uff41 /tmp"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestHeredocScriptExecution:
+    """Script execution via heredoc bypasses the -e/-c flag patterns.
+
+    `python3 << 'EOF'` feeds arbitrary code through stdin without any
+    flag that the original patterns check for. See security audit Test 3.
+    """
+
+    def test_python3_heredoc_detected(self):
+        # The heredoc body also contains `rm -rf /` which fires the
+        # "delete in root path" pattern first (patterns are ordered).
+        # The heredoc pattern also matches — either detection is correct.
+        cmd = "python3 << 'EOF'\nimport os; os.system('rm -rf /')\nEOF"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_python_heredoc_detected(self):
+        cmd = 'python << "PYEOF"\nprint("pwned")\nPYEOF'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_perl_heredoc_detected(self):
+        cmd = "perl <<'END'\nsystem('whoami');\nEND"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_ruby_heredoc_detected(self):
+        cmd = "ruby <<RUBY\n`rm -rf /`\nRUBY"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_node_heredoc_detected(self):
+        cmd = "node << 'JS'\nrequire('child_process').execSync('whoami')\nJS"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_python3_dash_c_still_detected(self):
+        """Existing -c pattern must not regress."""
+        cmd = "python3 -c 'import os; os.system(\"rm -rf /\")'"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_python_not_flagged(self):
+        """Plain 'python3 script.py' without heredoc or -c must stay safe."""
+        cmd = "python3 my_script.py"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestPgrepKillExpansion:
+    """kill -9 $(pgrep hermes) bypasses the pkill/killall name-matching
+    pattern because the command substitution is opaque to regex.
+
+    See security audit Test 7.
+    """
+
+    def test_kill_dollar_pgrep_detected(self):
+        cmd = 'kill -9 $(pgrep -f "hermes.*gateway")'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "pgrep" in desc.lower()
+
+    def test_kill_backtick_pgrep_detected(self):
+        cmd = "kill -9 `pgrep hermes`"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_kill_dollar_pgrep_no_flags(self):
+        cmd = "kill $(pgrep gateway)"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pkill_hermes_still_detected(self):
+        """Existing pkill pattern must not regress."""
+        cmd = "pkill -9 hermes"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_kill_pid_not_flagged(self):
+        """A plain 'kill 12345' (literal PID, no expansion) must stay safe."""
+        cmd = "kill 12345"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestGitDestructiveOps:
+    """git reset --hard, push --force, clean -f, branch -D can destroy
+    work and rewrite shared history. Not covered by rm/chmod patterns.
+
+    See security audit Test 6.
+    """
+
+    def test_git_reset_hard_detected(self):
+        cmd = "git reset --hard HEAD~3"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "reset" in desc.lower() or "hard" in desc.lower()
+
+    def test_git_push_force_detected(self):
+        cmd = "git push --force origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
+    def test_git_push_dash_f_detected(self):
+        cmd = "git push -f origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_clean_force_detected(self):
+        cmd = "git clean -fd"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "clean" in desc.lower()
+
+    def test_git_branch_force_delete_detected(self):
+        cmd = "git branch -D feature-branch"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_git_status_not_flagged(self):
+        cmd = "git status"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_safe_git_push_not_flagged(self):
+        """Normal push without --force must not be flagged."""
+        cmd = "git push origin main"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_git_branch_lowercase_d_also_flagged(self):
+        """git branch -d triggers approval too — IGNORECASE is global.
+
+        This is intentional: -d is safer than -D but an approval prompt
+        for branch deletion is reasonable. The user can still approve.
+        """
+        cmd = "git branch -d feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+
+class TestChmodExecuteCombo:
+    """chmod +x && ./ is the two-step social engineering pattern where a
+    script is first made executable then immediately run. The script
+    content may contain dangerous commands invisible to pattern matching.
+
+    See security audit Test 4.
+    """
+
+    def test_chmod_and_execute_detected(self):
+        cmd = "chmod +x /tmp/cleanup.sh && ./cleanup.sh"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "chmod" in desc.lower() or "execution" in desc.lower()
+
+    def test_chmod_semicolon_execute_detected(self):
+        cmd = "chmod +x script.sh; ./script.sh"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        # Semicolon variant — pattern uses && but full-string match
+        # on chmod +x should still trigger even without the && ./
+        assert dangerous is True
+
+    def test_safe_chmod_without_execute_not_flagged(self):
+        """chmod +x alone without immediate execution must not be flagged."""
+        cmd = "chmod +x script.sh"
+        dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 

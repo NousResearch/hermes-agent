@@ -26,7 +26,7 @@ import logging
 import threading
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import registry
+from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -129,45 +129,7 @@ def _run_async(coro):
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
 
-def _discover_tools():
-    """Import all tool modules to trigger their registry.register() calls.
-
-    Wrapped in a function so import errors in optional tools (e.g., fal_client
-    not installed) don't prevent the rest from loading.
-    """
-    _modules = [
-        "tools.web_tools",
-        "tools.terminal_tool",
-        "tools.file_tools",
-        "tools.vision_tools",
-        "tools.mixture_of_agents_tool",
-        "tools.image_generation_tool",
-        "tools.skills_tool",
-        "tools.skill_manager_tool",
-        "tools.browser_tool",
-        "tools.cronjob_tools",
-        "tools.rl_training_tool",
-        "tools.tts_tool",
-        "tools.todo_tool",
-        "tools.memory_tool",
-        "tools.session_search_tool",
-        "tools.clarify_tool",
-        "tools.code_execution_tool",
-        "tools.delegate_tool",
-        "tools.process_registry",
-        "tools.send_message_tool",
-        "tools.honcho_tools",
-        "tools.homeassistant_tool",
-    ]
-    import importlib
-    for mod_name in _modules:
-        try:
-            importlib.import_module(mod_name)
-        except Exception as e:
-            logger.warning("Could not import tool module %s: %s", mod_name, e)
-
-
-_discover_tools()
+discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config)
 try:
@@ -211,7 +173,7 @@ _LEGACY_TOOLSET_MAP = {
     "browser_tools": [
         "browser_navigate", "browser_snapshot", "browser_click",
         "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_close", "browser_get_images",
+        "browser_press", "browser_get_images",
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
@@ -252,7 +214,7 @@ def get_tool_definitions(
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 
-    if enabled_toolsets:
+    if enabled_toolsets is not None:
         for toolset_name in enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -312,13 +274,38 @@ def get_tool_definitions(
     # execute_code" even when the API key isn't configured or the toolset is
     # disabled (#560-discord).
     if "execute_code" in available_tool_names:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
+        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
         sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
-        dynamic_schema = build_execute_code_schema(sandbox_enabled)
+        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "execute_code":
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
+
+    # Rebuild discord_server schema based on the bot's privileged intents
+    # (detected from GET /applications/@me) and the user's action allowlist
+    # in config.  Hides actions the bot's intents don't support so the
+    # model never attempts them, and annotates fetch_messages when the
+    # MESSAGE_CONTENT intent is missing.
+    if "discord_server" in available_tool_names:
+        try:
+            from tools.discord_tool import get_dynamic_schema
+            dynamic = get_dynamic_schema()
+        except Exception:  # pragma: no cover — defensive, fall back to static
+            dynamic = None
+        if dynamic is None:
+            # Tool filtered out entirely (empty allowlist or detection disabled
+            # the only remaining actions).  Drop it from the schema list.
+            filtered_tools = [
+                t for t in filtered_tools
+                if t.get("function", {}).get("name") != "discord_server"
+            ]
+            available_tool_names.discard("discord_server")
+        else:
+            for i, td in enumerate(filtered_tools):
+                if td.get("function", {}).get("name") == "discord_server":
+                    filtered_tools[i] = {"type": "function", "function": dynamic}
+                    break
 
     # Strip web tool cross-references from browser_navigate description when
     # web_search / web_extract are not available.  The static schema says
@@ -365,14 +352,106 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
+# =========================================================================
+# Tool argument type coercion
+# =========================================================================
+
+def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce tool call arguments to match their JSON Schema types.
+
+    LLMs frequently return numbers as strings (``"42"`` instead of ``42``)
+    and booleans as strings (``"true"`` instead of ``true``).  This compares
+    each argument value against the tool's registered JSON Schema and attempts
+    safe coercion when the value is a string but the schema expects a different
+    type.  Original values are preserved when coercion fails.
+
+    Handles ``"type": "integer"``, ``"type": "number"``, ``"type": "boolean"``,
+    and union types (``"type": ["integer", "string"]``).
+    """
+    if not args or not isinstance(args, dict):
+        return args
+
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return args
+
+    properties = (schema.get("parameters") or {}).get("properties")
+    if not properties:
+        return args
+
+    for key, value in args.items():
+        if not isinstance(value, str):
+            continue
+        prop_schema = properties.get(key)
+        if not prop_schema:
+            continue
+        expected = prop_schema.get("type")
+        if not expected:
+            continue
+        coerced = _coerce_value(value, expected)
+        if coerced is not value:
+            args[key] = coerced
+
+    return args
+
+
+def _coerce_value(value: str, expected_type):
+    """Attempt to coerce a string *value* to *expected_type*.
+
+    Returns the original string when coercion is not applicable or fails.
+    """
+    if isinstance(expected_type, list):
+        # Union type — try each in order, return first successful coercion
+        for t in expected_type:
+            result = _coerce_value(value, t)
+            if result is not value:
+                return result
+        return value
+
+    if expected_type in ("integer", "number"):
+        return _coerce_number(value, integer_only=(expected_type == "integer"))
+    if expected_type == "boolean":
+        return _coerce_boolean(value)
+    return value
+
+
+def _coerce_number(value: str, integer_only: bool = False):
+    """Try to parse *value* as a number.  Returns original string on failure."""
+    try:
+        f = float(value)
+    except (ValueError, OverflowError):
+        return value
+    # Guard against inf/nan before int() conversion
+    if f != f or f == float("inf") or f == float("-inf"):
+        return f
+    # If it looks like an integer (no fractional part), return int
+    if f == int(f):
+        return int(f)
+    if integer_only:
+        # Schema wants an integer but value has decimals — keep as string
+        return value
+    return f
+
+
+def _coerce_boolean(value: str):
+    """Try to parse *value* as a boolean.  Returns original string on failure."""
+    low = value.strip().lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    return value
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
     task_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
-    honcho_manager: Optional[Any] = None,
-    honcho_session_key: Optional[str] = None,
+    skip_pre_tool_call_hook: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -390,24 +469,56 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
-    # Notify the read-loop tracker when a non-read/search tool runs,
-    # so the *consecutive* counter resets (reads after other work are fine).
-    if function_name not in _READ_SEARCH_TOOLS:
-        try:
-            from tools.file_tools import notify_other_tool_call
-            notify_other_tool_call(task_id or "default")
-        except Exception:
-            pass  # file_tools may not be loaded yet
+    # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+    function_args = coerce_tool_args(function_name, function_args)
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        try:
-            from hermes_cli.plugins import invoke_hook
-            invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
-        except Exception:
-            pass
+        # Check plugin hooks for a block directive (unless caller already
+        # checked — e.g. run_agent._invoke_tool passes skip=True to
+        # avoid double-firing the hook).
+        if not skip_pre_tool_call_hook:
+            block_message: Optional[str] = None
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name,
+                    function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+            except Exception:
+                pass
+
+            if block_message is not None:
+                return json.dumps({"error": block_message}, ensure_ascii=False)
+        else:
+            # Still fire the hook for observers — just don't check for blocking
+            # (the caller already did that).
+            try:
+                from hermes_cli.plugins import invoke_hook
+                invoke_hook(
+                    "pre_tool_call",
+                    tool_name=function_name,
+                    args=function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+            except Exception:
+                pass
+
+        # Notify the read-loop tracker when a non-read/search tool runs,
+        # so the *consecutive* counter resets (reads after other work are fine).
+        if function_name not in _READ_SEARCH_TOOLS:
+            try:
+                from tools.file_tools import notify_other_tool_call
+                notify_other_tool_call(task_id or "default")
+            except Exception:
+                pass  # file_tools may not be loaded yet
 
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
@@ -417,21 +528,25 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
-                honcho_manager=honcho_manager,
-                honcho_session_key=honcho_session_key,
             )
         else:
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
                 user_task=user_task,
-                honcho_manager=honcho_manager,
-                honcho_session_key=honcho_session_key,
             )
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook("post_tool_call", tool_name=function_name, args=function_args, result=result, task_id=task_id or "")
+            invoke_hook(
+                "post_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
         except Exception:
             pass
 

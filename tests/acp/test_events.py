@@ -42,9 +42,10 @@ class TestToolProgressCallback:
     def test_emits_tool_call_start(self, mock_conn, event_loop_fixture):
         """Tool progress should emit a ToolCallStart update."""
         tool_call_ids = {}
+        tool_call_meta = {}
         loop = event_loop_fixture
 
-        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids)
+        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
 
         # Run callback in the event loop context
         with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
@@ -52,7 +53,7 @@ class TestToolProgressCallback:
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            cb("terminal", "$ ls -la", {"command": "ls -la"})
+            cb("tool.started", "terminal", "$ ls -la", {"command": "ls -la"})
 
         # Should have tracked the tool call ID
         assert "terminal" in tool_call_ids
@@ -66,50 +67,53 @@ class TestToolProgressCallback:
     def test_handles_string_args(self, mock_conn, event_loop_fixture):
         """If args is a JSON string, it should be parsed."""
         tool_call_ids = {}
+        tool_call_meta = {}
         loop = event_loop_fixture
 
-        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids)
+        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
 
         with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
             future = MagicMock(spec=Future)
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            cb("read_file", "Reading /etc/hosts", '{"path": "/etc/hosts"}')
+            cb("tool.started", "read_file", "Reading /etc/hosts", '{"path": "/etc/hosts"}')
 
         assert "read_file" in tool_call_ids
 
     def test_handles_non_dict_args(self, mock_conn, event_loop_fixture):
         """If args is not a dict, it should be wrapped."""
         tool_call_ids = {}
+        tool_call_meta = {}
         loop = event_loop_fixture
 
-        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids)
+        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
 
         with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
             future = MagicMock(spec=Future)
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            cb("terminal", "$ echo hi", None)
+            cb("tool.started", "terminal", "$ echo hi", None)
 
         assert "terminal" in tool_call_ids
 
     def test_duplicate_same_name_tool_calls_use_fifo_ids(self, mock_conn, event_loop_fixture):
         """Multiple same-name tool calls should be tracked independently in order."""
         tool_call_ids = {}
+        tool_call_meta = {}
         loop = event_loop_fixture
 
-        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids)
-        step_cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        step_cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
 
         with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
             future = MagicMock(spec=Future)
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            progress_cb("terminal", "$ ls", {"command": "ls"})
-            progress_cb("terminal", "$ pwd", {"command": "pwd"})
+            progress_cb("tool.started", "terminal", "$ ls", {"command": "ls"})
+            progress_cb("tool.started", "terminal", "$ pwd", {"command": "pwd"})
             assert len(tool_call_ids["terminal"]) == 2
 
             step_cb(1, [{"name": "terminal", "result": "ok-1"}])
@@ -163,7 +167,7 @@ class TestStepCallback:
         tool_call_ids = {"terminal": "tc-abc123"}
         loop = event_loop_fixture
 
-        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
 
         with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
             future = MagicMock(spec=Future)
@@ -181,7 +185,7 @@ class TestStepCallback:
         tool_call_ids = {}
         loop = event_loop_fixture
 
-        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
 
         with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
             cb(1, [{"name": "unknown_tool", "result": "ok"}])
@@ -193,7 +197,7 @@ class TestStepCallback:
         tool_call_ids = {"read_file": "tc-def456"}
         loop = event_loop_fixture
 
-        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
 
         with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
             future = MagicMock(spec=Future)
@@ -204,6 +208,90 @@ class TestStepCallback:
 
         assert "read_file" not in tool_call_ids
         mock_rcts.assert_called_once()
+
+    def test_result_passed_to_build_tool_complete(self, mock_conn, event_loop_fixture):
+        """Tool result from prev_tools dict is forwarded to build_tool_complete."""
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-xyz789"])}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            # Provide a result string in the tool info dict
+            cb(1, [{"name": "terminal", "result": '{"output": "hello"}'}])
+
+        mock_btc.assert_called_once_with(
+            "tc-xyz789", "terminal", result='{"output": "hello"}', function_args=None, snapshot=None
+        )
+
+    def test_none_result_passed_through(self, mock_conn, event_loop_fixture):
+        """When result is None (e.g. first iteration), None is passed through."""
+        from collections import deque
+
+        tool_call_ids = {"web_search": deque(["tc-aaa"])}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb(1, [{"name": "web_search", "result": None}])
+
+        mock_btc.assert_called_once_with("tc-aaa", "web_search", result=None, function_args=None, snapshot=None)
+
+    def test_step_callback_passes_arguments_and_snapshot(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        tool_call_ids = {"write_file": deque(["tc-write"])}
+        tool_call_meta = {"tc-write": {"args": {"path": "fallback.txt"}, "snapshot": "snap"}}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb(1, [{"name": "write_file", "result": '{"bytes_written": 23}', "arguments": {"path": "diff-test.txt"}}])
+
+        mock_btc.assert_called_once_with(
+            "tc-write",
+            "write_file",
+            result='{"bytes_written": 23}',
+            function_args={"path": "diff-test.txt"},
+            snapshot="snap",
+        )
+
+    def test_tool_progress_captures_snapshot_metadata(self, mock_conn, event_loop_fixture):
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-meta"), \
+             patch("acp_adapter.events._send_update") as mock_send, \
+             patch("agent.display.capture_local_edit_snapshot", return_value="snapshot"):
+            cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+            cb("tool.started", "write_file", None, {"path": "diff-test.txt", "content": "hello"})
+
+        assert list(tool_call_ids["write_file"]) == ["tc-meta"]
+        assert tool_call_meta["tc-meta"] == {
+            "args": {"path": "diff-test.txt", "content": "hello"},
+            "snapshot": "snapshot",
+        }
+        mock_send.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

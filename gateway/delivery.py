@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any
 
 from hermes_cli.config import get_hermes_home
 
@@ -70,12 +70,15 @@ class DeliveryTarget:
         if target == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id format
+        # Check for platform:chat_id or platform:chat_id:thread_id format
         if ":" in target:
-            platform_str, chat_id = target.split(":", 1)
+            parts = target.split(":", 2)
+            platform_str = parts[0]
+            chat_id = parts[1] if len(parts) > 1 else None
+            thread_id = parts[2] if len(parts) > 2 else None
             try:
                 platform = Platform(platform_str)
-                return cls(platform=platform, chat_id=chat_id, is_explicit=True)
+                return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
@@ -94,6 +97,8 @@ class DeliveryTarget:
             return "origin"
         if self.platform == Platform.LOCAL:
             return "local"
+        if self.chat_id and self.thread_id:
+            return f"{self.platform.value}:{self.chat_id}:{self.thread_id}"
         if self.chat_id:
             return f"{self.platform.value}:{self.chat_id}"
         return self.platform.value
@@ -118,53 +123,6 @@ class DeliveryRouter:
         self.config = config
         self.adapters = adapters or {}
         self.output_dir = get_hermes_home() / "cron" / "output"
-    
-    def resolve_targets(
-        self,
-        deliver: Union[str, List[str]],
-        origin: Optional[SessionSource] = None
-    ) -> List[DeliveryTarget]:
-        """
-        Resolve delivery specification to concrete targets.
-        
-        Args:
-            deliver: Delivery spec - "origin", "telegram", ["local", "discord"], etc.
-            origin: The source where the request originated (for "origin" target)
-        
-        Returns:
-            List of resolved delivery targets
-        """
-        if isinstance(deliver, str):
-            deliver = [deliver]
-        
-        targets = []
-        seen_platforms = set()
-        
-        for target_str in deliver:
-            target = DeliveryTarget.parse(target_str, origin)
-            
-            # Resolve home channel if needed
-            if target.chat_id is None and target.platform != Platform.LOCAL:
-                home = self.config.get_home_channel(target.platform)
-                if home:
-                    target.chat_id = home.chat_id
-                else:
-                    # No home channel configured, skip this platform
-                    continue
-            
-            # Deduplicate
-            key = (target.platform, target.chat_id, target.thread_id)
-            if key not in seen_platforms:
-                seen_platforms.add(key)
-                targets.append(target)
-        
-        # Always include local if configured
-        if self.config.always_log_local:
-            local_key = (Platform.LOCAL, None, None)
-            if local_key not in seen_platforms:
-                targets.append(DeliveryTarget(platform=Platform.LOCAL))
-        
-        return targets
     
     async def deliver(
         self,
@@ -294,53 +252,5 @@ class DeliveryRouter:
         return await adapter.send(target.chat_id, content, metadata=send_metadata or None)
 
 
-def parse_deliver_spec(
-    deliver: Optional[Union[str, List[str]]],
-    origin: Optional[SessionSource] = None,
-    default: str = "origin"
-) -> Union[str, List[str]]:
-    """
-    Normalize a delivery specification.
-    
-    If None or empty, returns the default.
-    """
-    if not deliver:
-        return default
-    return deliver
 
 
-def build_delivery_context_for_tool(
-    config: GatewayConfig,
-    origin: Optional[SessionSource] = None
-) -> Dict[str, Any]:
-    """
-    Build context for the unified cronjob tool to understand delivery options.
-    
-    This is passed to the tool so it can validate and explain delivery targets.
-    """
-    connected = config.get_connected_platforms()
-    
-    options = {
-        "origin": {
-            "description": "Back to where this job was created",
-            "available": origin is not None,
-        },
-        "local": {
-            "description": "Save to local files only",
-            "available": True,
-        }
-    }
-    
-    for platform in connected:
-        home = config.get_home_channel(platform)
-        options[platform.value] = {
-            "description": f"{platform.value.title()} home channel",
-            "available": True,
-            "home_channel": home.to_dict() if home else None,
-        }
-    
-    return {
-        "origin": origin.to_dict() if origin else None,
-        "options": options,
-        "always_log_local": config.always_log_local,
-    }

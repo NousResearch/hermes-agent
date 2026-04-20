@@ -44,7 +44,7 @@ class TestOfferOpenclawMigration:
             assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
 
     def test_runs_migration_when_user_accepts(self, tmp_path):
-        """Should dynamically load the script and run the Migrator."""
+        """Should run dry-run preview first, then execute after confirmation."""
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
 
@@ -60,6 +60,7 @@ class TestOfferOpenclawMigration:
         fake_migrator = MagicMock()
         fake_migrator.migrate.return_value = {
             "summary": {"migrated": 3, "skipped": 1, "conflict": 0, "error": 0},
+            "items": [{"kind": "config", "status": "migrated", "destination": "/tmp/x"}],
             "output_dir": str(hermes_home / "migration"),
         }
         fake_mod.Migrator = MagicMock(return_value=fake_migrator)
@@ -70,6 +71,7 @@ class TestOfferOpenclawMigration:
         with (
             patch("hermes_cli.setup.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            # Both prompts answered Yes: preview offer + proceed confirmation
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
             patch("importlib.util.spec_from_file_location") as mock_spec_fn,
@@ -91,13 +93,75 @@ class TestOfferOpenclawMigration:
         fake_mod.resolve_selected_options.assert_called_once_with(
             None, None, preset="full"
         )
-        fake_mod.Migrator.assert_called_once()
-        call_kwargs = fake_mod.Migrator.call_args[1]
-        assert call_kwargs["execute"] is True
-        assert call_kwargs["overwrite"] is False
-        assert call_kwargs["migrate_secrets"] is True
-        assert call_kwargs["preset_name"] == "full"
-        fake_migrator.migrate.assert_called_once()
+        # Migrator called twice: once for dry-run preview, once for execution
+        assert fake_mod.Migrator.call_count == 2
+
+        # First call: dry-run preview (execute=False, overwrite=True to show all)
+        preview_kwargs = fake_mod.Migrator.call_args_list[0][1]
+        assert preview_kwargs["execute"] is False
+        assert preview_kwargs["overwrite"] is True
+        assert preview_kwargs["migrate_secrets"] is True
+        assert preview_kwargs["preset_name"] == "full"
+
+        # Second call: actual execution (execute=True, overwrite=False to preserve)
+        exec_kwargs = fake_mod.Migrator.call_args_list[1][1]
+        assert exec_kwargs["execute"] is True
+        assert exec_kwargs["overwrite"] is False
+        assert exec_kwargs["migrate_secrets"] is True
+        assert exec_kwargs["preset_name"] == "full"
+
+        # migrate() called twice (once per Migrator instance)
+        assert fake_migrator.migrate.call_count == 2
+
+    def test_user_declines_after_preview(self, tmp_path):
+        """Should return False when user sees preview but declines to proceed."""
+        openclaw_dir = tmp_path / ".openclaw"
+        openclaw_dir.mkdir()
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("agent:\n  max_turns: 90\n")
+
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value={"soul", "memory"})
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 3, "skipped": 0, "conflict": 0, "error": 0},
+            "items": [{"kind": "config", "status": "migrated", "destination": "/tmp/x"}],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
+
+        script = tmp_path / "openclaw_to_hermes.py"
+        script.write_text("# placeholder")
+
+        # First prompt (preview): Yes, Second prompt (proceed): No
+        prompt_responses = iter([True, False])
+
+        with (
+            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            patch.object(setup_mod, "prompt_yes_no", side_effect=prompt_responses),
+            patch.object(setup_mod, "get_config_path", return_value=config_path),
+            patch("importlib.util.spec_from_file_location") as mock_spec_fn,
+        ):
+            mock_spec = MagicMock()
+            mock_spec.loader = MagicMock()
+            mock_spec_fn.return_value = mock_spec
+
+            def exec_module(mod):
+                mod.resolve_selected_options = fake_mod.resolve_selected_options
+                mod.Migrator = fake_mod.Migrator
+
+            mock_spec.loader.exec_module = exec_module
+
+            result = setup_mod._offer_openclaw_migration(hermes_home)
+
+        assert result is False
+        # Only dry-run Migrator was created, not the execute one
+        assert fake_mod.Migrator.call_count == 1
+        preview_kwargs = fake_mod.Migrator.call_args[1]
+        assert preview_kwargs["execute"] is False
 
     def test_handles_migration_error_gracefully(self, tmp_path):
         """Should catch exceptions and return False."""
@@ -184,6 +248,8 @@ class TestSetupWizardOpenclawIntegration:
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             # User presses Enter to start
             patch("builtins.input", return_value=""),
+            # Select "Full setup" (index 1) so we exercise the full path
+            patch.object(setup_mod, "prompt_choice", return_value=1),
             # Mock the migration offer
             patch.object(
                 setup_mod, "_offer_openclaw_migration", return_value=False
@@ -196,6 +262,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_tools"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
+            patch.object(setup_mod, "_offer_launch_chat"),
         ):
             setup_mod.run_setup_wizard(args)
 
@@ -218,6 +285,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
+            patch.object(setup_mod, "prompt_choice", return_value=1),
             patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
             patch.object(setup_mod, "setup_model_provider"),
             patch.object(setup_mod, "setup_terminal_backend"),
@@ -226,6 +294,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_tools"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
+            patch.object(setup_mod, "_offer_launch_chat"),
         ):
             setup_mod.run_setup_wizard(args)
 
@@ -249,6 +318,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
+            patch.object(setup_mod, "prompt_choice", return_value=1),
             patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
             patch.object(setup_mod, "setup_model_provider") as setup_model_provider,
             patch.object(setup_mod, "setup_terminal_backend"),
@@ -257,6 +327,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_tools"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
+            patch.object(setup_mod, "_offer_launch_chat"),
         ):
             setup_mod.run_setup_wizard(args)
 
@@ -285,3 +356,183 @@ class TestSetupWizardOpenclawIntegration:
             setup_mod.run_setup_wizard(args)
 
         mock_migration.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _get_section_config_summary / _skip_configured_section — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetSectionConfigSummary:
+    """Test the _get_section_config_summary helper."""
+
+    def test_model_returns_none_without_api_key(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary({}, "model")
+        assert result is None
+
+    def test_model_returns_summary_with_api_key(self):
+        def env_side(key):
+            return "sk-xxx" if key == "OPENROUTER_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(
+                {"model": "openai/gpt-4"}, "model"
+            )
+        assert result == "openai/gpt-4"
+
+    def test_model_returns_dict_default_key(self):
+        def env_side(key):
+            return "sk-xxx" if key == "OPENAI_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(
+                {"model": {"default": "claude-opus-4", "provider": "anthropic"}},
+                "model",
+            )
+        assert result == "claude-opus-4"
+
+    def test_terminal_always_returns(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary(
+                {"terminal": {"backend": "docker"}}, "terminal"
+            )
+        assert result == "backend: docker"
+
+    def test_agent_always_returns(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary(
+                {"agent": {"max_turns": 120}}, "agent"
+            )
+        assert result == "max turns: 120"
+
+    def test_gateway_returns_none_without_tokens(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+        assert result is None
+
+    def test_gateway_lists_platforms(self):
+        def env_side(key):
+            if key == "TELEGRAM_BOT_TOKEN":
+                return "tok123"
+            if key == "DISCORD_BOT_TOKEN":
+                return "disc456"
+            return ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+        assert "Telegram" in result
+        assert "Discord" in result
+
+    def test_tools_returns_none_without_keys(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary({}, "tools")
+        assert result is None
+
+    def test_tools_lists_configured(self):
+        def env_side(key):
+            return "key" if key == "BROWSERBASE_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "tools")
+        assert "Browser" in result
+
+
+class TestSkipConfiguredSection:
+    """Test the _skip_configured_section helper."""
+
+    def test_returns_false_when_not_configured(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._skip_configured_section({}, "model", "Model")
+        assert result is False
+
+    def test_returns_true_when_user_skips(self):
+        def env_side(key):
+            return "sk-xxx" if key == "OPENROUTER_API_KEY" else ""
+
+        with (
+            patch.object(setup_mod, "get_env_value", side_effect=env_side),
+            patch.object(setup_mod, "prompt_yes_no", return_value=False),
+        ):
+            result = setup_mod._skip_configured_section(
+                {"model": "openai/gpt-4"}, "model", "Model"
+            )
+        assert result is True
+
+    def test_returns_false_when_user_wants_reconfig(self):
+        def env_side(key):
+            return "sk-xxx" if key == "OPENROUTER_API_KEY" else ""
+
+        with (
+            patch.object(setup_mod, "get_env_value", side_effect=env_side),
+            patch.object(setup_mod, "prompt_yes_no", return_value=True),
+        ):
+            result = setup_mod._skip_configured_section(
+                {"model": "openai/gpt-4"}, "model", "Model"
+            )
+        assert result is False
+
+
+class TestSetupWizardSkipsConfiguredSections:
+    """After migration, already-configured sections should offer skip."""
+
+    def test_sections_skipped_when_migration_imported_settings(self, tmp_path):
+        """When migration ran and API key exists, model section should be skippable.
+
+        Simulates the real flow: get_env_value returns "" during the is_existing
+        check (before migration), then returns a key after migration imported it.
+        """
+        args = _first_time_args()
+
+        # Track whether migration has "run" — after it does, API key is available
+        migration_done = {"value": False}
+
+        def env_side(key):
+            if migration_done["value"] and key == "OPENROUTER_API_KEY":
+                return "sk-xxx"
+            return ""
+
+        def fake_migration(hermes_home):
+            migration_done["value"] = True
+            return True
+
+        reloaded_config = {"model": "openai/gpt-4"}
+
+        with (
+            patch.object(setup_mod, "ensure_hermes_home"),
+            patch.object(
+                setup_mod, "load_config",
+                side_effect=[{}, reloaded_config],
+            ),
+            patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
+            patch.object(setup_mod, "get_env_value", side_effect=env_side),
+            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
+            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("builtins.input", return_value=""),
+            patch.object(setup_mod, "prompt_choice", return_value=1),
+            # Migration succeeds and flips the env_side flag
+            patch.object(
+                setup_mod, "_offer_openclaw_migration",
+                side_effect=fake_migration,
+            ),
+            # User says No to all reconfig prompts
+            patch.object(setup_mod, "prompt_yes_no", return_value=False),
+            patch.object(setup_mod, "setup_model_provider") as mock_model,
+            patch.object(setup_mod, "setup_terminal_backend") as mock_terminal,
+            patch.object(setup_mod, "setup_agent_settings") as mock_agent,
+            patch.object(setup_mod, "setup_gateway") as mock_gateway,
+            patch.object(setup_mod, "setup_tools") as mock_tools,
+            patch.object(setup_mod, "save_config"),
+            patch.object(setup_mod, "_print_setup_summary"),
+        ):
+            setup_mod.run_setup_wizard(args)
+
+        # Model has API key → skip offered, user said No → section NOT called
+        mock_model.assert_not_called()
+        # Terminal/agent always have a summary → skip offered, user said No
+        mock_terminal.assert_not_called()
+        mock_agent.assert_not_called()
+        # Gateway has no tokens (env_side returns "" for gateway keys) → section runs
+        mock_gateway.assert_called_once()
+        # Tools have no keys → section runs
+        mock_tools.assert_called_once()

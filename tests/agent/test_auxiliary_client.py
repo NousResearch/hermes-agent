@@ -1,21 +1,25 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
 import json
+import logging
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
 from agent.auxiliary_client import (
     get_text_auxiliary_client,
-    get_vision_auxiliary_client,
     get_available_vision_backends,
+    resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
+    call_llm,
+    async_call_llm,
     _read_codex_access_token,
-    _get_auxiliary_provider,
-    _resolve_forced_provider,
+    _get_provider_chain,
+    _is_payment_error,
+    _try_payment_fallback,
     _resolve_auto,
 )
 
@@ -27,12 +31,6 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
-        # Per-task provider/model/direct-endpoint overrides
-        "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
-        "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
-        "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
-        "AUXILIARY_WEB_EXTRACT_BASE_URL", "AUXILIARY_WEB_EXTRACT_API_KEY",
-        "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -72,12 +70,27 @@ class TestReadCodexAccessToken:
         result = _read_codex_access_token()
         assert result == "tok-123"
 
+    def test_pool_without_selected_entry_falls_back_to_auth_store(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        valid_jwt = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig"
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+             patch("hermes_cli.auth._read_codex_tokens", return_value={
+                 "tokens": {"access_token": valid_jwt, "refresh_token": "refresh"}
+             }):
+            result = _read_codex_access_token()
+
+        assert result == valid_jwt
+
     def test_missing_returns_none(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _read_codex_access_token()
         assert result is None
 
     def test_empty_token_returns_none(self, tmp_path, monkeypatch):
@@ -134,7 +147,8 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _read_codex_access_token()
         assert result is None, "Expired JWT should return None"
 
     def test_valid_jwt_returns_token(self, tmp_path, monkeypatch):
@@ -197,7 +211,8 @@ class TestAnthropicOAuthFlag:
     def test_api_key_no_oauth_flag(self, monkeypatch):
         """Regular API keys (sk-ant-api-*) should create client with is_oauth=False."""
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-testkey1234"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, model = _try_anthropic()
@@ -205,6 +220,49 @@ class TestAnthropicOAuthFlag:
             assert isinstance(client, AnthropicAuxiliaryClient)
             adapter = client.chat.completions
             assert adapter._is_oauth is False
+
+    def test_pool_entry_takes_priority_over_legacy_resolution(self):
+        class _Entry:
+            access_token = "sk-ant-oat01-pooled"
+            base_url = "https://api.anthropic.com"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", side_effect=AssertionError("legacy path should not run")),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build,
+        ):
+            from agent.auxiliary_client import _try_anthropic
+
+            client, model = _try_anthropic()
+
+        assert client is not None
+        assert model == "claude-haiku-4-5-20251001"
+        assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
+
+
+class TestTryCodex:
+    def test_pool_without_selected_entry_falls_back_to_auth_store(self):
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _try_codex
+
+            client, model = _try_codex()
+
+        assert client is not None
+        assert model == "gpt-5.2-codex"
+        assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
 class TestExpiredCodexFallback:
@@ -307,10 +365,11 @@ class TestExpiredCodexFallback:
 
 
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
-        """OAuth-style tokens should get is_oauth=True (token is not sk-ant-api-*)."""
+        """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
         # Mock resolve_anthropic_token to return an OAuth-style token
-        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat-hermes-token"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, model = _try_anthropic()
@@ -363,7 +422,7 @@ class TestExpiredCodexFallback:
 
     def test_claude_code_oauth_env_sets_flag(self, monkeypatch):
         """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token-test")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-cc-test-token")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
@@ -377,589 +436,697 @@ class TestExpiredCodexFallback:
 class TestExplicitProviderRouting:
     """Test explicit provider selection bypasses auto chain correctly."""
 
-    def test_explicit_anthropic_oauth(self, monkeypatch):
-        """provider='anthropic' + OAuth token should work with is_oauth=True."""
-        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-explicit-test")
-        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
-            mock_build.return_value = MagicMock()
-            client, model = resolve_provider_client("anthropic")
-            assert client is not None
-            # Verify OAuth flag propagated
-            adapter = client.chat.completions
-            assert adapter._is_oauth is True
-
     def test_explicit_anthropic_api_key(self, monkeypatch):
         """provider='anthropic' + regular API key should work with is_oauth=False."""
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api-regular-key"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             client, model = resolve_provider_client("anthropic")
             assert client is not None
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
-    def test_explicit_openrouter(self, monkeypatch):
-        """provider='openrouter' should use OPENROUTER_API_KEY."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-explicit")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            client, model = resolve_provider_client("openrouter")
-            assert client is not None
-
-    def test_explicit_kimi(self, monkeypatch):
-        """provider='kimi-coding' should use KIMI_API_KEY."""
-        monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            client, model = resolve_provider_client("kimi-coding")
-            assert client is not None
-
-    def test_explicit_minimax(self, monkeypatch):
-        """provider='minimax' should use MINIMAX_API_KEY."""
-        monkeypatch.setenv("MINIMAX_API_KEY", "mm-test-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            client, model = resolve_provider_client("minimax")
-            assert client is not None
-
-    def test_explicit_deepseek(self, monkeypatch):
-        """provider='deepseek' should use DEEPSEEK_API_KEY."""
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-test-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            client, model = resolve_provider_client("deepseek")
-            assert client is not None
-
-    def test_explicit_zai(self, monkeypatch):
-        """provider='zai' should use GLM_API_KEY."""
-        monkeypatch.setenv("GLM_API_KEY", "zai-test-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = MagicMock()
-            client, model = resolve_provider_client("zai")
-            assert client is not None
-
-    def test_explicit_unknown_returns_none(self, monkeypatch):
-        """Unknown provider should return None."""
-        client, model = resolve_provider_client("nonexistent-provider")
-        assert client is None
-
-
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
-    def test_openrouter_takes_priority(self, monkeypatch, codex_auth_dir):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client()
-        assert model == "google/gemini-3-flash-preview"
-        mock_openai.assert_called_once()
-        call_kwargs = mock_openai.call_args
-        assert call_kwargs.kwargs["api_key"] == "or-key"
+    def test_codex_pool_entry_takes_priority_over_auth_store(self):
+        class _Entry:
+            access_token = "pooled-codex-token"
+            base_url = "https://chatgpt.com/backend-api/codex"
 
-    def test_nous_takes_priority_over_codex(self, monkeypatch, codex_auth_dir):
-        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_nous.return_value = {"access_token": "nous-tok"}
-            client, model = get_text_auxiliary_client()
-        assert model == "gemini-3-flash"
+        class _Pool:
+            def has_credentials(self):
+                return True
 
-    def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
-        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
-        # Override the autouse monkeypatch for codex
-        monkeypatch.setattr(
-            "agent.auxiliary_client._read_codex_access_token",
-            lambda: "codex-test-token-abc123",
-        )
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client()
-        assert model == "my-local-model"
-        call_kwargs = mock_openai.call_args
-        assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
+            def select(self):
+                return _Entry()
 
-    def test_task_direct_endpoint_override(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_API_KEY", "task-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("web_extract")
-        assert model == "task-model"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
-        assert mock_openai.call_args.kwargs["api_key"] == "task-key"
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI"),
+            patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
+        ):
+            from agent.auxiliary_client import _try_codex
 
-    def test_task_direct_endpoint_without_openai_key_does_not_fall_back(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("web_extract")
-        assert client is None
-        assert model is None
-        mock_openai.assert_not_called()
+            client, model = _try_codex()
 
-    def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
-        config = {
-            "model": {
-                "provider": "custom",
-                "base_url": "http://localhost:1234/v1",
-                "default": "my-local-model",
-            }
-        }
-        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
-        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+        from agent.auxiliary_client import CodexAuxiliaryClient
 
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.2-codex"
+
+# ── Payment / credit exhaustion fallback ─────────────────────────────────
+
+
+class TestIsPaymentError:
+    """_is_payment_error detects 402 and credit-related errors."""
+
+    def test_402_status_code(self):
+        exc = Exception("Payment Required")
+        exc.status_code = 402
+        assert _is_payment_error(exc) is True
+
+    def test_402_with_credits_message(self):
+        exc = Exception("You requested up to 65535 tokens, but can only afford 8029")
+        exc.status_code = 402
+        assert _is_payment_error(exc) is True
+
+    def test_429_with_credits_message(self):
+        exc = Exception("insufficient credits remaining")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_429_without_credits_message_is_not_payment(self):
+        """Normal rate limits should NOT be treated as payment errors."""
+        exc = Exception("Rate limit exceeded, try again in 2 seconds")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+    def test_generic_500_is_not_payment(self):
+        exc = Exception("Internal server error")
+        exc.status_code = 500
+        assert _is_payment_error(exc) is False
+
+    def test_no_status_code_with_billing_message(self):
+        exc = Exception("billing: payment required for this request")
+        assert _is_payment_error(exc) is True
+
+    def test_no_status_code_no_message(self):
+        exc = Exception("connection reset")
+        assert _is_payment_error(exc) is False
+
+
+class TestGetProviderChain:
+    """_get_provider_chain() resolves functions at call time (testable)."""
+
+    def test_returns_five_entries(self):
+        chain = _get_provider_chain()
+        assert len(chain) == 5
+        labels = [label for label, _ in chain]
+        assert labels == ["openrouter", "nous", "local/custom", "openai-codex", "api-key"]
+
+    def test_picks_up_patched_functions(self):
+        """Patches on _try_* functions must be visible in the chain."""
+        sentinel = lambda: ("patched", "model")
+        with patch("agent.auxiliary_client._try_openrouter", sentinel):
+            chain = _get_provider_chain()
+        assert chain[0] == ("openrouter", sentinel)
+
+
+class TestTryPaymentFallback:
+    """_try_payment_fallback skips the failed provider and tries alternatives."""
+
+    def test_skips_failed_provider(self):
+        mock_client = MagicMock()
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
+            client, model, label = _try_payment_fallback("openrouter", task="compression")
+        assert client is mock_client
+        assert model == "nous-model"
+        assert label == "nous"
+
+    def test_returns_none_when_no_fallback(self):
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client()
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
+            client, model, label = _try_payment_fallback("openrouter")
+        assert client is None
+        assert label == ""
 
-        assert client is not None
-        assert model == "my-local-model"
-        call_kwargs = mock_openai.call_args
-        assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
+    def test_codex_alias_maps_to_chain_label(self):
+        """'codex' should map to 'openai-codex' in the skip set."""
+        mock_client = MagicMock()
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(mock_client, "or-model")), \
+             patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"):
+            client, model, label = _try_payment_fallback("openai-codex", task="vision")
+        assert client is mock_client
+        assert label == "openrouter"
 
-    def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client()
+    def test_skips_to_codex_when_or_and_nous_fail(self):
+        mock_codex = MagicMock()
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_codex", return_value=(mock_codex, "gpt-5.2-codex")), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
+            client, model, label = _try_payment_fallback("openrouter")
+        assert client is mock_codex
         assert model == "gpt-5.2-codex"
-        # Returns a CodexAuxiliaryClient wrapper, not a raw OpenAI client
-        from agent.auxiliary_client import CodexAuxiliaryClient
-        assert isinstance(client, CodexAuxiliaryClient)
-
-    def test_returns_none_when_nothing_available(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
-            client, model = get_text_auxiliary_client()
-        assert client is None
-        assert model is None
+        assert label == "openai-codex"
 
 
-class TestVisionClientFallback:
-    """Vision client auto mode resolves known-good multimodal backends."""
+class TestCallLlmPaymentFallback:
+    """call_llm() retries with a different provider on 402 / payment errors."""
 
-    def test_vision_returns_none_without_any_credentials(self):
-        with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.auxiliary_client._try_anthropic", return_value=(None, None)),
-        ):
-            client, model = get_vision_auxiliary_client()
-        assert client is None
-        assert model is None
+    def _make_402_error(self, msg="Payment Required: insufficient credits"):
+        exc = Exception(msg)
+        exc.status_code = 402
+        return exc
 
-    def test_vision_auto_includes_anthropic_when_configured(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
-        with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
-        ):
-            backends = get_available_vision_backends()
-
-        assert "anthropic" in backends
-
-    def test_resolve_provider_client_returns_native_anthropic_wrapper(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
-        with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
-        ):
-            client, model = resolve_provider_client("anthropic")
-
-        assert client is not None
-        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
-
-    def test_resolve_provider_client_copilot_uses_runtime_credentials(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-
-        with (
-            patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
-                return_value={
-                    "provider": "copilot",
-                    "api_key": "gh-cli-token",
-                    "base_url": "https://api.githubcopilot.com",
-                    "source": "gh auth token",
-                },
-            ),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
-        ):
-            client, model = resolve_provider_client("copilot", model="gpt-5.4")
-
-        assert client is not None
-        assert model == "gpt-5.4"
-        call_kwargs = mock_openai.call_args.kwargs
-        assert call_kwargs["api_key"] == "gh-cli-token"
-        assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
-        assert call_kwargs["default_headers"]["Editor-Version"]
-
-    def test_vision_auto_uses_anthropic_when_no_higher_priority_backend(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
-        with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
-        ):
-            client, model = get_vision_auxiliary_client()
-
-        assert client is not None
-        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
-
-    def test_selected_anthropic_provider_is_preferred_for_vision_auto(self, monkeypatch):
+    def test_non_payment_error_not_caught(self, monkeypatch):
+        """Non-payment/non-connection errors (500) should NOT trigger fallback."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
 
-        def fake_load_config():
-            return {"model": {"provider": "anthropic", "default": "claude-sonnet-4-6"}}
+        primary_client = MagicMock()
+        server_err = Exception("Internal Server Error")
+        server_err.status_code = 500
+        primary_client.chat.completions.create.side_effect = server_err
 
-        with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
-            patch("hermes_cli.config.load_config", fake_load_config),
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)):
+            with pytest.raises(Exception, match="Internal Server Error"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+# ---------------------------------------------------------------------------
+# Gate: _resolve_api_key_provider must skip anthropic when not configured
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
+    """_resolve_api_key_provider must not try anthropic when user never configured it."""
+    from collections import OrderedDict
+    from hermes_cli.auth import ProviderConfig
+
+    # Build a minimal registry with only "anthropic" so the loop is guaranteed
+    # to reach it without being short-circuited by earlier providers.
+    fake_registry = OrderedDict({
+        "anthropic": ProviderConfig(
+            id="anthropic",
+            name="Anthropic",
+            auth_type="api_key",
+            inference_base_url="https://api.anthropic.com",
+            api_key_env_vars=("ANTHROPIC_API_KEY",),
+        ),
+    })
+
+    called = []
+
+    def mock_try_anthropic():
+        called.append("anthropic")
+        return None, None
+
+    monkeypatch.setattr("agent.auxiliary_client._try_anthropic", mock_try_anthropic)
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: False,
+    )
+
+    from agent.auxiliary_client import _resolve_api_key_provider
+    _resolve_api_key_provider()
+
+    assert "anthropic" not in called, \
+        "_try_anthropic() should not be called when anthropic is not explicitly configured"
+
+
+# ---------------------------------------------------------------------------
+# model="default" elimination (#7512)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _try_payment_fallback reason parameter (#7512 bug 3)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _is_connection_error coverage
+# ---------------------------------------------------------------------------
+
+
+class TestIsConnectionError:
+    """Tests for _is_connection_error detection."""
+
+    def test_connection_refused(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Connection refused")
+        assert _is_connection_error(err) is True
+
+    def test_timeout(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Request timed out.")
+        assert _is_connection_error(err) is True
+
+    def test_dns_failure(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Name or service not known")
+        assert _is_connection_error(err) is True
+
+    def test_normal_api_error_not_connection(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Bad Request: invalid model")
+        err.status_code = 400
+        assert _is_connection_error(err) is False
+
+    def test_500_not_connection(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Internal Server Error")
+        err.status_code = 500
+        assert _is_connection_error(err) is False
+
+
+class TestKimiForCodingTemperature:
+    """Moonshot kimi-for-coding models require fixed temperatures.
+
+    k2.5 / k2-turbo-preview / k2-0905-preview → 0.6 (non-thinking lock).
+    k2-thinking / k2-thinking-turbo → 1.0 (thinking lock).
+    kimi-k2-instruct* and every other model preserve the caller's temperature.
+    """
+
+    def test_build_call_kwargs_forces_fixed_temperature(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-for-coding",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+        )
+
+        assert kwargs["temperature"] == 0.6
+
+    def test_build_call_kwargs_injects_temperature_when_missing(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-for-coding",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=None,
+        )
+
+        assert kwargs["temperature"] == 0.6
+
+    def test_auto_routed_kimi_for_coding_sync_call_uses_fixed_temperature(self):
+        client = MagicMock()
+        client.base_url = "https://api.kimi.com/coding/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "kimi-for-coding"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "kimi-for-coding", None, None, None),
         ):
-            client, model = get_vision_auxiliary_client()
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.1,
+            )
 
-        assert client is not None
-        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "kimi-for-coding"
+        assert kwargs["temperature"] == 0.6
 
-    def test_vision_auto_includes_codex(self, codex_auth_dir):
-        """Codex supports vision (gpt-5.3-codex), so auto mode should use it."""
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_vision_auxiliary_client()
-        from agent.auxiliary_client import CodexAuxiliaryClient
-        assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.2-codex"
+    @pytest.mark.asyncio
+    async def test_auto_routed_kimi_for_coding_async_call_uses_fixed_temperature(self):
+        client = MagicMock()
+        client.base_url = "https://api.kimi.com/coding/v1"
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
 
-    def test_vision_auto_falls_back_to_custom_endpoint(self, monkeypatch):
-        """Custom endpoint is used as fallback in vision auto mode.
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "kimi-for-coding"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "kimi-for-coding", None, None, None),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.1,
+            )
 
-        Many local models (Qwen-VL, LLaVA, etc.) support vision.
-        When no OpenRouter/Nous/Codex is available, try the custom endpoint.
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "kimi-for-coding"
+        assert kwargs["temperature"] == 0.6
+
+    @pytest.mark.parametrize(
+        "model,expected",
+        [
+            ("kimi-k2.5", 0.6),
+            ("kimi-k2-turbo-preview", 0.6),
+            ("kimi-k2-0905-preview", 0.6),
+            ("kimi-k2-thinking", 1.0),
+            ("kimi-k2-thinking-turbo", 1.0),
+            ("moonshotai/kimi-k2.5", 0.6),
+            ("moonshotai/Kimi-K2-Thinking", 1.0),
+        ],
+    )
+    def test_kimi_k2_family_temperature_override(self, model, expected):
+        """Moonshot kimi-k2.* models only accept fixed temperatures.
+
+        Non-thinking models → 0.6, thinking-mode models → 1.0.
         """
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
-        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_vision_auxiliary_client()
-        assert client is not None  # Custom endpoint picked up as fallback
+        from agent.auxiliary_client import _build_call_kwargs
 
-    def test_vision_direct_endpoint_override(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://localhost:4567/v1")
-        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "vision-key")
-        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_vision_auxiliary_client()
-        assert model == "vision-model"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:4567/v1"
-        assert mock_openai.call_args.kwargs["api_key"] == "vision-key"
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+        )
 
-    def test_vision_direct_endpoint_requires_openai_api_key(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://localhost:4567/v1")
-        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_vision_auxiliary_client()
-        assert client is None
-        assert model is None
-        mock_openai.assert_not_called()
+        assert kwargs["temperature"] == expected
 
-    def test_vision_uses_openrouter_when_available(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_vision_auxiliary_client()
-        assert model == "google/gemini-3-flash-preview"
-        assert client is not None
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-sonnet-4-6",
+            "gpt-5.4",
+            # kimi-k2-instruct is the non-coding K2 family — temperature is
+            # variable (recommended 0.6 but not enforced).  Must not clamp.
+            "kimi-k2-instruct",
+            "moonshotai/Kimi-K2-Instruct",
+            "moonshotai/Kimi-K2-Instruct-0905",
+            "kimi-k2-instruct-0905",
+            # Hypothetical future kimi name not in the whitelist.
+            "kimi-k2-experimental",
+        ],
+    )
+    def test_non_restricted_model_preserves_temperature(self, model):
+        from agent.auxiliary_client import _build_call_kwargs
 
-    def test_vision_uses_nous_when_available(self, monkeypatch):
-        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
-             patch("agent.auxiliary_client.OpenAI"):
-            mock_nous.return_value = {"access_token": "nous-tok"}
-            client, model = get_vision_auxiliary_client()
-        assert model == "gemini-3-flash"
-        assert client is not None
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+        )
 
-    def test_vision_forced_main_uses_custom_endpoint(self, monkeypatch):
-        """When explicitly forced to 'main', vision CAN use custom endpoint."""
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
-        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_vision_auxiliary_client()
-        assert client is not None
-        assert model == "my-local-model"
+        assert kwargs["temperature"] == 0.3
 
-    def test_vision_forced_main_returns_none_without_creds(self, monkeypatch):
-        """Forced main with no credentials still returns None."""
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
-            client, model = get_vision_auxiliary_client()
-        assert client is None
-        assert model is None
+    # ── Endpoint-aware overrides: api.moonshot.ai vs api.kimi.com/coding ──
+    # The public Moonshot chat endpoint and the Coding Plan endpoint enforce
+    # different temperature contracts for the same model name.  `kimi-k2.5` on
+    # api.moonshot.ai rejects 0.6 with HTTP 400 "only 1 is allowed for this
+    # model", while the Coding Plan docs mandate 0.6.  Override must pick the
+    # right value per base_url.
 
-    def test_vision_forced_codex(self, monkeypatch, codex_auth_dir):
-        """When forced to 'codex', vision uses Codex OAuth."""
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "codex")
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_vision_auxiliary_client()
-        from agent.auxiliary_client import CodexAuxiliaryClient
-        assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.2-codex"
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.moonshot.ai/v1",
+            "https://api.moonshot.ai/v1/",
+            "https://API.MOONSHOT.AI/v1",
+            "https://api.moonshot.cn/v1",
+            "https://api.moonshot.cn/v1/",
+        ],
+    )
+    def test_kimi_k2_5_public_api_forces_temperature_1(self, base_url):
+        """kimi-k2.5 on the public Moonshot API only accepts temperature=1."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+            base_url=base_url,
+        )
+
+        assert kwargs["temperature"] == 1.0
+
+    def test_kimi_k2_5_coding_plan_keeps_temperature_0_6(self):
+        """kimi-k2.5 on api.kimi.com/coding keeps the Coding Plan's 0.6 lock."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+            base_url="https://api.kimi.com/coding/v1",
+        )
+
+        assert kwargs["temperature"] == 0.6
+
+    def test_kimi_k2_5_no_base_url_falls_back_to_coding_plan_lock(self):
+        """Without a base_url hint, the Coding Plan default (0.6) applies.
+
+        Preserves PR #12144 backward compatibility for callers that don't thread
+        the client's base_url through.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+        )
+
+        assert kwargs["temperature"] == 0.6
+
+    @pytest.mark.parametrize(
+        "model,expected",
+        [
+            # Only kimi-k2.5 diverges on api.moonshot.ai; the rest keep the
+            # Coding Plan lock (empirically verified against Moonshot in April
+            # 2026: turbo-preview accepts 0.6, thinking-turbo accepts 1.0).
+            ("kimi-k2-turbo-preview", 0.6),
+            ("kimi-k2-0905-preview", 0.6),
+            ("kimi-k2-thinking", 1.0),
+            ("kimi-k2-thinking-turbo", 1.0),
+            ("moonshotai/kimi-k2-thinking-turbo", 1.0),
+        ],
+    )
+    def test_other_kimi_k2_family_unchanged_on_public_api(self, model, expected):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+            base_url="https://api.moonshot.ai/v1",
+        )
+
+        assert kwargs["temperature"] == expected
 
 
-class TestGetAuxiliaryProvider:
-    """Tests for _get_auxiliary_provider env var resolution."""
-
-    def test_no_task_returns_auto(self):
-        assert _get_auxiliary_provider() == "auto"
-        assert _get_auxiliary_provider("") == "auto"
-
-    def test_auxiliary_prefix_takes_priority(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "openrouter")
-        assert _get_auxiliary_provider("vision") == "openrouter"
-
-    def test_context_prefix_fallback(self, monkeypatch):
-        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
-        assert _get_auxiliary_provider("compression") == "nous"
-
-    def test_auxiliary_prefix_over_context_prefix(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_COMPRESSION_PROVIDER", "openrouter")
-        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
-        assert _get_auxiliary_provider("compression") == "openrouter"
-
-    def test_auto_value_treated_as_auto(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "auto")
-        assert _get_auxiliary_provider("vision") == "auto"
-
-    def test_whitespace_stripped(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "  openrouter  ")
-        assert _get_auxiliary_provider("vision") == "openrouter"
-
-    def test_case_insensitive(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "OpenRouter")
-        assert _get_auxiliary_provider("vision") == "openrouter"
-
-    def test_main_provider(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "main")
-        assert _get_auxiliary_provider("web_extract") == "main"
+# ---------------------------------------------------------------------------
+# async_call_llm payment / connection fallback (#7512 bug 2)
+# ---------------------------------------------------------------------------
 
 
-class TestResolveForcedProvider:
-    """Tests for _resolve_forced_provider with explicit provider selection."""
+class TestStaleBaseUrlWarning:
+    """_resolve_auto() warns when OPENAI_BASE_URL conflicts with config provider (#5161)."""
 
-    def test_forced_openrouter(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = _resolve_forced_provider("openrouter")
-        assert model == "google/gemini-3-flash-preview"
-        assert client is not None
+    def test_warns_when_openai_base_url_set_with_named_provider(self, monkeypatch, caplog):
+        """Warning fires when OPENAI_BASE_URL is set but provider is a named provider."""
+        import agent.auxiliary_client as mod
+        # Reset the module-level flag so the warning fires
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
 
-    def test_forced_openrouter_no_key(self, monkeypatch):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
-            client, model = _resolve_forced_provider("openrouter")
-        assert client is None
-        assert model is None
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
 
-    def test_forced_nous(self, monkeypatch):
-        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
-             patch("agent.auxiliary_client.OpenAI"):
-            mock_nous.return_value = {"access_token": "nous-tok"}
-            client, model = _resolve_forced_provider("nous")
-        assert model == "gemini-3-flash"
-        assert client is not None
+        assert any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Expected a warning about stale OPENAI_BASE_URL"
+        assert mod._stale_base_url_warned is True
 
-    def test_forced_nous_not_configured(self, monkeypatch):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
-            client, model = _resolve_forced_provider("nous")
-        assert client is None
-        assert model is None
 
-    def test_forced_main_uses_custom(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
-        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = _resolve_forced_provider("main")
-        assert model == "my-local-model"
+class TestAuxiliaryTaskExtraBody:
+    def test_sync_call_merges_task_extra_body_from_config(self):
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
 
-    def test_forced_main_uses_config_saved_custom_endpoint(self, monkeypatch):
         config = {
-            "model": {
-                "provider": "custom",
-                "base_url": "http://local:8080/v1",
-                "default": "my-local-model",
+            "auxiliary": {
+                "session_search": {
+                    "extra_body": {
+                        "enable_thinking": False,
+                        "reasoning": {"effort": "none"},
+                    }
+                }
             }
         }
-        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
-        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = _resolve_forced_provider("main")
-        assert client is not None
-        assert model == "my-local-model"
-        call_kwargs = mock_openai.call_args
-        assert call_kwargs.kwargs["base_url"] == "http://local:8080/v1"
 
-    def test_forced_main_skips_openrouter_nous(self, monkeypatch):
-        """Even if OpenRouter key is set, 'main' skips it."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
-        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = _resolve_forced_provider("main")
-        # Should use custom endpoint, not OpenRouter
-        assert model == "my-local-model"
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                extra_body={"metadata": {"source": "test"}},
+            )
 
-    def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI"):
-            client, model = _resolve_forced_provider("main")
-        from agent.auxiliary_client import CodexAuxiliaryClient
-        assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.2-codex"
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["enable_thinking"] is False
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "none"}
+        assert kwargs["extra_body"]["metadata"] == {"source": "test"}
 
-    def test_forced_codex(self, codex_auth_dir, monkeypatch):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI"):
-            client, model = _resolve_forced_provider("codex")
-        from agent.auxiliary_client import CodexAuxiliaryClient
-        assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.2-codex"
+    @pytest.mark.asyncio
+    async def test_async_call_explicit_extra_body_overrides_task_config(self):
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
 
-    def test_forced_codex_no_token(self, monkeypatch):
-        with patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
-            client, model = _resolve_forced_provider("codex")
-        assert client is None
-        assert model is None
+        config = {
+            "auxiliary": {
+                "session_search": {
+                    "extra_body": {"enable_thinking": False}
+                }
+            }
+        }
 
-    def test_forced_unknown_returns_none(self, monkeypatch):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
-            client, model = _resolve_forced_provider("invalid-provider")
-        assert client is None
-        assert model is None
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                extra_body={"enable_thinking": True},
+            )
 
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["enable_thinking"] is True
 
-class TestTaskSpecificOverrides:
-    """Integration tests for per-task provider routing via get_text_auxiliary_client(task=...)."""
-
-    def test_text_with_vision_provider_override(self, monkeypatch):
-        """AUXILIARY_VISION_PROVIDER should not affect text tasks."""
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "nous")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_text_auxiliary_client()  # no task → auto
-        assert model == "google/gemini-3-flash-preview"  # OpenRouter, not Nous
-
-    def test_compression_task_reads_context_prefix(self, monkeypatch):
-        """Compression task should check CONTEXT_COMPRESSION_PROVIDER env var."""
-        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")  # would win in auto
-        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
-             patch("agent.auxiliary_client.OpenAI"):
-            mock_nous.return_value = {"access_token": "***"}
-            client, model = get_text_auxiliary_client("compression")
-        # Config-first: model comes from config.yaml summary_model default,
-        # but provider is forced to Nous via env var
-        assert client is not None
-
-    def test_web_extract_task_override(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "openrouter")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_text_auxiliary_client("web_extract")
-        assert model == "google/gemini-3-flash-preview"
-
-    def test_task_direct_endpoint_from_config(self, monkeypatch, tmp_path):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "config.yaml").write_text(
-            """auxiliary:
-  web_extract:
-    base_url: http://localhost:3456/v1
-    api_key: config-key
-    model: config-model
-"""
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("web_extract")
-        assert model == "config-model"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:3456/v1"
-        assert mock_openai.call_args.kwargs["api_key"] == "config-key"
-
-    def test_task_without_override_uses_auto(self, monkeypatch):
-        """A task with no provider env var falls through to auto chain."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_text_auxiliary_client("compression")
-        assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
-
-    def test_compression_summary_base_url_from_config(self, monkeypatch, tmp_path):
-        """compression.summary_base_url should produce a custom-endpoint client."""
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "config.yaml").write_text(
-            """compression:
-  summary_provider: custom
-  summary_model: glm-4.7
-  summary_base_url: https://api.z.ai/api/coding/paas/v4
-"""
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        # Custom endpoints need an API key to build the client
+    def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
+        """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("compression")
-        assert model == "glm-4.7"
-        assert mock_openai.call_args.kwargs["base_url"] == "https://api.z.ai/api/coding/paas/v4"
 
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="llama3"), \
+             patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("http://localhost:11434/v1", "test-key", None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai, \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            mock_openai.return_value = MagicMock()
+            _resolve_auto()
 
-class TestAuxiliaryMaxTokensParam:
-    def test_codex_fallback_uses_max_tokens(self, monkeypatch):
-        """Codex adapter translates max_tokens internally, so we return max_tokens."""
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value="tok"):
-            result = auxiliary_max_tokens_param(1024)
-        assert result == {"max_tokens": 1024}
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when provider is 'custom'"
 
-    def test_openrouter_uses_max_tokens(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        result = auxiliary_max_tokens_param(1024)
-        assert result == {"max_tokens": 1024}
+    def test_no_warning_when_provider_is_named_custom(self, monkeypatch, caplog):
+        """No warning when the provider is 'custom:myname' — base_url comes from config."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    def test_no_provider_uses_max_tokens(self):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
-            result = auxiliary_max_tokens_param(1024)
-        assert result == {"max_tokens": 1024}
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom:ollama-local"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="llama3"), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(MagicMock(), "llama3")), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when provider is 'custom:*'"
+
+    def test_no_warning_when_openai_base_url_not_set(self, monkeypatch, caplog):
+        """No warning when OPENAI_BASE_URL is absent."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when OPENAI_BASE_URL is not set"
+
+# ---------------------------------------------------------------------------
+# Anthropic-compatible image block conversion
+# ---------------------------------------------------------------------------
+
+class TestAnthropicCompatImageConversion:
+    """Tests for _is_anthropic_compat_endpoint and _convert_openai_images_to_anthropic."""
+
+    def test_known_providers_detected(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert _is_anthropic_compat_endpoint("minimax", "")
+        assert _is_anthropic_compat_endpoint("minimax-cn", "")
+
+    def test_openrouter_not_detected(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert not _is_anthropic_compat_endpoint("openrouter", "")
+        assert not _is_anthropic_compat_endpoint("anthropic", "")
+
+    def test_url_based_detection(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert _is_anthropic_compat_endpoint("custom", "https://api.minimax.io/anthropic")
+        assert _is_anthropic_compat_endpoint("custom", "https://example.com/anthropic/v1")
+        assert not _is_anthropic_compat_endpoint("custom", "https://api.openai.com/v1")
+
+    def test_base64_image_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR="}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        img_block = result[0]["content"][1]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "base64"
+        assert img_block["source"]["media_type"] == "image/png"
+        assert img_block["source"]["data"] == "iVBOR="
+
+    def test_url_image_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        img_block = result[0]["content"][0]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "url"
+        assert img_block["source"]["url"] == "https://example.com/img.jpg"
+
+    def test_text_only_messages_unchanged(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{"role": "user", "content": "Hello"}]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0] is messages[0]  # same object, not copied
+
+    def test_jpeg_media_type_parsed(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/="}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"

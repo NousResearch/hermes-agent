@@ -45,7 +45,7 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
 
-    for name in ("telegram", "telegram.ext", "telegram.constants"):
+    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)
 
 
@@ -236,15 +236,16 @@ class TestDocumentDownloadBlock:
         assert "Please summarize" in event.text
 
     @pytest.mark.asyncio
-    async def test_unsupported_type_rejected(self, adapter):
+    async def test_zip_document_cached(self, adapter):
+        """A .zip upload should be cached as a supported document."""
         doc = _make_document(file_name="archive.zip", mime_type="application/zip", file_size=100)
         msg = _make_message(document=doc)
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        assert "Unsupported document type" in event.text
-        assert ".zip" in event.text
+        assert event.media_urls and event.media_urls[0].endswith("archive.zip")
+        assert event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):
@@ -483,6 +484,32 @@ class TestSendDocument:
         connected_adapter._bot.send_document.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_send_document_workspace_path_has_docker_hint(self, connected_adapter):
+        """Container-local-looking paths get a more actionable Docker hint."""
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path="/workspace/report.txt",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
+        connected_adapter._bot.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_document_outputs_path_has_docker_hint(self, connected_adapter):
+        """Legacy /outputs paths also get the Docker hint."""
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path="/outputs/report.txt",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
+        connected_adapter._bot.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_send_document_not_connected(self, adapter):
         """If bot is None, returns not connected error."""
         result = await adapter.send_document(
@@ -663,6 +690,17 @@ class TestSendVideo:
 
         assert result.success is False
         assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_video_workspace_path_has_docker_hint(self, connected_adapter):
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path="/workspace/video.mp4",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_send_video_not_connected(self, adapter):

@@ -1,6 +1,9 @@
 """Tests for acp_adapter.session — SessionManager and SessionState."""
 
+import contextlib
+import io
 import json
+import time
 from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
@@ -98,15 +101,23 @@ class TestListAndCleanup:
     def test_list_sessions_returns_created(self, manager):
         s1 = manager.create_session(cwd="/a")
         s2 = manager.create_session(cwd="/b")
+        s1.history.append({"role": "user", "content": "hello from a"})
+        s2.history.append({"role": "user", "content": "hello from b"})
         listing = manager.list_sessions()
         ids = {s["session_id"] for s in listing}
         assert s1.session_id in ids
         assert s2.session_id in ids
         assert len(listing) == 2
 
+    def test_list_sessions_hides_empty_threads(self, manager):
+        manager.create_session(cwd="/empty")
+        assert manager.list_sessions() == []
+
     def test_cleanup_clears_all(self, manager):
-        manager.create_session()
-        manager.create_session()
+        s1 = manager.create_session()
+        s2 = manager.create_session()
+        s1.history.append({"role": "user", "content": "one"})
+        s2.history.append({"role": "user", "content": "two"})
         assert len(manager.list_sessions()) == 2
         manager.cleanup()
         assert manager.list_sessions() == []
@@ -192,6 +203,8 @@ class TestPersistence:
     def test_list_sessions_includes_db_only(self, manager):
         """Sessions only in DB (not in memory) appear in list_sessions."""
         state = manager.create_session(cwd="/db-only")
+        state.history.append({"role": "user", "content": "database only thread"})
+        manager.save_session(state.session_id)
         sid = state.session_id
 
         # Drop from memory.
@@ -201,6 +214,53 @@ class TestPersistence:
         listing = manager.list_sessions()
         ids = {s["session_id"] for s in listing}
         assert sid in ids
+
+    def test_list_sessions_filters_by_cwd(self, manager):
+        keep = manager.create_session(cwd="/keep")
+        drop = manager.create_session(cwd="/drop")
+        keep.history.append({"role": "user", "content": "keep me"})
+        drop.history.append({"role": "user", "content": "drop me"})
+
+        listing = manager.list_sessions(cwd="/keep")
+        ids = {s["session_id"] for s in listing}
+        assert keep.session_id in ids
+        assert drop.session_id not in ids
+
+    def test_list_sessions_matches_windows_and_wsl_paths(self, manager):
+        state = manager.create_session(cwd="/mnt/e/Projects/AI/browser-link-3")
+        state.history.append({"role": "user", "content": "same project from WSL"})
+
+        listing = manager.list_sessions(cwd=r"E:\Projects\AI\browser-link-3")
+        ids = {s["session_id"] for s in listing}
+        assert state.session_id in ids
+
+    def test_list_sessions_prefers_title_then_preview(self, manager):
+        state = manager.create_session(cwd="/named")
+        state.history.append({"role": "user", "content": "Investigate broken ACP history in Zed"})
+        manager.save_session(state.session_id)
+        db = manager._get_db()
+        db.set_session_title(state.session_id, "Fix Zed ACP history")
+
+        listing = manager.list_sessions(cwd="/named")
+        assert listing[0]["title"] == "Fix Zed ACP history"
+
+        db.set_session_title(state.session_id, "")
+        listing = manager.list_sessions(cwd="/named")
+        assert listing[0]["title"].startswith("Investigate broken ACP history")
+
+    def test_list_sessions_sorted_by_most_recent_activity(self, manager):
+        older = manager.create_session(cwd="/ordered")
+        older.history.append({"role": "user", "content": "older"})
+        manager.save_session(older.session_id)
+        time.sleep(0.02)
+        newer = manager.create_session(cwd="/ordered")
+        newer.history.append({"role": "user", "content": "newer"})
+        manager.save_session(newer.session_id)
+
+        listing = manager.list_sessions(cwd="/ordered")
+        assert [item["session_id"] for item in listing[:2]] == [newer.session_id, older.session_id]
+        assert listing[0]["updated_at"]
+        assert listing[1]["updated_at"]
 
     def test_fork_restores_source_from_db(self, manager):
         """Forking a session that is only in DB should work."""
@@ -329,3 +389,40 @@ class TestPersistence:
         assert restored is not None
         assert restored.agent.provider == "anthropic"
         assert restored.agent.base_url == "https://anthropic.example/v1"
+
+    def test_acp_agents_route_human_output_to_stderr(self, tmp_path, monkeypatch):
+        """ACP agents must keep stdout clean for JSON-RPC stdio transport."""
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "test-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(model=kwargs.get("model"), _print_fn=None)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(cwd="/work")
+
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+            state.agent._print_fn("ACP noise")
+
+        assert stdout_buf.getvalue() == ""
+        assert stderr_buf.getvalue() == "ACP noise\n"

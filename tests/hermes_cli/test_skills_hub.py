@@ -1,9 +1,11 @@
 from io import StringIO
+from unittest.mock import patch
 
 import pytest
 from rich.console import Console
 
-from hermes_cli.skills_hub import do_check, do_list, do_update, handle_skills_slash
+from cli import ChatConsole
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -177,3 +179,72 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
+    results = [type("R", (), {
+        "name": "kubernetes",
+        "description": "Cluster orchestration",
+        "source": "skills.sh",
+        "trust_level": "community",
+        "identifier": "skills-sh/example/kubernetes",
+    })()]
+
+    with patch("tools.skills_hub.unified_search", return_value=results), \
+         patch("tools.skills_hub.create_source_router", return_value={}), \
+         patch("tools.skills_hub.GitHubAuth"):
+        handle_skills_slash("/skills search kubernetes", console=ChatConsole())
+
+
+def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    canonical_identifier = "skills-sh/anthropics/skills/frontend-design"
+
+    class _ResolvedSource:
+        def inspect(self, identifier):
+            return type("Meta", (), {
+                "extra": {},
+                "identifier": canonical_identifier,
+            })()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "frontend-design",
+                "files": {"SKILL.md": "# Frontend Design"},
+                "source": "skills.sh",
+                "identifier": canonical_identifier,
+                "trust_level": "trusted",
+                "metadata": {},
+            })()
+
+    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "frontend-design"
+    q_path.mkdir(parents=True)
+    (q_path / "SKILL.md").write_text("# Frontend Design")
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community"):
+        scanned["source"] = source
+        return guard.ScanResult(
+            skill_name="frontend-design",
+            source=source,
+            trust_level="trusted",
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_ResolvedSource()])
+    monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (False, "stop after scan"))
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_install("skils-sh/anthropics/skills/frontend-design", console=console, skip_confirm=True)
+
+    assert scanned["source"] == canonical_identifier

@@ -9,7 +9,9 @@ from hermes_cli.models import (
     fetch_api_models,
     github_model_reasoning_efforts,
     normalize_copilot_model_id,
+    normalize_opencode_model_id,
     normalize_provider,
+    opencode_model_api_mode,
     parse_model_input,
     probe_api_models,
     provider_label,
@@ -122,7 +124,14 @@ class TestParseModelInput:
 
 class TestCuratedModelsForProvider:
     def test_openrouter_returns_curated_list(self):
-        models = curated_models_for_provider("openrouter")
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[
+                ("anthropic/claude-opus-4.6", "recommended"),
+                ("qwen/qwen3.6-plus", ""),
+            ],
+        ):
+            models = curated_models_for_provider("openrouter")
         assert len(models) > 0
         assert any("claude" in m[0] for m in models)
 
@@ -154,7 +163,7 @@ class TestNormalizeProvider:
 class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
-        assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"
@@ -167,7 +176,14 @@ class TestProviderLabel:
 
 class TestProviderModelIds:
     def test_openrouter_returns_curated_list(self):
-        ids = provider_model_ids("openrouter")
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[
+                ("anthropic/claude-opus-4.6", "recommended"),
+                ("qwen/qwen3.6-plus", ""),
+            ],
+        ):
+            ids = provider_model_ids("openrouter")
         assert len(ids) > 0
         assert all("/" in mid for mid in ids)
 
@@ -339,6 +355,30 @@ class TestCopilotNormalization:
         }]
         assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
 
+    def test_normalize_opencode_model_id_strips_provider_prefix(self):
+        assert normalize_opencode_model_id("opencode-go", "opencode-go/kimi-k2.5") == "kimi-k2.5"
+        assert normalize_opencode_model_id("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "claude-sonnet-4-6"
+        assert normalize_opencode_model_id("opencode-go", "glm-5") == "glm-5"
+
+    def test_opencode_zen_api_modes_match_docs(self):
+        assert opencode_model_api_mode("opencode-zen", "gpt-5.4") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "gpt-5.3-codex") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/gpt-5.4") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "claude-sonnet-4-6") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
+
+    def test_opencode_go_api_modes_match_docs(self):
+        assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5.1") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "glm-5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/kimi-k2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
+
 
 # -- validate — format checks -----------------------------------------------
 
@@ -363,7 +403,8 @@ class TestValidateFormatChecks:
 
     def test_no_slash_model_rejected_if_not_in_api(self):
         result = _validate("gpt-5.4", api_models=["openai/gpt-5.4"])
-        assert result["accepted"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "not found" in result["message"]
 
 
@@ -389,42 +430,56 @@ class TestValidateApiFound:
 # -- validate — API not found ------------------------------------------------
 
 class TestValidateApiNotFound:
-    def test_model_not_in_api_accepted_with_warning(self):
+    def test_model_not_in_api_rejected_with_guidance(self):
         result = _validate("anthropic/claude-nonexistent")
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "not found" in result["message"]
 
     def test_warning_includes_suggestions(self):
         result = _validate("anthropic/claude-opus-4.5")
         assert result["accepted"] is True
-        assert "Similar models" in result["message"]
+        # Close match auto-corrects; less similar inputs show suggestions
+        assert "Auto-corrected" in result["message"] or "Similar models" in result["message"]
+
+    def test_auto_correction_returns_corrected_model(self):
+        """When a very close match exists, validate returns corrected_model."""
+        result = _validate("anthropic/claude-opus-4.5")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") == "anthropic/claude-opus-4.6"
+        assert result["recognized"] is True
+
+    def test_dissimilar_model_shows_suggestions_not_autocorrect(self):
+        """Models too different for auto-correction are rejected with suggestions."""
+        result = _validate("anthropic/claude-nonexistent")
+        assert result["accepted"] is False
+        assert result.get("corrected_model") is None
+        assert "not found" in result["message"]
 
 
-# -- validate — API unreachable — accept and persist everything ----------------
+# -- validate — API unreachable — reject with guidance ----------------
 
 class TestValidateApiFallback:
-    def test_any_model_accepted_when_api_down(self):
+    def test_any_model_rejected_when_api_down(self):
         result = _validate("anthropic/claude-opus-4.6", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
 
-    def test_unknown_model_also_accepted_when_api_down(self):
-        """No hardcoded catalog gatekeeping — accept, persist, and warn."""
+    def test_unknown_model_also_rejected_when_api_down(self):
         result = _validate("anthropic/claude-next-gen", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "could not reach" in result["message"].lower()
 
-    def test_zai_model_accepted_when_api_down(self):
+    def test_zai_model_rejected_when_api_down(self):
         result = _validate("glm-5", provider="zai", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
 
-    def test_unknown_provider_accepted_when_api_down(self):
+    def test_unknown_provider_rejected_when_api_down(self):
         result = _validate("some-model", provider="totally-unknown", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
 
     def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
         with patch(
@@ -444,7 +499,44 @@ class TestValidateApiFallback:
                 base_url="http://localhost:8000",
             )
 
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
+
+
+# -- validate — Codex auto-correction ------------------------------------------
+
+class TestValidateCodexAutoCorrection:
+    """Auto-correction for typos on openai-codex provider."""
+
+    def test_missing_dash_auto_corrects(self):
+        """gpt5.3-codex (missing dash) auto-corrects to gpt-5.3-codex."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex",
+                        "gpt-5.2-codex", "gpt-5.1-codex-max"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("gpt5.3-codex", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["corrected_model"] == "gpt-5.3-codex"
+        assert "Auto-corrected" in result["message"]
+
+    def test_exact_match_no_correction(self):
+        """Exact model name does not trigger auto-correction."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("gpt-5.3-codex", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_very_different_name_falls_to_suggestions(self):
+        """Names too different for auto-correction are rejected with a suggestion list."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("totally-wrong", "openai-codex")
+        assert result["accepted"] is False
+        assert result["recognized"] is False
+        assert result.get("corrected_model") is None
+        assert "not found" in result["message"]

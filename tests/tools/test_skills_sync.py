@@ -6,11 +6,13 @@ from unittest.mock import patch
 from tools.skills_sync import (
     _get_bundled_dir,
     _read_manifest,
+    _read_skill_name,
     _write_manifest,
     _discover_bundled_skills,
     _compute_relative_dest,
     _dir_hash,
     sync_skills,
+    reset_bundled_skill,
     MANIFEST_FILE,
     SKILLS_DIR,
 )
@@ -130,6 +132,37 @@ class TestDiscoverBundledSkills:
     def test_nonexistent_dir_returns_empty(self, tmp_path):
         skills = _discover_bundled_skills(tmp_path / "nonexistent")
         assert skills == []
+
+
+class TestReadSkillName:
+    def test_reads_name_from_frontmatter(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: audiocraft-audio-generation\n---\n# Skill")
+        assert _read_skill_name(skill_md, "audiocraft") == "audiocraft-audio-generation"
+
+    def test_falls_back_to_dir_name_without_frontmatter(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("# Just a heading\nNo frontmatter here")
+        assert _read_skill_name(skill_md, "my-skill") == "my-skill"
+
+    def test_falls_back_when_name_field_empty(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname:\n---\n")
+        assert _read_skill_name(skill_md, "fallback") == "fallback"
+
+    def test_handles_quoted_name(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text('---\nname: "serving-llms-vllm"\n---\n')
+        assert _read_skill_name(skill_md, "vllm") == "serving-llms-vllm"
+
+    def test_discover_uses_frontmatter_name(self, tmp_path):
+        skill_dir = tmp_path / "category" / "audiocraft"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: audiocraft-audio-generation\n---\n# Skill"
+        )
+        skills = _discover_bundled_skills(tmp_path)
+        assert skills[0][0] == "audiocraft-audio-generation"
 
 
 class TestComputeRelativeDest:
@@ -489,3 +522,133 @@ class TestGetBundledDir:
         monkeypatch.setenv("HERMES_BUNDLED_SKILLS", "")
         result = _get_bundled_dir()
         assert result.name == "skills"
+
+
+class TestResetBundledSkill:
+    """Covers reset_bundled_skill() — the escape hatch for the 'user-modified' trap."""
+
+    def _setup_bundled(self, tmp_path):
+        """Create a minimal bundled skills tree with a single 'google-workspace' skill."""
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "productivity" / "google-workspace").mkdir(parents=True)
+        (bundled / "productivity" / "google-workspace" / "SKILL.md").write_text(
+            "---\nname: google-workspace\n---\n# GW v2 (upstream)\n"
+        )
+        return bundled
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def test_reset_clears_stuck_user_modified_flag(self, tmp_path):
+        """The core bug repro: copy-pasted bundled restore doesn't un-stick the flag; reset does."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Simulate the stuck state: user edited the skill on an older bundled version,
+        # so manifest has an old origin hash that no longer matches anything on disk.
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("---\nname: google-workspace\n---\n# GW v2 (upstream)\n")
+        # Stale origin_hash — from some prior bundled version. User "restored" by pasting
+        # the current bundled contents, so user_hash == current bundled_hash, but manifest
+        # still points at the stale hash → treated as user_modified forever.
+        manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            # Sanity check: without reset, sync would flag it user_modified
+            pre = sync_skills(quiet=True)
+            assert "google-workspace" in pre["user_modified"]
+
+            # Reset (no --restore) should clear the manifest entry and re-baseline
+            result = reset_bundled_skill("google-workspace", restore=False)
+
+            assert result["ok"] is True
+            assert result["action"] == "manifest_cleared"
+
+            # After reset, the manifest should hold the *current* bundled hash
+            manifest_after = _read_manifest()
+            expected = _dir_hash(bundled / "productivity" / "google-workspace")
+            assert manifest_after["google-workspace"] == expected
+        # User's copy was preserved (we didn't delete)
+        assert dest.exists()
+        assert "GW v2" in (dest / "SKILL.md").read_text()
+
+    def test_reset_restore_replaces_user_copy(self, tmp_path):
+        """--restore nukes the user's copy and re-copies the bundled version."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# heavily edited by user\n")
+        (dest / "my_custom_file.py").write_text("print('user-added')\n")
+        manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("google-workspace", restore=True)
+
+        assert result["ok"] is True
+        assert result["action"] == "restored"
+        # User's custom file should be gone
+        assert not (dest / "my_custom_file.py").exists()
+        # SKILL.md should be the bundled content
+        assert "GW v2 (upstream)" in (dest / "SKILL.md").read_text()
+
+    def test_reset_nonexistent_skill_errors_gracefully(self, tmp_path):
+        """Resetting a skill that's neither bundled nor in the manifest returns a clear error."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+        manifest_file.write_text("")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("some-hub-skill", restore=False)
+
+        assert result["ok"] is False
+        assert result["action"] == "not_in_manifest"
+        assert "not a tracked bundled skill" in result["message"]
+
+    def test_reset_restore_when_bundled_removed_upstream(self, tmp_path):
+        """If a skill was removed upstream, --restore should fail with a clear message."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = skills_dir / "productivity" / "ghost-skill"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("---\nname: ghost-skill\n---\n# Ghost\n")
+        manifest_file.write_text("ghost-skill:OLDHASH00000000000000000000000000\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("ghost-skill", restore=True)
+
+        assert result["ok"] is False
+        assert result["action"] == "bundled_missing"
+
+    def test_reset_no_op_when_already_clean(self, tmp_path):
+        """If manifest has skill but user copy is in-sync, reset still safely clears + re-baselines."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Simulate a clean state — do a fresh sync first
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+            pre_manifest = _read_manifest()
+            assert "google-workspace" in pre_manifest
+
+            result = reset_bundled_skill("google-workspace", restore=False)
+
+            assert result["ok"] is True
+            assert result["action"] == "manifest_cleared"
+            # Manifest entry still present (re-baselined), user copy still present
+            post_manifest = _read_manifest()
+            assert "google-workspace" in post_manifest
+        assert (skills_dir / "productivity" / "google-workspace" / "SKILL.md").exists()

@@ -10,9 +10,10 @@ Limitations (documented, not fixable at pre-flight level):
     can return a public IP for the check, then a private IP for the actual
     connection. Fixing this requires connection-level validation (e.g.
     Python's Champion library or an egress proxy like Stripe's Smokescreen).
-  - Redirect-based bypass in vision_tools is mitigated by an httpx event
-    hook that re-validates each redirect target. Web tools use third-party
-    SDKs (Firecrawl/Tavily) where redirect handling is on their servers.
+  - Redirect-based bypass is mitigated by httpx event hooks that re-validate
+    each redirect target in vision_tools, gateway platform adapters, and
+    media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
+    where redirect handling is on their servers.
 """
 
 import ipaddress
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 _BLOCKED_HOSTNAMES = frozenset({
     "metadata.google.internal",
     "metadata.goog",
+})
+
+# Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
+# This is intentionally narrow: QQ media downloads can legitimately resolve
+# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+_TRUSTED_PRIVATE_IP_HOSTS = frozenset({
+    "multimedia.nt.qq.com.cn",
 })
 
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
@@ -47,6 +55,11 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
+    """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
+    return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+
+
 def is_safe_url(url: str) -> bool:
     """Return True if the URL target is not a private/internal address.
 
@@ -55,7 +68,8 @@ def is_safe_url(url: str) -> bool:
     """
     try:
         parsed = urlparse(url)
-        hostname = (parsed.hostname or "").strip().lower()
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        scheme = (parsed.scheme or "").strip().lower()
         if not hostname:
             return False
 
@@ -63,6 +77,8 @@ def is_safe_url(url: str) -> bool:
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
             return False
+
+        allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
 
         # Try to resolve and check IP
         try:
@@ -80,12 +96,18 @@ def is_safe_url(url: str) -> bool:
             except ValueError:
                 continue
 
-            if _is_blocked_ip(ip):
+            if not allow_private_ip and _is_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,
                 )
                 return False
+
+        if allow_private_ip:
+            logger.debug(
+                "Allowing trusted hostname despite private/internal resolution: %s",
+                hostname,
+            )
 
         return True
 

@@ -32,6 +32,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+from hermes_constants import get_hermes_home
+from tools.binary_extensions import BINARY_EXTENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +48,7 @@ WRITE_DENIED_PATHS = {
         os.path.join(_HOME, ".ssh", "id_rsa"),
         os.path.join(_HOME, ".ssh", "id_ed25519"),
         os.path.join(_HOME, ".ssh", "config"),
-        os.path.join(_HOME, ".hermes", ".env"),
+        str(get_hermes_home() / ".env"),
         os.path.join(_HOME, ".bashrc"),
         os.path.join(_HOME, ".zshrc"),
         os.path.join(_HOME, ".profile"),
@@ -70,6 +72,9 @@ WRITE_DENIED_PREFIXES = [
         os.path.join(_HOME, ".kube"),
         "/etc/sudoers.d",
         "/etc/systemd",
+        os.path.join(_HOME, ".docker"),
+        os.path.join(_HOME, ".azure"),
+        os.path.join(_HOME, ".config", "gh"),
     ]
 ]
 
@@ -247,23 +252,43 @@ class FileOperations(ABC):
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """Read a file with pagination support."""
         ...
-    
+
+    @abstractmethod
+    def read_file_raw(self, path: str) -> ReadResult:
+        """Read the complete file content as a plain string.
+
+        No pagination, no line-number prefixes, no per-line truncation.
+        Returns ReadResult with .content = full file text, .error set on
+        failure. Always reads to EOF regardless of file size.
+        """
+        ...
+
     @abstractmethod
     def write_file(self, path: str, content: str) -> WriteResult:
         """Write content to a file, creating directories as needed."""
         ...
-    
+
     @abstractmethod
-    def patch_replace(self, path: str, old_string: str, new_string: str, 
+    def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
         """Replace text in a file using fuzzy matching."""
         ...
-    
+
     @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch."""
         ...
-    
+
+    @abstractmethod
+    def delete_file(self, path: str) -> WriteResult:
+        """Delete a file. Returns WriteResult with .error set on failure."""
+        ...
+
+    @abstractmethod
+    def move_file(self, src: str, dst: str) -> WriteResult:
+        """Move/rename a file from src to dst. Returns WriteResult with .error set on failure."""
+        ...
+
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
@@ -275,26 +300,6 @@ class FileOperations(ABC):
 # =============================================================================
 # Shell-based Implementation
 # =============================================================================
-
-# Binary file extensions (fast path check)
-BINARY_EXTENSIONS = {
-    # Images
-    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.tiff', '.tif',
-    '.svg',  # SVG is text but often treated as binary
-    # Audio/Video
-    '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv', '.flac', '.ogg', '.webm',
-    # Archives
-    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar',
-    # Documents
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    # Compiled/Binary
-    '.exe', '.dll', '.so', '.dylib', '.o', '.a', '.pyc', '.pyo', '.class',
-    '.wasm', '.bin',
-    # Fonts
-    '.ttf', '.otf', '.woff', '.woff2', '.eot',
-    # Other
-    '.db', '.sqlite', '.sqlite3',
-}
 
 # Image extensions (subset of binary that we can return as base64)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
@@ -325,11 +330,26 @@ class ShellFileOperations(FileOperations):
     def __init__(self, terminal_env, cwd: str = None):
         """
         Initialize file operations with a terminal environment.
-        
+
         Args:
             terminal_env: Any object with execute(command, cwd) method.
                          Returns {"output": str, "returncode": int}
-            cwd: Working directory (defaults to env's cwd or current directory)
+            cwd: Optional explicit fallback cwd when the terminal env has
+                 no cwd attribute (rare — most backends track cwd live).
+
+        Note:
+            Every _exec() call prefers the LIVE ``terminal_env.cwd`` over
+            ``self.cwd`` so ``cd`` commands run via the terminal tool are
+            picked up immediately.  ``self.cwd`` is only used as a fallback
+            when the env has no cwd at all — it is NOT the authoritative
+            cwd, despite being settable at init time.
+
+            Historical bug (fixed): prior versions of this class used the
+            init-time cwd for every _exec() call, which caused relative
+            paths passed to patch/read/write to target the wrong directory
+            after the user ran ``cd`` in the terminal.  Patches would
+            claim success and return a plausible diff but land in the
+            original directory, producing apparent silent failures.
         """
         self.env = terminal_env
         # Determine cwd from various possible sources.
@@ -338,25 +358,37 @@ class ShellFileOperations(FileOperations):
         # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
-        
+
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
         """Execute command via terminal backend.
-        
+
         Args:
             stdin_data: If provided, piped to the process's stdin instead of
                         embedding in the command string. Bypasses ARG_MAX.
+
+        Cwd resolution order (critical — see class docstring):
+          1. Explicit ``cwd`` arg (if provided)
+          2. Live ``self.env.cwd`` (tracks ``cd`` commands run via terminal)
+          3. Init-time ``self.cwd`` (fallback when env has no cwd attribute)
+
+        This ordering ensures relative paths in file operations follow the
+        terminal's current directory — not the directory this file_ops was
+        originally created in.  See test_file_ops_cwd_tracking.py.
         """
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
-        
-        result = self.env.execute(command, cwd=cwd or self.cwd, **kwargs)
+
+        # Resolve cwd from the live env so `cd` commands are picked up.
+        # Fall through to init-time self.cwd only if the env doesn't track cwd.
+        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
@@ -381,9 +413,7 @@ class ShellFileOperations(FileOperations):
         
         # Content analysis: >30% non-printable chars = binary
         if content_sample:
-            if not content_sample:
-                return False
-            non_printable = sum(1 for c in content_sample[:1000] 
+            non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
             return non_printable / min(len(content_sample), 1000) > 0.30
         
@@ -551,102 +581,114 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
-    # Images larger than this are too expensive to inline as base64 in the
-    # conversation context. Return metadata only and suggest vision_analyze.
-    MAX_IMAGE_BYTES = 512 * 1024  # 512 KB
+    def _suggest_similar_files(self, path: str) -> ReadResult:
+        """Suggest similar files when the requested file is not found."""
+        dir_path = os.path.dirname(path) or "."
+        filename = os.path.basename(path)
+        basename_no_ext = os.path.splitext(filename)[0]
+        ext = os.path.splitext(filename)[1].lower()
+        lower_name = filename.lower()
 
-    def _read_image(self, path: str) -> ReadResult:
-        """Read an image file, returning base64 content."""
-        # Get file size (wc -c is POSIX, works on Linux + macOS)
+        # List files in the target directory
+        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
+        ls_result = self._exec(ls_cmd)
+
+        scored: list = []  # (score, filepath) — higher is better
+        if ls_result.exit_code == 0 and ls_result.stdout.strip():
+            for f in ls_result.stdout.strip().split('\n'):
+                if not f:
+                    continue
+                lf = f.lower()
+                score = 0
+
+                # Exact match (shouldn't happen, but guard)
+                if lf == lower_name:
+                    score = 100
+                # Same base name, different extension (e.g. config.yml vs config.yaml)
+                elif os.path.splitext(f)[0].lower() == basename_no_ext.lower():
+                    score = 90
+                # Target is prefix of candidate or vice-versa
+                elif lf.startswith(lower_name) or lower_name.startswith(lf):
+                    score = 70
+                # Substring match (candidate contains query)
+                elif lower_name in lf:
+                    score = 60
+                # Reverse substring (query contains candidate name)
+                elif lf in lower_name and len(lf) > 2:
+                    score = 40
+                # Same extension with some overlap
+                elif ext and os.path.splitext(f)[1].lower() == ext:
+                    common = set(lower_name) & set(lf)
+                    if len(common) >= max(len(lower_name), len(lf)) * 0.4:
+                        score = 30
+
+                if score > 0:
+                    scored.append((score, os.path.join(dir_path, f)))
+
+        scored.sort(key=lambda x: -x[0])
+        similar = [fp for _, fp in scored[:5]]
+
+        return ReadResult(
+            error=f"File not found: {path}",
+            similar_files=similar
+        )
+    
+    def read_file_raw(self, path: str) -> ReadResult:
+        """Read the complete file content as a plain string.
+
+        No pagination, no line-number prefixes, no per-line truncation.
+        Uses cat so the full file is returned regardless of size.
+        """
+        path = self._expand_path(path)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
+        if stat_result.exit_code != 0:
+            return self._suggest_similar_files(path)
         try:
             file_size = int(stat_result.stdout.strip())
         except ValueError:
             file_size = 0
-        
-        if file_size > self.MAX_IMAGE_BYTES:
+        if self._is_image(path):
+            return ReadResult(is_image=True, is_binary=True, file_size=file_size)
+        sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
+        if self._is_likely_binary(path, sample_result.stdout):
             return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                hint=(
-                    f"Image is too large to inline ({file_size:,} bytes). "
-                    "Use vision_analyze to inspect the image, or reference it by path."
-                ),
+                is_binary=True, file_size=file_size,
+                error="Binary file — cannot display as text."
             )
-        
-        # Get base64 content
-        b64_cmd = f"base64 -w 0 {self._escape_shell_arg(path)} 2>/dev/null"
-        b64_result = self._exec(b64_cmd, timeout=30)
-        
-        if b64_result.exit_code != 0:
-            return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                error=f"Failed to read image: {b64_result.stdout}"
-            )
-        
-        # Try to get dimensions (requires ImageMagick)
-        dimensions = None
-        if self._has_command('identify'):
-            dim_cmd = f"identify -format '%wx%h' {self._escape_shell_arg(path)} 2>/dev/null"
-            dim_result = self._exec(dim_cmd)
-            if dim_result.exit_code == 0:
-                dimensions = dim_result.stdout.strip()
-        
-        # Determine MIME type from extension
-        ext = os.path.splitext(path)[1].lower()
-        mime_types = {
-            '.png': 'image/png',
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp',
-            '.bmp': 'image/bmp',
-            '.ico': 'image/x-icon',
-        }
-        mime_type = mime_types.get(ext, 'application/octet-stream')
-        
-        return ReadResult(
-            is_image=True,
-            is_binary=True,
-            file_size=file_size,
-            base64_content=b64_result.stdout,
-            mime_type=mime_type,
-            dimensions=dimensions
+        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
+        if cat_result.exit_code != 0:
+            return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        return ReadResult(content=cat_result.stdout, file_size=file_size)
+
+    def delete_file(self, path: str) -> WriteResult:
+        """Delete a file via rm."""
+        path = self._expand_path(path)
+        if _is_write_denied(path):
+            return WriteResult(error=f"Delete denied: {path} is a protected path")
+        result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
+        if result.exit_code != 0:
+            return WriteResult(error=f"Failed to delete {path}: {result.stdout}")
+        return WriteResult()
+
+    def move_file(self, src: str, dst: str) -> WriteResult:
+        """Move a file via mv."""
+        src = self._expand_path(src)
+        dst = self._expand_path(dst)
+        for p in (src, dst):
+            if _is_write_denied(p):
+                return WriteResult(error=f"Move denied: {p} is a protected path")
+        result = self._exec(
+            f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
         )
-    
-    def _suggest_similar_files(self, path: str) -> ReadResult:
-        """Suggest similar files when the requested file is not found."""
-        # Get directory and filename
-        dir_path = os.path.dirname(path) or "."
-        filename = os.path.basename(path)
-        
-        # List files in directory
-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -20"
-        ls_result = self._exec(ls_cmd)
-        
-        similar = []
-        if ls_result.exit_code == 0 and ls_result.stdout.strip():
-            files = ls_result.stdout.strip().split('\n')
-            # Simple similarity: files that share some characters with the target
-            for f in files:
-                # Check if filenames share significant overlap
-                common = set(filename.lower()) & set(f.lower())
-                if len(common) >= len(filename) * 0.5:  # 50% character overlap
-                    similar.append(os.path.join(dir_path, f))
-        
-        return ReadResult(
-            error=f"File not found: {path}",
-            similar_files=similar[:5]  # Limit to 5 suggestions
-        )
-    
+        if result.exit_code != 0:
+            return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
+        return WriteResult()
+
     # =========================================================================
     # WRITE Implementation
     # =========================================================================
-    
+
     def write_file(self, path: str, content: str) -> WriteResult:
         """
         Write content to a file, creating parent directories as needed.
@@ -738,7 +780,7 @@ class ShellFileOperations(FileOperations):
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
-        new_content, match_count, error = fuzzy_find_and_replace(
+        new_content, match_count, _strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all
         )
         
@@ -752,7 +794,24 @@ class ShellFileOperations(FileOperations):
         write_result = self.write_file(path, new_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
-        
+
+        # Post-write verification — re-read the file and confirm the bytes we
+        # intended to write actually landed. Catches silent persistence
+        # failures (backend FS oddities, race with another task, truncated
+        # pipe, etc.) that would otherwise return success-with-diff while the
+        # file is unchanged on disk.
+        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_result = self._exec(verify_cmd)
+        if verify_result.exit_code != 0:
+            return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
+        if verify_result.stdout != new_content:
+            return PatchResult(error=(
+                f"Post-write verification failed for {path}: on-disk content "
+                f"differs from intended write "
+                f"(wrote {len(new_content)} chars, read back {len(verify_result.stdout)}). "
+                "The patch did not persist. Re-read the file and try again."
+            ))
+
         # Generate diff
         diff = self._unified_diff(content, new_content, path)
         
@@ -820,7 +879,7 @@ class ShellFileOperations(FileOperations):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
         
         # Run linter
-        cmd = linter_cmd.format(file=self._escape_shell_arg(path))
+        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
         result = self._exec(cmd, timeout=30)
         
         return LintResult(
@@ -857,8 +916,33 @@ class ShellFileOperations(FileOperations):
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
+            # Try to suggest nearby paths
+            parent = os.path.dirname(path) or "."
+            basename_query = os.path.basename(path)
+            hint_parts = [f"Path not found: {path}"]
+            # Check if parent directory exists and list similar entries
+            parent_check = self._exec(
+                f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
+            )
+            if "yes" in parent_check.stdout and basename_query:
+                ls_result = self._exec(
+                    f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
+                )
+                if ls_result.exit_code == 0 and ls_result.stdout.strip():
+                    lower_q = basename_query.lower()
+                    candidates = []
+                    for entry in ls_result.stdout.strip().split('\n'):
+                        if not entry:
+                            continue
+                        le = entry.lower()
+                        if lower_q in le or le in lower_q or le.startswith(lower_q[:3]):
+                            candidates.append(os.path.join(parent, entry))
+                    if candidates:
+                        hint_parts.append(
+                            "Similar paths: " + ", ".join(candidates[:5])
+                        )
             return SearchResult(
-                error=f"Path not found: {path}. Verify the path exists (use 'terminal' to check).",
+                error=". ".join(hint_parts),
                 total_count=0
             )
         
@@ -894,7 +978,7 @@ class ShellFileOperations(FileOperations):
         hidden_exclude = "-not -path '*/.*'"
 
         cmd = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
+              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
 
         result = self._exec(cmd, timeout=60)
 
@@ -924,7 +1008,8 @@ class ShellFileOperations(FileOperations):
 
         rg --files respects .gitignore and excludes hidden directories by
         default, and uses parallel directory traversal for ~200x speedup
-        over find on wide trees.
+        over find on wide trees.  Results are sorted by modification time
+        (most recently edited first) when rg >= 13.0 supports --sortr.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -934,14 +1019,25 @@ class ShellFileOperations(FileOperations):
             glob_pattern = pattern
 
         fetch_limit = limit + offset
-        cmd = (
-            f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+        # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
+        cmd_sorted = (
+            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
             f"{self._escape_shell_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
-        result = self._exec(cmd, timeout=60)
-
+        result = self._exec(cmd_sorted, timeout=60)
         all_files = [f for f in result.stdout.strip().split('\n') if f]
+
+        if not all_files:
+            # --sortr may have failed on older rg; retry without it.
+            cmd_plain = (
+                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"| head -n {fetch_limit}"
+            )
+            result = self._exec(cmd_plain, timeout=60)
+            all_files = [f for f in result.stdout.strip().split('\n') if f]
+
         page = all_files[offset:offset + limit]
 
         return SearchResult(

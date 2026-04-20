@@ -8,6 +8,10 @@ description: "Master the Hermes Agent terminal interface — commands, keybindin
 
 Hermes Agent's CLI is a full terminal user interface (TUI) — not a web UI. It features multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output. Built for people who live in the terminal.
 
+:::tip
+Hermes also ships a modern TUI with modal overlays, mouse selection, and non-blocking input. Launch it with `hermes --tui` — see the [TUI](tui.md) guide.
+:::
+
 ## Running the CLI
 
 ```bash
@@ -94,6 +98,7 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | `Ctrl+B` | Start/stop voice recording when voice mode is enabled (`voice.record_key`, default: `ctrl+b`) |
 | `Ctrl+C` | Interrupt agent (double-press within 2s to force exit) |
 | `Ctrl+D` | Exit |
+| `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
 | `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands |
 
 ## Slash Commands
@@ -212,6 +217,33 @@ You can interrupt the agent at any point:
 - In-progress terminal commands are killed immediately (SIGTERM, then SIGKILL after 1s)
 - Multiple messages typed during interrupt are combined into one prompt
 
+### Busy Input Mode
+
+The `display.busy_input_mode` config key controls what happens when you press Enter while the agent is working:
+
+| Mode | Behavior |
+|------|----------|
+| `"interrupt"` (default) | Your message interrupts the current operation and is processed immediately |
+| `"queue"` | Your message is silently queued and sent as the next turn after the agent finishes |
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  busy_input_mode: "queue"   # or "interrupt" (default)
+```
+
+Queue mode is useful when you want to prepare follow-up messages without accidentally canceling in-flight work. Unknown values fall back to `"interrupt"`.
+
+### Suspending to Background
+
+On Unix systems, press **`Ctrl+Z`** to suspend Hermes to the background — just like any terminal process. The shell prints a confirmation:
+
+```
+Hermes Agent has been suspended. Run `fg` to bring Hermes Agent back.
+```
+
+Type `fg` in your shell to resume the session exactly where you left off. This is not supported on Windows.
+
 ## Tool Progress Display
 
 The CLI shows animated feedback as the agent works:
@@ -230,7 +262,19 @@ The CLI shows animated feedback as the agent works:
   ┊ 📄 web_extract (2.1s)
 ```
 
-Cycle through display modes with `/verbose`: `off → new → all → verbose`.
+Cycle through display modes with `/verbose`: `off → new → all → verbose`. This command can also be enabled for messaging platforms — see [configuration](/docs/user-guide/configuration#display-settings).
+
+### Tool Preview Length
+
+The `display.tool_preview_length` config key controls the maximum number of characters shown in tool call preview lines (e.g. file paths, terminal commands). The default is `0`, which means no limit — full paths and commands are shown.
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  tool_preview_length: 80   # Truncate tool previews to 80 chars (0 = no limit)
+```
+
+This is useful on narrow terminals or when tool arguments contain very long file paths.
 
 ## Session Management
 
@@ -282,7 +326,11 @@ Long conversations are automatically summarized when approaching context limits:
 compression:
   enabled: true
   threshold: 0.50    # Compress at 50% of context limit by default
-  summary_model: "google/gemini-3-flash-preview"  # Model used for summarization
+
+# Summarization model configured under auxiliary:
+auxiliary:
+  compression:
+    model: "google/gemini-3-flash-preview"  # Model used for summarization
 ```
 
 When compression triggers, middle turns are summarized while the first 3 and last 4 turns are always preserved.

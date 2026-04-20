@@ -25,14 +25,6 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from gateway.platforms.base import SendResult
 
 
-class TestPlatformEnum(unittest.TestCase):
-    """Verify EMAIL is in the Platform enum."""
-
-    def test_email_in_platform_enum(self):
-        from gateway.config import Platform
-        self.assertEqual(Platform.EMAIL.value, "email")
-
-
 class TestConfigEnvOverrides(unittest.TestCase):
     """Verify email config is loaded from environment variables."""
 
@@ -71,20 +63,6 @@ class TestConfigEnvOverrides(unittest.TestCase):
         config = GatewayConfig()
         _apply_env_overrides(config)
         self.assertNotIn(Platform.EMAIL, config.platforms)
-
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_IMAP_HOST": "imap.test.com",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-    }, clear=False)
-    def test_email_in_connected_platforms(self):
-        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        connected = config.get_connected_platforms()
-        self.assertIn(Platform.EMAIL, connected)
-
 
 class TestCheckRequirements(unittest.TestCase):
     """Verify check_email_requirements function."""
@@ -255,119 +233,6 @@ class TestExtractAttachments(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["type"], "image")
         mock_cache.assert_called_once()
-
-
-class TestAuthorizationMaps(unittest.TestCase):
-    """Verify email is in authorization maps in gateway/run.py."""
-
-    def test_email_in_adapter_factory(self):
-        """Email adapter creation branch should exist."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._create_adapter)
-        self.assertIn("Platform.EMAIL", source)
-
-    def test_email_in_allowed_users_map(self):
-        """EMAIL_ALLOWED_USERS should be in platform_env_map."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        self.assertIn("EMAIL_ALLOWED_USERS", source)
-
-    def test_email_in_allow_all_map(self):
-        """EMAIL_ALLOW_ALL_USERS should be in platform_allow_all_map."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        self.assertIn("EMAIL_ALLOW_ALL_USERS", source)
-
-
-class TestSendMessageToolRouting(unittest.TestCase):
-    """Verify email routing in send_message_tool."""
-
-    def test_email_in_platform_map(self):
-        import tools.send_message_tool as smt
-        import inspect
-        source = inspect.getsource(smt._handle_send)
-        self.assertIn('"email"', source)
-
-    def test_send_to_platform_has_email_branch(self):
-        import tools.send_message_tool as smt
-        import inspect
-        source = inspect.getsource(smt._send_to_platform)
-        self.assertIn("Platform.EMAIL", source)
-
-
-class TestCronDelivery(unittest.TestCase):
-    """Verify email in cron scheduler platform_map."""
-
-    def test_email_in_cron_platform_map(self):
-        import cron.scheduler
-        import inspect
-        source = inspect.getsource(cron.scheduler)
-        self.assertIn('"email"', source)
-
-
-class TestToolset(unittest.TestCase):
-    """Verify email toolset is registered."""
-
-    def test_email_toolset_exists(self):
-        from toolsets import TOOLSETS
-        self.assertIn("hermes-email", TOOLSETS)
-
-    def test_email_in_gateway_toolset(self):
-        from toolsets import TOOLSETS
-        includes = TOOLSETS["hermes-gateway"]["includes"]
-        self.assertIn("hermes-email", includes)
-
-
-class TestPlatformHints(unittest.TestCase):
-    """Verify email platform hint is registered."""
-
-    def test_email_in_platform_hints(self):
-        from agent.prompt_builder import PLATFORM_HINTS
-        self.assertIn("email", PLATFORM_HINTS)
-        self.assertIn("email", PLATFORM_HINTS["email"].lower())
-
-
-class TestChannelDirectory(unittest.TestCase):
-    """Verify email in channel directory session-based discovery."""
-
-    def test_email_in_session_discovery(self):
-        import gateway.channel_directory
-        import inspect
-        source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn('"email"', source)
-
-
-class TestGatewaySetup(unittest.TestCase):
-    """Verify email in gateway setup wizard."""
-
-    def test_email_in_platforms_list(self):
-        from hermes_cli.gateway import _PLATFORMS
-        keys = [p["key"] for p in _PLATFORMS]
-        self.assertIn("email", keys)
-
-    def test_email_has_setup_vars(self):
-        from hermes_cli.gateway import _PLATFORMS
-        email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
-        var_names = [v["name"] for v in email_platform["vars"]]
-        self.assertIn("EMAIL_ADDRESS", var_names)
-        self.assertIn("EMAIL_PASSWORD", var_names)
-        self.assertIn("EMAIL_IMAP_HOST", var_names)
-        self.assertIn("EMAIL_SMTP_HOST", var_names)
-
-
-class TestEnvExample(unittest.TestCase):
-    """Verify .env.example has email config."""
-
-    def test_env_example_has_email_vars(self):
-        env_path = Path(__file__).resolve().parents[2] / ".env.example"
-        content = env_path.read_text()
-        self.assertIn("EMAIL_ADDRESS", content)
-        self.assertIn("EMAIL_PASSWORD", content)
-        self.assertIn("EMAIL_IMAP_HOST", content)
-        self.assertIn("EMAIL_SMTP_HOST", content)
 
 
 class TestDispatchMessage(unittest.TestCase):
@@ -1055,6 +920,123 @@ class TestSendEmailStandalone(unittest.TestCase):
 
         self.assertIn("error", result)
         self.assertIn("not configured", result["error"])
+
+
+class TestSmtpConnectionCleanup(unittest.TestCase):
+    """Verify SMTP connections are closed even when send_message raises."""
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+        return EmailAdapter(PlatformConfig(enabled=True))
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def test_smtp_quit_called_on_send_message_failure(self):
+        """SMTP quit() must be called even when send_message() raises."""
+        adapter = self._make_adapter()
+        mock_smtp = MagicMock()
+        mock_smtp.send_message.side_effect = Exception("send failed")
+
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            with self.assertRaises(Exception):
+                adapter._send_email("user@test.com", "Hello")
+
+        mock_smtp.quit.assert_called_once()
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def test_smtp_close_called_when_quit_also_fails(self):
+        """If both send_message() and quit() fail, close() is the fallback."""
+        adapter = self._make_adapter()
+        mock_smtp = MagicMock()
+        mock_smtp.send_message.side_effect = Exception("send failed")
+        mock_smtp.quit.side_effect = Exception("quit failed")
+
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            with self.assertRaises(Exception):
+                adapter._send_email("user@test.com", "Hello")
+
+        mock_smtp.close.assert_called_once()
+
+
+class TestImapConnectionCleanup(unittest.TestCase):
+    """Verify IMAP connections are closed even when fetch raises."""
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_IMAP_PORT": "993",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+        return EmailAdapter(PlatformConfig(enabled=True))
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_IMAP_PORT": "993",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def test_imap_logout_called_on_uid_fetch_failure(self):
+        """IMAP logout() must be called even when uid fetch raises."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                raise Exception("fetch failed")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        mock_imap.logout.assert_called_once()
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_IMAP_PORT": "993",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def test_imap_logout_called_on_early_return(self):
+        """IMAP logout() must be called even when returning early (no unseen)."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        mock_imap.logout.assert_called_once()
 
 
 if __name__ == "__main__":

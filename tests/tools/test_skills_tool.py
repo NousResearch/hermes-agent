@@ -13,11 +13,9 @@ from tools.skills_tool import (
     _parse_frontmatter,
     _parse_tags,
     _get_category_from_path,
-    _estimate_tokens,
     _find_all_skills,
     skill_matches_platform,
     skills_list,
-    skills_categories,
     skill_view,
     MAX_DESCRIPTION_LENGTH,
 )
@@ -188,18 +186,6 @@ class TestGetCategoryFromPath:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
             skill_md = tmp_path / "other" / "SKILL.md"
             assert _get_category_from_path(skill_md) is None
-
-
-# ---------------------------------------------------------------------------
-# _estimate_tokens
-# ---------------------------------------------------------------------------
-
-
-class TestEstimateTokens:
-    def test_estimate(self):
-        assert _estimate_tokens("1234") == 1
-        assert _estimate_tokens("12345678") == 2
-        assert _estimate_tokens("") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -498,78 +484,6 @@ class TestSkillViewSecureSetupOnLoad:
         assert result["setup_skipped"] is True
         assert result["content"].startswith("---")
 
-    def test_gateway_load_returns_guidance_without_secret_capture(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
-        called = {"value": False}
-
-        def fake_secret_callback(var_name, prompt, metadata=None):
-            called["value"] = True
-            return {
-                "success": True,
-                "stored_as": var_name,
-                "validated": False,
-                "skipped": False,
-            }
-
-        monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fake_secret_callback,
-            raising=False,
-        )
-
-        with patch.dict(
-            os.environ, {"HERMES_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-                _make_skill(
-                    tmp_path,
-                    "gif-search",
-                    frontmatter_extra=(
-                        "required_environment_variables:\n"
-                        "  - name: TENOR_API_KEY\n"
-                        "    prompt: Tenor API key\n"
-                    ),
-                )
-                raw = skill_view("gif-search")
-
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert called["value"] is False
-        assert "local cli" in result["gateway_setup_hint"].lower()
-        assert result["content"].startswith("---")
-
-
-# ---------------------------------------------------------------------------
-# skills_categories
-# ---------------------------------------------------------------------------
-
-
-class TestSkillsCategories:
-    def test_lists_categories(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "s1", category="devops")
-            _make_skill(tmp_path, "s2", category="mlops")
-            raw = skills_categories()
-        result = json.loads(raw)
-        assert result["success"] is True
-        names = {c["name"] for c in result["categories"]}
-        assert "devops" in names
-        assert "mlops" in names
-
-    def test_empty_skills_dir(self, tmp_path):
-        skills_dir = tmp_path / "skills"
-        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
-            raw = skills_categories()
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert result["categories"] == []
-
-
 # ---------------------------------------------------------------------------
 # skill_matches_platform
 # ---------------------------------------------------------------------------
@@ -589,38 +503,38 @@ class TestSkillMatchesPlatform:
         assert skill_matches_platform({"platforms": None}) is True
 
     def test_macos_on_darwin(self):
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             assert skill_matches_platform({"platforms": ["macos"]}) is True
 
     def test_macos_on_linux(self):
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             assert skill_matches_platform({"platforms": ["macos"]}) is False
 
     def test_linux_on_linux(self):
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             assert skill_matches_platform({"platforms": ["linux"]}) is True
 
     def test_linux_on_darwin(self):
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             assert skill_matches_platform({"platforms": ["linux"]}) is False
 
     def test_windows_on_win32(self):
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "win32"
             assert skill_matches_platform({"platforms": ["windows"]}) is True
 
     def test_windows_on_linux(self):
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             assert skill_matches_platform({"platforms": ["windows"]}) is False
 
     def test_multi_platform_match(self):
         """Skills listing multiple platforms should match any of them."""
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             assert skill_matches_platform({"platforms": ["macos", "linux"]}) is True
             mock_sys.platform = "linux"
@@ -630,20 +544,20 @@ class TestSkillMatchesPlatform:
 
     def test_string_instead_of_list(self):
         """A single string value should be treated as a one-element list."""
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             assert skill_matches_platform({"platforms": "macos"}) is True
             mock_sys.platform = "linux"
             assert skill_matches_platform({"platforms": "macos"}) is False
 
     def test_case_insensitive(self):
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             assert skill_matches_platform({"platforms": ["MacOS"]}) is True
             assert skill_matches_platform({"platforms": ["MACOS"]}) is True
 
     def test_unknown_platform_no_match(self):
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             assert skill_matches_platform({"platforms": ["freebsd"]}) is False
 
@@ -659,7 +573,7 @@ class TestFindAllSkillsPlatformFiltering:
     def test_excludes_incompatible_platform(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "linux"
             _make_skill(tmp_path, "universal-skill")
@@ -672,7 +586,7 @@ class TestFindAllSkillsPlatformFiltering:
     def test_includes_matching_platform(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "darwin"
             _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
@@ -684,7 +598,7 @@ class TestFindAllSkillsPlatformFiltering:
         """Skills without platforms field should appear on any platform."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "win32"
             _make_skill(tmp_path, "generic-skill")
@@ -695,7 +609,7 @@ class TestFindAllSkillsPlatformFiltering:
     def test_multi_platform_skill(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             _make_skill(
                 tmp_path, "cross-plat", frontmatter_extra="platforms: [macos, linux]\n"
@@ -813,6 +727,29 @@ class TestSkillViewPrerequisites:
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
 
+    def test_remote_backend_treats_persisted_env_as_available(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "remote-ready",
+                frontmatter_extra="prerequisites:\n  env_vars: [PERSISTED_REMOTE_KEY]\n",
+            )
+            from hermes_cli.config import save_env_value
+
+            save_env_value("PERSISTED_REMOTE_KEY", "persisted-value")
+            monkeypatch.delenv("PERSISTED_REMOTE_KEY", raising=False)
+            raw = skill_view("remote-ready")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["setup_needed"] is False
+        assert result["missing_required_environment_variables"] == []
+        assert result["readiness_status"] == "available"
+
     def test_no_setup_metadata_when_no_required_envs(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "plain-skill")
@@ -857,38 +794,12 @@ class TestSkillViewPrerequisites:
         assert result["missing_required_environment_variables"] == ["SHELL_ONLY_KEY"]
         assert result["readiness_status"] == "setup_needed"
 
-    def test_gateway_load_keeps_setup_guidance_for_backend_only_env(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-
-        with patch.dict(
-            os.environ, {"HERMES_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-                _make_skill(
-                    tmp_path,
-                    "backend-unknown",
-                    frontmatter_extra="prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n",
-                )
-                raw = skill_view("backend-unknown")
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert "local cli" in result["gateway_setup_hint"].lower()
-        assert result["setup_needed"] is True
-
     @pytest.mark.parametrize(
-        "backend,expected_note",
-        [
-            ("ssh", "remote environment"),
-            ("daytona", "remote environment"),
-            ("docker", "docker-backed skills"),
-            ("singularity", "singularity-backed skills"),
-            ("modal", "modal-backed skills"),
-        ],
+        "backend",
+        ["ssh", "daytona", "docker", "singularity", "modal"],
     )
-    def test_remote_backend_keeps_setup_needed_after_local_secret_capture(
-        self, tmp_path, monkeypatch, backend, expected_note
+    def test_remote_backend_becomes_available_after_local_secret_capture(
+        self, tmp_path, monkeypatch, backend
     ):
         monkeypatch.setenv("TERMINAL_ENV", backend)
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
@@ -926,10 +837,10 @@ class TestSkillViewPrerequisites:
         result = json.loads(raw)
         assert result["success"] is True
         assert len(calls) == 1
-        assert result["setup_needed"] is True
-        assert result["readiness_status"] == "setup_needed"
-        assert result["missing_required_environment_variables"] == ["TENOR_API_KEY"]
-        assert expected_note in result["setup_note"].lower()
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert result["missing_required_environment_variables"] == []
+        assert "setup_note" not in result
 
     def test_skill_view_surfaces_skill_read_errors(self, tmp_path, monkeypatch):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

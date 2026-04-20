@@ -20,14 +20,25 @@ Both ``code_execution_tool.py`` and ``tools/environments/local.py`` consult
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import Path
+from contextvars import ContextVar
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
 # Session-scoped set of env var names that should pass through to sandboxes.
-_allowed_env_vars: set[str] = set()
+# Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
+_allowed_env_vars_var: ContextVar[set[str]] = ContextVar("_allowed_env_vars")
+
+
+def _get_allowed() -> set[str]:
+    """Get or create the allowed env vars set for the current context/session."""
+    try:
+        return _allowed_env_vars_var.get()
+    except LookupError:
+        val: set[str] = set()
+        _allowed_env_vars_var.set(val)
+        return val
+
 
 # Cache for the config-based allowlist (loaded once per process).
 _config_passthrough: frozenset[str] | None = None
@@ -41,7 +52,7 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
     for name in var_names:
         name = name.strip()
         if name:
-            _allowed_env_vars.add(name)
+            _get_allowed().add(name)
             logger.debug("env passthrough: registered %s", name)
 
 
@@ -53,18 +64,13 @@ def _load_config_passthrough() -> frozenset[str]:
 
     result: set[str] = set()
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
-
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            passthrough = cfg.get("terminal", {}).get("env_passthrough")
-            if isinstance(passthrough, list):
-                for item in passthrough:
-                    if isinstance(item, str) and item.strip():
-                        result.add(item.strip())
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        passthrough = cfg.get("terminal", {}).get("env_passthrough")
+        if isinstance(passthrough, list):
+            for item in passthrough:
+                if isinstance(item, str) and item.strip():
+                    result.add(item.strip())
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
 
@@ -78,22 +84,18 @@ def is_env_passthrough(var_name: str) -> bool:
     Returns ``True`` if the variable was registered by a skill or listed in
     the user's ``tools.env_passthrough`` config.
     """
-    if var_name in _allowed_env_vars:
+    if var_name in _get_allowed():
         return True
     return var_name in _load_config_passthrough()
 
 
 def get_all_passthrough() -> frozenset[str]:
     """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_allowed_env_vars) | _load_config_passthrough()
+    return frozenset(_get_allowed()) | _load_config_passthrough()
 
 
 def clear_env_passthrough() -> None:
     """Reset the skill-scoped allowlist (e.g. on session reset)."""
-    _allowed_env_vars.clear()
+    _get_allowed().clear()
 
 
-def reset_config_cache() -> None:
-    """Force re-read of config on next access (for testing)."""
-    global _config_passthrough
-    _config_passthrough = None

@@ -46,6 +46,8 @@ def _make_args(**kwargs):
         "command": None,
         "args": None,
         "auth": None,
+        "preset": None,
+        "env": None,
         "mcp_action": None,
     }
     defaults.update(kwargs)
@@ -269,6 +271,145 @@ class TestMcpAdd:
         config = load_config()
         assert config["mcp_servers"]["broken"]["enabled"] is False
 
+    def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
+        """Stdio servers can persist explicit environment variables."""
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["env"] == {
+                "MY_API_KEY": "secret123",
+                "DEBUG": "true",
+            }
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            command="npx",
+            args=["@mcp/github"],
+            env=["MY_API_KEY=secret123", "DEBUG=true"],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        srv = config["mcp_servers"]["github"]
+        assert srv["env"] == {
+            "MY_API_KEY": "secret123",
+            "DEBUG": "true",
+        }
+
+    def test_add_stdio_server_rejects_invalid_env_name(self, capsys):
+        """Invalid environment variable names are rejected up front."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            command="npx",
+            args=["@mcp/github"],
+            env=["BAD-NAME=value"],
+        ))
+        out = capsys.readouterr().out
+        assert "Invalid --env variable name" in out
+
+    def test_add_http_server_rejects_env_flag(self, capsys):
+        """The --env flag is only valid for stdio transports."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="ink",
+            url="https://mcp.ml.ink/mcp",
+            env=["DEBUG=true"],
+        ))
+        out = capsys.readouterr().out
+        assert "only supported for stdio MCP servers" in out
+
+    def test_add_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
+        """A preset fills in command/args when no explicit transport given."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._MCP_PRESETS",
+            {"testmcp": {"command": "npx", "args": ["-y", "test-mcp-server"], "display_name": "Test MCP"}},
+        )
+        fake_tools = [FakeTool("do_thing", "Does a thing")]
+
+        def mock_probe(name, config, **kw):
+            assert name == "myserver"
+            assert config["command"] == "npx"
+            assert config["args"] == ["-y", "test-mcp-server"]
+            assert "env" not in config
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_add(_make_args(name="myserver", preset="testmcp"))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        config = read_raw_config()
+        srv = config["mcp_servers"]["myserver"]
+        assert srv["command"] == "npx"
+        assert srv["args"] == ["-y", "test-mcp-server"]
+        assert "env" not in srv
+
+    def test_preset_does_not_override_explicit_command(self, tmp_path, capsys, monkeypatch):
+        """Explicit transports win over presets."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._MCP_PRESETS",
+            {"testmcp": {"command": "npx", "args": ["-y", "test-mcp-server"], "display_name": "Test MCP"}},
+        )
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["command"] == "uvx"
+            assert config["args"] == ["custom-server"]
+            assert "env" not in config
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_add(_make_args(
+            name="custom",
+            preset="testmcp",
+            command="uvx",
+            args=["custom-server"],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        config = read_raw_config()
+        srv = config["mcp_servers"]["custom"]
+        assert srv["command"] == "uvx"
+        assert srv["args"] == ["custom-server"]
+        assert "env" not in srv
+
+    def test_unknown_preset_rejected(self, capsys):
+        """An unknown preset name is rejected with a clear error."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(name="foo", preset="nonexistent"))
+        out = capsys.readouterr().out
+        assert "Unknown MCP preset" in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_test
@@ -398,3 +539,64 @@ class TestDispatcher:
         mcp_command(_make_args(mcp_action=None))
         out = capsys.readouterr().out
         assert "Commands:" in out or "No MCP servers" in out
+
+
+# ---------------------------------------------------------------------------
+# Tests: Task 7 consolidation — cmd_mcp_remove evicts manager cache,
+# cmd_mcp_login forces re-auth
+# ---------------------------------------------------------------------------
+
+
+class TestMcpRemoveEvictsManager:
+    def test_remove_evicts_in_memory_provider(self, tmp_path, capsys, monkeypatch):
+        """After cmd_mcp_remove, the MCPOAuthManager no longer caches the provider."""
+        _seed_config(tmp_path, {
+            "oauth-srv": {"url": "https://example.com/mcp", "auth": "oauth"},
+        })
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+        reset_manager_for_tests()
+
+        mgr = get_manager()
+        mgr.get_or_build_provider(
+            "oauth-srv", "https://example.com/mcp", None,
+        )
+        assert "oauth-srv" in mgr._entries
+
+        from hermes_cli.mcp_config import cmd_mcp_remove
+        cmd_mcp_remove(_make_args(name="oauth-srv"))
+
+        assert "oauth-srv" not in mgr._entries
+
+
+class TestMcpLogin:
+    def test_login_rejects_unknown_server(self, tmp_path, capsys):
+        _seed_config(tmp_path, {})
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="ghost"))
+        out = capsys.readouterr().out
+        assert "not found" in out
+
+    def test_login_rejects_non_oauth_server(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "srv": {"url": "https://example.com/mcp", "auth": "header"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="srv"))
+        out = capsys.readouterr().out
+        assert "not configured for OAuth" in out
+
+    def test_login_rejects_stdio_server(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "srv": {"command": "npx", "args": ["some-server"]},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="srv"))
+        out = capsys.readouterr().out
+        assert "no URL" in out or "not an OAuth" in out
+

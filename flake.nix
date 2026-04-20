@@ -2,7 +2,7 @@
   description = "Hermes Agent - AI agent framework by Nous Research";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -19,11 +19,20 @@
       url = "github:pyproject-nix/build-system-pkgs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    npm-lockfile-fix = {
+      url = "github:jeslie0/npm-lockfile-fix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = inputs:
+  outputs =
+    inputs:
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+      ];
 
       imports = [
         ./nix/packages.nix

@@ -37,7 +37,9 @@ const config: Config = {
         language: ['en'],
         indexBlog: false,
         docsRouteBasePath: '/',
-        highlightSearchTermsOnTargetPage: true,
+        // Disabled: appends ?_highlight=... to URLs (before the #anchor),
+        // which makes copy/pasted doc links ugly. Ctrl+F on the page is fine.
+        highlightSearchTermsOnTargetPage: false,
       }),
     ],
   ],
@@ -65,6 +67,12 @@ const config: Config = {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,
     },
+    docs: {
+      sidebar: {
+        hideable: true,
+        autoCollapseCategories: true,
+      },
+    },
     navbar: {
       title: 'Hermes Agent',
       logo: {
@@ -77,6 +85,11 @@ const config: Config = {
           sidebarId: 'docs',
           position: 'left',
           label: 'Docs',
+        },
+        {
+          to: '/skills',
+          label: 'Skills',
+          position: 'left',
         },
         {
           href: 'https://hermes-agent.nousresearch.com',

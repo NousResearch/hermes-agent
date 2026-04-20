@@ -5,7 +5,6 @@ Pure display functions with no HermesCLI state dependency.
 
 import json
 import logging
-import os
 import shutil
 import subprocess
 import threading
@@ -90,12 +89,6 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
-COMPACT_BANNER = """
-[bold #FFD700]╔══════════════════════════════════════════════════════════════╗[/]
-[bold #FFD700]║[/]  [#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
-[bold #FFD700]║[/]  [#CD7F32]Messenger of the Digital Gods[/]    [dim #B8860B]Nous Research[/]   [bold #FFD700]║[/]
-[bold #FFD700]╚══════════════════════════════════════════════════════════════╝[/]
-"""
 
 
 # =========================================================================
@@ -190,6 +183,79 @@ def check_for_updates() -> Optional[int]:
     return behind
 
 
+def _resolve_repo_dir() -> Optional[Path]:
+    """Return the active Hermes git checkout, or None if this isn't a git install."""
+    hermes_home = get_hermes_home()
+    repo_dir = hermes_home / "hermes-agent"
+    if not (repo_dir / ".git").exists():
+        repo_dir = Path(__file__).parent.parent.resolve()
+    return repo_dir if (repo_dir / ".git").exists() else None
+
+
+def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
+    """Resolve a git revision to an 8-character short hash."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=8", rev],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
+def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
+    """Return upstream/local git hashes for the startup banner."""
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return None
+
+    upstream = _git_short_hash(repo_dir, "origin/main")
+    local = _git_short_hash(repo_dir, "HEAD")
+    if not upstream or not local:
+        return None
+
+    ahead = 0
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            ahead = int((result.stdout or "0").strip() or "0")
+    except Exception:
+        ahead = 0
+
+    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+
+
+def format_banner_version_label() -> str:
+    """Return the version label shown in the startup banner title."""
+    base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
+    state = get_git_banner_state()
+    if not state:
+        return base
+
+    upstream = state["upstream"]
+    local = state["local"]
+    ahead = int(state.get("ahead") or 0)
+
+    if ahead <= 0 or upstream == local:
+        return f"{base} · upstream {upstream}"
+
+    carried_word = "commit" if ahead == 1 else "commits"
+    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
+
+
 # =========================================================================
 # Non-blocking update check
 # =========================================================================
@@ -222,10 +288,16 @@ def _format_context_length(tokens: int) -> str:
     """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
     if tokens >= 1_000_000:
         val = tokens / 1_000_000
-        return f"{val:g}M"
+        rounded = round(val)
+        if abs(val - rounded) < 0.05:
+            return f"{rounded}M"
+        return f"{val:.1f}M"
     elif tokens >= 1_000:
         val = tokens / 1_000
-        return f"{val:g}K"
+        rounded = round(val)
+        if abs(val - rounded) < 0.05:
+            return f"{rounded}K"
+        return f"{val:.1f}K"
     return str(tokens)
 
 
@@ -258,7 +330,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
     """
-    from model_tools import check_tool_availability
+    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -267,8 +339,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     disabled_tools = set()
+    # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
+    # homeassistant) — they show as unavailable at banner time because the
+    # check hasn't run yet, but they aren't misconfigured.
+    lazy_tools = set()
     for item in unavailable_toolsets:
-        disabled_tools.update(item.get("tools", []))
+        toolset_name = item.get("name", "")
+        ts_req = TOOLSET_REQUIREMENTS.get(toolset_name, {})
+        tools_in_ts = item.get("tools", [])
+        if ts_req.get("check_fn"):
+            lazy_tools.update(tools_in_ts)
+        else:
+            disabled_tools.update(tools_in_ts)
 
     layout_table = Table.grid(padding=(0, 2))
     layout_table.add_column("left", justify="center")
@@ -328,6 +410,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         for name in sorted(tool_names):
             if name in disabled_tools:
                 colored_names.append(f"[red]{name}[/]")
+            elif name in lazy_tools:
+                colored_names.append(f"[yellow]{name}[/]")
             else:
                 colored_names.append(f"[{text}]{name}[/]")
 
@@ -347,6 +431,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                     colored_names.append("[dim]...[/]")
                 elif name in disabled_tools:
                     colored_names.append(f"[red]{name}[/]")
+                elif name in lazy_tools:
+                    colored_names.append(f"[yellow]{name}[/]")
                 else:
                     colored_names.append(f"[{text}]{name}[/]")
             tools_str = ", ".join(colored_names)
@@ -403,16 +489,26 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
+    # Show active profile name when not 'default'
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _profile_name = get_active_profile_name()
+        if _profile_name and _profile_name != "default":
+            right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
+    except Exception:
+        pass  # Never break the banner over a profiles.py bug
+
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
     # Update check — use prefetched result if available
     try:
         behind = get_update_result(timeout=0.5)
         if behind and behind > 0:
+            from hermes_cli.config import recommended_update_command
             commits_word = "commit" if behind == 1 else "commits"
             right_lines.append(
                 f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-                f"[dim yellow] — run [bold]hermes update[/bold] to update[/]"
+                f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
             )
     except Exception:
         pass  # Never break the banner over an update check
@@ -425,7 +521,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     border_color = _skin_color("banner_border", "#CD7F32")
     outer_panel = Panel(
         layout_table,
-        title=f"[bold {title_color}]{agent_name} v{VERSION} ({RELEASE_DATE})[/]",
+        title=f"[bold {title_color}]{format_banner_version_label()}[/]",
         border_style=border_color,
         padding=(0, 2),
     )

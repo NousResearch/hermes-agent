@@ -1,12 +1,60 @@
 """Shared utility functions for hermes-agent."""
 
 import json
+import logging
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Union
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+
+TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def is_truthy_value(value: Any, default: bool = False) -> bool:
+    """Coerce bool-ish values using the project's shared truthy string set."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in TRUTHY_STRINGS
+    return bool(value)
+
+
+def env_var_enabled(name: str, default: str = "") -> bool:
+    """Return True when an environment variable is set to a truthy value."""
+    return is_truthy_value(os.getenv(name, default), default=False)
+
+
+def _preserve_file_mode(path: Path) -> "int | None":
+    """Capture the permission bits of *path* if it exists, else ``None``."""
+    try:
+        return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    except OSError:
+        return None
+
+
+def _restore_file_mode(path: Path, mode: "int | None") -> None:
+    """Re-apply *mode* to *path* after an atomic replace.
+
+    ``tempfile.mkstemp`` creates files with 0o600 (owner-only).  After
+    ``os.replace`` swaps the temp file into place the target inherits
+    those restrictive permissions, breaking Docker / NAS volume mounts
+    that rely on broader permissions set by the user.  Calling this
+    right after ``os.replace`` restores the original permissions.
+    """
+    if mode is None:
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 def atomic_json_write(
@@ -32,6 +80,8 @@ def atomic_json_write(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    original_mode = _preserve_file_mode(path)
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -49,6 +99,7 @@ def atomic_json_write(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        _restore_file_mode(path, original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -84,6 +135,8 @@ def atomic_yaml_write(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    original_mode = _preserve_file_mode(path)
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -97,6 +150,7 @@ def atomic_yaml_write(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        _restore_file_mode(path, original_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.
@@ -105,3 +159,38 @@ def atomic_yaml_write(
         except OSError:
             pass
         raise
+
+
+# ─── JSON Helpers ─────────────────────────────────────────────────────────────
+
+
+def safe_json_loads(text: str, default: Any = None) -> Any:
+    """Parse JSON, returning *default* on any parse error.
+
+    Replaces the ``try: json.loads(x) except (JSONDecodeError, TypeError)``
+    pattern duplicated across display.py, anthropic_adapter.py,
+    auxiliary_client.py, and others.
+    """
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
+
+
+# ─── Environment Variable Helpers ─────────────────────────────────────────────
+
+
+def env_int(key: str, default: int = 0) -> int:
+    """Read an environment variable as an integer, with fallback."""
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
+def env_bool(key: str, default: bool = False) -> bool:
+    """Read an environment variable as a boolean."""
+    return is_truthy_value(os.getenv(key, ""), default=default)

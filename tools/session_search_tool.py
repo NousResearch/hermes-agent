@@ -19,11 +19,33 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional, Union
 
-from agent.auxiliary_client import async_call_llm
+from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
+
+
+def _get_session_search_max_concurrency(default: int = 3) -> int:
+    """Read auxiliary.session_search.max_concurrency with sane bounds."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except ImportError:
+        return default
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get("session_search", {}) if isinstance(aux, dict) else {}
+    if not isinstance(task_config, dict):
+        return default
+    raw = task_config.get("max_concurrency")
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, 5))
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -90,31 +112,80 @@ def _truncate_around_matches(
     full_text: str, query: str, max_chars: int = MAX_SESSION_CHARS
 ) -> str:
     """
-    Truncate a conversation transcript to max_chars, centered around
-    where the query terms appear. Keeps content near matches, trims the edges.
+    Truncate a conversation transcript to *max_chars*, choosing a window
+    that maximises coverage of positions where the *query* actually appears.
+
+    Strategy (in priority order):
+    1. Try to find the full query as a phrase (case-insensitive).
+    2. If no phrase hit, look for positions where all query terms appear
+       within a 200-char proximity window (co-occurrence).
+    3. Fall back to individual term positions.
+
+    Once candidate positions are collected the function picks the window
+    start that covers the most of them.
     """
     if len(full_text) <= max_chars:
         return full_text
 
-    # Find the first occurrence of any query term
-    query_terms = query.lower().split()
     text_lower = full_text.lower()
-    first_match = len(full_text)
-    for term in query_terms:
-        pos = text_lower.find(term)
-        if pos != -1 and pos < first_match:
-            first_match = pos
+    query_lower = query.lower().strip()
+    match_positions: list[int] = []
 
-    if first_match == len(full_text):
-        # No match found, take from the start
-        first_match = 0
+    # --- 1. Full-phrase search ------------------------------------------------
+    phrase_pat = re.compile(re.escape(query_lower))
+    match_positions = [m.start() for m in phrase_pat.finditer(text_lower)]
 
-    # Center the window around the first match
-    half = max_chars // 2
-    start = max(0, first_match - half)
+    # --- 2. Proximity co-occurrence of all terms (within 200 chars) -----------
+    if not match_positions:
+        terms = query_lower.split()
+        if len(terms) > 1:
+            # Collect every occurrence of each term
+            term_positions: dict[str, list[int]] = {}
+            for t in terms:
+                term_positions[t] = [
+                    m.start() for m in re.finditer(re.escape(t), text_lower)
+                ]
+            # Slide through positions of the rarest term and check proximity
+            rarest = min(terms, key=lambda t: len(term_positions.get(t, [])))
+            for pos in term_positions.get(rarest, []):
+                if all(
+                    any(abs(p - pos) < 200 for p in term_positions.get(t, []))
+                    for t in terms
+                    if t != rarest
+                ):
+                    match_positions.append(pos)
+
+    # --- 3. Individual term positions (last resort) ---------------------------
+    if not match_positions:
+        terms = query_lower.split()
+        for t in terms:
+            for m in re.finditer(re.escape(t), text_lower):
+                match_positions.append(m.start())
+
+    if not match_positions:
+        # Nothing at all — take from the start
+        truncated = full_text[:max_chars]
+        suffix = "\n\n...[later conversation truncated]..." if max_chars < len(full_text) else ""
+        return truncated + suffix
+
+    # --- Pick window that covers the most match positions ---------------------
+    match_positions.sort()
+
+    best_start = 0
+    best_count = 0
+    for candidate in match_positions:
+        ws = max(0, candidate - max_chars // 4)  # bias: 25% before, 75% after
+        we = ws + max_chars
+        if we > len(full_text):
+            ws = max(0, len(full_text) - max_chars)
+            we = len(full_text)
+        count = sum(1 for p in match_positions if ws <= p < we)
+        if count > best_count:
+            best_count = count
+            best_start = ws
+
+    start = best_start
     end = min(len(full_text), start + max_chars)
-    if end - start < max_chars:
-        start = max(0, end - max_chars)
 
     truncated = full_text[start:end]
     prefix = "...[earlier conversation truncated]...\n\n" if start > 0 else ""
@@ -161,7 +232,15 @@ async def _summarize_session(
                 temperature=0.1,
                 max_tokens=MAX_SUMMARY_TOKENS,
             )
-            return response.choices[0].message.content.strip()
+            content = extract_content_or_reasoning(response)
+            if content:
+                return content
+            # Reasoning-only / empty — let the retry loop handle it
+            logging.warning("Session search LLM returned empty content (attempt %d/%d)", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))
+                continue
+            return content
         except RuntimeError:
             logging.warning("No auxiliary model available for session summarization")
             return None
@@ -178,10 +257,16 @@ async def _summarize_session(
                 return None
 
 
+# Sources that are excluded from session browsing/searching by default.
+# Third-party integrations (Paperclip agents, etc.) tag their sessions with
+# HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
+_HIDDEN_SESSION_SOURCES = ("tool",)
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5)  # fetch extra to skip current
+        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
 
         # Resolve current session lineage to exclude it
         current_root = None
@@ -227,7 +312,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         }, ensure_ascii=False)
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
-        return json.dumps({"success": False, "error": f"Failed to list recent sessions: {e}"}, ensure_ascii=False)
+        return tool_error(f"Failed to list recent sessions: {e}", success=False)
 
 
 def session_search(
@@ -244,9 +329,17 @@ def session_search(
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:
-        return json.dumps({"success": False, "error": "Session database not available."}, ensure_ascii=False)
+        return tool_error("Session database not available.", success=False)
 
-    limit = min(limit, 5)  # Cap at 5 sessions to avoid excessive LLM calls
+    # Defensive: models (especially open-source) may send non-int limit values
+    # (None when JSON null, string "int", or even a type object).  Coerce to a
+    # safe integer before any arithmetic/comparison to prevent TypeError.
+    if not isinstance(limit, int):
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 3
+    limit = max(1, min(limit, 5))  # Clamp to [1, 5]
 
     # Recent sessions mode: when query is empty, return metadata for recent sessions.
     # No LLM calls — just DB queries for titles, previews, timestamps.
@@ -265,6 +358,7 @@ def session_search(
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             limit=50,  # Get more matches to find unique sessions
             offset=0,
         )
@@ -350,9 +444,16 @@ def session_search(
 
         # Summarize all sessions in parallel
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize all sessions in parallel."""
+            """Summarize all sessions with bounded concurrency."""
+            max_concurrency = min(_get_session_search_max_concurrency(), max(1, len(tasks)))
+            semaphore = asyncio.Semaphore(max_concurrency)
+
+            async def _bounded_summary(text: str, meta: Dict[str, Any]) -> Optional[str]:
+                async with semaphore:
+                    return await _summarize_session(text, query, meta)
+
             coros = [
-                _summarize_session(text, query, meta)
+                _bounded_summary(text, meta)
                 for _, _, text, meta in tasks
             ]
             return await asyncio.gather(*coros, return_exceptions=True)
@@ -377,23 +478,30 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, _, _), result in zip(tasks, results):
+        for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
-                    session_id,
-                    result,
-                    exc_info=True,
+                    session_id, result, exc_info=True,
                 )
-                continue
+                result = None
+
+            entry = {
+                "session_id": session_id,
+                "when": _format_timestamp(match_info.get("session_started")),
+                "source": match_info.get("source", "unknown"),
+                "model": match_info.get("model"),
+            }
+
             if result:
-                summaries.append({
-                    "session_id": session_id,
-                    "when": _format_timestamp(match_info.get("session_started")),
-                    "source": match_info.get("source", "unknown"),
-                    "model": match_info.get("model"),
-                    "summary": result,
-                })
+                entry["summary"] = result
+            else:
+                # Fallback: raw preview so matched sessions aren't silently
+                # dropped when the summarizer is unavailable (fixes #3409).
+                preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
+                entry["summary"] = f"[Raw preview — summarization unavailable]\n{preview}"
+
+            summaries.append(entry)
 
         return json.dumps({
             "success": True,
@@ -405,7 +513,7 @@ def session_search(
 
     except Exception as e:
         logging.error("Session search failed: %s", e, exc_info=True)
-        return json.dumps({"success": False, "error": f"Search failed: {str(e)}"}, ensure_ascii=False)
+        return tool_error(f"Search failed: {str(e)}", success=False)
 
 
 def check_session_search_requirements() -> bool:
@@ -465,7 +573,7 @@ SESSION_SEARCH_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="session_search",

@@ -24,7 +24,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse, urlunparse
@@ -83,6 +83,43 @@ class SkillBundle:
     identifier: str
     trust_level: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+def _normalize_bundle_path(path_value: str, *, field_name: str, allow_nested: bool) -> str:
+    """Normalize and validate bundle-controlled paths before touching disk."""
+    if not isinstance(path_value, str):
+        raise ValueError(f"Unsafe {field_name}: expected a string")
+
+    raw = path_value.strip()
+    if not raw:
+        raise ValueError(f"Unsafe {field_name}: empty path")
+
+    normalized = raw.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    parts = [part for part in path.parts if part not in ("", ".")]
+
+    if normalized.startswith("/") or path.is_absolute():
+        raise ValueError(f"Unsafe {field_name}: {path_value}")
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Unsafe {field_name}: {path_value}")
+    if re.fullmatch(r"[A-Za-z]:", parts[0]):
+        raise ValueError(f"Unsafe {field_name}: {path_value}")
+    if not allow_nested and len(parts) != 1:
+        raise ValueError(f"Unsafe {field_name}: {path_value}")
+
+    return "/".join(parts)
+
+
+def _validate_skill_name(name: str) -> str:
+    return _normalize_bundle_path(name, field_name="skill name", allow_nested=False)
+
+
+def _validate_category_name(category: str) -> str:
+    return _normalize_bundle_path(category, field_name="category", allow_nested=False)
+
+
+def _validate_bundle_rel_path(rel_path: str) -> str:
+    return _normalize_bundle_path(rel_path, field_name="bundle file path", allow_nested=True)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +288,7 @@ class GitHubSource(SkillSource):
         {"repo": "openai/skills", "path": "skills/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
+        {"repo": "garrytan/gstack", "path": ""},
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -258,9 +296,19 @@ class GitHubSource(SkillSource):
         self.taps = list(self.DEFAULT_TAPS)
         if extra_taps:
             self.taps.extend(extra_taps)
+        # Per-instance cache: repo -> (default_branch, tree_entries)
+        # Survives within a single search/install flow, avoiding redundant API calls.
+        self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        # Set when GitHub returns 403 with rate limit exhausted
+        self._rate_limited: bool = False
 
     def source_id(self) -> str:
         return "github"
+
+    @property
+    def is_rate_limited(self) -> bool:
+        """Whether GitHub API rate limit was hit during operations."""
+        return self._rate_limited
 
     def trust_level_for(self, identifier: str) -> str:
         # identifier format: "owner/repo/path/to/skill"
@@ -392,10 +440,11 @@ class GitHubSource(SkillSource):
                 continue
 
             dir_name = entry["name"]
-            if dir_name.startswith(".") or dir_name.startswith("_"):
+            if dir_name.startswith((".", "_")):
                 continue
 
-            skill_identifier = f"{repo}/{path.rstrip('/')}/{dir_name}"
+            prefix = path.rstrip("/")
+            skill_identifier = f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}"
             meta = self.inspect(skill_identifier)
             if meta:
                 skills.append(meta)
@@ -403,6 +452,69 @@ class GitHubSource(SkillSource):
         # Cache the results
         self._write_cache(cache_key, [self._meta_to_dict(s) for s in skills])
         return skills
+
+    # -- Repo tree cache (avoids redundant API calls) --
+
+    def _get_repo_tree(self, repo: str) -> Optional[Tuple[str, List[dict]]]:
+        """Get cached or fresh repo tree.
+
+        Returns ``(default_branch, tree_entries)`` or ``None``.
+        A single install can call ``_download_directory_via_tree`` and
+        ``_find_skill_in_repo_tree`` multiple times for the same repo — this
+        cache eliminates the redundant ``GET /repos/{repo}`` +
+        ``GET /repos/{repo}/git/trees/{branch}`` round-trips (previously up to
+        6 duplicated pairs per install, consuming ~12 of the 60/hr
+        unauthenticated rate limit for nothing).
+        """
+        if repo in self._tree_cache:
+            return self._tree_cache[repo]
+
+        headers = self.auth.get_headers()
+
+        # Resolve default branch
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}",
+                headers=headers, timeout=15, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                self._check_rate_limit_response(resp)
+                return None
+            default_branch = resp.json().get("default_branch", "main")
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        # Fetch recursive tree
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+                params={"recursive": "1"},
+                headers=headers, timeout=30, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                self._check_rate_limit_response(resp)
+                return None
+            tree_data = resp.json()
+            if tree_data.get("truncated"):
+                logger.debug("Git tree truncated for %s, cannot cache", repo)
+                return None
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        entries = tree_data.get("tree", [])
+        self._tree_cache[repo] = (default_branch, entries)
+        return (default_branch, entries)
+
+    def _check_rate_limit_response(self, resp: "httpx.Response") -> None:
+        """Flag the instance as rate-limited when GitHub returns 403 + exhausted quota."""
+        if resp.status_code == 403:
+            remaining = resp.headers.get("X-RateLimit-Remaining", "")
+            if remaining == "0":
+                self._rate_limited = True
+                logger.warning(
+                    "GitHub API rate limit exhausted (unauthenticated: 60 req/hr). "
+                    "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr."
+                )
 
     def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
         """Recursively download all text files from a GitHub directory.
@@ -419,40 +531,34 @@ class GitHubSource(SkillSource):
         return self._download_directory_recursive(repo, path)
 
     def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
-        """Download an entire directory using the Git Trees API (single request)."""
+        """Download an entire directory using the Git Trees API (single request).
+
+        Returns:
+            dict of files if the path exists and has content,
+            empty dict ``{}`` if the tree is cached but the path doesn't exist
+            (prevents unnecessary Contents API fallback),
+            ``None`` if the tree couldn't be fetched (triggers Contents API fallback).
+        """
         path = path.rstrip("/")
-        headers = self.auth.get_headers()
 
-        # Resolve the default branch via the repo endpoint
-        try:
-            repo_url = f"https://api.github.com/repos/{repo}"
-            resp = httpx.get(repo_url, headers=headers, timeout=15, follow_redirects=True)
-            if resp.status_code != 200:
-                return None
-            default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, ValueError):
+        cached = self._get_repo_tree(repo)
+        if cached is None:
             return None
+        _default_branch, tree_entries = cached
 
-        # Fetch the full recursive tree (branch name works as tree-ish)
-        try:
-            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{default_branch}"
-            resp = httpx.get(
-                tree_url, params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            tree_data = resp.json()
-            if tree_data.get("truncated"):
-                logger.debug("Git tree truncated for %s, falling back to Contents API", repo)
-                return None
-        except (httpx.HTTPError, ValueError):
-            return None
+        # Check if ANY entry lives under the target path
+        prefix = f"{path}/"
+        has_entries = any(
+            item.get("path", "").startswith(prefix) for item in tree_entries
+        )
+        if not has_entries:
+            # Path definitively doesn't exist in the repo — return empty
+            # instead of None to skip the Contents API fallback.
+            return {}
 
         # Filter to blobs under our target path and fetch content
-        prefix = f"{path}/"
         files: Dict[str, str] = {}
-        for item in tree_data.get("tree", []):
+        for item in tree_entries:
             if item.get("type") != "blob":
                 continue
             item_path = item.get("path", "")
@@ -509,38 +615,14 @@ class GitHubSource(SkillSource):
         handles deeply nested directory structures like
         ``cli-tool/components/skills/development/<skill>/SKILL.md``.
         """
-        # Get default branch
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}",
-                headers=self.auth.get_headers(),
-                timeout=15,
-                follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, json.JSONDecodeError):
+        cached = self._get_repo_tree(repo)
+        if cached is None:
             return None
-
-        # Get recursive tree (single API call for the entire repo)
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
-                params={"recursive": "1"},
-                headers=self.auth.get_headers(),
-                timeout=30,
-                follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            tree_data = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
-            return None
+        _default_branch, tree_entries = cached
 
         # Look for SKILL.md files inside directories named <skill_name>
         skill_md_suffix = f"/{skill_name}/SKILL.md"
-        for entry in tree_data.get("tree", []):
+        for entry in tree_entries:
             if entry.get("type") != "blob":
                 continue
             path = entry.get("path", "")
@@ -562,6 +644,7 @@ class GitHubSource(SkillSource):
             )
             if resp.status_code == 200:
                 return resp.text
+            self._check_rate_limit_response(resp)
         except httpx.HTTPError as e:
             logger.debug("GitHub contents API fetch failed: %s", e)
         return None
@@ -699,6 +782,12 @@ class WellKnownSkillSource(SkillSource):
         if not parsed:
             return None
 
+        try:
+            skill_name = _validate_skill_name(parsed["skill_name"])
+        except ValueError:
+            logger.warning("Well-known skill identifier contained unsafe skill name: %s", identifier)
+            return None
+
         entry = self._index_entry(parsed["index_url"], parsed["skill_name"])
         if not entry:
             return None
@@ -711,19 +800,28 @@ class WellKnownSkillSource(SkillSource):
         for rel_path in files:
             if not isinstance(rel_path, str) or not rel_path:
                 continue
-            text = self._fetch_text(f"{parsed['skill_url']}/{rel_path}")
+            try:
+                safe_rel_path = _validate_bundle_rel_path(rel_path)
+            except ValueError:
+                logger.warning(
+                    "Well-known skill %s advertised unsafe file path: %r",
+                    identifier,
+                    rel_path,
+                )
+                return None
+            text = self._fetch_text(f"{parsed['skill_url']}/{safe_rel_path}")
             if text is None:
                 return None
-            downloaded[rel_path] = text
+            downloaded[safe_rel_path] = text
 
         if "SKILL.md" not in downloaded:
             return None
 
         return SkillBundle(
-            name=parsed["skill_name"],
+            name=skill_name,
             files=downloaded,
             source="well-known",
-            identifier=self._wrap_identifier(parsed["base_url"], parsed["skill_name"]),
+            identifier=self._wrap_identifier(parsed["base_url"], skill_name),
             trust_level="community",
             metadata={
                 "index_url": parsed["index_url"],
@@ -925,19 +1023,10 @@ class SkillsShSource(SkillSource):
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         canonical = self._normalize_identifier(identifier)
-        detail: Optional[dict] = None
-        for candidate in self._candidate_identifiers(canonical):
-            meta = self.github.inspect(candidate)
-            if meta:
-                detail = self._fetch_detail_page(canonical)
-                return self._finalize_inspect_meta(meta, canonical, detail)
-
         detail = self._fetch_detail_page(canonical)
-        resolved = self._discover_identifier(canonical, detail=detail)
-        if resolved:
-            meta = self.github.inspect(resolved)
-            if meta:
-                return self._finalize_inspect_meta(meta, canonical, detail)
+        meta = self._resolve_github_meta(canonical, detail=detail)
+        if meta:
+            return self._finalize_inspect_meta(meta, canonical, detail)
         return None
 
     def _featured_skills(self, limit: int) -> List[SkillMeta]:
@@ -1099,6 +1188,13 @@ class SkillsShSource(SkillSource):
                 if self._matches_skill_tokens(meta, tokens):
                     return meta.identifier
 
+        # Prefer a single recursive tree lookup before brute-forcing every
+        # top-level directory. This avoids large request bursts on categorized
+        # repos like borghei/claude-skills.
+        tree_result = self.github._find_skill_in_repo_tree(repo, skill_token)
+        if tree_result:
+            return tree_result
+
         # Fallback: scan repo root for directories that might contain skills
         try:
             root_url = f"https://api.github.com/repos/{repo}/contents/"
@@ -1111,7 +1207,7 @@ class SkillsShSource(SkillSource):
                         if entry.get("type") != "dir":
                             continue
                         dir_name = entry["name"]
-                        if dir_name.startswith(".") or dir_name.startswith("_"):
+                        if dir_name.startswith((".", "_")):
                             continue
                         if dir_name in ("skills", ".agents", ".claude"):
                             continue  # already tried
@@ -1131,14 +1227,17 @@ class SkillsShSource(SkillSource):
         except Exception:
             pass
 
-        # Final fallback: use the GitHub Trees API to find the skill anywhere
-        # in the repo tree.  This handles deeply nested structures like
-        # cli-tool/components/skills/development/<skill>/ that the shallow
-        # scan above can't reach.
-        tree_result = self.github._find_skill_in_repo_tree(repo, skill_token)
-        if tree_result:
-            return tree_result
+        return None
 
+    def _resolve_github_meta(self, identifier: str, detail: Optional[dict] = None) -> Optional[SkillMeta]:
+        for candidate in self._candidate_identifiers(identifier):
+            meta = self.github.inspect(candidate)
+            if meta:
+                return meta
+
+        resolved = self._discover_identifier(identifier, detail=detail)
+        if resolved:
+            return self.github.inspect(resolved)
         return None
 
     def _finalize_inspect_meta(self, meta: SkillMeta, canonical: str, detail: Optional[dict]) -> SkillMeta:
@@ -1264,10 +1363,15 @@ class SkillsShSource(SkillSource):
 
     @staticmethod
     def _normalize_identifier(identifier: str) -> str:
-        if identifier.startswith("skills-sh/"):
-            return identifier[len("skills-sh/"):]
-        if identifier.startswith("skills.sh/"):
-            return identifier[len("skills.sh/"):]
+        prefix_aliases = (
+            "skills-sh/",
+            "skills.sh/",
+            "skils-sh/",
+            "skils.sh/",
+        )
+        for prefix in prefix_aliases:
+            if identifier.startswith(prefix):
+                return identifier[len(prefix):]
         return identifier
 
     @staticmethod
@@ -1322,7 +1426,7 @@ class ClawHubSource(SkillSource):
         if isinstance(tags, list):
             return [str(t) for t in tags]
         if isinstance(tags, dict):
-            return [str(k) for k in tags.keys() if str(k) != "latest"]
+            return [str(k) for k in tags if str(k) != "latest"]
         return []
 
     @staticmethod
@@ -1728,7 +1832,10 @@ class ClawHubSource(SkillSource):
                     follow_redirects=True,
                 )
                 if resp.status_code == 429:
-                    retry_after = int(resp.headers.get("retry-after", "5"))
+                    try:
+                        retry_after = int(resp.headers.get("retry-after", "5"))
+                    except (ValueError, TypeError):
+                        retry_after = 5
                     retry_after = min(retry_after, 15)  # Cap wait time
                     logger.debug(
                         "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
@@ -1744,9 +1851,10 @@ class ClawHubSource(SkillSource):
                     for info in zf.infolist():
                         if info.is_dir():
                             continue
-                        # Sanitize path — strip leading slashes and ..
-                        name = info.filename.lstrip("/")
-                        if ".." in name or name.startswith("/"):
+                        try:
+                            name = _validate_bundle_rel_path(info.filename)
+                        except ValueError:
+                            logger.debug("Skipping unsafe ZIP member path: %s", info.filename)
                             continue
                         # Only extract text-sized files (skip large binaries)
                         if info.file_size > 500_000:
@@ -1891,7 +1999,6 @@ class LobeHubSource(SkillSource):
     """
 
     INDEX_URL = "https://chat-agents.lobehub.com/index.json"
-    REPO = "lobehub/lobe-chat-agents"
 
     def source_id(self) -> str:
         return "lobehub"
@@ -2054,7 +2161,11 @@ class OptionalSkillSource(SkillSource):
     """
 
     def __init__(self):
-        self._optional_dir = Path(__file__).parent.parent / "optional-skills"
+        from hermes_constants import get_optional_skills_dir
+
+        self._optional_dir = get_optional_skills_dir(
+            Path(__file__).parent.parent / "optional-skills"
+        )
 
     def source_id(self) -> str:
         return "official"
@@ -2325,10 +2436,6 @@ class HubLockFile:
             result.append({"name": name, **entry})
         return result
 
-    def is_hub_installed(self, name: str) -> bool:
-        data = self.load()
-        return name in data["installed"]
-
 
 # ---------------------------------------------------------------------------
 # Taps management
@@ -2415,13 +2522,19 @@ def ensure_hub_dirs() -> None:
 def quarantine_bundle(bundle: SkillBundle) -> Path:
     """Write a skill bundle to the quarantine directory for scanning."""
     ensure_hub_dirs()
-    dest = QUARANTINE_DIR / bundle.name
+    skill_name = _validate_skill_name(bundle.name)
+    validated_files: List[Tuple[str, Union[str, bytes]]] = []
+    for rel_path, file_content in bundle.files.items():
+        safe_rel_path = _validate_bundle_rel_path(rel_path)
+        validated_files.append((safe_rel_path, file_content))
+
+    dest = QUARANTINE_DIR / skill_name
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
 
-    for rel_path, file_content in bundle.files.items():
-        file_dest = dest / rel_path
+    for rel_path, file_content in validated_files:
+        file_dest = dest.joinpath(*rel_path.split("/"))
         file_dest.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(file_content, bytes):
             file_dest.write_bytes(file_content)
@@ -2439,13 +2552,36 @@ def install_from_quarantine(
     scan_result: ScanResult,
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
-    if category:
-        install_dir = SKILLS_DIR / category / skill_name
+    safe_skill_name = _validate_skill_name(skill_name)
+    safe_category = _validate_category_name(category) if category else ""
+    quarantine_resolved = quarantine_path.resolve()
+    quarantine_root = QUARANTINE_DIR.resolve()
+    if not quarantine_resolved.is_relative_to(quarantine_root):
+        raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
+
+    if safe_category:
+        install_dir = SKILLS_DIR / safe_category / safe_skill_name
     else:
-        install_dir = SKILLS_DIR / skill_name
+        install_dir = SKILLS_DIR / safe_skill_name
 
     if install_dir.exists():
         shutil.rmtree(install_dir)
+
+    # Warn (but don't block) if SKILL.md is very large
+    skill_md = quarantine_path / "SKILL.md"
+    if skill_md.exists():
+        try:
+            skill_size = skill_md.stat().st_size
+            if skill_size > 100_000:
+                logger.warning(
+                    "Skill '%s' has a large SKILL.md (%s chars). "
+                    "Large skills consume significant context when loaded. "
+                    "Consider asking the author to split it into smaller files.",
+                    safe_skill_name,
+                    f"{skill_size:,}",
+                )
+        except OSError:
+            pass
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
@@ -2453,7 +2589,7 @@ def install_from_quarantine(
     # Record in lock file
     lock = HubLockFile()
     lock.record_install(
-        name=skill_name,
+        name=safe_skill_name,
         source=bundle.source,
         identifier=bundle.identifier,
         trust_level=bundle.trust_level,
@@ -2465,7 +2601,7 @@ def install_from_quarantine(
     )
 
     append_audit_log(
-        "INSTALL", skill_name, bundle.source,
+        "INSTALL", safe_skill_name, bundle.source,
         bundle.trust_level, scan_result.verdict,
         content_hash(install_dir),
     )
@@ -2562,6 +2698,222 @@ def check_for_skill_updates(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Hermes centralized index source
+# ---------------------------------------------------------------------------
+
+HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
+HERMES_INDEX_CACHE_FILE = INDEX_CACHE_DIR / "hermes-index.json"
+HERMES_INDEX_TTL = 6 * 3600  # 6 hours
+
+
+def _load_hermes_index() -> Optional[dict]:
+    """Fetch the centralized skills index, with local cache.
+
+    The index is a JSON file hosted on the docs site, rebuilt daily by CI.
+    We cache it locally for HERMES_INDEX_TTL seconds to avoid repeated
+    downloads within a session.
+    """
+    # Check local cache
+    if HERMES_INDEX_CACHE_FILE.exists():
+        try:
+            age = time.time() - HERMES_INDEX_CACHE_FILE.stat().st_mtime
+            if age < HERMES_INDEX_TTL:
+                return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Fetch from docs site
+    try:
+        resp = httpx.get(HERMES_INDEX_URL, timeout=15, follow_redirects=True)
+        if resp.status_code != 200:
+            logger.debug("Hermes index fetch returned %d", resp.status_code)
+            return _load_stale_index_cache()
+        data = resp.json()
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        logger.debug("Hermes index fetch failed: %s", e)
+        return _load_stale_index_cache()
+
+    # Validate structure
+    if not isinstance(data, dict) or "skills" not in data:
+        return _load_stale_index_cache()
+
+    # Cache locally
+    try:
+        HERMES_INDEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HERMES_INDEX_CACHE_FILE.write_text(json.dumps(data))
+    except OSError:
+        pass
+
+    return data
+
+
+def _load_stale_index_cache() -> Optional[dict]:
+    """Fall back to stale cache when the network fetch fails."""
+    if HERMES_INDEX_CACHE_FILE.exists():
+        try:
+            return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    return None
+
+
+class HermesIndexSource(SkillSource):
+    """Skill source backed by the centralized Hermes Skills Index.
+
+    The index is a JSON catalog published to the docs site and rebuilt
+    daily by CI.  It contains metadata + resolved GitHub paths for every
+    skill, eliminating the need for users to hit the GitHub API for
+    search or path discovery.
+
+    When the index is unavailable, all methods return empty / None so
+    downstream sources take over transparently.
+    """
+
+    def __init__(self, auth: GitHubAuth):
+        self._index: Optional[dict] = None
+        self._loaded = False
+        self.auth = auth
+        # Lazily create GitHubSource for fetch — only used when actually
+        # downloading files, which requires real GitHub API calls.
+        self._github: Optional[GitHubSource] = None
+
+    def _ensure_loaded(self) -> dict:
+        if not self._loaded:
+            self._index = _load_hermes_index()
+            self._loaded = True
+        return self._index or {}
+
+    def _get_github(self) -> GitHubSource:
+        if self._github is None:
+            self._github = GitHubSource(auth=self.auth)
+        return self._github
+
+    def source_id(self) -> str:
+        return "hermes-index"
+
+    @property
+    def is_available(self) -> bool:
+        """Whether the index is loaded and has skills."""
+        index = self._ensure_loaded()
+        return bool(index.get("skills"))
+
+    def trust_level_for(self, identifier: str) -> str:
+        index = self._ensure_loaded()
+        for skill in index.get("skills", []):
+            if skill.get("identifier") == identifier:
+                return skill.get("trust_level", "community")
+        return "community"
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        """Search the cached index.  Zero API calls."""
+        index = self._ensure_loaded()
+        skills = index.get("skills", [])
+        if not skills:
+            return []
+
+        if not query.strip():
+            # No query — return featured/popular
+            return [self._to_meta(s) for s in skills[:limit]]
+
+        query_lower = query.lower()
+        results: List[SkillMeta] = []
+        for s in skills:
+            searchable = f"{s.get('name', '')} {s.get('description', '')} {' '.join(s.get('tags', []))}".lower()
+            if query_lower in searchable:
+                results.append(self._to_meta(s))
+                if len(results) >= limit:
+                    break
+        return results
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        """Fetch a skill using the resolved path from the index.
+
+        If the index has a ``resolved_github_id`` for this skill, we skip
+        the entire candidate/discovery chain and go directly to GitHub
+        with the exact path.  This reduces install from ~31 API calls to
+        just the file content downloads (~5-22 depending on skill size).
+        """
+        index = self._ensure_loaded()
+        entry = self._find_entry(identifier, index)
+        if not entry:
+            return None
+
+        # Use resolved path if available
+        resolved = entry.get("resolved_github_id")
+        if resolved:
+            bundle = self._get_github().fetch(resolved)
+            if bundle:
+                bundle.source = entry.get("source", "hermes-index")
+                bundle.identifier = identifier
+                return bundle
+
+        # Fall back to identifier-based fetch via repo/path
+        repo = entry.get("repo", "")
+        path = entry.get("path", "")
+        if repo and path:
+            github_id = f"{repo}/{path}"
+            bundle = self._get_github().fetch(github_id)
+            if bundle:
+                bundle.source = entry.get("source", "hermes-index")
+                bundle.identifier = identifier
+                return bundle
+
+        return None
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        """Return metadata from the index.  Zero API calls."""
+        index = self._ensure_loaded()
+        entry = self._find_entry(identifier, index)
+        if entry:
+            return self._to_meta(entry)
+        return None
+
+    def _find_entry(self, identifier: str, index: dict) -> Optional[dict]:
+        """Look up a skill in the index by identifier or name."""
+        skills = index.get("skills", [])
+
+        # Exact identifier match
+        for s in skills:
+            if s.get("identifier") == identifier:
+                return s
+
+        # Try without source prefix (e.g. "skills-sh/" stripped)
+        normalized = identifier
+        for prefix in ("skills-sh/", "skills.sh/", "official/", "github/", "clawhub/"):
+            if identifier.startswith(prefix):
+                normalized = identifier[len(prefix):]
+                break
+
+        # Match on normalized identifier or name
+        for s in skills:
+            sid = s.get("identifier", "")
+            # Strip prefix from stored identifier too
+            stored_normalized = sid
+            for prefix in ("skills-sh/", "skills.sh/", "official/", "github/", "clawhub/"):
+                if sid.startswith(prefix):
+                    stored_normalized = sid[len(prefix):]
+                    break
+            if stored_normalized == normalized:
+                return s
+
+        return None
+
+    @staticmethod
+    def _to_meta(entry: dict) -> SkillMeta:
+        return SkillMeta(
+            name=entry.get("name", ""),
+            description=entry.get("description", ""),
+            source=entry.get("source", "hermes-index"),
+            identifier=entry.get("identifier", ""),
+            trust_level=entry.get("trust_level", "community"),
+            repo=entry.get("repo"),
+            path=entry.get("path"),
+            tags=entry.get("tags", []),
+            extra=entry.get("extra", {}),
+        )
+
+
 def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
     """
     Create all configured source adapters.
@@ -2575,6 +2927,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
 
     sources: List[SkillSource] = [
         OptionalSkillSource(),        # Official optional skills (highest priority)
+        HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
         GitHubSource(auth=auth, extra_taps=extra_taps),
@@ -2586,19 +2939,106 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     return sources
 
 
-def unified_search(query: str, sources: List[SkillSource],
-                   source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
-    """Search all sources and merge results."""
-    all_results: List[SkillMeta] = []
+def _search_one_source(
+    src: SkillSource, query: str, limit: int
+) -> Tuple[str, List[SkillMeta]]:
+    """Search a single source.  Runs in a thread for parallelism."""
+    try:
+        return src.source_id(), src.search(query, limit=limit)
+    except Exception as e:
+        logger.debug("Search failed for %s: %s", src.source_id(), e)
+        return src.source_id(), []
+
+
+def parallel_search_sources(
+    sources: List[SkillSource],
+    query: str = "",
+    per_source_limits: Optional[Dict[str, int]] = None,
+    source_filter: str = "all",
+    overall_timeout: float = 30,
+    on_source_done: Optional[Any] = None,
+) -> Tuple[List[SkillMeta], Dict[str, int], List[str]]:
+    """Search all sources in parallel with per-source timeout.
+
+    Returns ``(all_results, source_counts, timed_out_ids)``.
+
+    *on_source_done* is an optional callback ``(source_id, count) -> None``
+    invoked as each source completes — useful for progress indicators.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    per_source_limits = per_source_limits or {}
+
+    active: List[SkillSource] = []
+    # When the centralized index is available and the user hasn't filtered
+    # to a specific source, skip external API sources (github, skills-sh,
+    # clawhub, etc.) — the index already has their data.  This avoids
+    # ~70 GitHub API calls per search for unauthenticated users.
+    _index_available = False
+    _api_source_ids = frozenset({"github", "skills-sh", "clawhub",
+                                  "claude-marketplace", "lobehub", "well-known"})
+    if source_filter == "all":
+        for src in sources:
+            if (src.source_id() == "hermes-index"
+                    and getattr(src, "is_available", False)):
+                _index_available = True
+                break
 
     for src in sources:
-        if source_filter != "all" and src.source_id() != source_filter:
+        sid = src.source_id()
+        if source_filter != "all" and sid != source_filter and sid != "official":
             continue
+        # Skip external API sources when the index covers them
+        if _index_available and sid in _api_source_ids:
+            continue
+        active.append(src)
+
+    all_results: List[SkillMeta] = []
+    source_counts: Dict[str, int] = {}
+    timed_out_ids: List[str] = []
+
+    if not active:
+        return all_results, source_counts, timed_out_ids
+
+    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
+        futures = {}
+        for src in active:
+            lim = per_source_limits.get(src.source_id(), 50)
+            fut = pool.submit(_search_one_source, src, query, lim)
+            futures[fut] = src.source_id()
+
         try:
-            results = src.search(query, limit=limit)
-            all_results.extend(results)
-        except Exception as e:
-            logger.debug(f"Search failed for {src.source_id()}: {e}")
+            for fut in as_completed(futures, timeout=overall_timeout):
+                try:
+                    sid, results = fut.result(timeout=0)
+                    source_counts[sid] = len(results)
+                    all_results.extend(results)
+                    if on_source_done:
+                        on_source_done(sid, len(results))
+                except Exception:
+                    pass
+        except TimeoutError:
+            timed_out_ids = [
+                futures[f] for f in futures if not f.done()
+            ]
+            if timed_out_ids:
+                logger.debug(
+                    "Skills browse timed out waiting for: %s",
+                    ", ".join(timed_out_ids),
+                )
+
+    return all_results, source_counts, timed_out_ids
+
+
+def unified_search(query: str, sources: List[SkillSource],
+                   source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
+    """Search all sources (in parallel) and merge results."""
+    all_results, _, _ = parallel_search_sources(
+        sources,
+        query=query,
+        source_filter=source_filter,
+        overall_timeout=30,
+    )
 
     # Deduplicate by name, preferring higher trust levels
     _TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}

@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gateway.channel_directory import (
+    build_channel_directory,
+    lookup_channel_type,
     resolve_channel_name,
     format_directory_for_display,
     load_directory,
@@ -43,6 +45,27 @@ class TestLoadDirectory:
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
             result = load_directory()
         assert result["updated_at"] is None
+
+
+class TestBuildChannelDirectoryWrites:
+    def test_failed_write_preserves_previous_cache(self, tmp_path, monkeypatch):
+        cache_file = _write_directory(tmp_path, {
+            "telegram": [{"id": "123", "name": "Alice", "type": "dm"}]
+        })
+        previous = json.loads(cache_file.read_text())
+
+        def broken_dump(data, fp, *args, **kwargs):
+            fp.write('{"updated_at":')
+            fp.flush()
+            raise OSError("disk full")
+
+        monkeypatch.setattr(json, "dump", broken_dump)
+
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            build_channel_directory({})
+            result = load_directory()
+
+        assert result == previous
 
 
 class TestResolveChannelName:
@@ -118,6 +141,19 @@ class TestResolveChannelName:
         }
         with self._setup(tmp_path, platforms):
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == "-1001:17585"
+
+    def test_display_label_with_type_suffix_resolves(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {"id": "123", "name": "Alice", "type": "dm"},
+                {"id": "456", "name": "Dev Group", "type": "group"},
+                {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram", "Alice (dm)") == "123"
+            assert resolve_channel_name("telegram", "Dev Group (group)") == "456"
+            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585 (group)") == "-1001:17585"
 
 
 class TestBuildFromSessions:
@@ -250,3 +286,49 @@ class TestFormatDirectoryForDisplay:
         assert "Discord (Server1):" in result
         assert "Discord (Server2):" in result
         assert "discord:#general" in result
+
+
+class TestLookupChannelType:
+    def _setup(self, tmp_path, platforms):
+        cache_file = _write_directory(tmp_path, platforms)
+        return patch("gateway.channel_directory.DIRECTORY_PATH", cache_file)
+
+    def test_forum_channel(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "100", "name": "ideas", "guild": "Server1", "type": "forum"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_type("discord", "100") == "forum"
+
+    def test_regular_channel(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "200", "name": "general", "guild": "Server1", "type": "channel"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_type("discord", "200") == "channel"
+
+    def test_unknown_chat_id_returns_none(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "200", "name": "general", "guild": "Server1", "type": "channel"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_type("discord", "999") is None
+
+    def test_unknown_platform_returns_none(self, tmp_path):
+        with self._setup(tmp_path, {}):
+            assert lookup_channel_type("discord", "100") is None
+
+    def test_channel_without_type_key_returns_none(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "300", "name": "general", "guild": "Server1"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_type("discord", "300") is None

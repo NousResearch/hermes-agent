@@ -14,6 +14,8 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import signal
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +25,8 @@ from typing import Any, Optional
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
+_IS_WINDOWS = sys.platform == "win32"
+_UNSET = object()
 
 
 def _get_pid_path() -> Path:
@@ -47,6 +51,33 @@ def _get_lock_dir() -> Path:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def terminate_pid(pid: int, *, force: bool = False) -> None:
+    """Terminate a PID with platform-appropriate force semantics.
+
+    POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
+    because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
+    """
+    if force and _IS_WINDOWS:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except FileNotFoundError:
+            os.kill(pid, signal.SIGTERM)
+            return
+
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise OSError(details or f"taskkill failed for PID {pid}")
+        return
+
+    sig = signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM)
+    os.kill(pid, sig)
 
 
 def _scope_hash(identity: str) -> str:
@@ -128,6 +159,8 @@ def _build_runtime_status_record() -> dict[str, Any]:
     payload.update({
         "gateway_state": "starting",
         "exit_reason": None,
+        "restart_requested": False,
+        "active_agents": 0,
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
@@ -155,8 +188,8 @@ def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload))
 
 
-def _read_pid_record() -> Optional[dict]:
-    pid_path = _get_pid_path()
+def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
+    pid_path = pid_path or _get_pid_path()
     if not pid_path.exists():
         return None
 
@@ -179,6 +212,18 @@ def _read_pid_record() -> Optional[dict]:
     return None
 
 
+def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
+    if not cleanup_stale:
+        return
+    try:
+        if pid_path == _get_pid_path():
+            remove_pid_file()
+        else:
+            pid_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def write_pid_file() -> None:
     """Write the current process PID and metadata to the gateway PID file."""
     _write_json_file(_get_pid_path(), _build_pid_record())
@@ -186,12 +231,14 @@ def write_pid_file() -> None:
 
 def write_runtime_status(
     *,
-    gateway_state: Optional[str] = None,
-    exit_reason: Optional[str] = None,
-    platform: Optional[str] = None,
-    platform_state: Optional[str] = None,
-    error_code: Optional[str] = None,
-    error_message: Optional[str] = None,
+    gateway_state: Any = _UNSET,
+    exit_reason: Any = _UNSET,
+    restart_requested: Any = _UNSET,
+    active_agents: Any = _UNSET,
+    platform: Any = _UNSET,
+    platform_state: Any = _UNSET,
+    error_code: Any = _UNSET,
+    error_message: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -202,18 +249,22 @@ def write_runtime_status(
     payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
 
-    if gateway_state is not None:
+    if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
-    if exit_reason is not None:
+    if exit_reason is not _UNSET:
         payload["exit_reason"] = exit_reason
+    if restart_requested is not _UNSET:
+        payload["restart_requested"] = bool(restart_requested)
+    if active_agents is not _UNSET:
+        payload["active_agents"] = max(0, int(active_agents))
 
-    if platform is not None:
+    if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
-        if platform_state is not None:
+        if platform_state is not _UNSET:
             platform_payload["state"] = platform_state
-        if error_code is not None:
+        if error_code is not _UNSET:
             platform_payload["error_code"] = error_code
-        if error_message is not None:
+        if error_message is not _UNSET:
             platform_payload["error_message"] = error_message
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
@@ -227,9 +278,25 @@ def read_runtime_status() -> Optional[dict[str, Any]]:
 
 
 def remove_pid_file() -> None:
-    """Remove the gateway PID file if it exists."""
+    """Remove the gateway PID file, but only if it belongs to this process.
+
+    During --replace handoffs, the old process's atexit handler can fire AFTER
+    the new process has written its own PID file.  Blindly removing the file
+    would delete the new process's record, leaving the gateway running with no
+    PID file (invisible to ``get_running_pid()``).
+    """
     try:
-        _get_pid_path().unlink(missing_ok=True)
+        path = _get_pid_path()
+        record = _read_json_file(path)
+        if record is not None:
+            try:
+                file_pid = int(record["pid"])
+            except (KeyError, TypeError, ValueError):
+                file_pid = None
+            if file_pid is not None and file_pid != os.getpid():
+                # PID file belongs to a different process — leave it alone.
+                return
+        path.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -251,6 +318,15 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
     }
 
     existing = _read_json_file(lock_path)
+    if existing is None and lock_path.exists():
+        # Lock file exists but is empty or contains invalid JSON — treat as
+        # stale.  This happens when a previous process was killed between
+        # O_CREAT|O_EXCL and the subsequent json.dump() (e.g. DNS failure
+        # during rapid Slack reconnect retries).
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     if existing:
         try:
             existing_pid = int(existing["pid"])
@@ -349,43 +425,179 @@ def release_all_scoped_locks() -> int:
     return removed
 
 
-def get_running_pid() -> Optional[int]:
+# ── --replace takeover marker ─────────────────────────────────────────
+#
+# When a new gateway starts with ``--replace``, it SIGTERMs the existing
+# gateway so it can take over the bot token. PR #5646 made SIGTERM exit
+# the gateway with code 1 so ``Restart=on-failure`` can revive it after
+# unexpected kills — but that also means a --replace takeover target
+# exits 1, which tricks systemd into reviving it 30 seconds later,
+# starting a flap loop against the replacer when both services are
+# enabled in the user's systemd (e.g. ``hermes.service`` + ``hermes-
+# gateway.service``).
+#
+# The takeover marker breaks the loop: the replacer writes a short-lived
+# file naming the target PID + start_time BEFORE sending SIGTERM.
+# The target's shutdown handler reads the marker and, if it names
+# this process, treats the SIGTERM as a planned takeover and exits 0.
+# The marker is unlinked after the target has consumed it, so a stale
+# marker left by a crashed replacer can grief at most one future
+# shutdown on the same PID — and only within _TAKEOVER_MARKER_TTL_S.
+
+_TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
+_TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
+
+
+def _get_takeover_marker_path() -> Path:
+    """Return the path to the --replace takeover marker file."""
+    home = get_hermes_home()
+    return home / _TAKEOVER_MARKER_FILENAME
+
+
+def write_takeover_marker(target_pid: int) -> bool:
+    """Record that ``target_pid`` is being replaced by the current process.
+
+    Captures the target's ``start_time`` so that PID reuse after the
+    target exits cannot later match the marker. Also records the
+    replacer's PID and a UTC timestamp for TTL-based staleness checks.
+
+    Returns True on successful write, False on any failure. The caller
+    should proceed with the SIGTERM even if the write fails (the marker
+    is a best-effort signal, not a correctness requirement).
+    """
+    try:
+        target_start_time = _get_process_start_time(target_pid)
+        record = {
+            "target_pid": target_pid,
+            "target_start_time": target_start_time,
+            "replacer_pid": os.getpid(),
+            "written_at": _utc_now_iso(),
+        }
+        _write_json_file(_get_takeover_marker_path(), record)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def consume_takeover_marker_for_self() -> bool:
+    """Check & unlink the takeover marker if it names the current process.
+
+    Returns True only when a valid (non-stale) marker names this PID +
+    start_time. A returning True indicates the current SIGTERM is a
+    planned --replace takeover; the caller should exit 0 instead of
+    signalling ``_signal_initiated_shutdown``.
+
+    Always unlinks the marker on match (and on detected staleness) so
+    subsequent unrelated signals don't re-trigger.
+    """
+    path = _get_takeover_marker_path()
+    record = _read_json_file(path)
+    if not record:
+        return False
+
+    # Any malformed or stale marker → drop it and return False
+    try:
+        target_pid = int(record["target_pid"])
+        target_start_time = record.get("target_start_time")
+        written_at = record.get("written_at") or ""
+    except (KeyError, TypeError, ValueError):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    # TTL guard: a stale marker older than _TAKEOVER_MARKER_TTL_S is ignored.
+    stale = False
+    try:
+        written_dt = datetime.fromisoformat(written_at)
+        age = (datetime.now(timezone.utc) - written_dt).total_seconds()
+        if age > _TAKEOVER_MARKER_TTL_S:
+            stale = True
+    except (TypeError, ValueError):
+        stale = True  # Unparseable timestamp — treat as stale
+
+    if stale:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    # Does the marker name THIS process?
+    our_pid = os.getpid()
+    our_start_time = _get_process_start_time(our_pid)
+    matches = (
+        target_pid == our_pid
+        and target_start_time is not None
+        and our_start_time is not None
+        and target_start_time == our_start_time
+    )
+
+    # Consume the marker whether it matched or not — a marker that doesn't
+    # match our identity is stale-for-us anyway.
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    return matches
+
+
+def clear_takeover_marker() -> None:
+    """Remove the takeover marker unconditionally. Safe to call repeatedly."""
+    try:
+        _get_takeover_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def get_running_pid(
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+) -> Optional[int]:
     """Return the PID of a running gateway instance, or ``None``.
 
     Checks the PID file and verifies the process is actually alive.
     Cleans up stale PID files automatically.
     """
-    record = _read_pid_record()
+    resolved_pid_path = pid_path or _get_pid_path()
+    record = _read_pid_record(resolved_pid_path)
     if not record:
-        remove_pid_file()
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     try:
         pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
-        remove_pid_file()
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     try:
         os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
     except (ProcessLookupError, PermissionError):
-        remove_pid_file()
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     recorded_start = record.get("start_time")
     current_start = _get_process_start_time(pid)
     if recorded_start is not None and current_start is not None and current_start != recorded_start:
-        remove_pid_file()
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     if not _looks_like_gateway_process(pid):
         if not _record_looks_like_gateway(record):
-            remove_pid_file()
+            _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
             return None
 
     return pid
 
 
-def is_gateway_running() -> bool:
+def is_gateway_running(
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+) -> bool:
     """Check if the gateway daemon is currently running."""
-    return get_running_pid() is not None
+    return get_running_pid(pid_path, cleanup_stale=cleanup_stale) is not None

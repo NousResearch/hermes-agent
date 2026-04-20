@@ -149,6 +149,12 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
 # Optional: reply mode (thread or off, default: off)
 # MATTERMOST_REPLY_MODE=thread
+
+# Optional: respond without @mention (default: true = require mention)
+# MATTERMOST_REQUIRE_MENTION=false
+
+# Optional: channels where bot responds without @mention (comma-separated channel IDs)
+# MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -206,6 +212,19 @@ Set it in your `~/.hermes/.env`:
 MATTERMOST_REPLY_MODE=thread
 ```
 
+## Mention Behavior
+
+By default, the bot only responds in channels when `@mentioned`. You can change this:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). |
+| `MATTERMOST_FREE_RESPONSE_CHANNELS` | _(none)_ | Comma-separated channel IDs where the bot responds without `@mention`, even when require_mention is true. |
+
+To find a channel ID in Mattermost: open the channel, click the channel name header, and look for the ID in the URL or channel details.
+
+When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
+
 ## Troubleshooting
 
 ### Bot is not responding to messages
@@ -261,6 +280,23 @@ If this returns your bot's user info, the token is valid. If it returns an error
 **Cause**: Your User ID isn't in `MATTERMOST_ALLOWED_USERS`.
 
 **Fix**: Add your User ID to `MATTERMOST_ALLOWED_USERS` in `~/.hermes/.env` and restart the gateway. Remember: the User ID is a 26-character alphanumeric string, not your `@username`.
+
+## Per-Channel Prompts
+
+Assign ephemeral system prompts to specific Mattermost channels. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.
+
+```yaml
+mattermost:
+  channel_prompts:
+    "channel_id_abc123": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "channel_id_def456": |
+      Code review mode. Be precise about edge cases and
+      performance implications.
+```
+
+Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
 ## Security
 

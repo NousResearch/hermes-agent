@@ -212,6 +212,9 @@ class TestSessionHygieneWarnThreshold:
         assert post_compress_tokens < warn_threshold
 
 
+
+
+
 class TestEstimatedTokenThreshold:
     """Verify that hygiene thresholds are always below the model's context
     limit — for both actual and estimated token counts.
@@ -302,10 +305,19 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     class FakeCompressAgent:
+        last_instance = None
+
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            # Simulate real _compress_context: create a new session_id
+            self.session_id = f"{self.session_id}_compressed"
             return ([{"role": "assistant", "content": "compressed"}], None)
 
     fake_run_agent = types.ModuleType("run_agent")
@@ -367,6 +379,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
             chat_id="-1001",
             chat_type="group",
             thread_id="17585",
+            user_id="12345",
         ),
         message_id="1",
     )
@@ -374,10 +387,9 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    assert len(adapter.sent) == 2
-    assert adapter.sent[0]["chat_id"] == "-1001"
-    assert "Session is large" in adapter.sent[0]["content"]
-    assert adapter.sent[0]["metadata"] == {"thread_id": "17585"}
-    assert adapter.sent[1]["chat_id"] == "-1001"
-    assert "Compressed:" in adapter.sent[1]["content"]
-    assert adapter.sent[1]["metadata"] == {"thread_id": "17585"}
+    # Compression warnings are no longer sent to users — compression
+    # happens silently with server-side logging only.
+    assert len(adapter.sent) == 0
+    assert FakeCompressAgent.last_instance is not None
+    FakeCompressAgent.last_instance.shutdown_memory_provider.assert_called_once()
+    FakeCompressAgent.last_instance.close.assert_called_once()

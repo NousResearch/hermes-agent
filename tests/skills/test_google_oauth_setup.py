@@ -27,7 +27,16 @@ class FakeCredentials:
             "token_uri": "https://oauth2.googleapis.com/token",
             "client_id": "client-id",
             "client_secret": "client-secret",
-            "scopes": ["scope-a"],
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/contacts.readonly",
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/documents.readonly",
+            ],
         }
 
     def to_json(self):
@@ -151,7 +160,9 @@ class TestExchangeAuthCode:
         assert flow.state == "saved-state"
         assert flow.code_verifier == "saved-verifier"
         assert flow.fetch_token_calls == [{"code": "4/test-auth-code"}]
-        assert json.loads(setup_module.TOKEN_PATH.read_text())["token"] == "access-token"
+        saved = json.loads(setup_module.TOKEN_PATH.read_text())
+        assert saved["token"] == "access-token"
+        assert saved["type"] == "authorized_user"
         assert not setup_module.PENDING_AUTH_PATH.exists()
 
     def test_extracts_code_from_redirect_url_and_checks_state(self, setup_module):
@@ -201,3 +212,31 @@ class TestExchangeAuthCode:
         assert "token exchange failed" in out.lower()
         assert setup_module.PENDING_AUTH_PATH.exists()
         assert not setup_module.TOKEN_PATH.exists()
+
+    def test_accepts_narrower_scopes_with_warning(self, setup_module, capsys):
+        """Partial scopes are accepted with a warning (gws migration: v2.0)."""
+        setup_module.PENDING_AUTH_PATH.write_text(
+            json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})
+        )
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "***", "scopes": setup_module.SCOPES}))
+        FakeFlow.credentials_payload = {
+            "token": "***",
+            "refresh_token": "***",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "scopes": [
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/spreadsheets",
+            ],
+        }
+
+        setup_module.exchange_auth_code("4/test-auth-code")
+
+        out = capsys.readouterr().out
+        assert "warning" in out.lower()
+        assert "missing" in out.lower()
+        # Token is saved (partial scopes accepted)
+        assert setup_module.TOKEN_PATH.exists()
+        # Pending auth is cleaned up
+        assert not setup_module.PENDING_AUTH_PATH.exists()

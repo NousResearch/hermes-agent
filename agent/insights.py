@@ -27,7 +27,6 @@ from agent.usage_pricing import (
     DEFAULT_PRICING,
     estimate_usage_cost,
     format_duration_compact,
-    get_pricing,
     has_known_pricing,
 )
 
@@ -37,15 +36,6 @@ _DEFAULT_PRICING = DEFAULT_PRICING
 def _has_known_pricing(model_name: str, provider: str = None, base_url: str = None) -> bool:
     """Check if a model has known pricing (vs unknown/custom endpoint)."""
     return has_known_pricing(model_name, provider=provider, base_url=base_url)
-
-
-def _get_pricing(model_name: str) -> Dict[str, float]:
-    """Look up pricing for a model. Uses fuzzy matching on model name.
-
-    Returns _DEFAULT_PRICING (zero cost) for unknown/custom models —
-    we can't assume costs for self-hosted endpoints, local inference, etc.
-    """
-    return get_pricing(model_name)
 
 
 def _estimate_cost(
@@ -644,10 +634,7 @@ class InsightsEngine:
         lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
         lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
         lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
-        cost_str = f"${o['estimated_cost']:.2f}"
-        if o.get("models_without_pricing"):
-            cost_str += " *"
-        lines.append(f"  Total tokens:      {o['total_tokens']:<12,}  Est. cost:       {cost_str}")
+        lines.append(f"  Total tokens:      {o['total_tokens']:,}")
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{_format_duration(o['total_hours'] * 3600):<11}  Avg session:     ~{_format_duration(o['avg_session_duration'])}")
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
@@ -657,16 +644,10 @@ class InsightsEngine:
         if report["models"]:
             lines.append("  🤖 Models Used")
             lines.append("  " + "─" * 56)
-            lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12} {'Cost':>8}")
+            lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12}")
             for m in report["models"]:
                 model_name = m["model"][:28]
-                if m.get("has_pricing"):
-                    cost_cell = f"${m['cost']:>6.2f}"
-                else:
-                    cost_cell = "     N/A"
-                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,} {cost_cell}")
-            if o.get("models_without_pricing"):
-                lines.append("  * Cost N/A for custom/self-hosted models")
+                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,}")
             lines.append("")
 
         # Platform breakdown
@@ -747,10 +728,6 @@ class InsightsEngine:
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
-        cost_note = ""
-        if o.get("models_without_pricing"):
-            cost_note = " _(excludes custom/self-hosted models)_"
-        lines.append(f"**Est. cost:** ${o['estimated_cost']:.2f}{cost_note}")
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")
@@ -759,8 +736,7 @@ class InsightsEngine:
         if report["models"]:
             lines.append("**🤖 Models:**")
             for m in report["models"][:5]:
-                cost_str = f"${m['cost']:.2f}" if m.get("has_pricing") else "N/A"
-                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens, {cost_str}")
+                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
             lines.append("")
 
         # Platforms (if multi-platform)

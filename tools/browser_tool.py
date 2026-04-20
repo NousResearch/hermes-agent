@@ -2178,7 +2178,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         error_info = {"success": False, "error": f"Error during vision analysis: {str(e)}"}
         if screenshot_path.exists():
             error_info["screenshot_path"] = str(screenshot_path)
-            error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."
+            error_info["note"] = "Screenshot was captured but vision analysis failed. Use screenshot_path to attach it if needed."
         return json.dumps(error_info, ensure_ascii=False)
 
 

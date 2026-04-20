@@ -241,6 +241,64 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_suppresses_feishu_group_tool_progress(monkeypatch, tmp_path):
+    """Feishu group chats should not receive internal tool-progress messages."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FeishuGroupAgent:
+        def __init__(self, **kwargs):
+            self.tool_progress_callback = kwargs.get("tool_progress_callback")
+            self.status_callback = kwargs.get("status_callback")
+            self.tools = []
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            if self.tool_progress_callback:
+                self.tool_progress_callback("tool.started", "terminal", "pwd", {})
+            if self.status_callback:
+                self.status_callback("status", "processing")
+            return {
+                "final_response": "done",
+                "messages": [],
+                "api_calls": 1,
+            }
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FeishuGroupAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_group",
+        chat_type="group",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu-group",
+        session_key="agent:main:feishu:group:oc_group",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert adapter.typing == []
+
+
+@pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")

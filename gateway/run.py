@@ -28,7 +28,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Tuple
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -88,6 +88,61 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
+
+_MEDIA_TAG_RE = re.compile(r"MEDIA:\s*(\S+)")
+_PLACEHOLDER_MEDIA_PATHS = {
+    "<path>",
+    "<file>",
+    "<filepath>",
+    "<screenshot_path>",
+    "<image_path>",
+    "{path}",
+    "{file}",
+}
+
+
+def _normalize_media_tag_path(raw_path: str) -> Optional[str]:
+    """Return a deliverable local media path, ignoring docs placeholders."""
+    path = (raw_path or "").strip().strip("`\"'")
+    path = path.rstrip('",.;:)}]')
+    if not path:
+        return None
+    lowered = path.lower()
+    if lowered in _PLACEHOLDER_MEDIA_PATHS:
+        return None
+    if lowered.startswith("<") and lowered.endswith(">"):
+        return None
+    if not (path.startswith("/") or path.startswith("~/")):
+        return None
+    return path
+
+
+def _iter_media_paths_from_content(content: str):
+    for match in _MEDIA_TAG_RE.finditer(content or ""):
+        path = _normalize_media_tag_path(match.group(1))
+        if path:
+            yield path
+
+
+def _extract_media_tags_from_tool_messages(
+    messages: List[Dict[str, Any]],
+    history_media_paths: set,
+) -> Tuple[List[str], bool]:
+    """Extract new deliverable MEDIA tags from tool/function messages."""
+    media_tags: List[str] = []
+    has_voice_directive = False
+    for msg in messages:
+        if msg.get("role") not in ("tool", "function"):
+            continue
+        content = msg.get("content", "") or ""
+        if "MEDIA:" not in content:
+            continue
+        for path in _iter_media_paths_from_content(content):
+            if path not in history_media_paths:
+                media_tags.append(f"MEDIA:{path}")
+        if "[[audio_as_voice]]" in content:
+            has_voice_directive = True
+    return media_tags, has_voice_directive
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -9160,7 +9215,14 @@ class GatewayRunner:
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        feishu_group_visual_noise = (
+            source.platform == Platform.FEISHU and source.chat_type != "dm"
+        )
+        tool_progress_enabled = (
+            progress_mode != "off"
+            and source.platform != Platform.WEBHOOK
+            and not feishu_group_visual_noise
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -9433,7 +9495,7 @@ class GatewayRunner:
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
-            if not _status_adapter or not _run_still_current():
+            if not _status_adapter or feishu_group_visual_noise or not _run_still_current():
                 return
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -9791,10 +9853,8 @@ class GatewayRunner:
                 if _hm.get("role") in ("tool", "function"):
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+                        for _p in _iter_media_paths_from_content(_hc):
+                            _history_media_paths.add(_p)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -9983,18 +10043,10 @@ class GatewayRunner:
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
             if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in ("tool", "function"):
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
+                media_tags, has_voice_directive = _extract_media_tags_from_tool_messages(
+                    result.get("messages", []),
+                    _history_media_paths,
+                )
                 
                 if media_tags:
                     seen = set()

@@ -57,6 +57,12 @@ class TestExtractMediaImages:
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
 
+    def test_placeholder_media_path_not_extracted(self):
+        content = "Screenshot captured. You can still share it via MEDIA:<path>."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:<path>" in cleaned
+
 
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests

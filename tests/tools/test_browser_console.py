@@ -251,6 +251,26 @@ class TestBrowserVisionConfig:
         assert mock_llm.call_args.kwargs["temperature"] == 0.1
         assert mock_llm.call_args.kwargs["timeout"] == 120.0
 
+    def test_failed_analysis_note_does_not_emit_placeholder_media_tag(self, tmp_path):
+        """Failed browser_vision should not advertise literal MEDIA:<path>."""
+        from tools.browser_tool import browser_vision
+
+        shots_dir, screenshot = self._setup_screenshot(tmp_path)
+
+        with (
+            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("tools.browser_tool._cleanup_old_screenshots"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
+            patch("tools.browser_tool.call_llm", side_effect=TimeoutError("Request timed out.")),
+        ):
+            result = json.loads(browser_vision("what is on the page?", task_id="test"))
+
+        assert result["success"] is False
+        assert result["screenshot_path"] == str(screenshot)
+        assert "MEDIA:<path>" not in result.get("note", "")
+
 
 # ── auto-recording config ────────────────────────────────────────────
 

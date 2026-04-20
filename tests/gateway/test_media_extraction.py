@@ -179,6 +179,25 @@ class TestMediaExtraction:
         unique = [t for t in tags if t not in seen and not seen.add(t)]
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
 
+    def test_gateway_extractor_ignores_placeholder_media_path(self):
+        from gateway.run import _extract_media_tags_from_tool_messages
+
+        messages = [
+            {
+                "role": "tool",
+                "content": (
+                    '{"success": false, "note": "Screenshot captured. '
+                    'You can still share it via MEDIA:<path>."}'
+                ),
+            },
+            {"role": "tool", "content": "MEDIA:/tmp/real-chart.png"},
+        ]
+
+        tags, voice = _extract_media_tags_from_tool_messages(messages, set())
+
+        assert tags == ["MEDIA:/tmp/real-chart.png"]
+        assert voice is False
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

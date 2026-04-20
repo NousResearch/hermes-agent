@@ -1,0 +1,64 @@
+name: Nix Lockfile Check
+
+on:
+  pull_request:
+    paths:
+      - 'ui-tui/package.json'
+      - 'ui-tui/package-lock.json'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - 'nix/tui.nix'
+      - 'nix/web.nix'
+      - 'nix/lib.nix'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: nix-lockfile-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: nixbuild/nix-quick-install-action@63ca48f939ee3b8d835f4126562537df0fee5b91  # v30
+
+      - name: Check lockfile hashes
+        id: check
+        continue-on-error: true
+        run: nix run .#fix-lockfiles -- --check
+
+      - name: Post sticky PR comment (stale)
+        if: steps.check.outputs.stale == 'true' && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        with:
+          header: nix-lockfile-check
+          message: |
+            ### ⚠️ npm lockfile hash out of date
+
+            The `hash = "sha256-..."` line in these nix files no longer matches the committed `package-lock.json`:
+
+            ${{ steps.check.outputs.report }}
+
+            #### Apply the fix
+
+            - [ ] **Apply lockfile fix** — tick to push a commit with the correct hashes to this PR branch
+            - Or [run the Nix Lockfile Fix workflow](${{ github.server_url }}/${{ github.repository }}/actions/workflows/nix-lockfile-fix.yml) manually (pass PR `#${{ github.event.pull_request.number }}`)
+            - Or locally: `nix run .#fix-lockfiles -- --apply` and commit the diff
+
+      - name: Clear sticky PR comment (resolved)
+        if: steps.check.outputs.stale == 'false' && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        with:
+          header: nix-lockfile-check
+          delete: true
+
+      - name: Fail if stale
+        if: steps.check.outputs.stale == 'true'
+        run: exit 1

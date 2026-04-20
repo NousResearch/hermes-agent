@@ -25,40 +25,40 @@ class TestDiscoverRepos:
     def workspace(self, tmp_path):
         """Create a fake workspace with repos/{org}/{repo}/README.md."""
         repos = tmp_path / "repos"
-        fc = repos / "proservice" / "fridai-client"
-        fc.mkdir(parents=True)
-        (fc / "README.md").write_text(
-            "# Fridai Client\n\nA React frontend with Next.js.\n"
+        fe = repos / "org-a" / "app-frontend"
+        fe.mkdir(parents=True)
+        (fe / "README.md").write_text(
+            "# App Frontend\n\nA React frontend with Next.js.\n"
         )
-        fb = repos / "proservice" / "fridai-backend"
-        fb.mkdir(parents=True)
-        (fb / "README.md").write_text(
-            "# Fridai Backend\n\nAPI using Lambda and CDK.\n"
+        be = repos / "org-a" / "app-backend"
+        be.mkdir(parents=True)
+        (be / "README.md").write_text(
+            "# App Backend\n\nAPI using Lambda and CDK.\n"
         )
-        # corp_it/device_fleet (no README)
-        df = repos / "corp_it" / "device_fleet"
-        df.mkdir(parents=True)
+        # org-b/infra-tools (no README)
+        it = repos / "org-b" / "infra-tools"
+        it.mkdir(parents=True)
         return tmp_path
 
     def test_discovers_repos_with_readmes(self, workspace):
         entries = _discover_repos(workspace)
         slugs = [e.slug for e in entries]
-        assert "fridai-client" in slugs
-        assert "fridai-backend" in slugs
+        assert "app-frontend" in slugs
+        assert "app-backend" in slugs
 
     def test_includes_dirs_without_readme(self, workspace):
         """Dirs without README are still discovered (just empty summary)."""
         entries = _discover_repos(workspace)
         slugs = [e.slug for e in entries]
-        assert "device_fleet" in slugs
-        df = next(e for e in entries if e.slug == "device_fleet")
-        assert df.readme_summary == ""
+        assert "infra-tools" in slugs
+        it = next(e for e in entries if e.slug == "infra-tools")
+        assert it.readme_summary == ""
 
     def test_captures_readme_summary(self, workspace):
         entries = _discover_repos(workspace)
-        fc = next(e for e in entries if e.slug == "fridai-client")
-        assert "Fridai Client" in fc.readme_summary
-        assert "React" in fc.readme_summary
+        fe = next(e for e in entries if e.slug == "app-frontend")
+        assert "App Frontend" in fe.readme_summary
+        assert "React" in fe.readme_summary
 
     def test_missing_repos_dir_returns_empty(self, tmp_path):
         entries = _discover_repos(tmp_path)
@@ -113,8 +113,8 @@ class TestBuildRoutingMessages:
         assert msgs[1]["content"] == "fix the bug"
 
     def test_system_contains_repo_context(self):
-        msgs = _build_routing_messages("task", "- slug: fridai-client\n  path: /fc")
-        assert "fridai-client" in msgs[0]["content"]
+        msgs = _build_routing_messages("task", "- slug: app-frontend\n  path: /fe")
+        assert "app-frontend" in msgs[0]["content"]
 
     def test_system_instructs_json_response(self):
         msgs = _build_routing_messages("task", "context")
@@ -128,21 +128,21 @@ class TestBuildRoutingMessages:
 class TestParseRoutingResponse:
     def _entries(self):
         return [
-            RepoEntry(slug="fridai-client", path="/fc"),
-            RepoEntry(slug="fridai-backend", path="/fb"),
-            RepoEntry(slug="propilot", path="/pp"),
+            RepoEntry(slug="app-frontend", path="/fe"),
+            RepoEntry(slug="app-backend", path="/be"),
+            RepoEntry(slug="app-agent", path="/ag"),
         ]
 
     def test_parses_valid_json(self):
-        result = _parse_routing_response('{"slug": "fridai-client"}', self._entries())
+        result = _parse_routing_response('{"slug": "app-frontend"}', self._entries())
         assert result is not None
-        assert result.slug == "fridai-client"
+        assert result.slug == "app-frontend"
 
     def test_parses_json_in_code_fence(self):
-        text = '```json\n{"slug": "fridai-backend"}\n```'
+        text = '```json\n{"slug": "app-backend"}\n```'
         result = _parse_routing_response(text, self._entries())
         assert result is not None
-        assert result.slug == "fridai-backend"
+        assert result.slug == "app-backend"
 
     def test_null_slug_returns_none(self):
         result = _parse_routing_response('{"slug": null}', self._entries())
@@ -157,9 +157,9 @@ class TestParseRoutingResponse:
         assert result is None
 
     def test_case_insensitive_slug_match(self):
-        result = _parse_routing_response('{"slug": "Fridai-Client"}', self._entries())
+        result = _parse_routing_response('{"slug": "App-Frontend"}', self._entries())
         assert result is not None
-        assert result.slug == "fridai-client"
+        assert result.slug == "app-frontend"
 
     def test_empty_string_returns_none(self):
         result = _parse_routing_response('', self._entries())
@@ -174,15 +174,15 @@ class TestRouteRepo:
     @pytest.fixture
     def workspace(self, tmp_path):
         repos = tmp_path / "repos"
-        fc = repos / "proservice" / "fridai-client"
-        fc.mkdir(parents=True)
-        (fc / "README.md").write_text("# Fridai Client\n\nReact frontend.\n")
-        fb = repos / "proservice" / "fridai-backend"
-        fb.mkdir(parents=True)
-        (fb / "README.md").write_text("# Fridai Backend\n\nNode.js API.\n")
-        pp = repos / "proservice" / "propilot"
-        pp.mkdir(parents=True)
-        (pp / "README.md").write_text("# Propilot\n\nBedrock agent.\n")
+        fe = repos / "org-a" / "app-frontend"
+        fe.mkdir(parents=True)
+        (fe / "README.md").write_text("# App Frontend\n\nReact frontend.\n")
+        be = repos / "org-a" / "app-backend"
+        be.mkdir(parents=True)
+        (be / "README.md").write_text("# App Backend\n\nNode.js API.\n")
+        ag = repos / "org-a" / "app-agent"
+        ag.mkdir(parents=True)
+        (ag / "README.md").write_text("# App Agent\n\nLLM agent service.\n")
         return tmp_path
 
     def _mock_llm(self, slug):
@@ -194,10 +194,10 @@ class TestRouteRepo:
         return mock
 
     def test_routes_via_llm(self, workspace):
-        mock = self._mock_llm("fridai-backend")
+        mock = self._mock_llm("app-backend")
         result = route_repo("fix the lambda function", workspace, _llm_call=mock)
         assert result is not None
-        assert result.slug == "fridai-backend"
+        assert result.slug == "app-backend"
         mock.assert_called_once()
         call_kwargs = mock.call_args
         assert call_kwargs.kwargs["task"] == "repo_routing"
@@ -219,10 +219,10 @@ class TestRouteRepo:
         assert result is None
 
     def test_passes_repo_context_to_llm(self, workspace):
-        mock = self._mock_llm("fridai-client")
+        mock = self._mock_llm("app-frontend")
         route_repo("fix frontend", workspace, _llm_call=mock)
         messages = mock.call_args.kwargs["messages"]
         system_msg = messages[0]["content"]
-        assert "fridai-client" in system_msg
-        assert "fridai-backend" in system_msg
-        assert "propilot" in system_msg
+        assert "app-frontend" in system_msg
+        assert "app-backend" in system_msg
+        assert "app-agent" in system_msg

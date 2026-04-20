@@ -5289,7 +5289,7 @@ For more help on a command:
         "prompt", nargs="?", default=None,
         help="Task prompt (used for repo routing if --repo is omitted)"
     )
-    cop_launch.add_argument("--repo", help="Repo slug (e.g. fridai-client)")
+    cop_launch.add_argument("--repo", help="Repo slug")
     cop_launch.add_argument("--repo-path", dest="repo_path", help="Absolute path to the repo inside the container")
     cop_launch.add_argument("--model", help="Model to use for the session")
     cop_launch.add_argument("--dry-run", dest="dry_run", action="store_true", help="Simulate launch without spawning copilot")

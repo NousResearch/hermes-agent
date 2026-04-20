@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -97,7 +97,6 @@ CREATE TABLE IF NOT EXISTS copilot_jobs (
     prompt TEXT,
     signal_source TEXT,
     signal_ref TEXT,
-    copilot_session_id TEXT,
     state TEXT NOT NULL DEFAULT 'running',
     exit_code INTEGER,
     created_at REAL NOT NULL,
@@ -349,7 +348,7 @@ class SessionDB:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
             if current_version < 7:
-                # v7: add copilot_jobs and copilot_job_events tables for
+                # v7: add copilot_jobs table for
                 # Copilot remote session lifecycle management.
                 cursor.executescript("""
                     CREATE TABLE IF NOT EXISTS copilot_jobs (
@@ -361,39 +360,84 @@ class SessionDB:
                         signal_source TEXT,
                         signal_ref TEXT,
                         copilot_session_id TEXT,
-                        remote_name TEXT,
-                        pid INTEGER,
-                        state TEXT NOT NULL DEFAULT 'pending',
-                        owner TEXT NOT NULL DEFAULT 'hermes',
-                        attach_command TEXT,
+                        state TEXT NOT NULL DEFAULT 'running',
+                        exit_code INTEGER,
                         created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL,
-                        last_activity_at REAL,
-                        idle_since REAL,
-                        closed_at REAL,
-                        idle_ttl_seconds INTEGER DEFAULT 300,
+                        finished_at REAL,
                         error_text TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS copilot_job_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        job_id TEXT NOT NULL REFERENCES copilot_jobs(id),
-                        from_state TEXT,
-                        to_state TEXT NOT NULL,
-                        owner TEXT,
-                        event_type TEXT NOT NULL,
-                        payload_json TEXT,
-                        created_at REAL NOT NULL
                     );
 
                     CREATE INDEX IF NOT EXISTS idx_copilot_jobs_state
                         ON copilot_jobs(state);
                     CREATE INDEX IF NOT EXISTS idx_copilot_jobs_repo
                         ON copilot_jobs(repo_slug, state);
-                    CREATE INDEX IF NOT EXISTS idx_copilot_job_events_job
-                        ON copilot_job_events(job_id, created_at);
                 """)
                 cursor.execute("UPDATE schema_version SET version = 7")
+            if current_version < 8:
+                # v8: simplify copilot_jobs — drop old columns and events table.
+                # Copilot sessions are now cloud-managed via --remote/--connect,
+                # so we no longer need PID tracking, ownership, idle TTL, or
+                # the copilot_job_events audit table.
+                cursor.executescript("""
+                    DROP TABLE IF EXISTS copilot_job_events;
+                    DROP TABLE IF EXISTS copilot_jobs;
+
+                    CREATE TABLE IF NOT EXISTS copilot_jobs (
+                        id TEXT PRIMARY KEY,
+                        hermes_session_id TEXT REFERENCES sessions(id),
+                        repo_slug TEXT NOT NULL,
+                        repo_path TEXT NOT NULL,
+                        prompt TEXT,
+                        signal_source TEXT,
+                        signal_ref TEXT,
+                        copilot_session_id TEXT,
+                        state TEXT NOT NULL DEFAULT 'running',
+                        exit_code INTEGER,
+                        created_at REAL NOT NULL,
+                        finished_at REAL,
+                        error_text TEXT
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_copilot_jobs_state
+                        ON copilot_jobs(state);
+                    CREATE INDEX IF NOT EXISTS idx_copilot_jobs_repo
+                        ON copilot_jobs(repo_slug, state);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                # v9: drop copilot_session_id — the job id IS the session UUID.
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS copilot_jobs_v9 (
+                        id TEXT PRIMARY KEY,
+                        hermes_session_id TEXT REFERENCES sessions(id),
+                        repo_slug TEXT NOT NULL,
+                        repo_path TEXT NOT NULL,
+                        prompt TEXT,
+                        signal_source TEXT,
+                        signal_ref TEXT,
+                        state TEXT NOT NULL DEFAULT 'running',
+                        exit_code INTEGER,
+                        created_at REAL NOT NULL,
+                        finished_at REAL,
+                        error_text TEXT
+                    );
+                    INSERT OR IGNORE INTO copilot_jobs_v9
+                        (id, hermes_session_id, repo_slug, repo_path, prompt,
+                         signal_source, signal_ref, state, exit_code,
+                         created_at, finished_at, error_text)
+                        SELECT COALESCE(copilot_session_id, id),
+                               hermes_session_id, repo_slug, repo_path, prompt,
+                               signal_source, signal_ref, state, exit_code,
+                               created_at, finished_at, error_text
+                        FROM copilot_jobs;
+                    DROP TABLE copilot_jobs;
+                    ALTER TABLE copilot_jobs_v9 RENAME TO copilot_jobs;
+                    CREATE INDEX IF NOT EXISTS idx_copilot_jobs_state
+                        ON copilot_jobs(state);
+                    CREATE INDEX IF NOT EXISTS idx_copilot_jobs_repo
+                        ON copilot_jobs(repo_slug, state);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 9")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1334,7 +1378,6 @@ class SessionDB:
         self,
         job_id: str,
         state: str,
-        copilot_session_id: str = None,
         exit_code: int = None,
         error_text: str = None,
     ) -> None:
@@ -1343,10 +1386,10 @@ class SessionDB:
         def _do(conn):
             conn.execute(
                 """UPDATE copilot_jobs
-                   SET state = ?, copilot_session_id = ?, exit_code = ?,
+                   SET state = ?, exit_code = ?,
                        finished_at = ?, error_text = ?
                    WHERE id = ?""",
-                (state, copilot_session_id, exit_code, now, error_text, job_id),
+                (state, exit_code, now, error_text, job_id),
             )
         self._execute_write(_do)
 

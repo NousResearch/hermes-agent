@@ -21,13 +21,6 @@ def _get_db() -> SessionDB:
     return SessionDB()
 
 
-def _short_id() -> str:
-    """Generate a short job ID like 'cj_20260419_153012_a1b2c3'."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix = uuid.uuid4().hex[:6]
-    return f"cj_{ts}_{suffix}"
-
-
 def _relative_time(ts) -> str:
     """Format a timestamp as relative time."""
     if not ts:
@@ -58,7 +51,8 @@ def copilot_launch(args):
     """Launch a new Copilot session for a repo.
 
     Routes the prompt to a repo (or uses --repo), spawns copilot with
-    --remote, waits for completion, and records the result.
+    --remote, captures the session ID from early output, and returns
+    immediately while copilot continues working in the background.
     """
     prompt = getattr(args, "prompt", None) or ""
     repo = getattr(args, "repo", None)
@@ -88,59 +82,67 @@ def copilot_launch(args):
         sys.exit(1)
 
     db = _get_db()
+    job_id = str(uuid.uuid4())
+
+    # Create job record
+    db.create_copilot_job(
+        job_id=job_id,
+        repo_slug=repo,
+        repo_path=repo_path,
+        prompt=prompt or None,
+        signal_source=getattr(args, "signal_source", None) or "cli",
+        signal_ref=getattr(args, "signal_ref", None),
+    )
+
+    print(f"Launching copilot job: {job_id}")
+    print(f"  Repo: {repo}")
+    if prompt:
+        preview = prompt[:80] + ("..." if len(prompt) > 80 else "")
+        print(f"  Prompt: {preview}")
+
+    # Completion callback — only used for dry_run and test (_spawn) paths.
+    # Real launches use complete_job.py for DB updates.
+    def _on_complete(session_id, exit_code):
+        try:
+            state = "done" if exit_code == 0 else "failed"
+            finish_db = _get_db()
+            finish_db.finish_copilot_job(
+                job_id,
+                state=state,
+                exit_code=exit_code,
+            )
+            finish_db.close()
+        except Exception:
+            pass  # Best-effort — don't crash the daemon thread
+
+    # Launch copilot
+    from copilot_jobs.launcher import launch_copilot
+    from copilot_jobs.models import RepoEntry as _RE
+
+    repo_entry = _RE(slug=repo, path=repo_path)
     try:
-        job_id = _short_id()
-        now = time.time()
-
-        # Create job record
-        db.create_copilot_job(
-            job_id=job_id,
-            repo_slug=repo,
-            repo_path=repo_path,
-            prompt=prompt or None,
-            signal_source=getattr(args, "signal_source", None) or "cli",
-            signal_ref=getattr(args, "signal_ref", None),
-        )
-
-        print(f"Launching copilot job: {job_id}")
-        print(f"  Repo: {repo}")
-        if prompt:
-            preview = prompt[:80] + ("..." if len(prompt) > 80 else "")
-            print(f"  Prompt: {preview}")
-
-        # Launch copilot
-        from copilot_jobs.launcher import launch_copilot
-        from copilot_jobs.models import RepoEntry as _RE
-
-        repo_entry = _RE(slug=repo, path=repo_path)
         result = launch_copilot(
             repo_entry, prompt,
+            session_id=job_id,
             model=model,
             dry_run=getattr(args, "dry_run", False),
+            on_complete=_on_complete,
         )
-
-        session_id = result.get("session_id")
-        exit_code = result.get("exit_code", -1)
-        state = "done" if exit_code == 0 else "failed"
-
-        # Update job with results
-        db.finish_copilot_job(
-            job_id,
-            state=state,
-            copilot_session_id=session_id,
-            exit_code=exit_code,
-        )
-
-        print(f"  State: {_state_badge(state)}")
-        if session_id:
-            print(f"  Session: {session_id}")
-            print(f"\n  Connect: copilot --connect={session_id}")
-            print(f"  Resume:  copilot --resume={session_id}")
-        if exit_code != 0:
-            print(f"  Exit code: {exit_code}", file=sys.stderr)
-
-    finally:
+    except Exception as exc:
+        db.finish_copilot_job(job_id, state="failed", error_text=str(exc))
         db.close()
+        raise
+
+    # For dry-run, the process already completed synchronously.
+    if getattr(args, "dry_run", False):
+        print(f"  State: {_state_badge('done')}")
+    else:
+        print(f"  State: 🟢 running")
+
+    print(f"\n  Connect: copilot --connect={job_id}")
+    print(f"  Resume:  copilot --resume={job_id}")
+
+    db.close()
 
 
 def copilot_list(args):
@@ -155,17 +157,15 @@ def copilot_list(args):
             print("No copilot jobs found.")
             return
 
-        fmt = "{:<30s} {:<20s} {:<12s} {:<14s} {:<40s}"
-        print(fmt.format("ID", "REPO", "STATE", "CREATED", "SESSION"))
-        print("-" * 120)
+        fmt = "{:<38s} {:<20s} {:<12s} {:<14s}"
+        print(fmt.format("ID", "REPO", "STATE", "CREATED"))
+        print("-" * 88)
         for job in jobs:
-            sid = job.get("copilot_session_id") or "-"
             print(fmt.format(
-                job["id"][:30],
+                job["id"][:38],
                 (job["repo_slug"] or "")[:20],
                 _state_badge(job["state"])[:12],
                 _relative_time(job["created_at"]),
-                sid[:40],
             ))
     finally:
         db.close()
@@ -191,11 +191,11 @@ def copilot_show(args):
         if job.get("prompt"):
             preview = job["prompt"][:120] + ("..." if len(job["prompt"]) > 120 else "")
             print(f"Prompt:   {preview}")
-        if job.get("copilot_session_id"):
-            sid = job["copilot_session_id"]
-            print(f"Session:  {sid}")
-            print(f"Connect:  copilot --connect={sid}")
-            print(f"Resume:   copilot --resume={sid}")
+
+        sid = job["id"]
+        print(f"Connect:  copilot --connect={sid}")
+        print(f"Resume:   copilot --resume={sid}")
+
         if job.get("exit_code") is not None:
             print(f"Exit:     {job['exit_code']}")
         if job.get("error_text"):

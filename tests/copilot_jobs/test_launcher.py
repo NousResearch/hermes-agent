@@ -1,6 +1,8 @@
 """Tests for copilot_jobs.launcher — command building, output parsing, and launch."""
 
 import json
+import os
+import threading
 
 import pytest
 
@@ -10,6 +12,31 @@ from copilot_jobs.launcher import (
     parse_copilot_output,
 )
 from copilot_jobs.models import RepoEntry
+
+
+# ---------------------------------------------------------------------------
+# Helpers for fake subprocesses with real pipes.
+# ---------------------------------------------------------------------------
+
+def _make_fake_proc(stdout_text: str, returncode: int = 0):
+    """Create a FakeProc with a real pipe for stdout.
+
+    The pipe is pre-loaded with *stdout_text* and the write end is closed,
+    so ``readline()`` / ``read()`` work with selectors.
+    """
+    r_fd, w_fd = os.pipe()
+    os.write(w_fd, stdout_text.encode())
+    os.close(w_fd)
+
+    class FakeProc:
+        def __init__(self):
+            self.stdout = os.fdopen(r_fd, "r")
+            self.returncode = returncode
+
+        def wait(self):
+            return self.returncode
+
+    return FakeProc()
 
 
 # ---------------------------------------------------------------------------
@@ -88,64 +115,101 @@ class TestBuildCopilotCommand:
         cmd = build_copilot_command("test", copilot_bin="/usr/bin/copilot")
         assert cmd[0] == "/usr/bin/copilot"
 
+    def test_session_id_adds_resume(self):
+        cmd = build_copilot_command("test", session_id="abc-123")
+        assert "--resume" in cmd
+        idx = cmd.index("--resume")
+        assert cmd[idx + 1] == "abc-123"
+
+    def test_no_session_id_no_resume(self):
+        cmd = build_copilot_command("test")
+        assert "--resume" not in cmd
+
 
 # ---------------------------------------------------------------------------
 # launch_copilot
 # ---------------------------------------------------------------------------
 
+_TEST_SID = "test-sid-00000000-0000-0000-0000-000000000000"
+
+
 class TestLaunchCopilot:
     def test_dry_run(self):
         repo = RepoEntry(slug="test-repo", path="/test")
-        result = launch_copilot(repo, "test prompt", dry_run=True)
+        result = launch_copilot(repo, "test prompt", session_id=_TEST_SID, dry_run=True)
 
         assert result["exit_code"] == 0
-        assert result["session_id"].startswith("dry-run-")
+        assert result["session_id"] == _TEST_SID
         assert "copilot" in result["cmd"][0]
+
+    def test_dry_run_on_complete(self):
+        """on_complete is called synchronously for dry_run."""
+        repo = RepoEntry(slug="test-repo", path="/test")
+        cb_args = {}
+
+        def on_cb(sid, code):
+            cb_args["sid"] = sid
+            cb_args["code"] = code
+
+        result = launch_copilot(repo, "test", session_id=_TEST_SID, dry_run=True, on_complete=on_cb)
+        assert cb_args["sid"] == _TEST_SID
+        assert cb_args["code"] == 0
 
     def test_spawn_hook_success(self):
         """_spawn hook should be used instead of real Popen."""
         repo = RepoEntry(slug="test-repo", path="/test")
 
-        class FakeProc:
-            returncode = 0
-            def communicate(self):
-                return ('{"sessionId": "ses_fake"}\n', "")
+        completed = threading.Event()
+        cb_args = {}
+
+        def on_cb(sid, code):
+            cb_args["sid"] = sid
+            cb_args["code"] = code
+            completed.set()
 
         spawned = []
+
         def fake_spawn(cmd, cwd):
             spawned.append((cmd, cwd))
-            return FakeProc()
+            return _make_fake_proc('some output\n', returncode=0)
 
-        result = launch_copilot(repo, "test prompt", _spawn=fake_spawn)
-        assert result["session_id"] == "ses_fake"
-        assert result["exit_code"] == 0
+        result = launch_copilot(
+            repo, "test prompt", session_id=_TEST_SID, _spawn=fake_spawn, on_complete=on_cb
+        )
+        assert result["session_id"] == _TEST_SID
         assert len(spawned) == 1
         assert spawned[0][1] == "/test"
+        # --resume should be in the command
+        assert "--resume" in result["cmd"]
+
+        # Wait for background thread to finish.
+        completed.wait(timeout=5)
+        assert cb_args["sid"] == _TEST_SID
+        assert cb_args["code"] == 0
 
     def test_exit_nonzero(self):
-        """Non-zero exit code should be captured."""
+        """Non-zero exit code should be captured via on_complete."""
         repo = RepoEntry(slug="test-repo", path="/test")
 
-        class FakeProc:
-            returncode = 1
-            def communicate(self):
-                return ("error output\n", "")
+        completed = threading.Event()
+        cb_args = {}
 
-        result = launch_copilot(repo, "test", _spawn=lambda c, d: FakeProc())
-        assert result["exit_code"] == 1
-        assert result["session_id"] is None
+        def on_cb(sid, code):
+            cb_args["sid"] = sid
+            cb_args["code"] = code
+            completed.set()
 
-    def test_captures_session_id_from_output(self):
-        """Session ID from JSONL output should be returned."""
-        repo = RepoEntry(slug="test-repo", path="/test")
+        result = launch_copilot(
+            repo, "test",
+            session_id=_TEST_SID,
+            _spawn=lambda c, d: _make_fake_proc("error output\n", returncode=1),
+            on_complete=on_cb,
+        )
+        # Session ID is always known upfront
+        assert result["session_id"] == _TEST_SID
 
-        class FakeProc:
-            returncode = 0
-            def communicate(self):
-                return ('{"sessionId": "ses_from_output"}\n', "")
-
-        result = launch_copilot(repo, "test", _spawn=lambda c, d: FakeProc())
-        assert result["session_id"] == "ses_from_output"
+        completed.wait(timeout=5)
+        assert cb_args["code"] == 1
 
     def test_spawn_failure_raises(self):
         """If _spawn raises, the exception should propagate."""
@@ -155,4 +219,4 @@ class TestLaunchCopilot:
             raise OSError("copilot not found")
 
         with pytest.raises(OSError, match="copilot not found"):
-            launch_copilot(repo, "test", _spawn=bad_spawn)
+            launch_copilot(repo, "test", session_id=_TEST_SID, _spawn=bad_spawn)

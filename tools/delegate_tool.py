@@ -279,6 +279,7 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    override_acp_cwd: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -353,6 +354,7 @@ def _build_child_agent(
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
+    effective_acp_cwd = override_acp_cwd or getattr(parent_agent, "acp_cwd", None)
 
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
@@ -381,6 +383,7 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        acp_cwd=effective_acp_cwd,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
@@ -685,6 +688,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    acp_cwd: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -777,6 +781,7 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
+                override_acp_cwd=t.get("acp_cwd") or acp_cwd,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -1137,6 +1142,17 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Per-task ACP args override.",
                         },
+                        "acp_cwd": {
+                            "type": "string",
+                            "description": (
+                                "Per-task ACP working directory override. Lets "
+                                "parallel subagents target different project "
+                                "subdirectories in one delegate_task call — "
+                                "e.g. one child editing `tools/`, another "
+                                "editing `agent/` — each reading the local "
+                                "CLAUDE.md for its subtree."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -1173,6 +1189,17 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "acp_cwd": {
+                "type": "string",
+                "description": (
+                    "Working directory for the spawned ACP subprocess (e.g. "
+                    "`claude --acp --stdio`). The ACP agent will resolve local "
+                    "project files (CLAUDE.md, .cursorrules, skills, tests) "
+                    "relative to this path. Falls back to the Hermes process "
+                    "cwd when unset. Inherited from the parent AIAgent unless "
+                    "overridden per-task in the `tasks` array."
+                ),
+            },
         },
         "required": [],
     },
@@ -1194,6 +1221,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        acp_cwd=args.get("acp_cwd"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

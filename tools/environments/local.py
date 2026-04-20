@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from pathlib import PureWindowsPath
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -153,22 +154,80 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
-    found = shutil.which("bash")
-    if found:
-        return found
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
 
     for candidate in (
-        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(program_files, "Git", "bin", "bash.exe"),
+        os.path.join(
+            program_files,
+            "Git", "usr", "bin", "bash.exe",
+        ),
+        os.path.join(program_files_x86, "Git", "bin", "bash.exe"),
+        os.path.join(
+            program_files_x86,
+            "Git", "usr", "bin", "bash.exe",
+        ),
+        os.path.join(local_app_data, "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(
+            local_app_data,
+            "Programs", "Git", "usr", "bin", "bash.exe",
+        ),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found and not _is_windows_wsl_bash(found):
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
         "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
+    )
+
+
+def _normalize_windows_path(path: str) -> str:
+    return str(PureWindowsPath(path)).casefold()
+
+
+def _is_windows_wsl_bash(path: str) -> bool:
+    """Return True for Windows' WSL bash launchers, which are not Git Bash."""
+    if not path:
+        return False
+
+    candidates = [
+        str(
+            PureWindowsPath(
+                os.environ.get("WINDIR")
+                or os.environ.get("SystemRoot")
+                or r"C:\Windows"
+            )
+            / "System32"
+            / "bash.exe"
+        ),
+    ]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(
+            str(PureWindowsPath(local_app_data) / "Microsoft" / "WindowsApps" / "bash.exe")
+        )
+
+    normalized = _normalize_windows_path(path)
+    return any(normalized == _normalize_windows_path(candidate) for candidate in candidates)
+
+
+def _windows_bash_compat_prelude() -> str:
+    """Small shims for Unix-style commands that Git Bash lacks by default."""
+    if not _IS_WINDOWS:
+        return ""
+    return (
+        "if ! command -v python3 >/dev/null 2>&1 "
+        "&& command -v python >/dev/null 2>&1; then\n"
+        "  python3() { python \"$@\"; }\n"
+        "fi\n"
     )
 
 
@@ -275,11 +334,26 @@ class LocalEnvironment(BaseEnvironment):
 
         return proc
 
+    def _wrap_command(self, command: str, cwd: str) -> str:
+        wrapped = super()._wrap_command(command, cwd)
+        if _IS_WINDOWS:
+            return _windows_bash_compat_prelude() + wrapped
+        return wrapped
+
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
             else:
                 pgid = os.getpgid(proc.pid)
                 os.killpg(pgid, signal.SIGTERM)

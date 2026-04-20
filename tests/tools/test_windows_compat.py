@@ -5,8 +5,11 @@ and that each module uses a platform guard before invoking POSIX-only functions.
 """
 
 import ast
-import pytest
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 # Files that must have Windows-safe process management
 GUARDED_FILES = [
@@ -78,3 +81,90 @@ class TestKillpgGuarded:
                 assert "_IS_WINDOWS" in context or "else:" in context, (
                     f"{relpath}:{i + 1} has unguarded os.killpg/os.getpgid call"
                 )
+
+
+class TestWindowsBashSelection:
+    """Windows should use Git Bash for local shell execution, not WSL bash."""
+
+    def test_prefers_git_bash_over_wsl_bash_on_path(self, tmp_path, monkeypatch):
+        from tools.environments import local as local_env
+
+        git_bash = tmp_path / "Git" / "bin" / "bash.exe"
+        git_bash.parent.mkdir(parents=True)
+        git_bash.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(local_env, "_IS_WINDOWS", True)
+        monkeypatch.setenv("ProgramFiles", str(tmp_path))
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "missing-x86"))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "missing-local"))
+        monkeypatch.setattr(
+            local_env.shutil,
+            "which",
+            lambda name: r"C:\Windows\System32\bash.EXE" if name == "bash" else None,
+        )
+
+        assert local_env._find_bash() == str(git_bash)
+
+    def test_rejects_wsl_bash_when_git_bash_is_missing(self, tmp_path, monkeypatch):
+        from tools.environments import local as local_env
+
+        monkeypatch.setattr(local_env, "_IS_WINDOWS", True)
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "missing"))
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "missing-x86"))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "missing-local"))
+        monkeypatch.setenv("WINDIR", r"C:\Windows")
+        monkeypatch.setattr(
+            local_env.shutil,
+            "which",
+            lambda name: r"C:\Windows\System32\bash.exe" if name == "bash" else None,
+        )
+
+        with pytest.raises(RuntimeError, match="Git Bash not found"):
+            local_env._find_bash()
+
+    def test_allows_non_wsl_bash_from_path(self, tmp_path, monkeypatch):
+        from tools.environments import local as local_env
+
+        path_bash = tmp_path / "tools" / "bash.exe"
+        path_bash.parent.mkdir(parents=True)
+        path_bash.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(local_env, "_IS_WINDOWS", True)
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "missing"))
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "missing-x86"))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "missing-local"))
+        monkeypatch.setattr(
+            local_env.shutil,
+            "which",
+            lambda name: str(path_bash) if name == "bash" else None,
+        )
+
+        assert local_env._find_bash() == str(path_bash)
+
+
+class TestWindowsPipeDrain:
+    """Windows pipe draining cannot rely on select.select()."""
+
+    def test_wait_for_process_drains_stdout_with_windows_path(self, monkeypatch):
+        import tools.environments.base as base_env
+        from tools.environments.base import BaseEnvironment
+
+        class DummyEnvironment(BaseEnvironment):
+            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+                raise NotImplementedError
+
+            def cleanup(self):
+                pass
+
+        monkeypatch.setattr(base_env.os, "name", "nt", raising=False)
+        env = DummyEnvironment(cwd=".", timeout=5)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "print('hermes-local-test')"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        result = env._wait_for_process(proc, timeout=5)
+
+        assert result["returncode"] == 0
+        assert "hermes-local-test" in result["output"]

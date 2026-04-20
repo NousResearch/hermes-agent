@@ -464,8 +464,48 @@ class BaseEnvironment(ABC):
         # U+FFFD substitution rather than clobbering the whole buffer.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
-        def _drain():
-            fd = proc.stdout.fileno()
+        def _flush_decoder():
+            # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
+            # this emits U+FFFD for any final incomplete sequence rather than
+            # raising.
+            try:
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    output_chunks.append(tail)
+            except Exception:
+                pass
+
+        def _append_output(chunk):
+            if isinstance(chunk, bytes):
+                text = decoder.decode(chunk)
+            else:
+                text = str(chunk)
+            if text:
+                output_chunks.append(text)
+
+        def _stdout_fd_or_drain_iterable():
+            stdout = proc.stdout
+            if stdout is None:
+                _flush_decoder()
+                return None
+
+            fileno = getattr(stdout, "fileno", None)
+            if callable(fileno):
+                return fileno()
+
+            try:
+                for chunk in stdout:
+                    _append_output(chunk)
+            except (ValueError, OSError):
+                pass
+            finally:
+                _flush_decoder()
+            return None
+
+        def _drain_posix():
+            fd = _stdout_fd_or_drain_iterable()
+            if fd is None:
+                return
             idle_after_exit = 0
             try:
                 while True:
@@ -480,7 +520,7 @@ class BaseEnvironment(ABC):
                             break
                         if not chunk:
                             break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
+                        _append_output(chunk)
                         idle_after_exit = 0
                     elif proc.poll() is not None:
                         # bash is gone and the pipe was idle for ~100ms.  Give
@@ -490,18 +530,39 @@ class BaseEnvironment(ABC):
                         if idle_after_exit >= 3:
                             break
             finally:
-                # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
-                # this emits U+FFFD for any final incomplete sequence rather than
-                # raising.
-                try:
-                    tail = decoder.decode(b"", final=True)
-                    if tail:
-                        output_chunks.append(tail)
-                except Exception:
-                    pass
+                _flush_decoder()
+
+        def _drain_windows():
+            fd = _stdout_fd_or_drain_iterable()
+            if fd is None:
+                return
+            try:
+                while True:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except (ValueError, OSError):
+                        break
+                    if not chunk:
+                        break
+                    _append_output(chunk)
+            finally:
+                _flush_decoder()
+
+        _drain = _drain_windows if os.name == "nt" else _drain_posix
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
+
+        def _join_drain_thread(timeout_seconds: float = 2.0) -> None:
+            if os.name != "nt":
+                drain_thread.join(timeout=timeout_seconds)
+                return
+
+            # Windows pipe reads cannot be select()-polled. If a child keeps
+            # the inherited pipe open after the shell exits, don't burn the
+            # full POSIX drain timeout waiting on a blocking read.
+            drain_thread.join(timeout=min(timeout_seconds, 0.25))
+
         deadline = time.monotonic() + timeout
         _now = time.monotonic()
         _activity_state = {
@@ -539,7 +600,7 @@ class BaseEnvironment(ABC):
                             _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
                         )
                     self._kill_process(proc)
-                    drain_thread.join(timeout=2)
+                    _join_drain_thread()
                     return {
                         "output": "".join(output_chunks) + "\n[Command interrupted]",
                         "returncode": 130,
@@ -552,12 +613,12 @@ class BaseEnvironment(ABC):
                             _tid, _pid, _iter_count, timeout,
                         )
                     self._kill_process(proc)
-                    drain_thread.join(timeout=2)
+                    _join_drain_thread()
                     partial = "".join(output_chunks)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
                     return {
                         "output": partial + timeout_msg
-                        if partial
+                        if partial.strip()
                         else timeout_msg.lstrip(),
                         "returncode": 124,
                     }
@@ -600,7 +661,7 @@ class BaseEnvironment(ABC):
                 )
             try:
                 self._kill_process(proc)
-                drain_thread.join(timeout=2)
+                _join_drain_thread()
             except Exception:
                 pass  # cleanup is best-effort
             raise
@@ -608,12 +669,13 @@ class BaseEnvironment(ABC):
         # Drain thread now exits promptly after bash does (~300ms idle
         # check).  A short join is enough; a long one would be a bug since
         # it means the non-blocking loop itself stopped cooperating.
-        drain_thread.join(timeout=2)
+        _join_drain_thread()
 
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
+        if not (os.name == "nt" and drain_thread.is_alive()):
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
 
         if _DEBUG_INTERRUPT:
             logger.info(

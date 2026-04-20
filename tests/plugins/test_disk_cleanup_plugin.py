@@ -1,8 +1,8 @@
-"""Tests for the disk-guardian plugin.
+"""Tests for the disk-cleanup plugin.
 
-Covers the bundled plugin at ``plugins/disk-guardian/``:
+Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
-  * ``disk_guardian`` library: track / forget / dry_run / quick / status,
+  * ``disk_cleanup`` library: track / forget / dry_run / quick / status,
     ``is_safe_path`` and ``guess_category`` filtering.
   * Plugin ``__init__``: ``post_tool_call`` hook auto-tracks files created
     by ``write_file`` / ``terminal``; ``on_session_end`` hook runs quick
@@ -14,7 +14,6 @@ Covers the bundled plugin at ``plugins/disk-guardian/``:
 
 import importlib
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -23,23 +22,24 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
-    """Isolate HERMES_HOME + clear plugin module cache for each test."""
+    """Isolate HERMES_HOME for each test.
+
+    The global hermetic fixture already redirects HERMES_HOME to a tempdir,
+    but we want the plugin to work with a predictable subpath. We reset
+    HERMES_HOME here for clarity.
+    """
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    # Drop the disk-guardian modules so each test re-imports fresh.
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_plugins.disk_guardian") or mod == "plugins.disk_guardian":
-            del sys.modules[mod]
     yield hermes_home
 
 
 def _load_lib():
     """Import the plugin's library module directly from the repo path."""
     repo_root = Path(__file__).resolve().parents[2]
-    lib_path = repo_root / "plugins" / "disk-guardian" / "disk_guardian.py"
+    lib_path = repo_root / "plugins" / "disk-cleanup" / "disk_cleanup.py"
     spec = importlib.util.spec_from_file_location(
-        "disk_guardian_under_test", lib_path
+        "disk_cleanup_under_test", lib_path
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -49,23 +49,23 @@ def _load_lib():
 def _load_plugin_init():
     """Import the plugin's __init__.py (which depends on the library)."""
     repo_root = Path(__file__).resolve().parents[2]
-    plugin_dir = repo_root / "plugins" / "disk-guardian"
+    plugin_dir = repo_root / "plugins" / "disk-cleanup"
     # Use the PluginManager's module naming convention so relative imports work.
     spec = importlib.util.spec_from_file_location(
-        "hermes_plugins.disk_guardian",
+        "hermes_plugins.disk_cleanup",
         plugin_dir / "__init__.py",
         submodule_search_locations=[str(plugin_dir)],
     )
-    # Ensure parent namespace package exists for the relative `. import disk_guardian`
+    # Ensure parent namespace package exists for the relative `. import disk_cleanup`
     import types
     if "hermes_plugins" not in sys.modules:
         ns = types.ModuleType("hermes_plugins")
         ns.__path__ = []
         sys.modules["hermes_plugins"] = ns
     mod = importlib.util.module_from_spec(spec)
-    mod.__package__ = "hermes_plugins.disk_guardian"
+    mod.__package__ = "hermes_plugins.disk_cleanup"
     mod.__path__ = [str(plugin_dir)]
-    sys.modules["hermes_plugins.disk_guardian"] = mod
+    sys.modules["hermes_plugins.disk_cleanup"] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -245,7 +245,7 @@ class TestPostToolCallHook:
             result="OK",
             task_id="t1", session_id="s1",
         )
-        tracked_file = _isolate_env / "disk-guardian" / "tracked.json"
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert len(data) == 1
         assert data[0]["category"] == "test"
@@ -260,7 +260,7 @@ class TestPostToolCallHook:
             result="OK",
             task_id="t2", session_id="s2",
         )
-        tracked_file = _isolate_env / "disk-guardian" / "tracked.json"
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 
     def test_terminal_command_picks_up_paths(self, _isolate_env):
@@ -273,7 +273,7 @@ class TestPostToolCallHook:
             result=f"created {p}\n",
             task_id="t3", session_id="s3",
         )
-        tracked_file = _isolate_env / "disk-guardian" / "tracked.json"
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert any(Path(i["path"]) == p.resolve() for i in data)
 
@@ -286,7 +286,7 @@ class TestPostToolCallHook:
             task_id="t4", session_id="s4",
         )
         # read_file should never trigger tracking.
-        tracked_file = _isolate_env / "disk-guardian" / "tracked.json"
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 
 
@@ -319,7 +319,7 @@ class TestSlashCommand:
     def test_help(self, _isolate_env):
         pi = _load_plugin_init()
         out = pi._handle_slash("help")
-        assert "disk-guardian" in out
+        assert "disk-cleanup" in out
         assert "status" in out
 
     def test_status_empty(self, _isolate_env):
@@ -366,61 +366,35 @@ class TestSlashCommand:
 # ---------------------------------------------------------------------------
 
 class TestBundledDiscovery:
-    def test_disk_guardian_is_discovered_as_bundled(self, _isolate_env, monkeypatch):
+    def test_disk_cleanup_is_discovered_as_bundled(self, _isolate_env, monkeypatch):
         # The default hermetic conftest disables bundled plugin discovery.
         # This test specifically exercises it, so clear the suppression.
         monkeypatch.delenv("HERMES_DISABLE_BUNDLED_PLUGINS", raising=False)
-        # Reset plugin manager state so discovery runs fresh.
-        for mod in list(sys.modules.keys()):
-            if mod.startswith("hermes_cli.plugins") or mod == "plugins":
-                del sys.modules[mod]
-
-        repo_root = Path(__file__).resolve().parents[2]
-        sys.path.insert(0, str(repo_root))
-        try:
-            from hermes_cli import plugins as pmod
-            mgr = pmod.PluginManager()
-            mgr.discover_and_load()
-            assert "disk-guardian" in mgr._plugins
-            loaded = mgr._plugins["disk-guardian"]
-            assert loaded.manifest.source == "bundled"
-            assert loaded.enabled
-            assert "post_tool_call" in loaded.hooks_registered
-            assert "on_session_end" in loaded.hooks_registered
-            assert "disk-guardian" in loaded.commands_registered
-        finally:
-            sys.path.pop(0)
+        from hermes_cli import plugins as pmod
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        assert "disk-cleanup" in mgr._plugins
+        loaded = mgr._plugins["disk-cleanup"]
+        assert loaded.manifest.source == "bundled"
+        assert loaded.enabled
+        assert "post_tool_call" in loaded.hooks_registered
+        assert "on_session_end" in loaded.hooks_registered
+        assert "disk-cleanup" in loaded.commands_registered
 
     def test_memory_and_context_engine_subdirs_skipped(self, _isolate_env, monkeypatch):
         """Bundled scan must NOT pick up plugins/memory or plugins/context_engine
         as top-level plugins — they have their own discovery paths."""
         monkeypatch.delenv("HERMES_DISABLE_BUNDLED_PLUGINS", raising=False)
-        for mod in list(sys.modules.keys()):
-            if mod.startswith("hermes_cli.plugins") or mod == "plugins":
-                del sys.modules[mod]
-        repo_root = Path(__file__).resolve().parents[2]
-        sys.path.insert(0, str(repo_root))
-        try:
-            from hermes_cli import plugins as pmod
-            mgr = pmod.PluginManager()
-            mgr.discover_and_load()
-            assert "memory" not in mgr._plugins
-            assert "context_engine" not in mgr._plugins
-        finally:
-            sys.path.pop(0)
+        from hermes_cli import plugins as pmod
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        assert "memory" not in mgr._plugins
+        assert "context_engine" not in mgr._plugins
 
     def test_bundled_scan_suppressed_by_env_var(self, _isolate_env, monkeypatch):
         """HERMES_DISABLE_BUNDLED_PLUGINS=1 suppresses bundled discovery."""
         monkeypatch.setenv("HERMES_DISABLE_BUNDLED_PLUGINS", "1")
-        for mod in list(sys.modules.keys()):
-            if mod.startswith("hermes_cli.plugins") or mod == "plugins":
-                del sys.modules[mod]
-        repo_root = Path(__file__).resolve().parents[2]
-        sys.path.insert(0, str(repo_root))
-        try:
-            from hermes_cli import plugins as pmod
-            mgr = pmod.PluginManager()
-            mgr.discover_and_load()
-            assert "disk-guardian" not in mgr._plugins
-        finally:
-            sys.path.pop(0)
+        from hermes_cli import plugins as pmod
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        assert "disk-cleanup" not in mgr._plugins

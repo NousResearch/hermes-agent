@@ -2276,7 +2276,7 @@ class HermesCLI:
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
-            if prompt_elapsed:
+            if prompt_elapsed and prompt_elapsed != "⏲ 0s":
                 parts.append(prompt_elapsed)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -2339,7 +2339,7 @@ class HermesCLI:
                     ]
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
-                    if prompt_elapsed:
+                    if prompt_elapsed and prompt_elapsed != "⏲ 0s":
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
                     frags.append(("class:status-bar", " "))

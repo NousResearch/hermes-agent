@@ -919,3 +919,27 @@ class TestAdversarialEdgeCases:
         )
         result = classify_api_error(e)
         assert result.reason == FailoverReason.format_error
+
+    # Broader non-string type guards — defense against other provider quirks.
+
+    def test_list_message_no_crash(self):
+        """Some providers return message as a list of error entries."""
+        e = MockAPIError(
+            "validation",
+            status_code=400,
+            body={"message": [{"msg": "field required"}]},
+        )
+        result = classify_api_error(e)
+        assert result is not None
+
+    def test_int_message_no_crash(self):
+        """Any non-string type must be coerced safely."""
+        e = MockAPIError("server error", status_code=500, body={"message": 42})
+        result = classify_api_error(e)
+        assert result is not None
+
+    def test_none_message_still_works(self):
+        """Regression: None fallback (the 'or \"\"' path) must still work."""
+        e = MockAPIError("server error", status_code=500, body={"message": None})
+        result = classify_api_error(e)
+        assert result is not None

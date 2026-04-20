@@ -46,6 +46,37 @@ class TestSessionLifecycle:
         assert isinstance(session["ended_at"], float)
         assert session["end_reason"] == "user_exit"
 
+    def test_end_session_preserves_original_end_reason(self, db):
+        """The first end_reason wins — compression splits must not be
+        overwritten when a later stale ``end_session()`` call lands on the
+        same row (e.g. from a CLI session_id that desynced after compression
+        and then tried to /resume another session).
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.end_session("s1", end_reason="compression")
+        first_ended_at = db.get_session("s1")["ended_at"]
+
+        # Simulate a stale CLI holding the old session_id and calling
+        # end_session() again with a different reason.
+        time.sleep(0.01)
+        db.end_session("s1", end_reason="resumed_other")
+
+        session = db.get_session("s1")
+        assert session["end_reason"] == "compression"
+        assert session["ended_at"] == first_ended_at
+
+    def test_end_session_after_reopen_allows_re_end(self, db):
+        """reopen_session() is the explicit escape hatch for re-ending a
+        closed session. After reopen, end_session() takes effect again.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.end_session("s1", end_reason="compression")
+        db.reopen_session("s1")
+        db.end_session("s1", end_reason="user_exit")
+
+        session = db.get_session("s1")
+        assert session["end_reason"] == "user_exit"
+
     def test_update_system_prompt(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_system_prompt("s1", "You are a helpful assistant.")

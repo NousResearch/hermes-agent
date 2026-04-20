@@ -161,7 +161,7 @@ export function useMainApp(gw: GatewayClient) {
     [historyItems, messageId]
   )
 
-  const virtualHistory = useVirtualHistory(scrollRef, virtualRows)
+  const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols)
 
   const scrollWithSelection = useCallback(
     (delta: number) => {
@@ -306,12 +306,26 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    const onResize = () =>
-      rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+    let timer: null | ReturnType<typeof setTimeout> = null
+
+    const onResize = () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      timer = setTimeout(() => {
+        timer = null
+        void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+      }, 100)
+    }
 
     stdout.on('resize', onResize)
 
     return () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+
       stdout.off('resize', onResize)
     }
   }, [rpc, stdout, ui.sid])

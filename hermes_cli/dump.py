@@ -160,7 +160,6 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("display", "streaming"),
         ("display", "skin"),
         ("display", "show_reasoning"),
-        ("smart_model_routing", "enabled"),
         ("privacy", "redact_pii"),
         ("tts", "provider"),
     ]

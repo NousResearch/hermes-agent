@@ -310,12 +310,6 @@ def load_cli_config() -> Dict[str, Any]:
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.50,    # Compress at 50% of model's context limit
         },
-        "smart_model_routing": {
-            "enabled": False,
-            "max_simple_chars": 160,
-            "max_simple_words": 28,
-            "cheap_model": {},
-        },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -1857,8 +1851,9 @@ class HermesCLI:
             fb = [fb] if fb.get("provider") and fb.get("model") else []
         self._fallback_model = fb
 
-        # Optional cheap-vs-strong routing for simple turns
-        self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
+        # Signature of the currently-initialised agent's runtime.  Used to
+        # rebuild the agent when provider / model / base_url changes across
+        # turns (e.g. after /model or credential rotation).
         self._active_agent_route_signature = None
 
         # Agent will be initialized on first use
@@ -2883,24 +2878,36 @@ class HermesCLI:
         return True
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
-        """Resolve model/runtime overrides for a single user turn."""
-        from agent.smart_model_routing import resolve_turn_route
+        """Build the effective model/runtime config for a single user turn.
+
+        Always uses the session's primary model/provider.  If the user has
+        toggled `/fast` on and the current model supports Priority
+        Processing / Anthropic fast mode, attach `request_overrides` so the
+        API call is marked accordingly.
+        """
         from hermes_cli.models import resolve_fast_mode_overrides
 
-        route = resolve_turn_route(
-            user_message,
-            self._smart_model_routing,
-            {
-                "model": self.model,
-                "api_key": self.api_key,
-                "base_url": self.base_url,
-                "provider": self.provider,
-                "api_mode": self.api_mode,
-                "command": self.acp_command,
-                "args": list(self.acp_args or []),
-                "credential_pool": getattr(self, "_credential_pool", None),
-            },
-        )
+        runtime = {
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "provider": self.provider,
+            "api_mode": self.api_mode,
+            "command": self.acp_command,
+            "args": list(self.acp_args or []),
+            "credential_pool": getattr(self, "_credential_pool", None),
+        }
+        route = {
+            "model": self.model,
+            "runtime": runtime,
+            "signature": (
+                self.model,
+                runtime["provider"],
+                runtime["base_url"],
+                runtime["api_mode"],
+                runtime["command"],
+                tuple(runtime["args"]),
+            ),
+        }
 
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
@@ -2908,13 +2915,13 @@ class HermesCLI:
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route.get("model"))
+            overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -7911,7 +7918,6 @@ class HermesCLI:
         if not self._init_agent(
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
-            route_label=turn_route["label"],
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
@@ -10535,7 +10541,6 @@ def main(
                 if cli._init_agent(
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
-                    route_label=turn_route["label"],
                     request_overrides=turn_route.get("request_overrides"),
                 ):
                     cli.agent.quiet_mode = True

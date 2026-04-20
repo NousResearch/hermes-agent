@@ -1,22 +1,19 @@
-type Cleanup = () => Promise<void> | void
-
 interface SetupOptions {
-  cleanups?: Cleanup[]
+  cleanups?: (() => Promise<void> | void)[]
   failsafeMs?: number
   onError?: (scope: 'uncaughtException' | 'unhandledRejection', err: unknown) => void
   onSignal?: (signal: NodeJS.Signals) => void
 }
 
-const DEFAULT_FAILSAFE_MS = 4000
+const SIGNAL_EXIT_CODE: Record<'SIGHUP' | 'SIGINT' | 'SIGTERM', number> = {
+  SIGHUP: 129,
+  SIGINT: 130,
+  SIGTERM: 143
+}
 
 let wired = false
 
-export function setupGracefulExit({
-  cleanups = [],
-  failsafeMs = DEFAULT_FAILSAFE_MS,
-  onError,
-  onSignal
-}: SetupOptions = {}) {
+export function setupGracefulExit({ cleanups = [], failsafeMs = 4000, onError, onSignal }: SetupOptions = {}) {
   if (wired) {
     return
   }
@@ -36,28 +33,15 @@ export function setupGracefulExit({
       onSignal?.(signal)
     }
 
-    const failsafe = setTimeout(() => process.exit(code), failsafeMs)
+    setTimeout(() => process.exit(code), failsafeMs).unref?.()
 
-    failsafe.unref?.()
-
-    void Promise.allSettled(cleanups.map(fn => Promise.resolve().then(fn)))
-      .catch(() => {})
-      .finally(() => process.exit(code))
+    void Promise.allSettled(cleanups.map(fn => Promise.resolve().then(fn))).finally(() => process.exit(code))
   }
 
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-    process.on(sig, () => exit(sig === 'SIGINT' ? 130 : sig === 'SIGTERM' ? 143 : 129, sig))
+    process.on(sig, () => exit(SIGNAL_EXIT_CODE[sig], sig))
   }
 
-  process.on('uncaughtException', err => {
-    onError?.('uncaughtException', err)
-  })
-
-  process.on('unhandledRejection', reason => {
-    onError?.('unhandledRejection', reason)
-  })
-}
-
-export function forceExit(code = 0) {
-  process.exit(code)
+  process.on('uncaughtException', err => onError?.('uncaughtException', err))
+  process.on('unhandledRejection', reason => onError?.('unhandledRejection', reason))
 }

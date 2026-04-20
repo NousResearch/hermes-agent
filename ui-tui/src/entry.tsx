@@ -2,8 +2,8 @@
 import { bootBanner } from './bootBanner.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
-import { formatBytes, performHeapDump } from './lib/memory.js'
-import { startMemoryMonitor } from './lib/memoryMonitor.js'
+import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
+import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
@@ -15,6 +15,9 @@ process.stdout.write(bootBanner())
 const gw = new GatewayClient()
 
 gw.start()
+
+const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
+  `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`
 
 setupGracefulExit({
   cleanups: [() => gw.kill()],
@@ -28,16 +31,11 @@ setupGracefulExit({
 
 const stopMemoryMonitor = startMemoryMonitor({
   onCritical: (snap, dump) => {
-    process.stderr.write(
-      `hermes-tui: critical memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`
-    )
+    process.stderr.write(dumpNotice(snap, dump))
     process.stderr.write('hermes-tui: exiting to avoid OOM; restart to recover\n')
     process.exit(137)
   },
-  onHigh: (snap, dump) =>
-    process.stderr.write(
-      `hermes-tui: high memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`
-    )
+  onHigh: (snap, dump) => process.stderr.write(dumpNotice(snap, dump))
 })
 
 if (process.env.HERMES_HEAPDUMP_ON_START === '1') {

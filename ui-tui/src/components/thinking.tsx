@@ -596,6 +596,17 @@ export const ToolTrail = memo(function ToolTrail({
     }
   }, [detailsMode])
 
+  const latestErrorId = useMemo(
+    () => activity.reduce((max, i) => (i.tone === 'error' && i.id > max ? i.id : max), -1),
+    [activity]
+  )
+
+  useEffect(() => {
+    if (latestErrorId >= 0) {
+      setOpenMeta(true)
+    }
+  }, [latestErrorId])
+
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 
   if (

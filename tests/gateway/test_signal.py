@@ -794,53 +794,96 @@ def _make_dm_envelope(sender: str, attachments: list, text: str = "") -> dict:
 
 
 class TestSignalInboundMessageTypeClassification:
-    """_handle_envelope must set MessageType.DOCUMENT for application/* attachments.
+    """_handle_envelope must set MessageType.DOCUMENT for application/* and text/* attachments.
 
     Before the fix, PDFs and other documents left msg_type as MessageType.TEXT,
     so run.py's document-context injection (which gates on MessageType.DOCUMENT)
     silently dropped the file and the agent never saw it.
     """
 
-    @pytest.mark.asyncio
-    async def test_pdf_attachment_sets_document_type(self, monkeypatch):
-        """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
-        from gateway.platforms.base import MessageType
-
+    async def _dispatch_single_attachment(self, monkeypatch, content_type: str,
+                                          att_id: str, fetch_path: str, fetch_ext: str):
+        """Helper: run _handle_envelope with one attachment and return the dispatched event."""
         envelope = _make_dm_envelope(
             sender="+15559876543",
             attachments=[{
-                "contentType": "application/pdf",
-                "id": "6zLO3b-6Yf3zVWeLDctA.pdf",
-                "size": 508237,
-                "filename": "report.pdf",
+                "contentType": content_type,
+                "id": att_id,
+                "size": 1024,
+                "filename": None,
                 "width": None,
                 "height": None,
                 "caption": None,
                 "uploadTimestamp": 1700000000000,
             }],
-            text="here's the doc",
         )
-
         adapter = _make_signal_adapter(monkeypatch)
         adapter._rpc, _ = _stub_rpc(None)
-
         dispatched = []
 
         async def _fake_handle_message(event):
             dispatched.append(event)
 
         adapter.handle_message = _fake_handle_message
-        adapter._fetch_attachment = AsyncMock(return_value=("/tmp/report.pdf", ".pdf"))
-
+        adapter._fetch_attachment = AsyncMock(return_value=(fetch_path, fetch_ext))
         await adapter._handle_envelope(envelope)
-
         assert dispatched, "_handle_envelope did not dispatch any event"
-        event = dispatched[0]
+        return dispatched[0]
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_sets_document_type(self, monkeypatch):
+        """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="application/pdf",
+            att_id="6zLO3b-6Yf3zVWeLDctA.pdf",
+            fetch_path="/tmp/report.pdf",
+            fetch_ext=".pdf",
+        )
+
         assert event.message_type == MessageType.DOCUMENT, (
             f"Expected DOCUMENT, got {event.message_type}. "
             "PDFs must be classified as DOCUMENT so run.py injects file context."
         )
         assert "/tmp/report.pdf" in event.media_urls
+
+    @pytest.mark.asyncio
+    async def test_text_plain_attachment_sets_document_type(self, monkeypatch):
+        """A text/plain attachment must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/plain",
+            att_id="notes.txt",
+            fetch_path="/tmp/notes.txt",
+            fetch_ext=".txt",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/plain must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_text_html_attachment_sets_document_type(self, monkeypatch):
+        """A text/html attachment must produce MessageType.DOCUMENT (covers the text/* wildcard)."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/html",
+            att_id="page.html",
+            fetch_path="/tmp/page.html",
+            fetch_ext=".html",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/html must be classified as DOCUMENT so run.py injects file context."
+        )
 
 
 # ---------------------------------------------------------------------------

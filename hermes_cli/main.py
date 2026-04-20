@@ -6874,6 +6874,10 @@ For more help on a command:
     # cron list
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
+    cron_list.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Show last_error and delivery errors for each job",
+    )
 
     # cron create/add
     cron_create = cron_subparsers.add_parser(
@@ -6938,6 +6942,37 @@ For more help on a command:
     cron_edit.add_argument(
         "--script",
         help="Path to a Python script whose stdout is injected into the prompt each run. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--model",
+        help="Override the model used for this job (e.g. 'nous/hermes-4-70b'). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--provider",
+        help="Override the inference provider for this job (e.g. 'openrouter', 'anthropic'). Pass empty string to clear.",
+    )
+
+    # cron migrate-model: bulk model/provider update across matching jobs
+    cron_migrate = cron_subparsers.add_parser(
+        "migrate-model",
+        help="Bulk-update model/provider across jobs matching a filter",
+    )
+    cron_migrate.add_argument(
+        "--from-model",
+        dest="from_model",
+        help="Only update jobs whose current model matches this value (substring match)",
+    )
+    cron_migrate.add_argument(
+        "--from-provider",
+        dest="from_provider",
+        help="Only update jobs whose current provider matches this value",
+    )
+    cron_migrate.add_argument("--model", help="New model to set on matched jobs")
+    cron_migrate.add_argument("--provider", help="New provider to set on matched jobs")
+    cron_migrate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print jobs that would be updated without writing changes",
     )
 
     # lifecycle actions

@@ -1098,6 +1098,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
+                # #126: track whether agent went silent so cron list can
+                # surface terminal outcome rather than misleading 'dispatched'.
+                was_silent = not should_deliver and success
+
                 delivery_error = None
                 if should_deliver:
                     try:
@@ -1113,7 +1117,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error,
+                             was_silent=was_silent)
                 executed += 1
 
             except Exception as e:

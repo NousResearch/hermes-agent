@@ -38,7 +38,7 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
-def cron_list(show_all: bool = False):
+def cron_list(show_all: bool = False, verbose: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
 
@@ -93,20 +93,38 @@ def cron_list(show_all: bool = False):
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
+        model_override = job.get("model")
+        provider_override = job.get("provider")
+        if model_override or provider_override:
+            model_str = model_override or "(default)"
+            provider_str = provider_override or "(default)"
+            print(f"    Model:     {model_str}  via  {provider_str}")
 
-        # Execution history
+        # Execution history — show terminal outcome, not just 'dispatched'
+        # last_status values: None (never run), 'delivered', 'silent', 'error'
+        # Legacy: 'ok' is treated as synonym for 'delivered' (backward compat)
         last_status = job.get("last_status")
         if last_status:
             last_run = job.get("last_run_at", "?")
-            if last_status == "ok":
-                status_display = color("ok", Colors.GREEN)
+            if last_status in ("delivered", "ok"):
+                # 'ok' is the legacy term for a delivered run (pre-#126 jobs)
+                status_display = color("delivered", Colors.GREEN)
+            elif last_status == "silent":
+                status_display = color("silent (suppressed)", Colors.DIM)
             else:
-                status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
+                status_display = color(f"{last_status}", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
+
+            # --verbose: surface last_error even on non-error outcomes (e.g. agent warnings)
+            last_err = job.get("last_error")
+            if verbose and last_err:
+                print(f"    Last error: {color(last_err, Colors.RED)}")
 
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
+            if verbose:
+                print(f"    {color('  Detail:', Colors.DIM)} {delivery_err}")
 
         print()
 
@@ -208,6 +226,12 @@ def cron_edit(args):
             if skill not in final_skills:
                 final_skills.append(skill)
 
+    # Resolve model/provider: empty string means explicit clear (set to None)
+    raw_model = getattr(args, "model", None)
+    raw_provider = getattr(args, "provider", None)
+    model_update = raw_model if raw_model is None else (raw_model.strip() or None)
+    provider_update = raw_provider if raw_provider is None else (raw_provider.strip() or None)
+
     result = _cron_api(
         action="update",
         job_id=args.job_id,
@@ -218,6 +242,8 @@ def cron_edit(args):
         repeat=getattr(args, "repeat", None),
         skills=final_skills,
         script=getattr(args, "script", None),
+        model=model_update,
+        provider=provider_update,
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -233,6 +259,10 @@ def cron_edit(args):
         print("  Skills: none")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
+    if updated.get("model"):
+        print(f"  Model: {updated['model']}  via  {updated.get('provider') or '(default provider)'}")
+    elif raw_model is not None:
+        print("  Model: (cleared — using global default)")
     return 0
 
 
@@ -250,13 +280,70 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+def cron_migrate_model(args) -> int:
+    """Bulk-update model/provider across jobs matching a filter."""
+    from cron.jobs import list_jobs, update_job
+
+    from_model = getattr(args, "from_model", None)
+    from_provider = getattr(args, "from_provider", None)
+    new_model = getattr(args, "model", None)
+    new_provider = getattr(args, "provider", None)
+    dry_run = getattr(args, "dry_run", False)
+
+    if not new_model and not new_provider:
+        print(color("Error: specify at least --model or --provider to set new values.", Colors.RED))
+        return 1
+
+    jobs = list_jobs(include_disabled=True)
+    matched = []
+    for job in jobs:
+        current_model = (job.get("model") or "").strip()
+        current_provider = (job.get("provider") or "").strip()
+        if from_model and from_model.lower() not in current_model.lower():
+            continue
+        if from_provider and from_provider.lower() not in current_provider.lower():
+            continue
+        matched.append(job)
+
+    if not matched:
+        print(color("No jobs matched the filter.", Colors.YELLOW))
+        return 0
+
+    print()
+    print(f"  {'[DRY RUN] ' if dry_run else ''}Matching jobs: {len(matched)}")
+    for job in matched:
+        jid = job.get("id", "?")
+        jname = job.get("name", "(unnamed)")
+        print(f"    {color(jid, Colors.YELLOW)} — {jname}")
+        print(f"      model:    {job.get('model') or '(default)'}  →  {new_model or job.get('model') or '(default)'}")
+        print(f"      provider: {job.get('provider') or '(default)'}  →  {new_provider or job.get('provider') or '(default)'}")
+        if not dry_run:
+            updates: dict = {}
+            if new_model is not None:
+                updates["model"] = new_model.strip() or None
+            if new_provider is not None:
+                updates["provider"] = new_provider.strip() or None
+            result = update_job(jid, updates)
+            if result:
+                print(f"      {color('updated', Colors.GREEN)}")
+            else:
+                print(f"      {color('failed', Colors.RED)}")
+    print()
+    if dry_run:
+        print(color("  Dry run complete — no changes written.", Colors.DIM))
+    else:
+        print(color(f"  {len(matched)} job(s) updated.", Colors.GREEN))
+    return 0
+
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
 
     if subcmd is None or subcmd == "list":
         show_all = getattr(args, 'all', False)
-        cron_list(show_all)
+        verbose = getattr(args, 'verbose', False)
+        cron_list(show_all, verbose=verbose)
         return 0
 
     if subcmd == "status":
@@ -285,6 +372,9 @@ def cron_command(args):
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
 
+    if subcmd == "migrate-model":
+        return cron_migrate_model(args)
+
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick|migrate-model]")
     sys.exit(1)

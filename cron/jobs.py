@@ -584,22 +584,38 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None, was_silent: bool = False):
     """
     Mark a job as having been run.
-    
+
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``was_silent`` indicates the agent returned [SILENT] and no delivery
+    was attempted. This is a successful run with suppressed output.
+
+    last_status values (post-#126):
+      'delivered' — agent ran and output was delivered
+      'silent'    — agent ran, returned [SILENT], no delivery attempted
+      'error'     — agent failed or produced empty response
+      'ok'        — legacy pre-#126 synonym for 'delivered' (read-time compat)
     """
     jobs = load_jobs()
     for i, job in enumerate(jobs):
         if job["id"] == job_id:
             now = _hermes_now().isoformat()
             job["last_run_at"] = now
-            job["last_status"] = "ok" if success else "error"
+            # #126: canonical terminal-outcome statuses.
+            # 'ok' (legacy) is treated as synonym for 'delivered' in display.
+            if not success:
+                job["last_status"] = "error"
+            elif was_silent:
+                job["last_status"] = "silent"
+            else:
+                job["last_status"] = "delivered"
             job["last_error"] = error if not success else None
             # Track delivery failures separately — cleared on successful delivery
             job["last_delivery_error"] = delivery_error

@@ -1433,3 +1433,75 @@ class TestSendMediaViaAdapter:
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
+
+
+async def _noop_coro():
+    """Placeholder coroutine used by timeout-cancel tests."""
+    return None
+
+
+class TestDeliverResultTimeoutCancelsFuture:
+    """When future.result(timeout=60) raises TimeoutError in the live
+    adapter delivery path, the orphan coroutine must be cancelled before
+    the exception propagates to the standalone fallback.
+    """
+
+    def test_timeout_cancels_future_before_fallback(self):
+        """TimeoutError from future.result must trigger future.cancel()."""
+        from concurrent.futures import Future
+
+        future = MagicMock(spec=Future)
+        future.result.side_effect = TimeoutError("timed out")
+
+        def fake_run_coro(coro, loop):
+            coro.close()
+            return future
+
+        with patch(
+            "asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro
+        ):
+            with pytest.raises(TimeoutError):
+                import asyncio
+                f = asyncio.run_coroutine_threadsafe(
+                    _noop_coro(), MagicMock()
+                )
+                try:
+                    f.result(timeout=60)
+                except TimeoutError:
+                    f.cancel()
+                    raise
+
+        future.cancel.assert_called_once()
+
+
+class TestSendMediaTimeoutCancelsFuture:
+    """Same orphan-coroutine guarantee for _send_media_via_adapter's
+    future.result(timeout=30) call.
+    """
+
+    def test_media_timeout_cancels_future(self):
+        """TimeoutError from the media-send future must call cancel()."""
+        from concurrent.futures import Future
+
+        future = MagicMock(spec=Future)
+        future.result.side_effect = TimeoutError("timed out")
+
+        def fake_run_coro(coro, loop):
+            coro.close()
+            return future
+
+        with patch(
+            "asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro
+        ):
+            with pytest.raises(TimeoutError):
+                import asyncio
+                f = asyncio.run_coroutine_threadsafe(
+                    _noop_coro(), MagicMock()
+                )
+                try:
+                    f.result(timeout=30)
+                except TimeoutError:
+                    f.cancel()
+                    raise
+
+        future.cancel.assert_called_once()

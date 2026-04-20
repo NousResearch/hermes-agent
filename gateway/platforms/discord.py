@@ -527,6 +527,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._slash_commands: bool = self.config.extra.get("slash_commands", True)
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -744,7 +745,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
 
             # Register slash commands
-            self._register_slash_commands()
+            if self._slash_commands:
+                self._register_slash_commands()
 
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))

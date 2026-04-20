@@ -1,7 +1,7 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import logging
 import os
@@ -1501,10 +1501,12 @@ class TestTickBackgroundMaintenance:
 
     def test_tick_retries_persisted_qq_group_daily_report_after_previous_delivery_failure(self, monkeypatch):
         monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
-        from hermes_time import reset_cache
+        from hermes_time import now as hermes_now, reset_cache
 
         reset_cache()
         shanghai = ZoneInfo("Asia/Shanghai")
+        retry_date = hermes_now().astimezone(shanghai).date() - timedelta(days=1)
+        retry_report_date = retry_date.isoformat()
         store = QqGroupArchiveStore()
         set_group_policy(
             "987654321",
@@ -1518,13 +1520,13 @@ class TestTickBackgroundMaintenance:
                 message_id=991,
                 user_id=456789,
                 text="昨天的情报",
-                when=datetime(2026, 4, 12, 10, 0, tzinfo=shanghai),
+                when=datetime.combine(retry_date, datetime.min.time(), tzinfo=shanghai).replace(hour=10),
             )
         )
-        store.rollup_daily(group_id="987654321", report_date="2026-04-12")
+        store.rollup_daily(group_id="987654321", report_date=retry_report_date)
         store.record_report_delivery(
             group_id="987654321",
-            report_date="2026-04-12",
+            report_date=retry_report_date,
             delivery_key="policy:qq_napcat:dm:179033731",
             target="qq_napcat:dm:179033731",
             error="network timeout",
@@ -1554,7 +1556,7 @@ class TestTickBackgroundMaintenance:
         assert "QQ 群日报" in content_arg
         assert store.has_successful_report_delivery(
             group_id="987654321",
-            report_date="2026-04-12",
+            report_date=retry_report_date,
             delivery_key="policy:qq_napcat:dm:179033731",
         ) is True
         reset_cache()
@@ -1649,9 +1651,12 @@ class TestTickBackgroundMaintenance:
 
     def test_tick_retries_persisted_weixin_group_daily_report_after_previous_delivery_failure(self, monkeypatch):
         monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Shanghai")
-        from hermes_time import reset_cache
+        from hermes_time import now as hermes_now, reset_cache
 
         reset_cache()
+        shanghai = ZoneInfo("Asia/Shanghai")
+        retry_date = hermes_now().astimezone(shanghai).date() - timedelta(days=1)
+        retry_report_date = retry_date.isoformat()
         store = WeixinGroupArchiveStore()
         set_weixin_group_policy(
             "project@chatroom",
@@ -1663,16 +1668,16 @@ class TestTickBackgroundMaintenance:
         store.archive_inbound_message(
             chat_id="project@chatroom",
             message_id="wx-991",
-            observed_at="2026-04-12T10:00:00+08:00",
+            observed_at=datetime.combine(retry_date, datetime.min.time(), tzinfo=shanghai).replace(hour=10).isoformat(),
             user_id="wxid_a",
             user_name="A",
             text="昨天的微信情报",
             media_types=[],
         )
-        store.rollup_daily(chat_id="project@chatroom", report_date="2026-04-12")
+        store.rollup_daily(chat_id="project@chatroom", report_date=retry_report_date)
         store.record_report_delivery(
             chat_id="project@chatroom",
-            report_date="2026-04-12",
+            report_date=retry_report_date,
             delivery_key="policy:weixin:wxid_admin",
             target="weixin:wxid_admin",
             error="network timeout",
@@ -1702,7 +1707,7 @@ class TestTickBackgroundMaintenance:
         assert "微信群日报" in content_arg
         assert store.has_successful_report_delivery(
             chat_id="project@chatroom",
-            report_date="2026-04-12",
+            report_date=retry_report_date,
             delivery_key="policy:weixin:wxid_admin",
         ) is True
         reset_cache()

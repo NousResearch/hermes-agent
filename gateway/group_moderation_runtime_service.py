@@ -9,12 +9,10 @@ from gateway.direct_control_platform_specs import (
     QQ_ADMIN_GROUP_MODERATION_SPEC,
 )
 from gateway.direct_tool_result_runtime_service import shortcut_tool_failure_text
-from gateway.qq_group_moderation_requests import (
-    extract_qq_oral_moderation_duration_seconds,
-    extract_qq_oral_moderation_reason,
-    extract_qq_oral_moderation_user_query,
-    match_qq_group_moderation_action,
-    match_qq_group_moderation_request,
+from gateway.group_moderation_request_platform_specs import (
+    GroupModerationRequestPlatformSpec,
+    QQ_GROUP_MODERATION_REQUEST_PLATFORM_SPEC,
+    get_group_moderation_request_platform_spec,
 )
 
 
@@ -26,21 +24,23 @@ def match_admin_platform_group_moderation_request(
     is_admin_user: bool,
     admin_only_message: str,
     spec: AdminGroupModerationPlatformSpec,
+    request_spec: GroupModerationRequestPlatformSpec | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     normalized_body = str(body or "").strip()
     if source is None or not normalized_body:
         return None, None
-    return match_qq_group_moderation_request(
+    request_spec = request_spec or get_group_moderation_request_platform_spec(spec.platform)
+    return request_spec.request_matcher(
         source=source,
         body=normalized_body,
         admin_ids_configured=admin_ids_configured,
         is_admin_user=is_admin_user,
         admin_only_message=admin_only_message,
-        action_matcher=match_qq_group_moderation_action,
+        action_matcher=request_spec.action_matcher,
         target_extractor=spec.target_extractor,
-        user_query_extractor=extract_qq_oral_moderation_user_query,
-        reason_extractor=extract_qq_oral_moderation_reason,
-        duration_extractor=extract_qq_oral_moderation_duration_seconds,
+        user_query_extractor=request_spec.user_query_extractor,
+        reason_extractor=request_spec.reason_extractor,
+        duration_extractor=request_spec.duration_extractor,
         current_group_target_formatter=spec.current_group_target_formatter,
         missing_target_message=spec.missing_target_message,
     )
@@ -61,6 +61,7 @@ def match_admin_qq_group_moderation_request(
         is_admin_user=is_admin_user,
         admin_only_message=admin_only_message,
         spec=QQ_ADMIN_GROUP_MODERATION_SPEC,
+        request_spec=QQ_GROUP_MODERATION_REQUEST_PLATFORM_SPEC,
     )
 
 

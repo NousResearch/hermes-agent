@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from gateway.config import Platform
 from gateway.direct_control_platform_specs import (
     QQ_ADMIN_GROUP_MODERATION_SPEC,
     WEIXIN_ADMIN_GROUP_MODERATION_SPEC,
 )
+from gateway.group_moderation_request_platform_specs import GroupModerationRequestPlatformSpec
 from gateway.session import SessionSource
 
 
@@ -30,19 +31,25 @@ def test_match_admin_platform_group_moderation_request_passes_expected_context()
     from gateway.group_moderation_runtime_service import match_admin_platform_group_moderation_request
 
     source = _make_source()
+    matcher = MagicMock(return_value=({"action": "kick_user", "target": "group:726109087"}, None))
+    request_spec = GroupModerationRequestPlatformSpec(
+        platform=Platform.QQ_NAPCAT,
+        request_matcher=matcher,
+        action_matcher=lambda body: "kick_user",
+        user_query_extractor=lambda body: "广告哥",
+        reason_extractor=lambda body: "广告",
+        duration_extractor=lambda body: 600,
+    )
 
-    with patch(
-        "gateway.group_moderation_runtime_service.match_qq_group_moderation_request",
-        return_value=({"action": "kick_user", "target": "group:726109087"}, None),
-    ) as matcher:
-        tool_args, error = match_admin_platform_group_moderation_request(
-            source=source,
-            body="把广告哥踢了，原因广告。",
-            admin_ids_configured=True,
-            is_admin_user=True,
-            admin_only_message="admin only",
-            spec=QQ_ADMIN_GROUP_MODERATION_SPEC,
-        )
+    tool_args, error = match_admin_platform_group_moderation_request(
+        source=source,
+        body="把广告哥踢了，原因广告。",
+        admin_ids_configured=True,
+        is_admin_user=True,
+        admin_only_message="admin only",
+        spec=QQ_ADMIN_GROUP_MODERATION_SPEC,
+        request_spec=request_spec,
+    )
 
     assert error is None
     assert tool_args == {"action": "kick_user", "target": "group:726109087"}
@@ -52,11 +59,11 @@ def test_match_admin_platform_group_moderation_request_passes_expected_context()
         admin_ids_configured=True,
         is_admin_user=True,
         admin_only_message="admin only",
-        action_matcher=matcher.call_args.kwargs["action_matcher"],
+        action_matcher=request_spec.action_matcher,
         target_extractor=QQ_ADMIN_GROUP_MODERATION_SPEC.target_extractor,
-        user_query_extractor=matcher.call_args.kwargs["user_query_extractor"],
-        reason_extractor=matcher.call_args.kwargs["reason_extractor"],
-        duration_extractor=matcher.call_args.kwargs["duration_extractor"],
+        user_query_extractor=request_spec.user_query_extractor,
+        reason_extractor=request_spec.reason_extractor,
+        duration_extractor=request_spec.duration_extractor,
         current_group_target_formatter=QQ_ADMIN_GROUP_MODERATION_SPEC.current_group_target_formatter,
         missing_target_message=QQ_ADMIN_GROUP_MODERATION_SPEC.missing_target_message,
     )

@@ -169,6 +169,65 @@ networks:
 
 Start with `docker compose up -d` and view logs with `docker compose logs -f`.
 
+## Configuring the model and provider
+
+Instead of running the interactive `hermes model` command in the container, you can set the model, inference provider, and API endpoint via environment variables. This is especially useful in Docker Compose where interactive setup is inconvenient.
+
+| Environment variable | Config key | Default | Example |
+|---|---|---|---|
+| `HERMES_MODEL` | `model.default` | *(from config.yaml)* | `openrouter/anthropic/claude-opus-4` |
+| `HERMES_INFERENCE_PROVIDER` | `model.provider` | `auto` | `openrouter`, `anthropic`, `openai`, `ollama` |
+| `HERMES_BASE_URL` | `model.base_url` | *(depends on provider)* | `http://localhost:8000/v1` |
+
+These env vars override the corresponding values in `~/.hermes/config.yaml`. If not set, Hermes falls back to the config file (or defaults).
+
+**Docker Compose example with model configuration:**
+
+```yaml
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "8642:8642"
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      # Inference provider configuration
+      - HERMES_MODEL=openrouter/openai/gpt-4o
+      - HERMES_INFERENCE_PROVIDER=openrouter
+      - HERMES_BASE_URL=https://openrouter.ai/api/v1
+      # API credentials (from host .env or secrets manager)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    networks:
+      - hermes-net
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+```
+
+Run this with: `OPENROUTER_API_KEY=sk-or-xxx docker compose up -d`
+
+Alternatively, for local models (vLLM, Ollama, LM Studio):
+
+```yaml
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    environment:
+      - HERMES_MODEL=meta-llama/llama-2-70b-chat
+      - HERMES_INFERENCE_PROVIDER=custom
+      - HERMES_BASE_URL=http://vllm:8000/v1  # point to your local server
+```
+
+:::note
+For more complex setups (multiple providers, fallback models, custom settings), use a mounted `config.yaml` file with `${VAR}` template expansion. See [Configuration](./configuration.md) for details.
+:::
+
 ## Resource limits
 
 The Hermes container needs moderate resources. Recommended minimums:

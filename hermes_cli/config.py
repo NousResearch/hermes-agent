@@ -2785,6 +2785,63 @@ def _expand_env_vars(obj):
     return obj
 
 
+def _apply_env_overrides(obj):
+    """Apply HERMES_* environment variable overrides to model config.
+
+    Priority: HERMES_* env vars > expanded config values.
+    Checks:
+    - HERMES_MODEL: sets config["model"]["default"]
+    - HERMES_INFERENCE_PROVIDER: sets config["model"]["provider"]
+    - HERMES_BASE_URL: sets config["model"]["base_url"]
+
+    Only applies if env var is set and non-empty. Does not clear existing
+    config values when env var is unset. Does not mutate the input dict.
+    """
+    if not isinstance(obj, dict):
+        return obj
+
+    # Check if any env overrides exist before doing conversions
+    has_overrides = (
+        bool(os.environ.get("HERMES_MODEL", "").strip())
+        or bool(os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip())
+        or bool(os.environ.get("HERMES_BASE_URL", "").strip())
+    )
+
+    if not has_overrides:
+        # No overrides to apply; return unchanged
+        return obj
+
+    # Make shallow copies to avoid mutating input
+    obj = dict(obj)
+    model_cfg = obj.get("model")
+
+    if not isinstance(model_cfg, dict):
+        # Convert plain-string model to dict form (only if we have overrides)
+        if isinstance(model_cfg, str) and model_cfg:
+            model_cfg = {"default": model_cfg}
+        else:
+            model_cfg = {}
+    else:
+        # Work with a shallow copy of the existing dict
+        model_cfg = dict(model_cfg)
+
+    # Apply env var overrides
+    model_name = os.environ.get("HERMES_MODEL", "").strip()
+    if model_name:
+        model_cfg["default"] = model_name
+
+    provider = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
+    if provider:
+        model_cfg["provider"] = provider
+
+    base_url = os.environ.get("HERMES_BASE_URL", "").strip()
+    if base_url:
+        model_cfg["base_url"] = base_url
+
+    obj["model"] = model_cfg
+    return obj
+
+
 def _items_by_unique_name(items):
     """Return a name-indexed dict only when all items have unique string names."""
     if not isinstance(items, list):
@@ -2954,6 +3011,7 @@ def load_config() -> Dict[str, Any]:
 
     normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
     expanded = _expand_env_vars(normalized)
+    expanded = _apply_env_overrides(expanded)
     _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(expanded)
     return expanded
 

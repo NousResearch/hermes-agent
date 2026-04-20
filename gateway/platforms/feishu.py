@@ -2396,6 +2396,15 @@ class FeishuAdapter(BasePlatformAdapter):
     def _pop_processing_reaction(self, message_id: str) -> Optional[str]:
         return self._pending_processing_reactions.pop(message_id, None)
 
+    async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
+        """Add a persistent ACK emoji reaction to signal the message was received.
+        
+        Uses configurable ack_emoji from settings (default: 👍).
+        """
+        if not self._client or not message_id:
+            return None
+        return await self._add_reaction(message_id, self._ack_emoji)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         if not self._reactions_enabled():
             return

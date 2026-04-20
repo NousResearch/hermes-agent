@@ -856,12 +856,7 @@ def cmd_whatsapp(args):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
 
 
-def cmd_setup(args):
-    """Interactive setup wizard."""
-    if not getattr(args, 'non_interactive', False):
-        _require_tty("setup")
-    from hermes_cli.setup import run_setup_wizard
-    run_setup_wizard(args)
+from hermes_cli.cmd_handlers.setup_handler import cmd_setup  # noqa: E402,F401
 
 
 def cmd_model(args):

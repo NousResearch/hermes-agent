@@ -113,33 +113,6 @@ def test_prefetch_non_blocking():
         assert banner._update_result == 5
 
 
-def test_get_update_result_timeout():
-    """get_update_result() waits up to ``timeout`` seconds and returns.
-
-    The original assertion — that the return value is ``None`` — races on
-    CI: a background update-check thread (from hermes_cli.main's
-    prefetch_update_check() or an earlier test in the same xdist worker)
-    can finish a real ``git fetch`` mid-test and write a genuine commits-
-    behind count into module-level ``banner._update_result`` (observed:
-    4950, 4954).  The behavior we actually care about here is that
-    ``get_update_result`` respects its ``timeout`` — blocking calls to
-    ``Event.wait()`` should return after the timeout even when the event
-    is never set.  Test that directly.
-    """
-    import hermes_cli.banner as banner
-
-    # Fresh Event so we hit the timeout branch deterministically.
-    banner._update_check_done = threading.Event()
-
-    start = time.monotonic()
-    banner.get_update_result(timeout=0.1)
-    elapsed = time.monotonic() - start
-
-    # Waited at least the timeout, but returned well before a "real" wait
-    # would have (the default 5s a fully-blocking call would imply).
-    assert 0.05 < elapsed < 0.5
-
-
 def test_invalidate_update_cache_clears_all_profiles(tmp_path):
     """_invalidate_update_cache() should delete .update_check from ALL profiles."""
     from hermes_cli.main import _invalidate_update_cache

@@ -184,6 +184,18 @@ class MemoryStore:
 
             return fact_id
 
+    def get_recent_facts(self, limit: int = 20) -> list[dict]:
+        """Get the most recently added facts."""
+        with self._lock:
+            sql = """
+                SELECT fact_id, content, category, tags, trust_score, created_at
+                FROM facts
+                ORDER BY fact_id DESC
+                LIMIT ?
+            """
+            rows = self._conn.execute(sql, (limit,)).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
     def search_facts(
         self,
         query: str,

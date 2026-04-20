@@ -251,8 +251,12 @@ class HolographicMemoryProvider(MemoryProvider):
             return
         self._auto_extract_facts(messages)
 
+        # NEW: Send session summary to webhook
+        if self._config.get("webhook_enabled", False):
+            self._send_session_summary()
+
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts and optionally post to a webhook."""
+        """Mirror built-in memory writes as facts. (No longer auto-posts to webhook on every write)"""
         if action == "add" and self._store and content:
             try:
                 category = "user_pref" if target == "user" else "general"
@@ -260,8 +264,70 @@ class HolographicMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
-            # Optional: Post to external webhook
-            self._post_write_webhook(action, target, content)
+    def _send_session_summary(self) -> None:
+        """Generate a markdown summary of the session's facts and post to webhook."""
+        import os
+        import requests
+        import threading
+        from datetime import datetime
+
+        webhook_config = self._config.get("post_write_webhook", {})
+        is_enabled = webhook_config.get("enabled", False) or str(self._config.get("webhook_enabled", "false")).lower() == "true"
+        
+        if not is_enabled:
+            return
+
+        url = webhook_config.get("url", "") or self._config.get("webhook_url", "")
+        if not url:
+            return
+
+        # 1. Gather recent facts (Last 20)
+        try:
+            facts = self._store.get_recent_facts(limit=20)
+        except Exception as e:
+            logger.debug("Failed to get facts for summary: %s", e)
+            return
+
+        if not facts:
+            return
+
+        # 2. Construct Markdown Summary
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        md_lines = [f"# Session Summary - {now}", ""]
+        
+        # Group by category if possible, otherwise just list
+        # Simple list for now
+        for f in reversed(facts): # Reverse to chronological order
+            md_lines.append(f"- [{f.get('category', 'general')}] {f['content']}")
+
+        summary_text = "\n".join(md_lines)
+
+        # 3. Send Webhook
+        def _send():
+            try:
+                headers = {}
+                raw_headers = webhook_config.get("headers", {})
+                for k, v in raw_headers.items():
+                    if isinstance(v, str) and v.startswith("$"):
+                        headers[k] = os.environ.get(v[1:], v)
+                    else:
+                        headers[k] = v
+
+                payload_template = webhook_config.get("payload", '{ "content": "${summary}" }')
+                payload_str = payload_template.replace("${summary}", summary_text)
+                
+                import json
+                try:
+                    payload = json.loads(payload_str)
+                except json.JSONDecodeError:
+                    payload = {"raw": payload_str}
+
+                requests.post(url, headers=headers, json=payload, timeout=60)
+                logger.debug("Session summary sent to %s", url)
+            except Exception as e:
+                logger.debug("Session summary webhook failed: %s", e)
+        
+        threading.Thread(target=_send, daemon=True).start()
 
     def _post_write_webhook(self, action: str, target: str, content: str) -> None:
         """Asynchronously post memory write data to a configured webhook URL."""
@@ -315,7 +381,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 except json.JSONDecodeError:
                     payload = {"raw": payload_str}
                 
-                requests.request(method, url, headers=processed_headers, json=payload, timeout=15)
+                requests.request(method, url, headers=processed_headers, json=payload, timeout=60)
                 logger.debug("Memory webhook sent to %s", url)
             except Exception as e:
                 logger.debug("Memory webhook failed: %s", e)

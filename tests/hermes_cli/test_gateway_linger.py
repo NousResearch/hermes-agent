@@ -132,3 +132,69 @@ def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
     ]
     assert helper_calls == [True]
     assert "User service installed and enabled" in out
+
+
+def test_systemd_install_repair_path_calls_linger_helper(monkeypatch, tmp_path):
+    # The repair branch used to early-return before the linger helper ran, so
+    # upgrades on headless hosts left the service dead after the user logged
+    # out. Pin that repair now behaves like fresh-install on user scope.
+    unit_path = tmp_path / "hermes-gateway.service"
+    unit_path.write_text("old unit\n", encoding="utf-8")
+
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "systemd_unit_is_current", lambda system=False: False)
+    monkeypatch.setattr(
+        gateway, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n"
+    )
+
+    calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append((cmd, check))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    helper_calls = []
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: helper_calls.append(True))
+
+    gateway.systemd_install(force=False)
+
+    assert unit_path.read_text(encoding="utf-8") == "new unit\n"
+    assert [cmd for cmd, _ in calls] == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", gateway.get_service_name()],
+    ]
+    assert helper_calls == [True]
+
+
+def test_systemd_install_repair_path_system_scope_skips_linger(monkeypatch, tmp_path):
+    # Linger is a per-user-session concept; system-scope units run under PID 1
+    # and must never touch it. Guards against mirroring the user-scope fix in
+    # the wrong branch of systemd_install().
+    unit_path = tmp_path / "hermes-gateway.service"
+    unit_path.write_text("old unit\n", encoding="utf-8")
+
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "systemd_unit_is_current", lambda system=False: False)
+    monkeypatch.setattr(
+        gateway, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n"
+    )
+    monkeypatch.setattr(gateway, "_require_root_for_system_service", lambda _action: None)
+
+    calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append((cmd, check))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    helper_calls = []
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: helper_calls.append(True))
+
+    gateway.systemd_install(force=False, system=True)
+
+    assert helper_calls == []
+    assert [cmd for cmd, _ in calls] == [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", gateway.get_service_name()],
+    ]

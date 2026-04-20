@@ -3166,6 +3166,8 @@ def systemd_install(
             if enable_on_startup:
                 _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
             print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
+            if not system:
+                _ensure_linger_enabled()
             return
         print(f"Service already installed at: {unit_path}")
         print("Use --force to reinstall")

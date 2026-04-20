@@ -48,6 +48,14 @@ let
     filter = path: _type: !(lib.hasInfix "/index-cache/" path);
   };
 
+  # Import bundled plugins (memory, context_engine, platforms/*).  Keeping
+  # them out of the Python site-packages keeps import semantics identical
+  # to a dev checkout — the loader reads them from HERMES_BUNDLED_PLUGINS.
+  bundledPlugins = lib.cleanSourceWith {
+    src = ../plugins;
+    filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
+  };
+
   runtimeDeps = [
     nodejs_22
     ripgrep
@@ -88,6 +96,7 @@ stdenv.mkDerivation {
 
     mkdir -p $out/share/hermes-agent $out/bin
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
+    cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
     cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
     mkdir -p $out/ui-tui
@@ -98,6 +107,7 @@ stdenv.mkDerivation {
         makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
+          --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \

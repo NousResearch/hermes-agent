@@ -845,6 +845,8 @@ class TestKimiForCodingTemperature:
             "https://api.moonshot.ai/v1",
             "https://api.moonshot.ai/v1/",
             "https://API.MOONSHOT.AI/v1",
+            "https://api.moonshot.cn/v1",
+            "https://api.moonshot.cn/v1/",
         ],
     )
     def test_kimi_k2_5_public_api_forces_temperature_1(self, base_url):

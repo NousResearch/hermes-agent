@@ -277,11 +277,23 @@ class HonchoSessionManager:
             logger.debug("Local session cache hit: %s", key)
             return self._cache[key]
 
-        # Gateway sessions should use the runtime user identity when available.
-        if self._runtime_user_peer_name:
-            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
-        elif self._config and self._config.peer_name:
+        # Peer resolution precedence:
+        #   1. config.peer_name — operator explicitly declared "who I am". All
+        #      transports (CLI, Telegram, Discord, Slack, cron, ...) collapse to
+        #      this single peer. This is the single-operator case.
+        #   2. runtime_user_peer_name — gateway-supplied platform user_id. Used
+        #      only when peer_name is NOT configured, i.e. multi-user bot mode
+        #      where each platform user gets their own peer.
+        #   3. fallback — derive from session key.
+        #
+        # Inverted from the original order so that setting peer_name in honcho
+        # config actually takes effect across gateways (prior behavior: gateway
+        # user_id would silently shadow peer_name, fragmenting one human into
+        # one peer per transport).
+        if self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)
+        elif self._runtime_user_peer_name:
+            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
         else:
             # Fallback: derive from session key
             parts = key.split(":", 1)

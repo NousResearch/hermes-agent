@@ -191,6 +191,100 @@ class TestManagerCacheOps:
         assert s1_info["message_count"] == 1
 
 
+class TestPeerResolutionPrecedence:
+    """Peer identity resolution in HonchoSessionManager.get_or_create.
+
+    Precedence must be: config.peer_name > runtime_user_peer_name > session-key fallback.
+    This prevents gateway transports (Telegram, Discord, Slack, ...) from each
+    minting a separate peer for the same human operator when peer_name is
+    explicitly configured.
+    """
+
+    def _make_manager(self, peer_name=None, ai_peer="hermes", runtime_user_peer_name=None):
+        """Build a manager with a mocked Honcho client so no network calls happen."""
+        honcho = MagicMock()
+        # honcho.peer(id) returns a peer stub; honcho.session(id) returns a session stub
+        honcho.peer.side_effect = lambda pid: SimpleNamespace(id=pid)
+        fake_session = MagicMock()
+        fake_session.add_peers = MagicMock()
+        fake_session.get_peer_configuration.side_effect = Exception("skip server sync")
+        fake_session.context.side_effect = Exception("skip context load")
+        honcho.session.return_value = fake_session
+
+        config = SimpleNamespace(
+            peer_name=peer_name,
+            ai_peer=ai_peer,
+            write_frequency="session",  # avoid spawning async writer thread
+            dialectic_reasoning_level="low",
+            dialectic_dynamic=True,
+            dialectic_max_chars=600,
+            observation_mode="directional",
+            user_observe_me=True,
+            user_observe_others=True,
+            ai_observe_me=True,
+            ai_observe_others=True,
+            message_max_chars=25000,
+            dialectic_max_input_chars=10000,
+        )
+        return HonchoSessionManager(
+            honcho=honcho,
+            config=config,
+            runtime_user_peer_name=runtime_user_peer_name,
+        )
+
+    def test_config_peer_name_wins_over_runtime_user_id(self):
+        """When peer_name is set, runtime user_id from the gateway is ignored.
+
+        This is the bug being fixed: previously the gateway user_id shadowed
+        peer_name, causing one human to fragment into one Honcho peer per
+        transport (CLI peer, Telegram user_id peer, Discord user_id peer, ...).
+        """
+        mgr = self._make_manager(
+            peer_name="swhitt",
+            runtime_user_peer_name="7140239264",  # e.g. Telegram user_id
+        )
+        session = mgr.get_or_create("agent:main:telegram:dm:7140239264")
+        assert session.user_peer_id == "swhitt"
+        assert session.assistant_peer_id == "hermes"
+
+    def test_runtime_user_id_used_when_peer_name_unset(self):
+        """Multi-user bot path: no peer_name configured → scope per platform user."""
+        mgr = self._make_manager(
+            peer_name=None,
+            runtime_user_peer_name="8439114563",
+        )
+        session = mgr.get_or_create("agent:main:discord:dm:8439114563")
+        assert session.user_peer_id == "8439114563"
+
+    def test_session_key_fallback_when_neither_set(self):
+        """No peer_name, no runtime_user_peer_name → derive from session key."""
+        mgr = self._make_manager(peer_name=None, runtime_user_peer_name=None)
+        session = mgr.get_or_create("telegram:12345")
+        # fallback format: user-<channel>-<chat_id>, sanitized
+        assert session.user_peer_id == "user-telegram-12345"
+
+    def test_peer_name_applied_across_transports(self):
+        """Same operator hitting multiple transports collapses to one peer."""
+        # Telegram
+        mgr_tg = self._make_manager(peer_name="swhitt", runtime_user_peer_name="7140239264")
+        s_tg = mgr_tg.get_or_create("agent:main:telegram:dm:7140239264")
+        # Discord
+        mgr_dc = self._make_manager(peer_name="swhitt", runtime_user_peer_name="146692017550917632")
+        s_dc = mgr_dc.get_or_create("agent:main:discord:dm:146692017550917632")
+        # CLI (no runtime user_id at all)
+        mgr_cli = self._make_manager(peer_name="swhitt", runtime_user_peer_name=None)
+        s_cli = mgr_cli.get_or_create("cli:20260420_190000_abcdef")
+
+        assert s_tg.user_peer_id == s_dc.user_peer_id == s_cli.user_peer_id == "swhitt"
+
+    def test_peer_name_is_sanitized(self):
+        """peer_name containing invalid chars is passed through _sanitize_id."""
+        mgr = self._make_manager(peer_name="steve@example.com")
+        session = mgr.get_or_create("cli:test")
+        # _sanitize_id replaces non [a-zA-Z0-9_-] with '-'
+        assert session.user_peer_id == "steve-example-com"
+
+
 class TestPeerLookupHelpers:
     def _make_cached_manager(self):
         mgr = HonchoSessionManager()

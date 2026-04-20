@@ -171,9 +171,26 @@ export const LIGHT_THEME: Theme = {
   bannerHero: ''
 }
 
-const LIGHT_MODE = /^(?:1|true|yes|on)$/i.test((process.env.HERMES_TUI_LIGHT ?? '').trim())
+// Pick light vs dark. Explicit `HERMES_TUI_LIGHT` wins; otherwise sniff
+// `COLORFGBG` (set by XFCE Terminal, rxvt, Terminal.app, etc.) — last field is the
+// background ANSI index; 7/15 are the "white" slots most light themes emit (#11300).
+export function detectLightMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicit = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
 
-export const DEFAULT_THEME: Theme = LIGHT_MODE ? LIGHT_THEME : DARK_THEME
+  if (/^(?:1|true|yes|on)$/.test(explicit)) {
+    return true
+  }
+
+  if (/^(?:0|false|no|off)$/.test(explicit)) {
+    return false
+  }
+
+  const bg = Number((env.COLORFGBG ?? '').trim().split(';').at(-1))
+
+  return bg === 7 || bg === 15
+}
+
+export const DEFAULT_THEME: Theme = detectLightMode() ? LIGHT_THEME : DARK_THEME
 
 // ── Skin → Theme ─────────────────────────────────────────────────────
 

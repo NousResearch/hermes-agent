@@ -8938,6 +8938,56 @@ class AIAgent:
                     and "skill_manage" in self.valid_tool_names):
                 self._iters_since_skill += 1
             
+            # ── Pre-API-call /steer drain ──────────────────────────────────
+            # If a /steer arrived during the previous API call (while the model
+            # was thinking), drain it now — before we build api_messages — so
+            # the model sees the steer text on THIS iteration.  Without this,
+            # steers sent during an API call only land after the NEXT tool batch,
+            # which may never come if the model returns a final response.
+            #
+            # We scan backwards for the last tool-role message in the messages
+            # list.  If found, the steer is appended there.  If not (first
+            # iteration, no tools yet), the steer stays pending for the next
+            # tool batch — injecting into a user message would break role
+            # alternation, and there's no tool output to piggyback on.
+            _pre_api_steer = self._drain_pending_steer()
+            if _pre_api_steer:
+                _injected = False
+                for _si in range(len(messages) - 1, -1, -1):
+                    _sm = messages[_si]
+                    if isinstance(_sm, dict) and _sm.get("role") == "tool":
+                        marker = f"\n\n[USER STEER (injected mid-run, not tool output): {_pre_api_steer}]"
+                        existing = _sm.get("content", "")
+                        if isinstance(existing, str):
+                            _sm["content"] = existing + marker
+                        else:
+                            # Multimodal content blocks — append text block
+                            try:
+                                blocks = list(existing) if existing else []
+                                blocks.append({"type": "text", "text": marker})
+                                _sm["content"] = blocks
+                            except Exception:
+                                pass
+                        _injected = True
+                        logger.debug(
+                            "Pre-API-call steer drain: injected into tool msg at index %d",
+                            _si,
+                        )
+                        break
+                if not _injected:
+                    # No tool message to inject into — put it back so
+                    # the post-tool-execution drain picks it up later.
+                    _lock = getattr(self, "_pending_steer_lock", None)
+                    if _lock is not None:
+                        with _lock:
+                            if self._pending_steer:
+                                self._pending_steer = self._pending_steer + "\n" + _pre_api_steer
+                            else:
+                                self._pending_steer = _pre_api_steer
+                    else:
+                        existing = getattr(self, "_pending_steer", None)
+                        self._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
+
             # Prepare messages for API call
             # If we have an ephemeral system prompt, prepend it to the messages
             # Note: Reasoning is embedded in content via <think> tags for trajectory storage.

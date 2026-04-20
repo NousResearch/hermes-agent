@@ -243,6 +243,11 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the
     #    singleton might still be cached from a previous test).
+    #    Also disable bundled-plugin discovery by default so the
+    #    repo-shipped <repo>/plugins/<name>/ dirs don't appear in tests
+    #    that assume an empty plugin set. Tests that specifically exercise
+    #    bundled discovery can clear this var explicitly.
+    monkeypatch.setenv("HERMES_DISABLE_BUNDLED_PLUGINS", "1")
     try:
         import hermes_cli.plugins as _plugins_mod
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)

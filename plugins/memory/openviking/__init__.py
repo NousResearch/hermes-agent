@@ -570,19 +570,38 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "total": result.get("total", len(formatted)),
         }, ensure_ascii=False)
 
+    def _is_directory(self, uri: str) -> bool:
+        """Check if a viking:// URI points to a directory via stat."""
+        try:
+            resp = self._client.get("/api/v1/fs/stat", params={"uri": uri})
+            return resp.get("result", {}).get("isDir", False)
+        except Exception:
+            # 如果 stat 失败，尝试 ls 来判断（目录可以 ls，文件不行）
+            try:
+                resp = self._client.get("/api/v1/fs/ls", params={"uri": uri})
+                return resp.get("result") is not None
+            except Exception:
+                return False
+
     def _tool_read(self, args: dict) -> str:
         uri = args.get("uri", "")
         if not uri:
             return tool_error("uri is required")
 
         level = args.get("level", "overview")
-        # Map our level names to OpenViking GET endpoints
-        if level == "abstract":
-            resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
-        elif level == "full":
+        is_dir = self._is_directory(uri)
+
+        if is_dir:
+            # 目录级别：按 level 调用对应端点（abstract/overview 仅支持目录）
+            if level == "abstract":
+                resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
+            elif level == "full":
+                resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
+            else:  # overview
+                resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
+        else:
+            # 文件级别：统一走 /content/read
             resp = self._client.get("/api/v1/content/read", params={"uri": uri})
-        else:  # overview
-            resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
 
         result = resp.get("result", "")
         # result is a plain string from the content endpoints

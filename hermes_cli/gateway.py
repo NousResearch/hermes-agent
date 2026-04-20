@@ -1399,9 +1399,32 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
+
+    # bootout unloads the old definition; non-zero is harmless when the job
+    # was never loaded (e.g. first repair after a crash).
+    subprocess.run(
+        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
+        check=False,
+        timeout=90,
+    )
+
+    # bootstrap must succeed — a non-zero return means launchd rejected the
+    # plist or the domain is unavailable. Surface the failure instead of
+    # silently claiming success (issue #12866).
+    bootstrap_result = subprocess.run(
+        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        check=False,
+        timeout=30,
+    )
+    if bootstrap_result.returncode != 0:
+        print(
+            f"✗ Failed to reload launchd service (launchctl bootstrap exited "
+            f"{bootstrap_result.returncode}). The plist has been rewritten but "
+            f"launchd may not have picked up the changes. "
+            f"Try: launchctl bootstrap {_launchd_domain()} {plist_path}"
+        )
+        return False
+
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 

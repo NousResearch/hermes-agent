@@ -2198,6 +2198,36 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_topic_id(self) -> Optional[int]:
+        """Return the configured topic_id for this agent, or None if unconfigured."""
+        raw = self.config.extra.get("topic_id")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_TOPIC_ID", "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Invalid topic_id value %r — ignoring", self.name, raw
+            )
+            return None
+
+    def _telegram_chat_id(self) -> Optional[int]:
+        """Return the configured chat_id for this agent, or None if unconfigured."""
+        raw = self.config.extra.get("chat_id")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Invalid chat_id value %r — ignoring", self.name, raw
+            )
+            return None
+
     def _telegram_ignored_threads(self) -> set[int]:
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
@@ -2335,6 +2365,19 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._is_group_chat(message):
             return True
+        # Chat-level allowlist: if chat_id is configured, only accept
+        # messages from that specific group.
+        _chat = self._telegram_chat_id()
+        if _chat is not None:
+            if getattr(getattr(message, "chat", None), "id", None) != _chat:
+                return False
+        # Topic-level allowlist: if topic_id is configured, only accept
+        # messages from that specific topic (thread).
+        _topic = self._telegram_topic_id()
+        if _topic is not None:
+            _thread = getattr(message, "message_thread_id", None)
+            if _thread != _topic:
+                return False
         thread_id = getattr(message, "message_thread_id", None)
         if thread_id is not None:
             try:

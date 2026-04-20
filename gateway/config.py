@@ -676,6 +676,10 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
+                if "topic_id" in telegram_cfg and not os.getenv("TELEGRAM_TOPIC_ID"):
+                    os.environ["TELEGRAM_TOPIC_ID"] = str(telegram_cfg["topic_id"])
+                if "chat_id" in telegram_cfg and not os.getenv("TELEGRAM_CHAT_ID"):
+                    os.environ["TELEGRAM_CHAT_ID"] = str(telegram_cfg["chat_id"])
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
                     os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
                 if "disable_link_previews" in telegram_cfg:

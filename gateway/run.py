@@ -9236,6 +9236,16 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
+        # Telegram topic_id override: when an agent is bound to a specific
+        # topic, route all self-talk (tool progress, interim messages) there
+        # regardless of which topic triggered the response.
+        # Skip for DMs — private chats have no forum topics, and sending
+        # with a message_thread_id causes "Thread not found" errors.
+        if source.platform == Platform.TELEGRAM and source.chat_type != "dm":
+            _tg_adapter = self.adapters.get(source.platform)
+            _tg_topic = getattr(_tg_adapter, "_telegram_topic_id", lambda: None)()
+            if _tg_topic is not None:
+                _progress_thread_id = str(_tg_topic)
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():

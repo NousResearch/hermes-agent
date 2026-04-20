@@ -8404,6 +8404,11 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            # ── Per-tool /steer drain ───────────────────────────────────
+            # Same as the sequential path: drain between each collected
+            # result so the steer lands as early as possible.
+            self._apply_pending_steer_to_tool_results(messages, 1)
+
         # ── Per-turn aggregate budget enforcement ─────────────────────────
         num_tools = len(parsed_calls)
         if num_tools > 0:
@@ -8766,6 +8771,12 @@ class AIAgent:
                 "tool_call_id": tool_call.id
             }
             messages.append(tool_msg)
+
+            # ── Per-tool /steer drain ───────────────────────────────────
+            # Drain pending steer BETWEEN individual tool calls so the
+            # injection lands as soon as a tool finishes — not after the
+            # entire batch.  The model sees it on the next API iteration.
+            self._apply_pending_steer_to_tool_results(messages, 1)
 
             if not self.quiet_mode:
                 if self.verbose_logging:

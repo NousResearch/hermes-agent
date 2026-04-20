@@ -38,6 +38,7 @@ import threading
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -125,6 +126,14 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, env_var_enabled
+
+
+def _base_url_hostname(base_url: str) -> str:
+    raw = (base_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    return (parsed.hostname or "").lower().rstrip(".")
 
 
 
@@ -703,6 +712,7 @@ class AIAgent:
     def base_url(self, value: str) -> None:
         self._base_url = value
         self._base_url_lower = value.lower() if value else ""
+        self._base_url_hostname = _base_url_hostname(value)
 
     def __init__(
         self,
@@ -847,7 +857,7 @@ class AIAgent:
         elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
             self.api_mode = "codex_responses"
             self.provider = "openai-codex"
-        elif (provider_name is None) and "api.x.ai" in self._base_url_lower:
+        elif (provider_name is None) and self._base_url_hostname == "api.x.ai":
             self.api_mode = "codex_responses"
             self.provider = "xai"
         elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
@@ -2259,8 +2269,13 @@ class AIAgent:
 
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
-        url = (base_url or self._base_url_lower).lower()
-        return "api.openai.com" in url and "openrouter" not in url
+        if base_url is not None:
+            hostname = _base_url_hostname(base_url)
+        else:
+            hostname = getattr(self, "_base_url_hostname", "") or _base_url_hostname(
+                getattr(self, "_base_url_lower", "")
+            )
+        return hostname == "api.openai.com"
 
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.
@@ -6747,7 +6762,7 @@ class AIAgent:
             if not is_github_responses:
                 kwargs["prompt_cache_key"] = self.session_id
 
-            is_xai_responses = self.provider == "xai" or "api.x.ai" in (self.base_url or "").lower()
+            is_xai_responses = self.provider == "xai" or self._base_url_hostname == "api.x.ai"
 
             if reasoning_enabled and is_xai_responses:
                 # xAI reasons automatically — no effort param, just include encrypted content

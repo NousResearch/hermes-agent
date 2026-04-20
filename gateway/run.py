@@ -3524,6 +3524,9 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "sessions":
+            return await self._handle_sessions_command(event)
+
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
@@ -7021,6 +7024,237 @@ class GatewayRunner:
             else:
                 return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
+    @staticmethod
+    def _session_preview_entries(messages: list[dict[str, Any]], max_entries: int = 8) -> list[tuple[str, str]]:
+        """Build compact visible preview entries for gateway /sessions views."""
+        entries: list[tuple[str, str]] = []
+        for msg in messages or []:
+            role = msg.get("role") or ""
+            if role in {"system", "tool", "session_meta"}:
+                continue
+
+            content = msg.get("content")
+            tool_calls = msg.get("tool_calls") or []
+            text = ""
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        parts.append(part.get("text", ""))
+                    elif isinstance(part, dict) and part.get("type") == "image_url":
+                        parts.append("[image]")
+                text = " ".join(p for p in parts if p)
+            elif content is not None:
+                text = str(content)
+
+            if role == "assistant" and tool_calls:
+                names = []
+                for tc in tool_calls:
+                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    name = fn.get("name", "unknown") if isinstance(fn, dict) else "unknown"
+                    if name not in names:
+                        names.append(name)
+                label = ", ".join(names[:4]) if names else "tool"
+                if len(names) > 4:
+                    label += ", ..."
+                tool_suffix = f"[{len(tool_calls)} tool call{'s' if len(tool_calls) != 1 else ''}: {label}]"
+                text = f"{text} {tool_suffix}".strip()
+
+            text = re.sub(
+                r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*",
+                "",
+                text,
+                flags=re.DOTALL,
+            )
+            text = re.sub(r"<REASONING_SCRATCHPAD>.*$", "", text, flags=re.DOTALL).strip()
+            if not text:
+                continue
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > 180:
+                text = text[:180] + "..."
+            entries.append((role, text))
+        return entries[-max_entries:]
+
+    def _list_gateway_historical_sessions(self, source, limit: int = 10) -> list[dict[str, Any]]:
+        """List sessions for this sender, with a legacy fallback for NULL user_id rows."""
+        if not self._session_db:
+            return []
+        platform_name = source.platform.value if source.platform else None
+        sessions = self._session_db.list_sessions_rich(source=platform_name, limit=max(limit, 50))
+        scoped = [s for s in sessions if s.get("user_id") == source.user_id]
+        if scoped:
+            return scoped[:limit]
+        legacy = [s for s in sessions if s.get("user_id") in (None, "")]
+        return legacy[:limit]
+
+    def _resolve_scoped_gateway_session_target(self, source, target: str) -> Optional[str]:
+        """Resolve an exact ID, unique prefix, or title within the sender's scope."""
+        if not self._session_db or not target:
+            return None
+        platform_name = source.platform.value if source.platform else None
+        user_id = source.user_id
+        resolved = self._session_db.resolve_session_id(target, source=platform_name, user_id=user_id)
+        if resolved:
+            return resolved
+        resolved = self._session_db.resolve_session_by_title(target, source=platform_name, user_id=user_id)
+        if resolved:
+            return resolved
+
+        # Legacy fallback: older gateway rows may not have user_id populated.
+        legacy_resolved = self._session_db.resolve_session_id(target, source=platform_name)
+        if legacy_resolved:
+            legacy_session = self._session_db.get_session(legacy_resolved)
+            if legacy_session and legacy_session.get("user_id") in (None, ""):
+                return legacy_resolved
+
+        legacy_resolved = self._session_db.resolve_session_by_title(target, source=platform_name)
+        if legacy_resolved:
+            legacy_session = self._session_db.get_session(legacy_resolved)
+            if legacy_session and legacy_session.get("user_id") in (None, ""):
+                return legacy_resolved
+        return None
+
+    async def _handle_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /sessions [list|view|resume|rename|delete|stats] in gateway chats."""
+        if not self._session_db:
+            return "Session database not available."
+
+        import shlex
+
+        try:
+            parts = shlex.split(event.text or "/sessions")
+        except ValueError as e:
+            return f"Could not parse /sessions command: {e}"
+
+        subcommand = parts[1].lower() if len(parts) > 1 else "list"
+        if subcommand not in {"list", "view", "resume", "rename", "delete", "stats"}:
+            return "Usage: `/sessions [list|view|resume|rename|delete|stats]`"
+
+        source = event.source
+        platform_name = source.platform.value if source.platform else None
+        user_id = source.user_id
+        current_entry = self.session_store.get_or_create_session(source)
+
+        if subcommand == "list":
+            limit = 10
+            if len(parts) > 2:
+                try:
+                    limit = max(1, int(parts[2]))
+                except ValueError:
+                    return "Usage: `/sessions list [limit]`"
+            sessions = self._list_gateway_historical_sessions(source, limit=limit)
+            sessions = [s for s in sessions if s.get("id") != current_entry.session_id]
+            if not sessions:
+                return "No historical sessions found for this chat yet."
+            lines = ["📚 **Historical Sessions**", ""]
+            for session in sessions:
+                title = session.get("title") or session["id"]
+                preview = session.get("preview") or ""
+                preview_part = f" — _{preview}_" if preview else ""
+                lines.append(f"• **{title}** `{session['id']}`{preview_part}")
+            lines.append("\nUse `/sessions view <session>` for details or `/sessions resume <session>` to switch.")
+            return "\n".join(lines)
+
+        if subcommand == "stats":
+            sessions = self._session_db.search_sessions(source=platform_name, limit=100000)
+            scoped = [s for s in sessions if s.get("user_id") == user_id]
+            message_count = sum((s.get("message_count") or 0) for s in scoped)
+            return (
+                "📊 **Session Stats**\n"
+                f"Sessions: **{len(scoped)}**\n"
+                f"Messages: **{message_count}**"
+            )
+
+        if subcommand == "resume":
+            target = " ".join(parts[2:]).strip()
+            if target:
+                resume_event = MessageEvent(
+                    text=f"/resume {target}",
+                    source=event.source,
+                    message_type=event.message_type,
+                    raw_message=event.raw_message,
+                    message_id=event.message_id,
+                    media_urls=list(event.media_urls),
+                    media_types=list(event.media_types),
+                    reply_to_message_id=event.reply_to_message_id,
+                    reply_to_text=event.reply_to_text,
+                    auto_skill=event.auto_skill,
+                    internal=event.internal,
+                    timestamp=event.timestamp,
+                )
+            else:
+                resume_event = MessageEvent(
+                    text="/resume",
+                    source=event.source,
+                    message_type=event.message_type,
+                    raw_message=event.raw_message,
+                    message_id=event.message_id,
+                    media_urls=list(event.media_urls),
+                    media_types=list(event.media_types),
+                    reply_to_message_id=event.reply_to_message_id,
+                    reply_to_text=event.reply_to_text,
+                    auto_skill=event.auto_skill,
+                    internal=event.internal,
+                    timestamp=event.timestamp,
+                )
+            return await self._handle_resume_command(resume_event)
+
+        if len(parts) < 3:
+            return (
+                f"Usage: `/sessions {subcommand} <session id|prefix|title>`"
+                + (" `<new title>`" if subcommand == "rename" else "")
+            )
+
+        target = parts[2].strip()
+        resolved = self._resolve_scoped_gateway_session_target(source, target)
+        if not resolved:
+            return f"Session not found: `{target}`"
+
+        if subcommand == "view":
+            session_meta = self._session_db.get_session(resolved) or {}
+            messages = self._session_db.get_messages_as_conversation(resolved)
+            entries = self._session_preview_entries(messages)
+            title = session_meta.get("title") or resolved
+            lines = [
+                "📄 **Session Details**",
+                f"**Session ID:** `{resolved}`",
+                f"**Title:** {title}",
+                f"**Messages:** {session_meta.get('message_count', 0)}",
+            ]
+            if entries:
+                lines.append("")
+                lines.append("**Preview:**")
+                for role, text in entries:
+                    speaker = "You" if role == "user" else "Hermes"
+                    lines.append(f"• **{speaker}:** {text}")
+            return "\n".join(lines)
+
+        if resolved == current_entry.session_id:
+            if subcommand == "rename":
+                return "That is the active session — use `/title <new name>` instead."
+            if subcommand == "delete":
+                return "Refusing to delete the active session. Switch away first with `/resume` or `/new`."
+
+        if subcommand == "rename":
+            if len(parts) < 4:
+                return "Usage: `/sessions rename <session id|prefix|title> <new title>`"
+            new_title = " ".join(parts[3:]).strip()
+            try:
+                if self._session_db.set_session_title(resolved, new_title):
+                    return f"Renamed session `{resolved}` to **{new_title}**."
+                return f"Session not found: `{target}`"
+            except ValueError as e:
+                return f"Error: {e}"
+
+        if subcommand == "delete":
+            if "--yes" not in parts[3:]:
+                return "Refusing to delete without confirmation. Re-run with `/sessions delete <session> --yes`."
+            if self._session_db.delete_session(resolved):
+                return f"Deleted session `{resolved}`."
+            return f"Session not found: `{target}`"
+
+        return "Usage: `/sessions [list|view|resume|rename|delete|stats]`"
+
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — switch to a previously-named session."""
         if not self._session_db:
@@ -7033,10 +7267,7 @@ class GatewayRunner:
         if not name:
             # List recent titled sessions for this user/platform
             try:
-                user_source = source.platform.value if source.platform else None
-                sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
-                )
+                sessions = self._list_gateway_historical_sessions(source, limit=10)
                 titled = [s for s in sessions if s.get("title")]
                 if not titled:
                     return (
@@ -7056,8 +7287,8 @@ class GatewayRunner:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve the name to a session ID inside this sender's scope
+        target_id = self._resolve_scoped_gateway_session_target(source, name)
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"

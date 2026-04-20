@@ -99,6 +99,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("sessions", "View and manage historical sessions", "Session",
+               args_hint="[list|view|resume|rename|delete|stats]",
+               subcommands=("list", "view", "resume", "rename", "delete", "stats")),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",

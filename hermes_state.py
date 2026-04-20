@@ -529,16 +529,44 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
+    @staticmethod
+    def _session_scope_sql(source: str = None, user_id: str = None) -> tuple[str, list[Any]]:
+        """Build reusable SQL fragments for optional session scoping."""
+        clauses = []
+        params: list[Any] = []
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(source)
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        return (" AND ".join(clauses), params)
+
+    def resolve_session_id(
+        self,
+        session_id_or_prefix: str,
+        source: str = None,
+        user_id: str = None,
+    ) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 
-        Returns the exact ID when it exists. Otherwise treats the input as a
-        prefix and returns the single matching session ID if the prefix is
-        unambiguous. Returns None for no matches or ambiguous prefixes.
+        Optional ``source``/``user_id`` filters scope the lookup to a subset of
+        sessions. Returns the exact ID when it exists inside the scope.
+        Otherwise treats the input as a prefix and returns the single matching
+        session ID if the prefix is unambiguous. Returns None for no matches or
+        ambiguous prefixes.
         """
-        exact = self.get_session(session_id_or_prefix)
-        if exact:
-            return exact["id"]
+        scope_sql, scope_params = self._session_scope_sql(source=source, user_id=user_id)
+        query = "SELECT id FROM sessions WHERE id = ?"
+        params: list[Any] = [session_id_or_prefix]
+        if scope_sql:
+            query += f" AND {scope_sql}"
+            params.extend(scope_params)
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            row = cursor.fetchone()
+        if row:
+            return row["id"]
 
         escaped = (
             session_id_or_prefix
@@ -546,11 +574,14 @@ class SessionDB:
             .replace("%", "\\%")
             .replace("_", "\\_")
         )
+        query = "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\'"
+        params = [f"{escaped}%"]
+        if scope_sql:
+            query += f" AND {scope_sql}"
+            params.extend(scope_params)
+        query += " ORDER BY started_at DESC LIMIT 2"
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
-                (f"{escaped}%",),
-            )
+            cursor = self._conn.execute(query, params)
             matches = [row["id"] for row in cursor.fetchall()]
         if len(matches) == 1:
             return matches[0]
@@ -641,35 +672,56 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+    def get_session_by_title(
+        self,
+        title: str,
+        source: str = None,
+        user_id: str = None,
+    ) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
+        scope_sql, scope_params = self._session_scope_sql(source=source, user_id=user_id)
+        query = "SELECT * FROM sessions WHERE title = ?"
+        params: list[Any] = [title]
+        if scope_sql:
+            query += f" AND {scope_sql}"
+            params.extend(scope_params)
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE title = ?", (title,)
-            )
+            cursor = self._conn.execute(query, params)
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def resolve_session_by_title(self, title: str) -> Optional[str]:
+    def resolve_session_by_title(
+        self,
+        title: str,
+        source: str = None,
+        user_id: str = None,
+    ) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
         If the exact title exists, returns that session's ID.
         If not, searches for "title #N" variants and returns the latest one.
         If the exact title exists AND numbered variants exist, returns the
         latest numbered variant (the most recent continuation).
+        Optional ``source``/``user_id`` filters scope the lookup.
         """
         # First try exact match
-        exact = self.get_session_by_title(title)
+        exact = self.get_session_by_title(title, source=source, user_id=user_id)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        scope_sql, scope_params = self._session_scope_sql(source=source, user_id=user_id)
+        query = (
+            "SELECT id, title, started_at FROM sessions "
+            "WHERE title LIKE ? ESCAPE '\\'"
+        )
+        params: list[Any] = [f"{escaped} #%"]
+        if scope_sql:
+            query += f" AND {scope_sql}"
+            params.extend(scope_params)
+        query += " ORDER BY started_at DESC"
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT id, title, started_at FROM sessions "
-                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-                (f"{escaped} #%",),
-            )
+            cursor = self._conn.execute(query, params)
             numbered = cursor.fetchall()
 
         if numbered:
@@ -721,6 +773,7 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
+        user_id: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -742,6 +795,9 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if user_id is not None:
+            where_clauses.append("s.user_id = ?")
+            params.append(user_id)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")

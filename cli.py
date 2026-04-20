@@ -4184,6 +4184,201 @@ class HermesCLI:
         print()
         return True
 
+    def _resolve_cli_session_target(self, target: str) -> Optional[str]:
+        """Resolve a historical session by exact ID, unique prefix, or title."""
+        if not self._session_db or not target:
+            return None
+        resolved = self._session_db.resolve_session_id(target)
+        if resolved:
+            session = self._session_db.get_session(resolved)
+            if session and session.get("source") != "tool":
+                return resolved
+        resolved = self._session_db.resolve_session_by_title(target)
+        if resolved:
+            session = self._session_db.get_session(resolved)
+            if session and session.get("source") != "tool":
+                return resolved
+        return None
+
+    @staticmethod
+    def _session_preview_entries(messages: list[dict[str, Any]], max_entries: int = 8) -> list[tuple[str, str]]:
+        """Build compact visible preview entries for a historical session."""
+        import re
+
+        entries: list[tuple[str, str]] = []
+        for msg in messages or []:
+            role = msg.get("role") or ""
+            if role in {"system", "tool", "session_meta"}:
+                continue
+
+            content = msg.get("content")
+            tool_calls = msg.get("tool_calls") or []
+            text = ""
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        parts.append(part.get("text", ""))
+                    elif isinstance(part, dict) and part.get("type") == "image_url":
+                        parts.append("[image]")
+                text = " ".join(p for p in parts if p)
+            elif content is not None:
+                text = str(content)
+
+            if role == "assistant" and tool_calls:
+                names = []
+                for tc in tool_calls:
+                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    name = fn.get("name", "unknown") if isinstance(fn, dict) else "unknown"
+                    if name not in names:
+                        names.append(name)
+                label = ", ".join(names[:4]) if names else "tool"
+                if len(names) > 4:
+                    label += ", ..."
+                tool_suffix = f"[{len(tool_calls)} tool call{'s' if len(tool_calls) != 1 else ''}: {label}]"
+                text = f"{text} {tool_suffix}".strip()
+
+            text = re.sub(
+                r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*",
+                "",
+                text,
+                flags=re.DOTALL,
+            )
+            text = re.sub(r"<REASONING_SCRATCHPAD>.*$", "", text, flags=re.DOTALL).strip()
+            if not text:
+                continue
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > 180:
+                text = text[:180] + "..."
+            entries.append((role, text))
+
+        return entries[-max_entries:]
+
+    def _handle_sessions_command(self, cmd_original: str) -> None:
+        """Handle /sessions [list|view|resume|rename|delete|stats] for CLI."""
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        import shlex
+
+        try:
+            parts = shlex.split(cmd_original)
+        except ValueError as e:
+            _cprint(f"  Could not parse /sessions command: {e}")
+            return
+
+        subcommand = parts[1].lower() if len(parts) > 1 else "list"
+        if subcommand not in {"list", "view", "resume", "rename", "delete", "stats"}:
+            _cprint("  Usage: /sessions [list|view|resume|rename|delete|stats]")
+            return
+
+        if subcommand == "list":
+            limit = 10
+            if len(parts) > 2:
+                try:
+                    limit = max(1, int(parts[2]))
+                except ValueError:
+                    _cprint("  Usage: /sessions list [limit]")
+                    return
+            sessions = self._session_db.list_sessions_rich(
+                exclude_sources=["tool"],
+                limit=limit,
+            )
+            sessions = [s for s in sessions if s.get("id") != self.session_id]
+            if not sessions:
+                _cprint("  No historical sessions found.")
+                return
+            from hermes_cli.main import _relative_time
+            print()
+            print("  Historical sessions:")
+            print()
+            print(f"  {'Title':<26} {'Source':<10} {'Preview':<32} {'Last Active':<13} {'ID'}")
+            print(f"  {'─' * 26} {'─' * 10} {'─' * 32} {'─' * 13} {'─' * 24}")
+            for session in sessions:
+                title = (session.get("title") or "—")[:24]
+                src = (session.get("source") or "?")[:10]
+                preview = (session.get("preview") or "")[:30]
+                last_active = _relative_time(session.get("last_active"))
+                print(f"  {title:<26} {src:<10} {preview:<32} {last_active:<13} {session['id']}")
+            print()
+            print("  Use /sessions view <session> for details or /sessions resume <session> to switch.")
+            print()
+            return
+
+        if subcommand == "stats":
+            sessions = [s for s in self._session_db.search_sessions(limit=100000) if s.get("source") != "tool"]
+            msgs = sum((s.get("message_count") or 0) for s in sessions)
+            _cprint(f"  Sessions: {len(sessions)}")
+            _cprint(f"  Stored messages: {msgs}")
+            return
+
+        if subcommand == "resume":
+            target = " ".join(parts[2:]).strip()
+            self._handle_resume_command(f"/resume {target}" if target else "/resume")
+            return
+
+        if len(parts) < 3:
+            _cprint(f"  Usage: /sessions {subcommand} <session id|prefix|title>" + (" <new title>" if subcommand == "rename" else ""))
+            return
+
+        target = parts[2].strip()
+        resolved = self._resolve_cli_session_target(target)
+        if not resolved:
+            _cprint(f"  Session not found: {target}")
+            return
+
+        if subcommand == "view":
+            session_meta = self._session_db.get_session(resolved) or {}
+            messages = self._session_db.get_messages_as_conversation(resolved)
+            entries = self._session_preview_entries(messages)
+            title = session_meta.get("title") or "—"
+            print()
+            print(f"  Session ID: {resolved}")
+            print(f"  Title: {title}")
+            print(f"  Messages: {session_meta.get('message_count', 0)}")
+            print(f"  Source: {session_meta.get('source', 'cli')}")
+            if entries:
+                print("  Preview:")
+                for role, text in entries:
+                    speaker = "You" if role == "user" else "Hermes"
+                    print(f"    - {speaker}: {text}")
+            else:
+                print("  Preview: (no visible messages)")
+            print()
+            return
+
+        if resolved == self.session_id:
+            if subcommand == "rename":
+                _cprint("  That is the active session — use /title <new name> instead.")
+            elif subcommand == "delete":
+                _cprint("  Refusing to delete the active session. Switch away first with /resume or /new.")
+            return
+
+        if subcommand == "rename":
+            if len(parts) < 4:
+                _cprint("  Usage: /sessions rename <session id|prefix|title> <new title>")
+                return
+            new_title = " ".join(parts[3:]).strip()
+            try:
+                if self._session_db.set_session_title(resolved, new_title):
+                    _cprint(f"  Renamed session {resolved} to: {new_title}")
+                else:
+                    _cprint(f"  Session not found: {target}")
+            except ValueError as e:
+                _cprint(f"  {e}")
+            return
+
+        if subcommand == "delete":
+            if "--yes" not in parts[3:]:
+                print("  Refusing to delete without confirmation. Re-run with: /sessions delete <session> --yes")
+                return
+            if self._session_db.delete_session(resolved):
+                _cprint(f"  Deleted session: {resolved}")
+            else:
+                _cprint(f"  Session not found: {target}")
+            return
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
@@ -5670,6 +5865,8 @@ class HermesCLI:
             self.new_session()
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "sessions":
+            self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "provider":

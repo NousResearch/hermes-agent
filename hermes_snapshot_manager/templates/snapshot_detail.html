@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="grid two-up snapshot-top-grid">
+  <article class="card">
+    <div class="section-heading">
+      <div><p class="eyebrow">Snapshot summary</p><h2>{{ snapshot.label or snapshot.id }}</h2></div>
+      <span class="pill pill-{{ snapshot.status_tone }}">{{ snapshot.status }}</span>
+    </div>
+    <div class="key-value-grid">
+      <div><span class="key-label">ID</span><strong><code>{{ snapshot.id }}</code></strong></div>
+      <div><span class="key-label">Created</span><strong>{{ snapshot.created_at }}</strong></div>
+      <div><span class="key-label">Type</span><strong>{{ snapshot.trigger_type }}</strong></div>
+      <div><span class="key-label">Known good</span><strong>{{ 'Yes' if snapshot.is_known_good else 'No' }}</strong></div>
+      <div><span class="key-label">Files</span><strong>{{ snapshot.total_files }}</strong></div>
+      <div><span class="key-label">Original size</span><strong>{{ display_stats.original_bytes_human }}</strong></div>
+      <div><span class="key-label">Compressed size</span><strong>{{ display_stats.compressed_bytes_human }}</strong></div>
+      <div><span class="key-label">Saved</span><strong>{{ display_stats.space_saved_bytes_human }}</strong></div>
+      <div><span class="key-label">Compression ratio</span><strong>{{ display_stats.compression_ratio }}%</strong></div>
+      <div><span class="key-label">Payload format</span><strong>{{ display_stats.payload_format }}</strong></div>
+    </div>
+    <div class="button-row">
+      <form method="post" action="/snapshots/{{ snapshot.id }}/known-good"><button type="submit">Mark known good</button></form>
+      <form method="post" action="/snapshots/{{ snapshot.id }}/verify"><button type="submit">Verify snapshot</button></form>
+    </div>
+  </article>
+  <article class="card danger">
+    <p class="eyebrow">Danger zone</p>
+    <h2>Restore entire package</h2>
+    <p class="subtitle">This replaces the entire <code>~/.hermes</code> tree and creates a pre-restore safeguard snapshot first.</p>
+    <form method="post" action="/api/snapshots/{{ snapshot.id }}/restore/start" class="js-operation-form" data-operation-kind="restore" data-redirect="/snapshots/{{ snapshot.id }}">
+      <label>Notes</label>
+      <input type="text" name="notes" placeholder="rollback after broken update" />
+      <button type="submit">Restore entire package</button>
+    </form>
+  </article>
+</section>
+<section class="grid two-up">
+  <article class="card">
+    <h2>Verification</h2>
+    {% if verification %}
+    <div class="key-value-grid compact">
+      <div><span class="key-label">OK</span><strong>{{ 'Yes' if verification.ok else 'No' }}</strong></div>
+      <div><span class="key-label">Missing</span><strong>{{ verification.missing_files|length }}</strong></div>
+      <div><span class="key-label">Changed</span><strong>{{ verification.changed_files|length }}</strong></div>
+    </div>
+    {% else %}<p class="empty-state">Run verification to confirm stored file hashes still match.</p>{% endif %}
+  </article>
+  <article class="card">
+    <h2>Diff vs current</h2>
+    <div class="key-value-grid compact">
+      <div><span class="key-label">Added</span><strong>{{ diff.added|length }}</strong></div>
+      <div><span class="key-label">Removed</span><strong>{{ diff.removed|length }}</strong></div>
+      <div><span class="key-label">Changed</span><strong>{{ diff.changed|length }}</strong></div>
+    </div>
+  </article>
+</section>
+{% endblock %}

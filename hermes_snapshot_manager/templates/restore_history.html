@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card page-header-card">
+  <p class="eyebrow">Audit trail</p>
+  <h2>Restore history</h2>
+  <p class="subtitle">Every restore attempt, its outcome, and any attached notes are listed here.</p>
+</section>
+<section class="card">
+  <div class="table-shell">
+    <table>
+      <thead><tr><th>ID</th><th>Snapshot</th><th>Result</th><th>When</th><th>Pre-restore snapshot</th><th>Notes</th></tr></thead>
+      <tbody>
+        {% for row in history %}
+        <tr>
+          <td>{{ row.id }}</td>
+          <td><code>{{ row.snapshot_id }}</code></td>
+          <td><span class="pill pill-{{ 'success' if row.result == 'success' else 'danger' }}">{{ row.result }}</span></td>
+          <td>{{ row.restored_at }}</td>
+          <td><code>{{ row.pre_restore_snapshot_id or '-' }}</code></td>
+          <td><code>{{ row.notes or '-' }}</code></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No restore attempts yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

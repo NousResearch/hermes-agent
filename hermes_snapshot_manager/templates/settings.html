@@ -1,0 +1,97 @@
+{% extends 'base.html' %}
+{% block content %}
+{% if request.query_params.get('saved') == '1' %}
+<section class="card success-banner toast-banner" id="settings-save-banner">
+  <strong>Settings saved.</strong>
+  <p class="subtitle">Schedule and retention changes will apply to the next run.</p>
+</section>
+{% endif %}
+{% if request.query_params.get('error') %}
+<section class="card danger" id="settings-error-banner">
+  <strong>Could not save settings.</strong>
+  <p class="subtitle">{{ request.query_params.get('error') }}</p>
+</section>
+{% endif %}
+<section class="grid two-up">
+  <article class="card">
+    <p class="eyebrow">Scheduling</p>
+    <h2>Make cron easier to configure</h2>
+    <p class="subtitle">Pick a friendly schedule preset, then tweak the cron expression only if you need something custom.</p>
+    <form method="post" action="/settings" class="js-schedule-form" data-current-cron="{{ settings.schedule_cron }}">
+      <label class="checkbox"><input type="checkbox" name="schedule_enabled" {% if settings.schedule_enabled %}checked{% endif %} /> Enable automatic snapshots</label>
+      <div class="preset-grid">
+        <label class="preset-option"><input type="radio" name="schedule_mode" value="every_hours" checked /> <span>Every few hours</span></label>
+        <label class="preset-option"><input type="radio" name="schedule_mode" value="daily" /> <span>Daily at a set time</span></label>
+        <label class="preset-option"><input type="radio" name="schedule_mode" value="weekly" /> <span>Weekly routine</span></label>
+        <label class="preset-option"><input type="radio" name="schedule_mode" value="custom" /> <span>Custom cron</span></label>
+      </div>
+      <div class="schedule-mode-panel" data-mode-panel="every_hours">
+        <label>Run every</label>
+        <div class="inline-control"><input type="number" name="schedule_every_hours" min="1" max="24" value="6" /><span>hours</span></div>
+      </div>
+      <div class="schedule-mode-panel hidden" data-mode-panel="daily">
+        <label>Run at</label>
+        <input type="time" name="schedule_daily_time" value="03:00" />
+      </div>
+      <div class="schedule-mode-panel hidden" data-mode-panel="weekly">
+        <label>Weekday</label>
+        <select name="schedule_weekly_day">
+          <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option>
+        </select>
+        <label>Run at</label>
+        <input type="time" name="schedule_weekly_time" value="08:00" />
+      </div>
+      <div class="schedule-mode-panel hidden" data-mode-panel="custom">
+        <label>Cron expression</label>
+        <input id="schedule-cron-custom" type="text" value="{{ settings.schedule_cron }}" placeholder="0 */6 * * *" />
+      </div>
+      <input type="hidden" name="schedule_cron" value="{{ settings.schedule_cron }}" />
+      <div class="card inset-card">
+        <p class="eyebrow">Generated cron</p>
+        <strong id="schedule-cron-preview"><code>{{ settings.schedule_cron }}</code></strong>
+        <p id="schedule-description-preview" class="subtitle">{{ schedule_summary.cron_description }}</p>
+      </div>
+      <label>Hourly retention</label>
+      <input type="number" name="retention_hourly" value="{{ settings.retention_hourly }}" min="1" />
+      <label>Daily retention</label>
+      <input type="number" name="retention_daily" value="{{ settings.retention_daily }}" min="1" />
+      <label>Weekly retention</label>
+      <input type="number" name="retention_weekly" value="{{ settings.retention_weekly }}" min="1" />
+      <label>Exclude patterns</label>
+      <div class="exclude-editor" data-exclude-editor>
+        <div class="exclude-editor__toolbar">
+          <button type="button" class="button-link button-link--secondary" data-exclude-add>Add pattern</button>
+          <button type="button" class="button-link button-link--ghost" data-exclude-restore-defaults>Restore defaults</button>
+        </div>
+        <div class="exclude-editor__presets">
+          <button type="button" class="chip-button" data-exclude-preset="sessions/**">sessions/**</button>
+          <button type="button" class="chip-button" data-exclude-preset="checkpoints/**">checkpoints/**</button>
+          <button type="button" class="chip-button" data-exclude-preset="cache/**">cache/**</button>
+          <button type="button" class="chip-button" data-exclude-preset="browser_screenshots/**">browser_screenshots/**</button>
+        </div>
+        <div class="exclude-editor__rows" data-exclude-rows></div>
+        <textarea name="exclude_patterns" rows="8" class="hidden" data-exclude-textarea>{{ schedule_summary.exclude_patterns_text }}</textarea>
+      </div>
+      <p class="help-text">One pattern per line. Bulky directories can be pruned before copy starts.</p>
+      <div class="inline-actions">
+        <button type="submit">Save settings</button>
+        <button type="button" class="button-link button-link--ghost" data-exclude-restore-defaults>Reset excludes</button>
+      </div>
+    </form>
+  </article>
+  <article class="card">
+    <p class="eyebrow">Schedule summary</p>
+    <h2>What will happen</h2>
+    <div class="key-value-grid compact">
+      <div><span class="key-label">Description</span><strong>{{ schedule_summary.description }}</strong></div>
+      <div><span class="key-label">Next run</span><strong>{{ schedule_summary.next_run_relative }}</strong></div>
+      <div><span class="key-label">UTC time</span><strong>{{ schedule_summary.next_run_utc or '-' }}</strong></div>
+      <div><span class="key-label">Current cron</span><strong><code>{{ settings.schedule_cron }}</code></strong></div>
+    </div>
+    <h3>Active excludes</h3>
+    <div class="chip-row">
+      {% for pattern in settings.exclude_patterns %}<span class="chip"><code>{{ pattern }}</code></span>{% endfor %}
+    </div>
+  </article>
+</section>
+{% endblock %}

@@ -1,0 +1,92 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="hero-grid">
+  <article class="card hero-card hero-card--primary">
+    <p class="eyebrow">System overview</p>
+    <h2>Snapshot protection at a glance</h2>
+    <p class="subtitle">Create known-good rollback points, monitor restore history, and keep scheduled backups under control.</p>
+    <div class="stat-grid">
+      <div class="stat-tile"><span class="stat-label">Snapshots</span><strong class="stat-value">{{ snapshot_count }}</strong></div>
+      <div class="stat-tile"><span class="stat-label">Restores</span><strong class="stat-value">{{ restore_count }}</strong></div>
+      <div class="stat-tile"><span class="stat-label">Schedule</span><strong class="stat-value">{{ 'On' if settings.schedule_enabled else 'Off' }}</strong></div>
+      <div class="stat-tile"><span class="stat-label">Next run</span><strong class="stat-value stat-value--small">{{ schedule_summary.next_run_relative }}</strong></div>
+    </div>
+    <div class="chip-row">
+      <span class="chip">Source: <code>{{ paths.source_root }}</code></span>
+      <span class="chip">Store: <code>{{ paths.snapshot_root }}</code></span>
+      <span class="chip">Schedule: {{ schedule_summary.description }}</span>
+    </div>
+  </article>
+
+  <article class="card quick-action-card">
+    <p class="eyebrow">Quick action</p>
+    <h2>Create a fresh snapshot</h2>
+    <p class="subtitle">Use a short label so you can spot the rollback point later.</p>
+    <form method="post" action="/api/snapshots/start" class="js-operation-form stacked-form" data-operation-kind="snapshot" data-redirect="/snapshots">
+      <label for="snapshot-label">Label</label>
+      <input id="snapshot-label" type="text" name="label" placeholder="before-upgrade" />
+      <button type="submit">Create snapshot</button>
+    </form>
+    <div class="inline-actions">
+      <a class="button-link button-link--secondary" href="/snapshots">Browse snapshots</a>
+      <a class="button-link button-link--ghost" href="/settings">Tune schedule</a>
+    </div>
+  </article>
+</section>
+
+<section class="grid two-up">
+  <article class="card">
+    <div class="section-heading">
+      <div><p class="eyebrow">Latest snapshot</p><h2>Most recent recovery point</h2></div>
+      <a href="/snapshots" class="text-link">View all</a>
+    </div>
+    {% if latest_snapshot %}
+    <div class="record-card">
+      <div class="record-card__main">
+        <strong>{{ latest_snapshot.label or latest_snapshot.id }}</strong>
+        <p class="subtitle">{{ latest_snapshot.created_at }}</p>
+      </div>
+      <span class="pill pill-{{ latest_snapshot.status_tone }}">{{ latest_snapshot.status }}</span>
+    </div>
+    <div class="key-value-grid compact">
+      <div><span class="key-label">Files</span><strong>{{ latest_snapshot.total_files }}</strong></div>
+      <div><span class="key-label">Size</span><strong>{{ latest_snapshot.total_bytes_human }}</strong></div>
+      <div><span class="key-label">Compression</span><strong>{{ latest_snapshot.compression_ratio if latest_snapshot.compression_ratio is not none else '-' }}{% if latest_snapshot.compression_ratio is not none %}%{% endif %}</strong></div>
+      <div><span class="key-label">Saved</span><strong>{{ latest_snapshot.space_saved_bytes_human or '-' }}</strong></div>
+    </div>
+    <a class="button-link button-link--secondary" href="/snapshots/{{ latest_snapshot.id }}">Open details</a>
+    {% else %}<p class="empty-state">No snapshots yet. Create one from the quick action card.</p>{% endif %}
+  </article>
+
+  <article class="card {% if latest_restore and latest_restore.result != 'success' %}danger{% endif %}">
+    <div class="section-heading">
+      <div><p class="eyebrow">Restore history</p><h2>Recent restore status</h2></div>
+      <a href="/restores" class="text-link">Audit trail</a>
+    </div>
+    {% if latest_restore %}
+    <div class="record-card">
+      <div class="record-card__main"><strong>{{ latest_restore.result }}</strong><p class="subtitle">{{ latest_restore.restored_at }}</p></div>
+      <span class="pill pill-{{ latest_restore_tone }}">{{ latest_restore.snapshot_id }}</span>
+    </div>
+    {% if latest_restore.notes %}<p class="callout-text">{{ latest_restore.notes }}</p>{% endif %}
+    {% else %}<p class="empty-state">No restore attempts recorded yet.</p>{% endif %}
+  </article>
+</section>
+
+<section class="card">
+  <div class="section-heading">
+    <div><p class="eyebrow">Recent snapshots</p><h2>Newest recovery points</h2></div>
+    <a href="/snapshots" class="text-link">Full library</a>
+  </div>
+  {% if latest_snapshots %}
+  <div class="list-stack">
+    {% for snapshot in latest_snapshots %}
+    <a class="list-row" href="/snapshots/{{ snapshot.id }}">
+      <div><strong>{{ snapshot.label or snapshot.id }}</strong><p class="subtitle">{{ snapshot.created_at }}</p></div>
+      <div class="list-row__meta"><span>{{ snapshot.total_files }} files</span><span>{{ snapshot.total_bytes_human }}</span><span class="pill pill-{{ snapshot.status_tone }}">{{ snapshot.status }}</span></div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}<p class="empty-state">Nothing here yet.</p>{% endif %}
+</section>
+{% endblock %}

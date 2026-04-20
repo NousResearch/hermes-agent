@@ -1,0 +1,61 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card page-header-card">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Snapshot library</p>
+      <h2>All snapshots</h2>
+      <p class="subtitle">Browse every recovery point, compare sizes, and jump straight to restore details.</p>
+    </div>
+    <div class="list-filters">
+      <input id="snapshot-filter" type="search" placeholder="Filter by label or snapshot id" data-filter-table="snapshots-table" />
+      <select id="snapshot-status-filter">
+        <option value="all">All statuses</option>
+        <option value="created">Created</option>
+        <option value="verified">Verified</option>
+        <option value="degraded">Degraded</option>
+        <option value="failed">Failed</option>
+      </select>
+      <select id="snapshot-sort" data-sort-table="snapshots-table">
+        <option value="created_desc">Newest first</option>
+        <option value="created_asc">Oldest first</option>
+        <option value="size_desc">Largest first</option>
+        <option value="size_asc">Smallest first</option>
+      </select>
+    </div>
+  </div>
+</section>
+<section class="card">
+  <div class="table-shell">
+    <table id="snapshots-table">
+      <thead>
+        <tr><th>Snapshot</th><th>Created</th><th>Type</th><th>Files</th><th>Size</th><th>Status</th><th>Known good</th></tr>
+      </thead>
+      <tbody>
+        {% for snapshot in snapshots %}
+        <tr data-filter-text="{{ (snapshot.label or '') ~ ' ' ~ snapshot.id }}" data-created="{{ snapshot.created_at }}" data-size="{{ snapshot.total_bytes }}" data-status="{{ snapshot.status }}">
+          <td><a href="/snapshots/{{ snapshot.id }}"><strong>{{ snapshot.label or snapshot.id }}</strong></a><div class="table-subtitle"><code>{{ snapshot.id }}</code></div></td>
+          <td>{{ snapshot.created_at }}</td>
+          <td>{{ snapshot.trigger_type }}</td>
+          <td>{{ snapshot.total_files }}</td>
+          <td>{{ snapshot.total_bytes_human }}</td>
+          <td><span class="pill pill-{{ snapshot.status_tone }}">{{ snapshot.status }}</span></td>
+          <td>{{ 'Yes' if snapshot.is_known_good else 'No' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">No snapshots yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="table-footer">
+    <p class="help-text" id="snapshots-table-summary">Showing all snapshots</p>
+    <div class="inline-actions compact-actions">
+      <button type="button" class="button-link button-link--secondary" id="snapshots-prev-page">Previous</button>
+      <span class="chip" id="snapshots-page-indicator">Page 1</span>
+      <button type="button" class="button-link button-link--secondary" id="snapshots-next-page">Next</button>
+    </div>
+  </div>
+  <p class="empty-state hidden" id="snapshots-no-results">No snapshots match the current filters.</p>
+</section>
+{% endblock %}

@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes Snapshot Manager Web UI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.hermes/hermes-agent
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/.hermes/hermes-agent/hermes_snapshot_manager/scripts/run_snapshot_manager.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or 'Hermes Snapshot Manager' }}</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero-header">
+        <div class="hero-header__content">
+          <div class="brand-mark">HS</div>
+          <div>
+            <p class="eyebrow">Rollback safety for WSL</p>
+            <h1>Hermes Snapshot Manager</h1>
+            <p class="subtitle">Independent rollback protection for <code>~/.hermes</code> with fast snapshots, restore history, and scheduled protection.</p>
+          </div>
+        </div>
+        <nav class="topnav">
+          <a href="/" class="{% if current_path == '/' %}active{% endif %}">Dashboard</a>
+          <a href="/snapshots" class="{% if current_path == '/snapshots' %}active{% endif %}">Snapshots</a>
+          <a href="/restores" class="{% if current_path == '/restores' %}active{% endif %}">Restores</a>
+          <a href="/settings" class="{% if current_path == '/settings' %}active{% endif %}">Settings</a>
+        </nav>
+      </header>
+      <main class="container">
+        <section id="operation-progress" class="card operation-progress hidden" aria-live="polite">
+          <div class="operation-progress__header">
+            <div>
+              <p class="eyebrow">Live operation</p>
+              <h2>Current operation</h2>
+            </div>
+            <span id="operation-progress-kind" class="pill">idle</span>
+          </div>
+          <div class="progress-bar-shell">
+            <div id="operation-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+          </div>
+          <div class="progress-meta-row">
+            <p id="operation-progress-percent" class="metric-value">0%</p>
+            <p id="operation-progress-message" class="subtitle">Waiting…</p>
+          </div>
+          <p id="operation-progress-detail" class="progress-detail"></p>
+          <p id="operation-progress-error" class="progress-error"></p>
+          <div id="operation-progress-action" class="operation-actions"></div>
+        </section>
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -497,6 +497,10 @@ TIPS_ZH = [
 ]
 
 
+# Backward compatibility: TIPS alias for existing tests/code
+TIPS = TIPS_EN
+
+
 def get_random_tip(exclude_recent: int = 0) -> str:
     """Return a random tip string.
 

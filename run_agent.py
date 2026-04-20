@@ -6909,6 +6909,34 @@ class AIAgent:
             # (the documented max output for qwen3-coder models) so the
             # model has adequate output budget for tool calls.
             api_kwargs.update(self._max_tokens_param(65536))
+        elif (
+            base_url_host_matches(self.base_url, "api.kimi.com")
+            or base_url_host_matches(self.base_url, "moonshot.ai")
+            or base_url_host_matches(self.base_url, "moonshot.cn")
+        ):
+            # Kimi/Moonshot defaults to a low max_tokens when omitted.
+            # Reasoning tokens share the output budget — without an explicit
+            # value the model can exhaust it on thinking alone, causing
+            # "Response truncated due to output length limit".  32000 matches
+            # Kimi CLI's default (see MoonshotAI/kimi-cli kimi.py generate()).
+            api_kwargs.update(self._max_tokens_param(32000))
+            # Kimi requires reasoning_effort as a top-level chat completions
+            # parameter (not inside extra_body).  Mirror Kimi CLI's
+            # with_generation_kwargs(reasoning_effort=...) / with_thinking():
+            # when thinking is disabled, Kimi CLI omits reasoning_effort
+            # entirely (maps to None).
+            _kimi_thinking_off = bool(
+                self.reasoning_config
+                and isinstance(self.reasoning_config, dict)
+                and self.reasoning_config.get("enabled") is False
+            )
+            if not _kimi_thinking_off:
+                _kimi_effort = "medium"
+                if self.reasoning_config and isinstance(self.reasoning_config, dict):
+                    _e = (self.reasoning_config.get("effort") or "").strip().lower()
+                    if _e in ("low", "medium", "high"):
+                        _kimi_effort = _e
+                api_kwargs["reasoning_effort"] = _kimi_effort
         elif (self._is_openrouter_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
             # OpenRouter and Nous Portal translate requests to Anthropic's
             # Messages API, which requires max_tokens as a mandatory field.
@@ -6939,6 +6967,24 @@ class AIAgent:
         if provider_preferences and _is_openrouter:
             extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self._base_url_lower
+
+        # Kimi/Moonshot API uses extra_body.thinking (separate from the
+        # top-level reasoning_effort) to enable/disable reasoning mode.
+        # Mirror Kimi CLI's with_thinking() behavior exactly — see
+        # MoonshotAI/kimi-cli packages/kosong/src/kosong/chat_provider/kimi.py
+        _is_kimi = (
+            base_url_host_matches(self.base_url, "api.kimi.com")
+            or base_url_host_matches(self.base_url, "moonshot.ai")
+            or base_url_host_matches(self.base_url, "moonshot.cn")
+        )
+        if _is_kimi:
+            _kimi_thinking_enabled = True
+            if self.reasoning_config and isinstance(self.reasoning_config, dict):
+                if self.reasoning_config.get("enabled") is False:
+                    _kimi_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _kimi_thinking_enabled else "disabled",
+            }
 
         if self._supports_reasoning_extra_body():
             if _is_github_models:

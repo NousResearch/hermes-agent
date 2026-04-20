@@ -300,6 +300,129 @@ class TestIRCAdapterMessageParsing:
         assert len(dispatched) == 1
         assert dispatched[0]["text"] == "* user waves"
 
+    @pytest.mark.asyncio
+    async def test_allowed_users_case_insensitive(self, monkeypatch):
+        """Allowlist should match nicks case-insensitively."""
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "server": "localhost",
+                "port": 6667,
+                "nickname": "hermes",
+                "channel": "#test",
+                "use_tls": False,
+                "allowed_users": ["Admin", "BOB"],
+            },
+        )
+        adapter = IRCAdapter(cfg)
+        adapter._current_nick = "hermes"
+        adapter._registered = True
+        dispatched = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture_dispatch
+        adapter._message_handler = AsyncMock()
+
+        # "admin" matches "Admin" in allowlist
+        await adapter._handle_line(":admin!u@host PRIVMSG #test :hermes: hello")
+        assert len(dispatched) == 1
+        assert dispatched[0]["text"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_user_blocked(self, monkeypatch):
+        """Nicks not in allowlist should be ignored."""
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "server": "localhost",
+                "port": 6667,
+                "nickname": "hermes",
+                "channel": "#test",
+                "use_tls": False,
+                "allowed_users": ["Admin", "BOB"],
+            },
+        )
+        adapter = IRCAdapter(cfg)
+        adapter._current_nick = "hermes"
+        adapter._registered = True
+        dispatched = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture_dispatch
+        adapter._message_handler = AsyncMock()
+
+        await adapter._handle_line(":eve!u@host PRIVMSG #test :hermes: hello")
+        assert len(dispatched) == 0
+
+    @pytest.mark.asyncio
+    async def test_nick_collision_retry(self, adapter):
+        """Multiple 433 responses should keep incrementing the suffix."""
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+
+        await adapter._handle_line(":server 433 * hermes :Nickname in use")
+        assert adapter._current_nick == "hermes_"
+        await adapter._handle_line(":server 433 * hermes_ :Nickname in use")
+        assert adapter._current_nick == "hermes_1"
+        await adapter._handle_line(":server 433 * hermes_1 :Nickname in use")
+        assert adapter._current_nick == "hermes_2"
+
+
+class TestIRCAdapterSplitting:
+
+    def test_split_respects_byte_limit(self):
+        """Multi-byte characters should not exceed IRC byte limit."""
+        # 100 japanese chars = 300 bytes in utf-8
+        text = "あ" * 100
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
+        adapter = IRCAdapter(cfg)
+        adapter._current_nick = "bot"
+        lines = adapter._split_message(text, "#test")
+        for line in lines:
+            overhead = len(f"PRIVMSG #test :{line}\r\n".encode("utf-8"))
+            assert overhead <= 512, f"line over 512 bytes: {overhead}"
+
+    def test_split_prefers_word_boundary(self):
+        text = "hello world foo bar baz qux"
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={"server": "x", "channel": "#x"})
+        adapter = IRCAdapter(cfg)
+        adapter._current_nick = "bot"
+        lines = adapter._split_message(text, "#test")
+        # Should not split in the middle of "world"
+        assert any("hello" in ln for ln in lines)
+        assert any("world" in ln for ln in lines)
+
+
+class TestIRCProtocolHelpersExtra:
+
+    def test_parse_malformed_no_space(self):
+        """A line starting with : but no space should not crash."""
+        msg = _parse_irc_message(":justaprefix")
+        assert msg["prefix"] == "justaprefix"
+        assert msg["command"] == ""
+        assert msg["params"] == []
+
+    def test_parse_empty(self):
+        msg = _parse_irc_message("")
+        assert msg["prefix"] == ""
+        assert msg["command"] == ""
+        assert msg["params"] == []
+
 
 class TestIRCAdapterMarkdown:
 

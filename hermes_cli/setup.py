@@ -2204,6 +2204,7 @@ def _setup_mattermost():
     home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+    print_info("   Open config in your editor:  hermes config edit")
 
 
 def _setup_bluebubbles():
@@ -2321,8 +2322,7 @@ def _setup_webhooks():
     print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
     print()
     print_info("   Open config in your editor:  hermes config edit")
-
-
+    print_info("   Open config in your editor:  hermes config edit")
 
 
 def setup_gateway(config: dict):
@@ -2355,24 +2355,19 @@ def setup_gateway(config: dict):
         _configure_platform(platforms[idx])
 
     # ── Gateway Service Setup ──
-    any_messaging = (
-        get_env_value("TELEGRAM_BOT_TOKEN")
-        or get_env_value("DISCORD_BOT_TOKEN")
-        or get_env_value("SLACK_BOT_TOKEN")
-        or get_env_value("SIGNAL_HTTP_URL")
-        or get_env_value("EMAIL_ADDRESS")
-        or get_env_value("TWILIO_ACCOUNT_SID")
-        or get_env_value("MATTERMOST_TOKEN")
-        or get_env_value("MATRIX_ACCESS_TOKEN")
-        or get_env_value("MATRIX_PASSWORD")
-        or get_env_value("WHATSAPP_ENABLED")
-        or get_env_value("DINGTALK_CLIENT_ID")
-        or get_env_value("FEISHU_APP_ID")
-        or get_env_value("WECOM_BOT_ID")
-        or get_env_value("WEIXIN_ACCOUNT_ID")
-        or get_env_value("BLUEBUBBLES_SERVER_URL")
-        or get_env_value("QQ_APP_ID")
-        or get_env_value("WEBHOOK_ENABLED")
+    # Count any platform (built-in or plugin) the user configured during this
+    # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
+    # are picked up without another hard-coded env-var list.
+    def _is_progress(status: str) -> bool:
+        s = status.lower()
+        return not (
+            s == "not configured"
+            or s.startswith("partially")
+            or s.startswith("plugin disabled")
+        )
+
+    any_messaging = any(
+        _is_progress(_platform_status(p)) for p in _all_platforms()
     )
     if any_messaging:
         print()

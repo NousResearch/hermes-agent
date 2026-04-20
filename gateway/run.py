@@ -421,6 +421,7 @@ if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
 
 from gateway.config import (
     Platform,
+    _BUILTIN_PLATFORM_VALUES,
     GatewayConfig,
     load_gateway_config,
 )
@@ -1688,6 +1689,66 @@ class GatewayRunner:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
     @staticmethod
+    def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
+        """Parse `/reasoning` args into `(value, persist_global)`.
+
+        `/reasoning <level>` is session-scoped by default. `--global` may be
+        supplied in any position to persist the change to config.yaml.
+        """
+        import shlex
+
+        text = str(raw_args or "").strip().replace("—", "--")
+        if not text:
+            return "", False
+        try:
+            tokens = shlex.split(text)
+        except ValueError:
+            tokens = text.split()
+
+        persist_global = False
+        value_tokens = []
+        for token in tokens:
+            if token == "--global":
+                persist_global = True
+            else:
+                value_tokens.append(token)
+        return " ".join(value_tokens).strip().lower(), persist_global
+
+    def _resolve_session_reasoning_config(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+    ) -> dict | None:
+        """Resolve reasoning effort for a session, honoring session overrides."""
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
+        if resolved_session_key and resolved_session_key in overrides:
+            return overrides[resolved_session_key]
+        return self._load_reasoning_config()
+
+    def _set_session_reasoning_override(
+        self,
+        session_key: str,
+        reasoning_config: Optional[dict],
+    ) -> None:
+        """Set or clear the session-scoped reasoning override."""
+        if not session_key:
+            return
+        if not hasattr(self, "_session_reasoning_overrides"):
+            self._session_reasoning_overrides = {}
+        if reasoning_config is None:
+            self._session_reasoning_overrides.pop(session_key, None)
+        else:
+            self._session_reasoning_overrides[session_key] = dict(reasoning_config)
+
+    @staticmethod
     def _load_service_tier() -> str | None:
         """Load Priority Processing setting from config.yaml.
 
@@ -2357,39 +2418,61 @@ class GatewayRunner:
             pass
         
         # Warn if no user allowlists are configured and open access is not opted in
+        _builtin_allowed_vars = (
+            "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
+            "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
+            "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_CHATS",
+            "EMAIL_ALLOWED_USERS",
+            "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
+            "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
+            "FEISHU_ALLOWED_USERS",
+            "WECOM_ALLOWED_USERS",
+            "WECOM_CALLBACK_ALLOWED_USERS",
+            "WEIXIN_ALLOWED_USERS",
+            "BLUEBUBBLES_ALLOWED_USERS",
+            "QQ_ALLOWED_USERS",
+            "YUANBAO_ALLOWED_USERS",
+            "GATEWAY_ALLOWED_USERS",
+        )
+        _builtin_allow_all_vars = (
+            "TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
+            "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
+            "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
+            "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
+            "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
+            "FEISHU_ALLOW_ALL_USERS",
+            "WECOM_ALLOW_ALL_USERS",
+            "WECOM_CALLBACK_ALLOW_ALL_USERS",
+            "WEIXIN_ALLOW_ALL_USERS",
+            "BLUEBUBBLES_ALLOW_ALL_USERS",
+            "QQ_ALLOW_ALL_USERS",
+            "YUANBAO_ALLOW_ALL_USERS",
+        )
+        # Also pick up plugin-registered platforms — each entry can declare
+        # its own allowed_users_env / allow_all_env, so the warning stays
+        # accurate as plugins like IRC come online.
+        _plugin_allowed_vars: tuple = ()
+        _plugin_allow_all_vars: tuple = ()
+        try:
+            from gateway.platform_registry import platform_registry
+            _plugin_allowed_vars = tuple(
+                e.allowed_users_env for e in platform_registry.plugin_entries()
+                if e.allowed_users_env
+            )
+            _plugin_allow_all_vars = tuple(
+                e.allow_all_env for e in platform_registry.plugin_entries()
+                if e.allow_all_env
+            )
+        except Exception:
+            pass
         _any_allowlist = any(
-            os.getenv(v)
-            for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
-                       "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
-                       "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-                       "TELEGRAM_GROUP_ALLOWED_USERS",
-                       "TELEGRAM_GROUP_ALLOWED_CHATS",
-                       "EMAIL_ALLOWED_USERS",
-                       "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
-                       "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
-                       "FEISHU_ALLOWED_USERS",
-                       "WECOM_ALLOWED_USERS",
-                       "WECOM_CALLBACK_ALLOWED_USERS",
-                       "WEIXIN_ALLOWED_USERS",
-                       "BLUEBUBBLES_ALLOWED_USERS",
-                       "QQ_ALLOWED_USERS",
-                       "YUANBAO_ALLOWED_USERS",
-                       "GATEWAY_ALLOWED_USERS")
+            os.getenv(v) for v in _builtin_allowed_vars + _plugin_allowed_vars
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
             os.getenv(v, "").lower() in ("true", "1", "yes")
-            for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
-                       "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
-                       "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
-                       "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-                       "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
-                       "FEISHU_ALLOW_ALL_USERS",
-                       "WECOM_ALLOW_ALL_USERS",
-                       "WECOM_CALLBACK_ALLOW_ALL_USERS",
-                       "WEIXIN_ALLOW_ALL_USERS",
-                       "BLUEBUBBLES_ALLOW_ALL_USERS",
-                       "QQ_ALLOW_ALL_USERS",
-                       "YUANBAO_ALLOW_ALL_USERS")
+            for v in _builtin_allow_all_vars + _plugin_allow_all_vars
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -3256,12 +3339,21 @@ class GatewayRunner:
                 getattr(self.config, "thread_sessions_per_user", False),
             )
 
-        # ── Plugin-registered platforms (checked first) ──────────────
+        # ── Plugin-registered platforms (checked first) ───────────────────
         try:
             from gateway.platform_registry import platform_registry
-            adapter = platform_registry.create_adapter(platform.value, config)
-            if adapter is not None:
-                return adapter
+            if platform_registry.is_registered(platform.value):
+                adapter = platform_registry.create_adapter(platform.value, config)
+                if adapter is not None:
+                    return adapter
+                # Registered but failed to instantiate — don't silently fall
+                # through to built-ins (there are none for plugin platforms).
+                logger.error(
+                    "Platform '%s' is registered but adapter creation failed "
+                    "(check dependencies and config)",
+                    platform.value,
+                )
+                return None
         except Exception as e:
             logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
         # Fall through to built-in adapters below
@@ -9462,6 +9554,16 @@ class GatewayRunner:
 
         try:
             platform = Platform(platform_name)
+            # Reject arbitrary strings that create dynamic pseudo-members.
+            # Built-in platforms are always valid; plugin platforms must be
+            # registered in the platform registry.
+            if platform.value not in _BUILTIN_PLATFORM_VALUES:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    if not platform_registry.is_registered(platform.value):
+                        raise ValueError(platform_name)
+                except Exception:
+                    raise ValueError(platform_name)
         except Exception:
             logger.warning(
                 "Synthetic process event has invalid platform metadata: %r",
@@ -10549,6 +10651,7 @@ class GatewayRunner:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
                 return
 
+
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in ("tool.started",):
                 return
@@ -10674,6 +10777,22 @@ class GatewayRunner:
                         return
 
                     raw = progress_queue.get_nowait()
+
+                    # Drain silently when interrupted: events queued in the
+                    # window between tool parse and interrupt processing
+                    # should not render as bubbles.  The "⚡ Interrupting
+                    # current task" message is sent separately and is the
+                    # last progress-flavored bubble the user should see.
+                    try:
+                        _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                        if _agent_for_interrupt is not None and getattr(
+                            _agent_for_interrupt, "is_interrupted", False
+                        ):
+                            # Drop this event and continue draining.
+                            await asyncio.sleep(0)
+                            continue
+                    except Exception:
+                        pass
 
                     # Drain silently when interrupted: events queued in the
                     # window between tool parse and interrupt processing

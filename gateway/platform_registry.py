@@ -58,6 +58,11 @@ class PlatformEntry:
     # fail at connect() time with a descriptive error.
     validate_config: Optional[Callable[[Any], bool]] = None
 
+    # Optional: given a PlatformConfig, is the platform connected/enabled?
+    # Used by ``GatewayConfig.get_connected_platforms()`` and setup UI status.
+    # If None, falls back to ``validate_config`` or ``check_fn``.
+    is_connected: Optional[Callable[[Any], bool]] = None
+
     # Env vars this platform needs (for ``hermes setup`` display).
     required_env: list = field(default_factory=list)
 

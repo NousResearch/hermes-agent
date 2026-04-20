@@ -89,12 +89,14 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
-    def test_unknown_platform_accepted_for_plugins(self):
-        """Unknown platform names are now accepted (dynamic enum members for
-        plugin platforms), so from_dict should succeed rather than raise."""
-        source = SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
-        assert source.platform.value == "nonexistent"
-        assert source.chat_id == "1"
+    def test_unknown_platform_rejected_for_bad_names(self):
+        """Arbitrary platform names are rejected (no accidental enum pollution).
+
+        Only bundled platform plugins (discovered under ``plugins/platforms/``)
+        and runtime-registered plugins get dynamic enum members.
+        """
+        with pytest.raises(ValueError):
+            SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 
 class TestSessionSourceDescription:

@@ -1535,6 +1535,24 @@ class TestBuildAssistantMessage:
         assert "<memory-context>" in result["content"]
         assert "Visible answer" in result["content"]
 
+    def test_memory_context_in_stored_content_is_preserved(self, agent):
+        """`_build_assistant_message` must not silently mutate model output
+        containing literal <memory-context> markers — that's legitimate text
+        (e.g. documentation, code) that the model may emit.  Streaming-path
+        leak prevention is handled by StreamingContextScrubber upstream."""
+        original = (
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+            "## Honcho Context\n"
+            "stale memory\n"
+            "</memory-context>\n\n"
+            "Visible answer"
+        )
+        msg = _mock_assistant_msg(content=original)
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<memory-context>" in result["content"]
+        assert "Visible answer" in result["content"]
+
     def test_unterminated_think_block_stripped(self, agent):
         """Unterminated <think> block (MiniMax / NIM dropped close tag) is
         fully stripped from stored content."""

@@ -569,6 +569,28 @@ class TestToolHandlers:
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
 
+    def test_local_embedded_recall_reconnects_after_idle_shutdown(self, provider, monkeypatch):
+        first_client = _make_mock_client()
+        first_client.arecall.side_effect = RuntimeError("Cannot connect to host 127.0.0.1:8888")
+        second_client = _make_mock_client()
+        second_client.arecall.return_value = SimpleNamespace(
+            results=[SimpleNamespace(text="Recovered memory")]
+        )
+        clients = iter([first_client, second_client])
+
+        provider._mode = "local_embedded"
+        provider._client = first_client
+        monkeypatch.setattr(provider, "_get_client", lambda: next(clients))
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+
+        assert result["result"] == "1. Recovered memory"
+        assert provider._client is second_client
+        first_client.arecall.assert_called_once()
+        second_client.arecall.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Prefetch tests

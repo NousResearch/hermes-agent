@@ -374,6 +374,39 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
     return False
 
 
+def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
+    """Return True when ``hostname`` matches a ``NO_PROXY`` entry.
+
+    Supports comma- or whitespace-separated entries with optional leading dots
+    and ``*.`` wildcards, which match both the apex domain and subdomains.
+    """
+    raw = no_proxy_value
+    if raw is None:
+        raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+
+    raw = raw.strip()
+    if not raw:
+        return False
+
+    lower_hostname = hostname.lower()
+    for entry in re.split(r"[\s,]+", raw):
+        normalized = entry.strip().lower()
+        if not normalized:
+            continue
+        if normalized == "*":
+            return True
+
+        if normalized.startswith("*."):
+            normalized = normalized[2:]
+        elif normalized.startswith("."):
+            normalized = normalized[1:]
+
+        if lower_hostname == normalized or lower_hostname.endswith(f".{normalized}"):
+            return True
+
+    return False
+
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path

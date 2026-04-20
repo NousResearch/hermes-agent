@@ -1855,6 +1855,16 @@ class AIAgent:
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
 
+        # Resolve custom_providers list once for reuse below (startup
+        # context-length override and plugin context-engine init).
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+            _custom_providers = get_compatible_custom_providers(_agent_cfg)
+        except Exception:
+            _custom_providers = _agent_cfg.get("custom_providers")
+            if not isinstance(_custom_providers, list):
+                _custom_providers = []
+
         # Check custom_providers per-model context_length
         if _config_context_length is None and _custom_providers:
             try:
@@ -1909,6 +1919,7 @@ class AIAgent:
         self._config_context_length = _config_context_length
 
         self._ensure_lmstudio_runtime_loaded(_config_context_length)
+
 
 
         # Select context engine: config-driven (like memory providers).
@@ -4773,6 +4784,9 @@ class AIAgent:
         if not _soul_loaded:
             # Fallback to hardcoded identity
             prompt_parts = [DEFAULT_AGENT_IDENTITY]
+
+        # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
+        prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
         prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
@@ -8564,6 +8578,13 @@ class AIAgent:
         codex_items = getattr(assistant_message, "codex_reasoning_items", None)
         if codex_items:
             msg["codex_reasoning_items"] = codex_items
+
+        # Codex Responses API: preserve exact assistant message items (with
+        # id/phase) so follow-up turns can replay structured items instead of
+        # flattening to plain text. This is required for prefix cache hits.
+        codex_message_items = getattr(assistant_message, "codex_message_items", None)
+        if codex_message_items:
+            msg["codex_message_items"] = codex_message_items
 
         # Codex Responses API: preserve exact assistant message items (with
         # id/phase) so follow-up turns can replay structured items instead of

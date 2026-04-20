@@ -2773,6 +2773,12 @@ def _load_bundled_platform_plugins_for_enumeration() -> set[str]:
     the registry — no adapters run, no network I/O — so loading it here is
     side-effect-free for the short-lived setup process.
 
+    **Contract:** Platform plugin ``register()`` functions MUST NOT register
+    tools, hooks, or start background threads. They should only call
+    ``ctx.register_platform()`` to populate the platform registry. Violating
+    this contract will cause side effects (tool registration, hook firing)
+    during setup menu rendering even when the plugin is disabled.
+
     Returns the set of plugin names that were force-loaded (i.e. plugins
     not in ``plugins.enabled``), so the caller can display a hint and
     auto-enable them on selection.
@@ -2887,10 +2893,21 @@ def _platform_status(platform: dict) -> str:
     """
     entry = platform.get("_registry_entry")
     if entry is not None:
-        try:
-            configured = bool(entry.check_fn())
-        except Exception:
-            configured = False
+        configured = False
+        # Prefer is_connected (checks both env and config.yaml) over
+        # check_fn (typically just dependency / env presence).
+        if entry.is_connected is not None:
+            try:
+                from gateway.config import PlatformConfig
+                synthetic = PlatformConfig(enabled=True)
+                configured = bool(entry.is_connected(synthetic))
+            except Exception:
+                configured = False
+        if not configured:
+            try:
+                configured = bool(entry.check_fn())
+            except Exception:
+                configured = False
         if platform.get("needs_enable") and not configured:
             return "plugin disabled — select to enable"
         return "configured" if configured else "not configured"
@@ -3270,6 +3287,12 @@ def _setup_wecom():
 
     print()
     print_success("💬 WeCom configured!")
+
+
+def _setup_yuanbao():
+    """Configure Yuanbao via the standard platform setup."""
+    yuanbao_platform = next(p for p in _PLATFORMS if p["key"] == "yuanbao")
+    _setup_standard_platform(yuanbao_platform)
 
 
 def _setup_yuanbao():
@@ -4009,11 +4032,21 @@ def gateway_setup():
         _configure_platform(platforms[choice])
 
     # ── Post-setup: offer to install/restart gateway ──
+    # Consider any platform (built-in or plugin) where the user has made
+    # meaningful progress.  ``_platform_status`` already handles plugin
+    # entries via their check_fn and per-platform dual-states like
+    # WhatsApp's "enabled, not paired".
+    def _is_progress(status: str) -> bool:
+        s = status.lower()
+        return not (
+            s == "not configured"
+            or s.startswith("partially")
+            or s.startswith("plugin disabled")
+        )
+
     any_configured = any(
-        bool(get_env_value(p["token_var"]))
-        for p in _PLATFORMS
-        if p["key"] != "whatsapp"
-    ) or (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true"
+        _is_progress(_platform_status(p)) for p in _all_platforms()
+    )
 
     if any_configured:
         print()

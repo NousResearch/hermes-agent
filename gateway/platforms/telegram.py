@@ -237,14 +237,14 @@ def _wrap_markdown_tables(text: str) -> str:
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
-    
+
     Handles:
     - Receiving messages from users and groups
     - Sending responses with Telegram markdown
     - Forum topics (thread_id support)
     - Media messages
     """
-    
+
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     # Threshold for detecting Telegram client-side message splits.
@@ -252,7 +252,7 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
-    
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
@@ -997,7 +997,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
-    
+
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
         pending_media_group_tasks = list(self._media_group_tasks.values())
@@ -1292,6 +1292,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Telegram message.
+
+        Used by the stream consumer's fresh-final cleanup path (ported
+        from openclaw/openclaw#72038) to remove long-lived preview
+        messages after sending the completed reply as a fresh message.
+        Telegram's Bot API ``deleteMessage`` works for bot-posted
+        messages in the last 48 hours.  Failures are non-fatal — the
+        caller leaves the preview in place and logs at debug level.
+        """
+        if not self._bot:
+            return False
+        try:
+            await self._bot.delete_message(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+            )
+            return True
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to delete Telegram message %s: %s",
+                self.name, message_id, e,
+            )
+            return False
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a previously sent Telegram message.
@@ -1980,7 +2005,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return await super().send_voice(chat_id, audio_path, caption, reply_to)
-    
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -2147,7 +2172,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 # Final fallback: send URL as text
                 return await super().send_image(chat_id, image_url, caption, reply_to)
-    
+
     async def send_animation(
         self,
         chat_id: str,
@@ -2209,7 +2234,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
-    
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:
@@ -2243,7 +2268,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
-    
+
     def format_message(self, content: str) -> str:
         """
         Convert standard markdown to Telegram MarkdownV2 format.
@@ -2415,7 +2440,7 @@ class TelegramAdapter(BasePlatformAdapter):
         text = ''.join(_safe_parts)
 
         return text
-    
+
     # ── Group mention gating ──────────────────────────────────────────────
 
     def _telegram_require_mention(self) -> bool:
@@ -2630,7 +2655,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
-    
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         if not update.message or not update.message.text:
@@ -2640,7 +2665,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
-    
+
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
         if not update.message:
@@ -2998,7 +3023,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         await self.handle_message(event)
-    
+
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
 

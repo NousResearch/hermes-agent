@@ -78,6 +78,30 @@ def test_generate_summary_public_moonshot_kimi_k2_5_forces_temperature_1():
     assert compressor.client.chat.completions.create.call_args.kwargs["temperature"] == 1.0
 
 
+def test_generate_summary_public_moonshot_cn_kimi_k2_5_forces_temperature_1():
+    config = CompressionConfig(
+        summarization_model="kimi-k2.5",
+        base_url="https://api.moonshot.cn/v1",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    compressor.client = MagicMock()
+    compressor.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    )
+
+    metrics = TrajectoryMetrics()
+    result = compressor._generate_summary("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert compressor.client.chat.completions.create.call_args.kwargs["temperature"] == 1.0
+
+
 # ---------------------------------------------------------------------------
 # CompressionConfig
 # ---------------------------------------------------------------------------

@@ -313,6 +313,42 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
+def test_build_api_kwargs_codex_applies_openai_codex_model_defaults(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["reasoning"] == {"effort": "medium", "summary": "auto"}
+    assert kwargs["text"] == {"verbosity": "low"}
+
+
+def test_build_api_kwargs_codex_does_not_apply_openai_codex_model_defaults_to_copilot(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch, model="gpt-5.4")
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["reasoning"] == {"effort": "medium"}
+    assert "text" not in kwargs
+
+
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     """'minimal' reasoning effort is clamped to 'low' on the Responses API.
 
@@ -744,19 +780,21 @@ def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypat
         agent._preflight_codex_api_kwargs(kwargs)
 
 
-def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch):
+def test_preflight_codex_api_kwargs_allows_reasoning_temperature_and_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()
     kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
     kwargs["include"] = ["reasoning.encrypted_content"]
     kwargs["temperature"] = 0.7
     kwargs["max_output_tokens"] = 4096
+    kwargs["text"] = {"verbosity": "low"}
 
     result = agent._preflight_codex_api_kwargs(kwargs)
     assert result["reasoning"] == {"effort": "high", "summary": "auto"}
     assert result["include"] == ["reasoning.encrypted_content"]
     assert result["temperature"] == 0.7
     assert result["max_output_tokens"] == 4096
+    assert result["text"] == {"verbosity": "low"}
 
 
 def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):

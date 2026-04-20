@@ -849,3 +849,97 @@ class TestAdversarialEdgeCases:
         )
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.model_not_found
+
+    # ── Regression: dict-typed message field (Issue #11233) ──
+
+    def test_pydantic_dict_message_no_crash(self):
+        """Pydantic validation errors return message as dict, not string.
+
+        Regression: classify_api_error must not crash when body['message']
+        is a dict (e.g. {"detail": [...]} from FastAPI/Pydantic). The
+        'or ""' fallback only handles None/falsy values — a non-empty
+        dict is truthy and passed to .lower(), causing AttributeError.
+        """
+        e = MockAPIError(
+            "Unprocessable Entity",
+            status_code=422,
+            body={
+                "object": "error",
+                "message": {
+                    "detail": [
+                        {
+                            "type": "extra_forbidden",
+                            "loc": ["body", "think"],
+                            "msg": "Extra inputs are not permitted",
+                        }
+                    ]
+                },
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.status_code == 422
+        assert result.retryable is False
+
+    def test_nested_error_dict_message_no_crash(self):
+        """Nested body['error']['message'] as dict must not crash.
+
+        Some providers wrap Pydantic errors in an 'error' object.
+        """
+        e = MockAPIError(
+            "Validation error",
+            status_code=400,
+            body={
+                "error": {
+                    "message": {
+                        "detail": [
+                            {"type": "missing", "loc": ["body", "required"]}
+                        ]
+                    }
+                }
+            },
+        )
+        result = classify_api_error(e, approx_tokens=1000)
+        assert result.reason == FailoverReason.format_error
+        assert result.status_code == 400
+
+    def test_metadata_raw_dict_message_no_crash(self):
+        """OpenRouter metadata.raw with dict message must not crash."""
+        e = MockAPIError(
+            "Provider error",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Provider error",
+                    "metadata": {
+                        "raw": '{"error":{"message":{"detail":[{"type":"invalid"}]}}}'
+                    }
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+
+    # Broader non-string type guards — defense against other provider quirks.
+
+    def test_list_message_no_crash(self):
+        """Some providers return message as a list of error entries."""
+        e = MockAPIError(
+            "validation",
+            status_code=400,
+            body={"message": [{"msg": "field required"}]},
+        )
+        result = classify_api_error(e)
+        assert result is not None
+
+    def test_int_message_no_crash(self):
+        """Any non-string type must be coerced safely."""
+        e = MockAPIError("server error", status_code=500, body={"message": 42})
+        result = classify_api_error(e)
+        assert result is not None
+
+    def test_none_message_still_works(self):
+        """Regression: None fallback (the 'or \"\"' path) must still work."""
+        e = MockAPIError("server error", status_code=500, body={"message": None})
+        result = classify_api_error(e)
+        assert result is not None

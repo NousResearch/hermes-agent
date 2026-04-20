@@ -9,7 +9,7 @@ declare global {
 }
 let _sessionToken: string | null = null;
 
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -182,6 +182,22 @@ export const api = {
       },
     );
   },
+
+  // Dashboard plugins
+  getPlugins: () =>
+    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  rescanPlugins: () =>
+    fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
+
+  // Dashboard themes
+  getThemes: () =>
+    fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
+  setTheme: (name: string) =>
+    fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
 };
 
 export interface PlatformStatus {
@@ -197,6 +213,7 @@ export interface StatusResponse {
   config_version: number;
   env_path: string;
   gateway_exit_reason: string | null;
+  gateway_health_url: string | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
@@ -283,6 +300,22 @@ export interface AnalyticsModelEntry {
   sessions: number;
 }
 
+export interface AnalyticsSkillEntry {
+  skill: string;
+  view_count: number;
+  manage_count: number;
+  total_count: number;
+  percentage: number;
+  last_used_at: number | null;
+}
+
+export interface AnalyticsSkillsSummary {
+  total_skill_loads: number;
+  total_skill_edits: number;
+  total_skill_actions: number;
+  distinct_skills_used: number;
+}
+
 export interface AnalyticsResponse {
   daily: AnalyticsDailyEntry[];
   by_model: AnalyticsModelEntry[];
@@ -294,6 +327,10 @@ export interface AnalyticsResponse {
     total_estimated_cost: number;
     total_actual_cost: number;
     total_sessions: number;
+  };
+  skills: {
+    summary: AnalyticsSkillsSummary;
+    top_skills: AnalyticsSkillEntry[];
   };
 }
 
@@ -414,4 +451,32 @@ export interface OAuthPollResponse {
   status: "pending" | "approved" | "denied" | "expired" | "error";
   error_message?: string | null;
   expires_at?: number | null;
+}
+
+// ── Dashboard theme types ──────────────────────────────────────────────
+
+export interface DashboardThemeSummary {
+  description: string;
+  label: string;
+  name: string;
+}
+
+export interface DashboardThemesResponse {
+  active: string;
+  themes: DashboardThemeSummary[];
+}
+
+// ── Dashboard plugin types ─────────────────────────────────────────────
+
+export interface PluginManifestResponse {
+  name: string;
+  label: string;
+  description: string;
+  icon: string;
+  version: string;
+  tab: { path: string; position: string };
+  entry: string;
+  css?: string | null;
+  has_api: boolean;
+  source: string;
 }

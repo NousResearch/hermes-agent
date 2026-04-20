@@ -93,6 +93,8 @@ class TestResolveCommand:
     def test_canonical_name_resolves(self):
         assert resolve_command("help").name == "help"
         assert resolve_command("background").name == "background"
+        assert resolve_command("copy").name == "copy"
+        assert resolve_command("agents").name == "agents"
 
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
@@ -102,6 +104,7 @@ class TestResolveCommand:
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
+        assert resolve_command("tasks").name == "agents"
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
@@ -684,6 +687,32 @@ class TestTelegramMenuCommands:
             assert 1 <= len(name) <= _TG_NAME_LIMIT, (
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
+
+    def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
+        """Telegram menu generation should discover plugin slash commands on first access."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
+        )
+        # Opt-in: plugins are opt-in by default, so enable in config.yaml
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - cmd-plugin\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        menu_names = {name for name, _ in menu}
+        assert "lcm" in menu_names
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""

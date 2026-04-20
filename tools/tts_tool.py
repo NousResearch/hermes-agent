@@ -2,12 +2,13 @@
 """
 Text-to-Speech Tool Module
 
-Supports six TTS providers:
+Supports seven TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
+- Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
@@ -44,7 +45,8 @@ from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway, resolve_openai_audio_api_key
+from tools.xai_http import hermes_xai_user_agent
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- providers are imported only when actually used to avoid
@@ -93,6 +95,18 @@ DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
+DEFAULT_XAI_VOICE_ID = "eve"
+DEFAULT_XAI_LANGUAGE = "en"
+DEFAULT_XAI_SAMPLE_RATE = 24000
+DEFAULT_XAI_BIT_RATE = 128000
+DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
+DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+DEFAULT_GEMINI_TTS_VOICE = "Kore"
+DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+# PCM output specs for Gemini TTS (fixed by the API)
+GEMINI_TTS_SAMPLE_RATE = 24000
+GEMINI_TTS_CHANNELS = 1
+GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -300,6 +314,71 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Provider: xAI TTS
+# ===========================================================================
+def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using xAI TTS.
+
+    xAI exposes a dedicated /v1/tts endpoint instead of the OpenAI audio.speech
+    API shape, so this is implemented as a separate backend.
+    """
+    import requests
+
+    api_key = os.getenv("XAI_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("XAI_API_KEY not set. Get one at https://console.x.ai/")
+
+    xai_config = tts_config.get("xai", {})
+    voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
+    language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
+    sample_rate = int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE))
+    bit_rate = int(xai_config.get("bit_rate", DEFAULT_XAI_BIT_RATE))
+    base_url = str(
+        xai_config.get("base_url")
+        or os.getenv("XAI_BASE_URL")
+        or DEFAULT_XAI_BASE_URL
+    ).strip().rstrip("/")
+
+    # Match the documented minimal POST /v1/tts shape by default. Only send
+    # output_format when Hermes actually needs a non-default format/override.
+    codec = "wav" if output_path.endswith(".wav") else "mp3"
+    payload: Dict[str, Any] = {
+        "text": text,
+        "voice_id": voice_id,
+        "language": language,
+    }
+    if (
+        codec != "mp3"
+        or sample_rate != DEFAULT_XAI_SAMPLE_RATE
+        or (codec == "mp3" and bit_rate != DEFAULT_XAI_BIT_RATE)
+    ):
+        output_format: Dict[str, Any] = {"codec": codec}
+        if sample_rate:
+            output_format["sample_rate"] = sample_rate
+        if codec == "mp3" and bit_rate:
+            output_format["bit_rate"] = bit_rate
+        payload["output_format"] = output_format
+
+    response = requests.post(
+        f"{base_url}/tts",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": hermes_xai_user_agent(),
+        },
+        json=payload,
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+
+    return output_path
+
+
+# ===========================================================================
 # Provider: MiniMax TTS
 # ===========================================================================
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -436,6 +515,174 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: Google Gemini TTS
+# ===========================================================================
+def _wrap_pcm_as_wav(
+    pcm_bytes: bytes,
+    sample_rate: int = GEMINI_TTS_SAMPLE_RATE,
+    channels: int = GEMINI_TTS_CHANNELS,
+    sample_width: int = GEMINI_TTS_SAMPLE_WIDTH,
+) -> bytes:
+    """Wrap raw signed-little-endian PCM with a standard WAV RIFF header.
+
+    Gemini TTS returns audio/L16;codec=pcm;rate=24000 -- raw PCM samples with
+    no container. We add a minimal WAV header so the file is playable and
+    ffmpeg can re-encode it to MP3/Opus downstream.
+    """
+    import struct
+
+    byte_rate = sample_rate * channels * sample_width
+    block_align = channels * sample_width
+    data_size = len(pcm_bytes)
+    fmt_chunk = struct.pack(
+        "<4sIHHIIHH",
+        b"fmt ",
+        16,             # fmt chunk size (PCM)
+        1,              # audio format (PCM)
+        channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        sample_width * 8,
+    )
+    data_chunk_header = struct.pack("<4sI", b"data", data_size)
+    riff_size = 4 + len(fmt_chunk) + len(data_chunk_header) + data_size
+    riff_header = struct.pack("<4sI4s", b"RIFF", riff_size, b"WAVE")
+    return riff_header + fmt_chunk + data_chunk_header + pcm_bytes
+
+
+def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Google Gemini TTS.
+
+    Gemini's generateContent endpoint with responseModalities=["AUDIO"] returns
+    raw 24kHz mono 16-bit PCM (L16) as base64. We wrap it with a WAV RIFF
+    header to produce a playable file, then ffmpeg-convert to MP3 / Opus if
+    the caller requested those formats (same pattern as NeuTTS).
+
+    Args:
+        text: Text to convert (prompt-style; supports inline direction like
+              "Say cheerfully:" and audio tags like [whispers]).
+        output_path: Where to save the audio file (.wav, .mp3, or .ogg).
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    import requests
+
+    api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
+        )
+
+    gemini_config = tts_config.get("gemini", {})
+    model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
+    voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
+    base_url = str(
+        gemini_config.get("base_url")
+        or os.getenv("GEMINI_BASE_URL")
+        or DEFAULT_GEMINI_TTS_BASE_URL
+    ).strip().rstrip("/")
+
+    payload: Dict[str, Any] = {
+        "contents": [{"parts": [{"text": text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": voice},
+                },
+            },
+        },
+    }
+
+    endpoint = f"{base_url}/models/{model}:generateContent"
+    response = requests.post(
+        endpoint,
+        params={"key": api_key},
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        timeout=60,
+    )
+    if response.status_code != 200:
+        # Surface the API error message when present
+        try:
+            err = response.json().get("error", {})
+            detail = err.get("message") or response.text[:300]
+        except Exception:
+            detail = response.text[:300]
+        raise RuntimeError(
+            f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
+        )
+
+    try:
+        data = response.json()
+        parts = data["candidates"][0]["content"]["parts"]
+        audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
+        if audio_part is None:
+            raise RuntimeError("Gemini TTS response contained no audio data")
+        inline = audio_part.get("inlineData") or audio_part.get("inline_data") or {}
+        audio_b64 = inline.get("data", "")
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Gemini TTS response was malformed: {e}") from e
+
+    if not audio_b64:
+        raise RuntimeError("Gemini TTS returned empty audio data")
+
+    pcm_bytes = base64.b64decode(audio_b64)
+    wav_bytes = _wrap_pcm_as_wav(pcm_bytes)
+
+    # Fast path: caller wants WAV directly, just write.
+    if output_path.lower().endswith(".wav"):
+        with open(output_path, "wb") as f:
+            f.write(wav_bytes)
+        return output_path
+
+    # Otherwise write WAV to a temp file and ffmpeg-convert to the target
+    # format (.mp3 or .ogg). If ffmpeg is missing, fall back to renaming the
+    # WAV -- this matches the NeuTTS behavior and keeps the tool usable on
+    # systems without ffmpeg (audio still plays, just with a misleading
+    # extension).
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(wav_bytes)
+        wav_path = tmp.name
+
+    try:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            # For .ogg output, force libopus encoding (Telegram voice bubbles
+            # require Opus specifically; ffmpeg's default for .ogg is Vorbis).
+            if output_path.lower().endswith(".ogg"):
+                cmd = [
+                    ffmpeg, "-i", wav_path,
+                    "-acodec", "libopus", "-ac", "1",
+                    "-b:a", "64k", "-vbr", "off",
+                    "-y", "-loglevel", "error",
+                    output_path,
+                ]
+            else:
+                cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
+                raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
+        else:
+            logger.warning(
+                "ffmpeg not found; writing raw WAV to %s (extension may be misleading)",
+                output_path,
+            )
+            shutil.copyfile(wav_path, output_path)
+    finally:
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -563,7 +810,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -600,6 +847,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
 
+        elif provider == "xai":
+            logger.info("Generating speech with xAI TTS...")
+            _generate_xai_tts(text, file_str, tts_config)
+
         elif provider == "mistral":
             try:
                 _import_mistral_client()
@@ -611,6 +862,10 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
+
+        elif provider == "gemini":
+            logger.info("Generating speech with Google Gemini TTS...")
+            _generate_gemini_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -661,12 +916,12 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "xai") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral"):
+        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -734,6 +989,10 @@ def check_tts_requirements() -> bool:
         pass
     if os.getenv("MINIMAX_API_KEY"):
         return True
+    if os.getenv("XAI_API_KEY"):
+        return True
+    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        return True
     try:
         _import_mistral_client()
         if os.getenv("MISTRAL_API_KEY"):
@@ -746,9 +1005,13 @@ def check_tts_requirements() -> bool:
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """Return direct OpenAI audio config or a managed gateway fallback."""
+    """Return direct OpenAI audio config or a managed gateway fallback.
+
+    When ``tts.use_gateway`` is set in config, the Tool Gateway is preferred
+    even if direct OpenAI credentials are present.
+    """
     direct_api_key = resolve_openai_audio_api_key()
-    if direct_api_key:
+    if direct_api_key and not prefers_gateway("tts"):
         return direct_api_key, DEFAULT_OPENAI_BASE_URL
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")

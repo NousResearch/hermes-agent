@@ -122,6 +122,43 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+prompt_yes_no() {
+    local question="$1"
+    local default="${2:-yes}"
+    local prompt_suffix
+    local answer=""
+
+    # Use case patterns (not ${var,,}) so this works on bash 3.2 (macOS /bin/bash).
+    case "$default" in
+        [yY]|[yY][eE][sS]|[tT][rR][uU][eE]|1) prompt_suffix="[Y/n]" ;;
+        *) prompt_suffix="[y/N]" ;;
+    esac
+
+    if [ "$IS_INTERACTIVE" = true ]; then
+        read -r -p "$question $prompt_suffix " answer || answer=""
+    elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        printf "%s %s " "$question" "$prompt_suffix" > /dev/tty
+        IFS= read -r answer < /dev/tty || answer=""
+    else
+        answer=""
+    fi
+
+    answer="${answer#"${answer%%[![:space:]]*}"}"
+    answer="${answer%"${answer##*[![:space:]]}"}"
+
+    if [ -z "$answer" ]; then
+        case "$default" in
+            [yY]|[yY][eE][sS]|[tT][rR][uU][eE]|1) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    case "$answer" in
+        [yY]|[yY][eE][sS]) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
@@ -260,7 +297,7 @@ check_python() {
         if command -v python >/dev/null 2>&1; then
             PYTHON_PATH="$(command -v python)"
             if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-                PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
                 log_success "Python found: $PYTHON_FOUND_VERSION"
                 return 0
             fi
@@ -269,7 +306,7 @@ check_python() {
         log_info "Installing Python via pkg..."
         pkg install -y python >/dev/null
         PYTHON_PATH="$(command -v python)"
-        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
         return 0
     fi
@@ -278,18 +315,17 @@ check_python() {
 
     # Let uv handle Python — it can download and manage Python versions
     # First check if a suitable Python is already available
-    if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
-        PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
-        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+    if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python found: $PYTHON_FOUND_VERSION"
         return 0
     fi
 
     # Python not found — use uv to install it (no sudo needed!)
     log_info "Python $PYTHON_VERSION not found, installing via uv..."
-    if $UV_CMD python install "$PYTHON_VERSION"; then
-        PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
-        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+    if "$UV_CMD" python install "$PYTHON_VERSION"; then
+        PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
     else
         log_error "Failed to install Python $PYTHON_VERSION"
@@ -606,9 +642,7 @@ install_system_packages() {
                 echo ""
                 log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
                 log_info "Hermes Agent itself does not require or retain root access."
-                read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r
-                echo
-                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                if prompt_yes_no "Install ${description}? (requires sudo)" "no"; then
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
                         [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                         [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
@@ -621,9 +655,7 @@ install_system_packages() {
                 echo ""
                 log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
                 log_info "Hermes Agent itself does not require or retain root access."
-                read -p "Install ${description}? [Y/n] " -n 1 -r < /dev/tty
-                echo
-                if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                if prompt_yes_no "Install ${description}?" "yes"; then
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
                         [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                         [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
@@ -863,9 +895,7 @@ install_deps() {
                 else
                     log_info "sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt."
                     log_info "Hermes Agent itself does not require or retain root access."
-                    read -p "Install build tools? [Y/n] " -n 1 -r < /dev/tty
-                    echo
-                    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                    if prompt_yes_no "Install build tools?" "yes"; then
                         sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
                         log_success "Build tools installed"
                     fi
@@ -1021,7 +1051,7 @@ copy_config_templates() {
     log_info "Setting up configuration files..."
 
     # Create ~/.hermes directory structure (config at top level, code in subdir)
-    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills,whatsapp/session}
+    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills}
 
     # Create .env at ~/.hermes/.env (top level, easy to find)
     if [ ! -f "$HERMES_HOME/.env" ]; then
@@ -1091,7 +1121,7 @@ install_node_deps() {
 
     if [ "$DISTRO" = "termux" ]; then
         log_info "Skipping automatic Node/browser dependency setup on Termux"
-        log_info "Browser automation and WhatsApp bridge are not part of the tested Termux install path yet."
+        log_info "Browser automation is not part of the tested Termux install path yet."
         log_info "If you want to experiment manually later, run: cd $INSTALL_DIR && npm install"
         return 0
     fi
@@ -1163,15 +1193,17 @@ install_node_deps() {
         log_success "Browser engine setup complete"
     fi
 
-    # Install WhatsApp bridge dependencies
-    if [ -f "$INSTALL_DIR/scripts/whatsapp-bridge/package.json" ]; then
-        log_info "Installing WhatsApp bridge dependencies..."
-        cd "$INSTALL_DIR/scripts/whatsapp-bridge"
+    # Install TUI dependencies
+    if [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
+        log_info "Installing TUI dependencies..."
+        cd "$INSTALL_DIR/ui-tui"
         npm install --silent 2>/dev/null || {
-            log_warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
+            log_warn "TUI npm install failed (hermes --tui may not work)"
         }
-        log_success "WhatsApp bridge dependencies installed"
+        log_success "TUI dependencies installed"
     fi
+
+
 }
 
 run_setup_wizard() {
@@ -1236,9 +1268,7 @@ maybe_start_gateway() {
             log_info "WhatsApp is enabled but not yet paired."
             log_info "Running 'hermes whatsapp' to pair via QR code..."
             echo ""
-            read -p "Pair WhatsApp now? [Y/n] " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+            if prompt_yes_no "Pair WhatsApp now?" "yes"; then
                 HERMES_CMD="$(get_hermes_command_path)"
                 $HERMES_CMD whatsapp || true
             fi
@@ -1253,14 +1283,18 @@ maybe_start_gateway() {
     fi
 
     echo ""
+    local should_install_gateway=false
     if [ "$DISTRO" = "termux" ]; then
-        read -p "Would you like to start the gateway in the background? [Y/n] " -n 1 -r < /dev/tty
+        if prompt_yes_no "Would you like to start the gateway in the background?" "yes"; then
+            should_install_gateway=true
+        fi
     else
-        read -p "Would you like to install the gateway as a background service? [Y/n] " -n 1 -r < /dev/tty
+        if prompt_yes_no "Would you like to install the gateway as a background service?" "yes"; then
+            should_install_gateway=true
+        fi
     fi
-    echo
 
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+    if [ "$should_install_gateway" = true ]; then
         HERMES_CMD="$(get_hermes_command_path)"
 
         if [ "$DISTRO" != "termux" ] && command -v systemctl &> /dev/null; then

@@ -63,6 +63,24 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_get_running_pid_accepts_explicit_pid_path_without_cleanup(self, tmp_path, monkeypatch):
+        other_home = tmp_path / "profile-home"
+        other_home.mkdir()
+        pid_path = other_home / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid(pid_path, cleanup_stale=False) == os.getpid()
+        assert pid_path.exists()
+
 
 class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
@@ -246,3 +264,181 @@ class TestScopedLocks:
 
         status.release_scoped_lock("telegram-bot-token", "secret")
         assert not lock_path.exists()
+
+
+class TestTakeoverMarker:
+    """Tests for the --replace takeover marker.
+
+    The marker breaks the post-#5646 flap loop between two gateway services
+    fighting for the same bot token. The replacer writes a file naming the
+    target PID + start_time; the target's shutdown handler sees it and exits
+    0 instead of 1, so systemd's Restart=on-failure doesn't revive it.
+    """
+
+    def test_write_marker_records_target_identity(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+
+        ok = status.write_takeover_marker(target_pid=12345)
+
+        assert ok is True
+        marker = tmp_path / ".gateway-takeover.json"
+        assert marker.exists()
+        payload = json.loads(marker.read_text())
+        assert payload["target_pid"] == 12345
+        assert payload["target_start_time"] == 42
+        assert payload["replacer_pid"] == os.getpid()
+        assert "written_at" in payload
+
+    def test_consume_returns_true_when_marker_names_self(self, tmp_path, monkeypatch):
+        """Primary happy path: planned takeover is recognised."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Mark THIS process as the target
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        ok = status.write_takeover_marker(target_pid=os.getpid())
+        assert ok is True
+
+        # Call consume as if this process just got SIGTERMed
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is True
+        # Marker must be unlinked after consumption
+        assert not (tmp_path / ".gateway-takeover.json").exists()
+
+    def test_consume_returns_false_for_different_pid(self, tmp_path, monkeypatch):
+        """A marker naming a DIFFERENT process must not be consumed as ours."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        # Marker names a different PID
+        other_pid = os.getpid() + 9999
+        ok = status.write_takeover_marker(target_pid=other_pid)
+        assert ok is True
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is False
+        # Marker IS unlinked even on non-match (the record has been consumed
+        # and isn't relevant to us — leaving it around would grief a later
+        # legitimate check).
+        assert not (tmp_path / ".gateway-takeover.json").exists()
+
+    def test_consume_returns_false_on_start_time_mismatch(self, tmp_path, monkeypatch):
+        """PID reuse defence: old marker's start_time mismatches current process."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Marker says target started at time 100 with our PID
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        status.write_takeover_marker(target_pid=os.getpid())
+
+        # Now change the reported start_time to simulate PID reuse
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 9999)
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is False
+
+    def test_consume_returns_false_when_marker_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is False
+
+    def test_consume_returns_false_for_stale_marker(self, tmp_path, monkeypatch):
+        """A marker older than 60s must be ignored."""
+        from datetime import datetime, timezone, timedelta
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-takeover.json"
+        # Hand-craft a marker written 2 minutes ago
+        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        marker_path.write_text(json.dumps({
+            "target_pid": os.getpid(),
+            "target_start_time": 123,
+            "replacer_pid": 99999,
+            "written_at": stale_time,
+        }))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is False
+        # Stale markers are unlinked so a later legit shutdown isn't griefed
+        assert not marker_path.exists()
+
+    def test_consume_handles_malformed_marker_gracefully(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-takeover.json"
+        marker_path.write_text("not valid json{")
+
+        # Must not raise
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is False
+
+    def test_consume_handles_marker_with_missing_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-takeover.json"
+        marker_path.write_text(json.dumps({"only_replacer_pid": 99999}))
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is False
+        # Malformed marker should be cleaned up
+        assert not marker_path.exists()
+
+    def test_clear_takeover_marker_is_idempotent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Nothing to clear — must not raise
+        status.clear_takeover_marker()
+
+        # Write then clear
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        status.write_takeover_marker(target_pid=12345)
+        assert (tmp_path / ".gateway-takeover.json").exists()
+
+        status.clear_takeover_marker()
+        assert not (tmp_path / ".gateway-takeover.json").exists()
+
+        # Clear again — still no error
+        status.clear_takeover_marker()
+
+    def test_write_marker_returns_false_on_write_failure(self, tmp_path, monkeypatch):
+        """write_takeover_marker is best-effort; returns False but doesn't raise."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def raise_oserror(*args, **kwargs):
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(status, "_write_json_file", raise_oserror)
+
+        ok = status.write_takeover_marker(target_pid=12345)
+
+        assert ok is False
+
+    def test_consume_ignores_marker_for_different_process_and_prevents_stale_grief(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: a stale marker from a dead replacer naming a dead
+        target must not accidentally cause an unrelated future gateway to
+        exit 0 on legitimate SIGTERM.
+
+        The distinguishing check is ``target_pid == our_pid AND
+        target_start_time == our_start_time``. Different PID always wins.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        marker_path = tmp_path / ".gateway-takeover.json"
+        # Fresh marker (timestamp is recent) but names a totally different PID
+        from datetime import datetime, timezone
+        marker_path.write_text(json.dumps({
+            "target_pid": os.getpid() + 10000,
+            "target_start_time": 42,
+            "replacer_pid": 99999,
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+
+        result = status.consume_takeover_marker_for_self()
+
+        # We are not the target — must NOT consume as planned
+        assert result is False

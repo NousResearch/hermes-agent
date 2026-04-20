@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import shlex
+import ssl
 import stat
 import base64
 import hashlib
@@ -70,12 +71,17 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+
+# Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
+DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
+GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
 
 
 # =============================================================================
@@ -121,6 +127,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_QWEN_BASE_URL,
     ),
+    "google-gemini-cli": ProviderConfig(
+        id="google-gemini-cli",
+        name="Google Gemini (OAuth)",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+    ),
     "copilot": ProviderConfig(
         id="copilot",
         name="GitHub Copilot",
@@ -140,7 +152,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="gemini",
         name="Google AI Studio",
         auth_type="api_key",
-        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta",
         api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         base_url_env_var="GEMINI_BASE_URL",
     ),
@@ -222,6 +234,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XAI_API_KEY",),
         base_url_env_var="XAI_BASE_URL",
     ),
+    "nvidia": ProviderConfig(
+        id="nvidia",
+        name="NVIDIA NIM",
+        auth_type="api_key",
+        inference_base_url="https://integrate.api.nvidia.com/v1",
+        api_key_env_vars=("NVIDIA_API_KEY",),
+        base_url_env_var="NVIDIA_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="Vercel AI Gateway",
@@ -273,6 +293,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.xiaomimimo.com/v1",
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
+    ),
+    "ollama-cloud": ProviderConfig(
+        id="ollama-cloud",
+        name="Ollama Cloud",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_OLLAMA_CLOUD_BASE_URL,
+        api_key_env_vars=("OLLAMA_API_KEY",),
+        base_url_env_var="OLLAMA_BASE_URL",
     ),
     "bedrock": ProviderConfig(
         id="bedrock",
@@ -326,6 +354,9 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     """
     if env_override:
         return env_override
+    # No key → nothing to infer from.  Return default without inspecting.
+    if not api_key:
+        return default_url
     if api_key.startswith("sk-kimi-"):
         return KIMI_CODE_BASE_URL
     return default_url
@@ -452,6 +483,14 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     """
     if env_override:
         return env_override
+
+    # No API key set → don't probe (would fire N×M HTTPS requests with an
+    # empty Bearer token, all returning 401).  This path is hit during
+    # auxiliary-client auto-detection when the user has no Z.AI credentials
+    # at all — the caller discards the result immediately, so the probe is
+    # pure latency for every AIAgent construction.
+    if not api_key:
+        return default_url
 
     # Check provider-state cache for a previously-detected endpoint.
     auth_store = _load_auth_store()
@@ -754,6 +793,28 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
         return False
 
 
+def unsuppress_credential_source(provider_id: str, source: str) -> bool:
+    """Clear a suppression marker so the source will be re-seeded on the next load.
+
+    Returns True if a marker was cleared, False if no marker existed.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        suppressed = auth_store.get("suppressed_sources")
+        if not isinstance(suppressed, dict):
+            return False
+        provider_list = suppressed.get(provider_id)
+        if not isinstance(provider_list, list) or source not in provider_list:
+            return False
+        provider_list.remove(source)
+        if not provider_list:
+            suppressed.pop(provider_id, None)
+        if not suppressed:
+            auth_store.pop("suppressed_sources", None)
+        _save_auth_store(auth_store)
+        return True
+
+
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None."""
     auth_store = _load_auth_store()
@@ -919,6 +980,7 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "arcee-ai": "arcee", "arceeai": "arcee",
@@ -929,7 +991,7 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
-        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
+        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
@@ -937,7 +999,8 @@ def resolve_provider(
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
-        "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
+        "ollama": "custom", "ollama_cloud": "ollama-cloud",
+        "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
@@ -1241,6 +1304,83 @@ def get_qwen_auth_status() -> Dict[str, Any]:
 
 
 # =============================================================================
+# Google Gemini OAuth (google-gemini-cli) — PKCE flow + Cloud Code Assist.
+#
+# Tokens live in ~/.hermes/auth/google_oauth.json (managed by agent.google_oauth).
+# The `base_url` here is the marker "cloudcode-pa://google" that run_agent.py
+# uses to construct a GeminiCloudCodeClient instead of the default OpenAI SDK.
+# Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
+# =============================================================================
+
+def resolve_gemini_oauth_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """Resolve runtime OAuth creds for google-gemini-cli."""
+    try:
+        from agent.google_oauth import (
+            GoogleOAuthError,
+            _credentials_path,
+            get_valid_access_token,
+            load_credentials,
+        )
+    except ImportError as exc:
+        raise AuthError(
+            f"agent.google_oauth is not importable: {exc}",
+            provider="google-gemini-cli",
+            code="google_oauth_module_missing",
+        ) from exc
+
+    try:
+        access_token = get_valid_access_token(force_refresh=force_refresh)
+    except GoogleOAuthError as exc:
+        raise AuthError(
+            str(exc),
+            provider="google-gemini-cli",
+            code=exc.code,
+        ) from exc
+
+    creds = load_credentials()
+    base_url = DEFAULT_GEMINI_CLOUDCODE_BASE_URL
+    return {
+        "provider": "google-gemini-cli",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": "google-oauth",
+        "expires_at_ms": (creds.expires_ms if creds else None),
+        "auth_file": str(_credentials_path()),
+        "email": (creds.email if creds else "") or "",
+        "project_id": (creds.project_id if creds else "") or "",
+    }
+
+
+def get_gemini_oauth_auth_status() -> Dict[str, Any]:
+    """Return a status dict for `hermes auth list` / `hermes status`."""
+    try:
+        from agent.google_oauth import _credentials_path, load_credentials
+    except ImportError:
+        return {"logged_in": False, "error": "agent.google_oauth unavailable"}
+    auth_path = _credentials_path()
+    creds = load_credentials()
+    if creds is None or not creds.access_token:
+        return {
+            "logged_in": False,
+            "auth_file": str(auth_path),
+            "error": "not logged in",
+        }
+    return {
+        "logged_in": True,
+        "auth_file": str(auth_path),
+        "source": "google-oauth",
+        "api_key": creds.access_token,
+        "expires_at_ms": creds.expires_ms,
+        "email": creds.email,
+        "project_id": creds.project_id,
+    }
+
+
+
+# =============================================================================
 # SSH / remote session detection
 # =============================================================================
 
@@ -1304,49 +1444,6 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),
     }
-
-
-def _write_codex_cli_tokens(
-    access_token: str,
-    refresh_token: str,
-    *,
-    last_refresh: Optional[str] = None,
-) -> None:
-    """Write refreshed tokens back to ~/.codex/auth.json.
-
-    OpenAI OAuth refresh tokens are single-use and rotate on every refresh.
-    When Hermes refreshes a token it consumes the old refresh_token; if we
-    don't write the new pair back, the Codex CLI (or VS Code extension) will
-    fail with ``refresh_token_reused`` on its next refresh attempt.
-
-    This mirrors the Anthropic write-back to ~/.claude/.credentials.json
-    via ``_write_claude_code_credentials()``.
-    """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
-    try:
-        existing: Dict[str, Any] = {}
-        if auth_path.is_file():
-            existing = json.loads(auth_path.read_text(encoding="utf-8"))
-        if not isinstance(existing, dict):
-            existing = {}
-
-        tokens_dict = existing.get("tokens")
-        if not isinstance(tokens_dict, dict):
-            tokens_dict = {}
-        tokens_dict["access_token"] = access_token
-        tokens_dict["refresh_token"] = refresh_token
-        existing["tokens"] = tokens_dict
-        if last_refresh is not None:
-            existing["last_refresh"] = last_refresh
-
-        auth_path.parent.mkdir(parents=True, exist_ok=True)
-        auth_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-        auth_path.chmod(0o600)
-    except (OSError, IOError) as exc:
-        logger.debug("Failed to write refreshed tokens to %s: %s", auth_path, exc)
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
@@ -1416,6 +1513,11 @@ def refresh_codex_oauth_pure(
                 "then run `hermes auth` to re-authenticate."
             )
             relogin_required = True
+        # A 401/403 from the token endpoint always means the refresh token
+        # is invalid/expired — force relogin even if the body error code
+        # wasn't one of the known strings above.
+        if response.status_code in (401, 403) and not relogin_required:
+            relogin_required = True
         raise AuthError(
             message,
             provider="openai-codex",
@@ -1471,12 +1573,6 @@ def _refresh_codex_auth_tokens(
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
-    # Write back to ~/.codex/auth.json so Codex CLI / VS Code stay in sync.
-    _write_codex_cli_tokens(
-        refreshed["access_token"],
-        refreshed["refresh_token"],
-        last_refresh=refreshed.get("last_refresh"),
-    )
     return updated_tokens
 
 
@@ -1521,25 +1617,7 @@ def resolve_codex_runtime_credentials(
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store."""
-    try:
-        data = _read_codex_tokens()
-    except AuthError as orig_err:
-        # Only attempt migration when there are NO tokens stored at all
-        # (code == "codex_auth_missing"), not when tokens exist but are invalid.
-        if orig_err.code != "codex_auth_missing":
-            raise
-
-        # Migration: user had Codex as active provider with old storage (~/.codex/).
-        cli_tokens = _import_codex_cli_tokens()
-        if cli_tokens:
-            logger.info("Migrating Codex credentials from ~/.codex/ to Hermes auth store")
-            print("⚠️  Migrating Codex credentials to Hermes's own auth store.")
-            print("   This avoids conflicts with Codex CLI and VS Code.")
-            print("   Run `hermes auth` to create a fully independent session.\n")
-            _save_codex_tokens(cli_tokens)
-            data = _read_codex_tokens()
-        else:
-            raise
+    data = _read_codex_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
@@ -1586,7 +1664,7 @@ def _resolve_verify(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None,
-) -> bool | str:
+) -> bool | ssl.SSLContext:
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
@@ -1606,13 +1684,12 @@ def _resolve_verify(
     if effective_ca:
         ca_path = str(effective_ca)
         if not os.path.isfile(ca_path):
-            import logging
-            logging.getLogger("hermes.auth").warning(
+            logger.warning(
                 "CA bundle path does not exist: %s — falling back to default certificates",
                 ca_path,
             )
             return True
-        return ca_path
+        return ssl.create_default_context(cafile=ca_path)
     return True
 
 
@@ -2028,6 +2105,62 @@ def refresh_nous_oauth_from_state(
         ca_bundle=tls.get("ca_bundle"),
         force_refresh=force_refresh,
         force_mint=force_mint,
+    )
+
+
+NOUS_DEVICE_CODE_SOURCE = "device_code"
+
+
+def persist_nous_credentials(
+    creds: Dict[str, Any],
+    *,
+    label: Optional[str] = None,
+):
+    """Persist minted Nous OAuth credentials as the singleton provider state
+    and ensure the credential pool is in sync.
+
+    Nous credentials are read at runtime from two independent locations:
+
+    - ``providers.nous``: singleton state read by
+      ``resolve_nous_runtime_credentials()`` during 401 recovery and by
+      ``_seed_from_singletons()`` during pool load.
+    - ``credential_pool.nous``: used by the runtime ``pool.select()`` path.
+
+    Historically ``hermes auth add nous`` wrote a ``manual:device_code`` pool
+    entry only, skipping ``providers.nous``.  When the 24h agent_key TTL
+    expired, the recovery path read the empty singleton state and raised
+    ``AuthError`` silently (``logger.debug`` at INFO level).
+
+    This helper writes ``providers.nous`` then calls ``load_pool("nous")`` so
+    ``_seed_from_singletons`` materialises the canonical ``device_code`` pool
+    entry from the singleton.  Re-running login upserts the same entry in
+    place; the pool never accumulates duplicate device_code rows.
+
+    ``label`` is an optional user-chosen display name (from
+    ``hermes auth add nous --label <name>``).  It gets embedded in the
+    singleton state so that ``_seed_from_singletons`` uses it as the pool
+    entry's label on every subsequent ``load_pool("nous")`` instead of the
+    auto-derived token fingerprint.  When ``None``, the auto-derived label
+    via ``label_from_token`` is used (unchanged default behaviour).
+
+    Returns the upserted :class:`PooledCredential` entry (or ``None`` if
+    seeding somehow produced no match — shouldn't happen).
+    """
+    from agent.credential_pool import load_pool
+
+    state = dict(creds)
+    if label and str(label).strip():
+        state["label"] = str(label).strip()
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "nous", state)
+        _save_auth_store(auth_store)
+
+    pool = load_pool("nous")
+    return next(
+        (e for e in pool.entries() if e.source == NOUS_DEVICE_CODE_SOURCE),
+        None,
     )
 
 
@@ -2458,6 +2591,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_codex_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
+    if target == "google-gemini-cli":
+        return get_gemini_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
     # API-key providers
@@ -2596,6 +2731,17 @@ def _update_config_for_provider(
     else:
         # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
+
+    # Clear stale api_key/api_mode left over from a previous custom provider.
+    # When the user switches from e.g. a MiniMax custom endpoint
+    # (api_mode=anthropic_messages, api_key=mxp-...) to a built-in provider
+    # (e.g. OpenRouter), the stale api_key/api_mode would override the new
+    # provider's credentials and transport choice.  Built-in providers that
+    # need a specific api_mode (copilot, xai) set it at request-resolution
+    # time via `_copilot_runtime_api_mode` / `_detect_api_mode_for_url`, so
+    # removing the persisted value here is safe.
+    model_cfg.pop("api_key", None)
+    model_cfg.pop("api_mode", None)
 
     # When switching to a non-OpenRouter provider, ensure model.default is
     # valid for the new provider.  An OpenRouter-formatted name like
@@ -3197,6 +3343,14 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
         inference_base_url = auth_state["inference_base_url"]
 
+        # Snapshot the prior active_provider BEFORE _save_provider_state
+        # overwrites it to "nous".  If the user picks "Skip (keep current)"
+        # during model selection below, we restore this so the user's previous
+        # provider (e.g. openrouter) is preserved.
+        with _auth_store_lock():
+            _prior_store = _load_auth_store()
+            prior_active_provider = _prior_store.get("active_provider")
+
         with _auth_store_lock():
             auth_store = _load_auth_store()
             _save_provider_state(auth_store, "nous", auth_state)
@@ -3256,6 +3410,27 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             print(f"Login succeeded, but could not fetch available models. Reason: {message}")
 
         # Write provider + model atomically so config is never mismatched.
+        # If no model was selected (user picked "Skip (keep current)",
+        # model list fetch failed, or no curated models were available),
+        # preserve the user's previous provider — don't silently switch
+        # them to Nous with a mismatched model.  The Nous OAuth tokens
+        # stay saved for future use.
+        if not selected_model:
+            # Restore the prior active_provider that _save_provider_state
+            # overwrote to "nous".  config.yaml model.provider is left
+            # untouched, so the user's previous provider is fully preserved.
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                if prior_active_provider:
+                    auth_store["active_provider"] = prior_active_provider
+                else:
+                    auth_store.pop("active_provider", None)
+                _save_auth_store(auth_store)
+            print()
+            print("No provider change. Nous credentials saved for future use.")
+            print("  Run `hermes model` again to switch to Nous Portal.")
+            return
+
         config_path = _update_config_for_provider(
             "nous", inference_base_url, default_model=selected_model,
         )

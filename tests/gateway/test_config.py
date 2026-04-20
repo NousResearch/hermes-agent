@@ -71,6 +71,51 @@ class TestGetConnectedPlatforms:
         config = GatewayConfig()
         assert config.get_connected_platforms() == []
 
+    def test_dingtalk_recognised_via_extras(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(
+                    enabled=True,
+                    extra={"client_id": "cid", "client_secret": "sec"},
+                ),
+            },
+        )
+        assert Platform.DINGTALK in config.get_connected_platforms()
+
+    def test_dingtalk_recognised_via_env_vars(self, monkeypatch):
+        """DingTalk configured via env vars (no extras) should still be
+        recognised as connected — covers the case where _apply_env_overrides
+        hasn't populated extras yet."""
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "env_cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "env_sec")
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(enabled=True, extra={}),
+            },
+        )
+        assert Platform.DINGTALK in config.get_connected_platforms()
+
+    def test_dingtalk_missing_creds_not_connected(self, monkeypatch):
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(enabled=True, extra={}),
+            },
+        )
+        assert Platform.DINGTALK not in config.get_connected_platforms()
+
+    def test_dingtalk_disabled_not_connected(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(
+                    enabled=False,
+                    extra={"client_id": "cid", "client_secret": "sec"},
+                ),
+            },
+        )
+        assert Platform.DINGTALK not in config.get_connected_platforms()
+
 
 class TestSessionResetPolicy:
     def test_roundtrip(self):
@@ -299,6 +344,42 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.platforms[Platform.TELEGRAM].extra["disable_link_previews"] is True
+
+    def test_bridges_telegram_proxy_url_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  proxy_url: socks5://127.0.0.1:1080\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
+
+        load_gateway_config()
+
+        import os
+        assert os.environ.get("TELEGRAM_PROXY") == "socks5://127.0.0.1:1080"
+
+    def test_telegram_proxy_env_takes_precedence_over_config(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  proxy_url: http://from-config:8080\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TELEGRAM_PROXY", "socks5://from-env:1080")
+
+        load_gateway_config()
+
+        import os
+        assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
 
 class TestHomeChannelEnvOverrides:

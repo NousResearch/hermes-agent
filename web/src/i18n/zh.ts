@@ -115,6 +115,11 @@ export const zh: Translations = {
     dailyTokenUsage: "每日 Token 用量",
     dailyBreakdown: "每日明细",
     perModelBreakdown: "模型用量明细",
+    topSkills: "常用技能",
+    skill: "技能",
+    loads: "代理加载",
+    edits: "代理管理",
+    lastUsed: "最近使用",
     input: "输入",
     output: "输出",
     total: "总计",
@@ -274,5 +279,10 @@ export const zh: Translations = {
 
   language: {
     switchTo: "切换到英文",
+  },
+
+  theme: {
+    title: "主题",
+    switchTheme: "切换主题",
   },
 };

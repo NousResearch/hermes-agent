@@ -77,6 +77,7 @@ AUTHOR_MAP = {
     "39405770+yyq4193@users.noreply.github.com": "yyq4193",
     "Asunfly@users.noreply.github.com": "Asunfly",
     "2500400+honghua@users.noreply.github.com": "honghua",
+    "462836+jplew@users.noreply.github.com": "jplew",
     "nish3451@users.noreply.github.com": "nish3451",
     "Mibayy@users.noreply.github.com": "Mibayy",
     "135070653+sgaofen@users.noreply.github.com": "sgaofen",

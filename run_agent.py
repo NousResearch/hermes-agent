@@ -4666,6 +4666,36 @@ class AIAgent:
             return bool(getattr(http_client, "is_closed", False))
         return False
 
+    @staticmethod
+    def _resolve_httpx_env_proxy(base_url: str) -> Optional[str]:
+        """Preserve env proxy support when Hermes injects a custom transport."""
+        if base_url and is_local_endpoint(base_url):
+            return None
+        return (
+            os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or os.getenv("HTTP_PROXY")
+            or os.getenv("http_proxy")
+            or None
+        )
+
+    def _build_keepalive_http_transport(self, httpx_module: Any, socket_module: Any, base_url: str) -> Any:
+        sock_opts = [(socket_module.SOL_SOCKET, socket_module.SO_KEEPALIVE, 1)]
+        if hasattr(socket_module, "TCP_KEEPIDLE"):
+            # Linux
+            sock_opts.append((socket_module.IPPROTO_TCP, socket_module.TCP_KEEPIDLE, 30))
+            sock_opts.append((socket_module.IPPROTO_TCP, socket_module.TCP_KEEPINTVL, 10))
+            sock_opts.append((socket_module.IPPROTO_TCP, socket_module.TCP_KEEPCNT, 3))
+        elif hasattr(socket_module, "TCP_KEEPALIVE"):
+            # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
+            sock_opts.append((socket_module.IPPROTO_TCP, socket_module.TCP_KEEPALIVE, 30))
+
+        transport_kwargs = {"socket_options": sock_opts}
+        proxy = self._resolve_httpx_env_proxy(base_url)
+        if proxy:
+            transport_kwargs["proxy"] = proxy
+        return httpx_module.HTTPTransport(**transport_kwargs)
+
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
         # Treat client_kwargs as read-only. Callers pass self._client_kwargs (or shallow
@@ -4727,17 +4757,9 @@ class AIAgent:
             try:
                 import httpx as _httpx
                 import socket as _socket
-                _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
-                if hasattr(_socket, "TCP_KEEPIDLE"):
-                    # Linux
-                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
-                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
-                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
-                elif hasattr(_socket, "TCP_KEEPALIVE"):
-                    # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
-                    _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                _base_url = str(client_kwargs.get("base_url") or self.base_url or "")
                 client_kwargs["http_client"] = _httpx.Client(
-                    transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    transport=self._build_keepalive_http_transport(_httpx, _socket, _base_url),
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail

@@ -12,6 +12,9 @@ const DEF_RE = /^\s*:\s+(.+)$/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
 
+export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
+export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
+
 export const INLINE_RE = new RegExp(
   `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|(?<!\\w)__(.+?)__(?!\\w)|\\*(.+?)\\*|(?<!\\w)_(.+?)_(?!\\w)|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
   'g'
@@ -262,6 +265,35 @@ function MdImpl({ compact, t, text }: MdProps) {
 
       if (!line.trim()) {
         gap()
+        i++
+
+        continue
+      }
+
+      if (AUDIO_DIRECTIVE_RE.test(line)) {
+        i++
+
+        continue
+      }
+
+      const media = line.match(MEDIA_LINE_RE)
+
+      if (media) {
+        start('paragraph')
+
+        const path = media[1]!
+        const url = /^(?:\/|[a-z]:[\\/])/i.test(path) ? `file://${path}` : path
+
+        nodes.push(
+          <Text color={t.color.dim} key={key}>
+            {'▸ '}
+            <Link url={url}>
+              <Text color={t.color.amber} underline>
+                {path}
+              </Text>
+            </Link>
+          </Text>
+        )
         i++
 
         continue

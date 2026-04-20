@@ -107,6 +107,7 @@ AUTHOR_MAP = {
     "239876380+handsdiff@users.noreply.github.com": "handsdiff",
     "hesapacicam112@gmail.com": "etherman-os",
     "mark.ramsell@rivermounts.com": "mark-ramsell",
+    "taeng02@icloud.com": "taeng0204",
     "gpickett00@gmail.com": "gpickett00",
     "mcosma@gmail.com": "wakamex",
     "clawdia.nash@proton.me": "clawdia-nash",

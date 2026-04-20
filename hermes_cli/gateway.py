@@ -1431,6 +1431,8 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
             refresh_systemd_unit_if_needed(system=system)
             _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
             print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
+            if not system:
+                _ensure_linger_enabled()
             return
         print(f"Service already installed at: {unit_path}")
         print("Use --force to reinstall")

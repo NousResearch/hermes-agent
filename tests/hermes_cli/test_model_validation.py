@@ -566,8 +566,11 @@ class TestValidateApiFallback:
                 base_url="http://localhost:8000",
             )
 
+        # Unreachable /models on a custom endpoint no longer hard-rejects —
+        # the model is persisted with a warning so Cloudflare-protected /
+        # proxy endpoints that don't expose /models still work. See #12950.
         assert result["accepted"] is False
-        assert result["persist"] is False
+        assert result["persist"] is True
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
 

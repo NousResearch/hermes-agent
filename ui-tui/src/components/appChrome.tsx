@@ -55,7 +55,7 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
-function SessionDuration({ lastUserAt, startedAt }: { lastUserAt?: null | number; startedAt: number }) {
+function SessionDuration({ startedAt }: { startedAt: number }) {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -65,9 +65,20 @@ function SessionDuration({ lastUserAt, startedAt }: { lastUserAt?: null | number
     return () => clearInterval(id)
   }, [startedAt])
 
-  const total = fmtDuration(now - startedAt)
+  return fmtDuration(now - startedAt)
+}
 
-  return lastUserAt ? `${fmtDuration(now - lastUserAt)}/${total}` : total
+export function IdleSinceLastMsg({ lastUserAt, t }: { lastUserAt: number; t: Theme }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    setNow(Date.now())
+    const id = setInterval(() => setNow(Date.now()), 1000)
+
+    return () => clearInterval(id)
+  }, [lastUserAt])
+
+  return <Text color={t.color.dim}>{fmtDuration(now - lastUserAt)} </Text>
 }
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
@@ -100,7 +111,6 @@ export function StatusRule({
   model,
   usage,
   bgCount,
-  lastUserAt,
   sessionStartedAt,
   showCost,
   voiceLabel,
@@ -135,7 +145,7 @@ export function StatusRule({
           {sessionStartedAt ? (
             <Text color={t.color.dim}>
               {' │ '}
-              <SessionDuration lastUserAt={lastUserAt} startedAt={sessionStartedAt} />
+              <SessionDuration startedAt={sessionStartedAt} />
             </Text>
           ) : null}
           {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
@@ -290,7 +300,6 @@ interface StatusRuleProps {
   busy: boolean
   cols: number
   cwdLabel: string
-  lastUserAt?: null | number
   model: string
   sessionStartedAt?: null | number
   showCost: boolean

@@ -321,6 +321,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "zai-org/GLM-5",
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
+        "moonshotai/Kimi-K2.6",
     ],
     # AWS Bedrock — static fallback list used when dynamic discovery is
     # unavailable (no boto3, no credentials, or API error).  The agent

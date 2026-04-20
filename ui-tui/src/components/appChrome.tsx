@@ -12,18 +12,24 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
-function FaceTicker({ color }: { color: string }) {
+function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
+  const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    const id = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
+    const face = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
+    const clock = setInterval(() => setNow(Date.now()), 1000)
 
-    return () => clearInterval(id)
+    return () => {
+      clearInterval(face)
+      clearInterval(clock)
+    }
   }, [])
 
   return (
     <Text color={color}>
       {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…
+      {startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
     </Text>
   )
 }
@@ -68,19 +74,6 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
   return fmtDuration(now - startedAt)
 }
 
-export function IdleSinceLastMsg({ lastUserAt, t }: { lastUserAt: number; t: Theme }) {
-  const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    setNow(Date.now())
-    const id = setInterval(() => setNow(Date.now()), 1000)
-
-    return () => clearInterval(id)
-  }, [lastUserAt])
-
-  return <Text color={t.color.dim}>{fmtDuration(now - lastUserAt)} </Text>
-}
-
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.amber)
@@ -113,6 +106,7 @@ export function StatusRule({
   bgCount,
   sessionStartedAt,
   showCost,
+  turnStartedAt,
   voiceLabel,
   t
 }: StatusRuleProps) {
@@ -133,7 +127,7 @@ export function StatusRule({
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
-          {busy ? <FaceTicker color={statusColor} /> : <Text color={statusColor}>{status}</Text>}
+          {busy ? <FaceTicker color={statusColor} startedAt={turnStartedAt} /> : <Text color={statusColor}>{status}</Text>}
           <Text color={t.color.dim}> │ {model}</Text>
           {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
           {bar ? (
@@ -306,6 +300,7 @@ interface StatusRuleProps {
   status: string
   statusColor: string
   t: Theme
+  turnStartedAt?: null | number
   usage: Usage
   voiceLabel?: string
 }

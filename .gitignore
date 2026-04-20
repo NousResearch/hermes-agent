@@ -54,6 +54,11 @@ environments/benchmarks/evals/
 # Web UI build output
 hermes_cli/web_dist/
 
+# Web UI assets — synced from @nous-research/ui at build time via
+# `npm run sync-assets` (see web/package.json).
+web/public/fonts/
+web/public/ds-assets/
+
 # Release script temp files
 .release_notes.md
 mini-swe-agent/

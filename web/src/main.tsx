@@ -3,8 +3,8 @@ import { BrowserRouter } from "react-router-dom";
 import "./index.css";
 import App from "./App";
 import { I18nProvider } from "./i18n";
-import { ThemeProvider } from "./themes";
 import { exposePluginSDK } from "./plugins";
+import { ThemeProvider } from "./themes";
 
 // Expose the plugin SDK before rendering so plugins loaded via <script>
 // can access React, components, etc. immediately.

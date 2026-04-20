@@ -71,6 +71,8 @@ def build_memory_context_block(raw_context: str) -> str:
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
+    if not clean.strip():
+        return ""
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

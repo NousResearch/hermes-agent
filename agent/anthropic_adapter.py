@@ -1310,6 +1310,19 @@ def convert_messages_to_anthropic(
             effective = blocks or content
             if not effective or effective == "":
                 effective = [{"type": "text", "text": "(empty)"}]
+            # Anthropic rejects assistant messages whose final block is a
+            # thinking/redacted_thinking block (HTTP 400: "The final block in
+            # an assistant message cannot be `thinking`").  This happens when
+            # a thinking-only response (empty content, non-empty reasoning_details)
+            # is replayed on the next turn.  Append a stub text block to satisfy
+            # the constraint.
+            if (
+                isinstance(effective, list)
+                and effective
+                and isinstance(effective[-1], dict)
+                and effective[-1].get("type") in ("thinking", "redacted_thinking")
+            ):
+                effective = list(effective) + [{"type": "text", "text": "(continued)"}]
             result.append({"role": "assistant", "content": effective})
             continue
 

@@ -1539,6 +1539,47 @@ class TestThinkingBlockSignatureManagement:
         assert len(thinking) == 1
         assert thinking[0]["thinking"] == "First thought."
 
+    def test_trailing_thinking_block_gets_stub_text_appended(self):
+        """Assistant message whose final block is thinking gets a stub text appended.
+
+        Anthropic's API rejects messages with HTTP 400 if the last content block
+        is a thinking/redacted_thinking block ("The final block in an assistant
+        message cannot be `thinking`").  This happens on thinking-prefill paths
+        where the model produced reasoning but no visible text before a tool call.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                # thinking-only turn (no text), with a valid signature
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Let me reason.", "signature": "sig_abc"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_x", "content": "result"},
+        ]
+        # We need a tool_call so the orphan-stripping logic keeps it; simulate it
+        messages[0]["tool_calls"] = [
+            {"id": "tc_x", "function": {"name": "my_tool", "arguments": "{}"}}
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in result if m["role"] == "assistant")
+        blocks = assistant["content"]
+        assert isinstance(blocks, list)
+        last = blocks[-1]
+        # The last block must NOT be thinking — a text stub must follow it
+        assert last.get("type") != "thinking", (
+            f"Last block is still 'thinking'; Anthropic would reject this: {blocks}"
+        )
+        assert last.get("type") != "redacted_thinking", (
+            f"Last block is still 'redacted_thinking'; Anthropic would reject this: {blocks}"
+        )
+        # There should still be a thinking block earlier in the list
+        assert any(b.get("type") == "thinking" for b in blocks)
+        # The stub text block should be non-empty (Anthropic rejects empty text blocks)
+        if last.get("type") == "text":
+            assert last.get("text"), "Stub text block must not be empty string"
+
     def test_empty_content_after_strip_gets_placeholder(self):
         """If stripping thinking leaves an empty message, a placeholder is added."""
         messages = [

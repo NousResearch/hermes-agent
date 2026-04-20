@@ -346,11 +346,23 @@ def _build_child_agent(
         child_thinking_cb = _child_thinking
 
     # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
-    effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or parent_agent.base_url
-    effective_api_key = override_api_key or parent_api_key
-    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+    # When override_base_url is explicitly set (custom endpoint), use the override
+    # values even if override_provider is None/empty. This ensures subagents with
+    # explicit base_url configuration don't inherit the parent's provider.
+    if override_base_url:
+        # Custom endpoint configured - use override values or defaults
+        effective_model = model or parent_agent.model
+        effective_provider = override_provider or "custom"
+        effective_base_url = override_base_url
+        effective_api_key = override_api_key or parent_api_key
+        effective_api_mode = override_api_mode or "chat_completions"
+    else:
+        # No custom endpoint - inherit from parent or use provider-based resolution
+        effective_model = model or parent_agent.model
+        effective_provider = override_provider or getattr(parent_agent, "provider", None)
+        effective_base_url = parent_agent.base_url
+        effective_api_key = override_api_key or parent_api_key
+        effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
@@ -1032,24 +1044,35 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load the delegation section from ``~/.hermes/config.yaml``.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Always reads fresh via ``hermes_cli.config.load_config()`` so that an
+    edit to ``config.yaml`` is picked up on the next ``delegate_task``
+    call without needing a CLI restart.
+
+    Earlier versions short-circuited through ``cli.CLI_CONFIG`` when it
+    was available, but that dict is populated **once** at
+    module-import time and is never re-read. In long-lived CLI sessions,
+    that caused ``delegation.model`` / ``delegation.provider`` changes
+    made after startup to be silently ignored — see issue #11999. The
+    short-circuit also misfired on startup configs that only contained
+    the built-in defaults (empty-string ``model``/``provider`` alongside
+    an integer ``max_iterations``): those produced a truthy-but-empty
+    dict that bypassed the persistent read entirely.
+
+    The persistent ``load_config()`` pipeline is cheap (single YAML
+    parse over a deep-merged deepcopy of ``DEFAULT_CONFIG``) and is the
+    same path the gateway and cron use, so unifying everyone on that
+    source of truth also removes a subtle CLI-only divergence. In the
+    rare case ``hermes_cli.config`` can't be imported (heavily cut-down
+    installs), returns an empty dict so callers fall back to their
+    inherit-from-parent defaults.
     """
-    try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
-    except Exception:
-        pass
     try:
         from hermes_cli.config import load_config
         full = load_config()
-        return full.get("delegation", {})
+        delegation = full.get("delegation", {})
+        return delegation if isinstance(delegation, dict) else {}
     except Exception:
         return {}
 

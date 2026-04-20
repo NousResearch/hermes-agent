@@ -713,6 +713,15 @@ export function TextInput({
         setCur(next)
         curRef.current = next
       }}
+      onMouseDown={(e: { button: number }) => {
+        // Right-click to paste: route through the same hotkey path as
+        // Alt+V so the composer's clipboard RPC (text or image) handles it.
+        if (!focus || e.button !== 2) {
+          return
+        }
+
+        emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+      }}
       ref={boxRef}
     >
       <Text wrap="wrap">{rendered}</Text>

@@ -66,6 +66,8 @@ AUTHOR_MAP = {
     "104278804+Sertug17@users.noreply.github.com": "Sertug17",
     "112503481+caentzminger@users.noreply.github.com": "caentzminger",
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
+    "sir_even@icloud.com": "sirEven",
+    "36056348+sirEven@users.noreply.github.com": "sirEven",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
     "254021826+dodo-reach@users.noreply.github.com": "dodo-reach",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",

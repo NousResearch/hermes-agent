@@ -263,6 +263,25 @@ def get_tool_definitions(
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
+    # Plugin hook: allow semantic/discovery/filtering plugins to refine the list
+    # before the execute_code schema rebuild and browser_navigate cross-ref stripping.
+    # Plugins receive the fully-resolved, check_fn-filtered tool list and return
+    # the (possibly mutated) list they want the LLM to see.
+    # Fail-open: if no plugin responds or all raise, keep the original list.
+    try:
+        from hermes_cli.plugins import invoke_hook
+        results = invoke_hook(
+            "on_tool_definitions_filter",
+            tools=filtered_tools,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=quiet_mode,
+        )
+        if results:
+            filtered_tools = results[0]
+    except Exception:
+        pass  # fail open — keep original filtered_tools
+
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
     # other tools by name — otherwise the model sees tools mentioned in

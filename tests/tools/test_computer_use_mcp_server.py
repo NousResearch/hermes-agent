@@ -733,6 +733,36 @@ class TestKeyboardTools:
         assert result["app_session_id"] == "app-1"
         assert seen == {"action": "keystroke", "text": "uwu"}
 
+    def test_type_text_impl_rejects_unapproved_active_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": False, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
+        })
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: '{"success": true}')
+
+        result = adapter.type_text_impl("uwu")
+
+        assert result["success"] is False
+        assert result["approval_required"] is True
+        assert result["approved"] is False
+        assert result["app_session_id"] == "app-1"
+        assert "not approved" in result["error"]
+
+    def test_type_text_impl_requires_explicit_app_session_when_multiple_sessions_are_active(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+            "notes": {"app_name": "Notes", "app_session_id": "app-2", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+        })
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: '{"success": true}')
+
+        result = adapter.type_text_impl("uwu")
+
+        assert result["success"] is False
+        assert result["session_required"] is True
+        assert result["multiple_active_sessions"] is True
+        assert result["active_sessions"][0]["app_session_id"] == "app-2"
+        assert result["active_sessions"][1]["app_session_id"] == "app-1"
+        assert "app_session_id" in result["error"]
+
     def test_type_text_impl_can_target_specific_app_session(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
             "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
@@ -772,6 +802,31 @@ class TestKeyboardTools:
         assert result["success"] is True
         assert result["app_session_id"] == "app-1"
         assert seen == {"action": "keystroke", "key": "return", "modifiers": ["command", "shift"]}
+
+    def test_press_key_impl_rejects_unapproved_target_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": False, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
+        })
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: '{"success": true}')
+
+        result = adapter.press_key_impl("return", ["command"], app_session_id="app-1")
+
+        assert result["success"] is False
+        assert result["approval_required"] is True
+        assert result["approved"] is False
+        assert result["app_session_id"] == "app-1"
+        assert "not approved" in result["error"]
+
+    def test_press_key_impl_rejects_inactive_target_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": False, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
+        })
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: '{"success": true}')
+
+        result = adapter.press_key_impl("return", ["command"], app_session_id="app-1")
+
+        assert result["success"] is False
+        assert result["session_required"] is True
 
     def test_press_key_impl_can_target_specific_app_session(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {

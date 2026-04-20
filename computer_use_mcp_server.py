@@ -432,6 +432,50 @@ def _session_required_error(action: str) -> dict[str, Any]:
     }
 
 
+def _multiple_active_sessions_error(action: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "session_required": True,
+        "multiple_active_sessions": True,
+        "active_sessions": _active_sessions(),
+        "session_id": _SESSION_ID,
+        "error": f"Multiple active app sessions found. Pass app_session_id before {action}.",
+    }
+
+
+def _session_approval_required_error(action: str, session: dict[str, Any]) -> dict[str, Any]:
+    app_name = str(session.get("app_name") or "this app")
+    return {
+        "success": False,
+        "approval_required": True,
+        "approved": False,
+        "session_id": _SESSION_ID,
+        **_session_payload(session),
+        "approved_apps": _load_approved_apps(),
+        "approval_store_path": str(_approval_store_path()),
+        "error": f"{app_name} is not approved for Hermes computer-use yet. Approve it before {action}.",
+    }
+
+
+def _resolve_keyboard_session(action: str, app_session_id: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    wanted = str(app_session_id or "").strip()
+    with _APP_SESSIONS_LOCK:
+        if wanted:
+            session = _find_session(app_session_id=wanted)
+            if not session or not session.get("active"):
+                return None, _session_required_error(action)
+        else:
+            active_records = [record for record in _APP_SESSIONS.values() if record.get("active")]
+            if not active_records:
+                return None, _session_required_error(action)
+            if len(active_records) > 1:
+                return None, _multiple_active_sessions_error(action)
+            session = active_records[0]
+        if not session.get("approved"):
+            return None, _session_approval_required_error(action, session)
+        return session, None
+
+
 def _preview_pointer_response(action: str, session: dict[str, Any]) -> dict[str, Any]:
     return {
         "success": False,
@@ -627,17 +671,17 @@ def get_app_state_impl(app_name: str | None = None, app_session_id: str | None =
 
 
 def type_text_impl(text: str, app_session_id: str | None = None) -> dict[str, Any]:
-    session = _resolve_session(app_session_id=app_session_id)
-    if not session:
-        return _session_required_error("typing")
+    session, error = _resolve_keyboard_session("typing", app_session_id=app_session_id)
+    if error:
+        return error
     result = _decode(computer_control(action="keystroke", text=text))
     return {"success": not bool(result.get("error")), **result, **_session_payload(session), "session_id": _SESSION_ID}
 
 
 def press_key_impl(key: str, modifiers: list[str] | None = None, app_session_id: str | None = None) -> dict[str, Any]:
-    session = _resolve_session(app_session_id=app_session_id)
-    if not session:
-        return _session_required_error("pressing keys")
+    session, error = _resolve_keyboard_session("pressing keys", app_session_id=app_session_id)
+    if error:
+        return error
     result = _decode(computer_control(action="keystroke", key=key, modifiers=modifiers or []))
     return {"success": not bool(result.get("error")), **result, **_session_payload(session), "session_id": _SESSION_ID}
 

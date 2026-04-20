@@ -29,10 +29,15 @@ Usage:
 """
 
 import difflib
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Any
 from enum import Enum
+
+
+REPLACE_HASHLINE_RE = re.compile(r"^\s*#\s*HASHLINE\s+sha256:([0-9a-fA-F]{64})\s*$")
+PATCH_HASHLINE_RE = re.compile(r"^\*\*\*\s+Hashline:\s+(.+?)\s+sha256:([0-9a-fA-F]{64})\s*$")
 
 
 class OperationType(Enum):
@@ -64,6 +69,89 @@ class PatchOperation:
     new_path: Optional[str] = None  # For move operations
     hunks: List[Hunk] = field(default_factory=list)
     content: Optional[str] = None  # For add file operations
+
+
+@dataclass(frozen=True)
+class HashlineExpectation:
+    """Hermes-native anchored safe-edit expectation for an existing file."""
+    file_path: str
+    expected_sha256: str
+
+
+@dataclass(frozen=True)
+class FileSnapshot:
+    """Filesystem state snapshot used to make rollback conditional."""
+    exists: bool
+    sha256: Optional[str] = None
+
+
+def parse_replace_hashline(payload: str) -> Tuple[Optional[HashlineExpectation], str, Optional[str]]:
+    """Parse an optional replace-mode HASHLINE directive from the first line."""
+    if not isinstance(payload, str):
+        return None, payload, None
+    if "\n" in payload:
+        first_line, remainder = payload.split("\n", 1)
+    else:
+        first_line, remainder = payload, ""
+    if "HASHLINE" not in first_line.upper():
+        return None, payload, None
+    match = REPLACE_HASHLINE_RE.match(first_line)
+    if not match:
+        return None, payload, (
+            "Invalid HASHLINE directive. Expected first line in the form "
+            "'# HASHLINE sha256:<64-hex-digest>'."
+        )
+    return HashlineExpectation(file_path="", expected_sha256=match.group(1).lower()), remainder, None
+
+
+def parse_patch_hashlines(
+    patch_content: str,
+) -> Tuple[dict[str, HashlineExpectation], str, Optional[str]]:
+    """Parse and strip V4A patch-level Hashline directives."""
+    if not isinstance(patch_content, str):
+        return {}, patch_content, None
+
+    expected_hashes: dict[str, HashlineExpectation] = {}
+    kept_lines: list[str] = []
+    for line in patch_content.splitlines():
+        if line.startswith("*** Hashline:"):
+            match = PATCH_HASHLINE_RE.match(line)
+            if not match:
+                return {}, patch_content, (
+                    "Invalid '*** Hashline:' directive. Expected "
+                    "'*** Hashline: path/to/file sha256:<64-hex-digest>'."
+                )
+            path = match.group(1).strip()
+            expected_hashes[path] = HashlineExpectation(
+                file_path=path,
+                expected_sha256=match.group(2).lower(),
+            )
+            continue
+        kept_lines.append(line)
+
+    rebuilt = "\n".join(kept_lines)
+    if patch_content.endswith("\n"):
+        rebuilt += "\n"
+    return expected_hashes, rebuilt, None
+
+
+def get_anchor_required_paths(operations: List[PatchOperation]) -> List[str]:
+    """Return existing-file mutation paths that require HASHLINE protection."""
+    required: list[str] = []
+    for op in operations:
+        if op.operation in {OperationType.UPDATE, OperationType.DELETE, OperationType.MOVE}:
+            required.append(op.file_path)
+    return required
+
+
+def get_touched_paths(operations: List[PatchOperation]) -> List[str]:
+    """Return all file paths touched by the patch for path-policy checks."""
+    touched: list[str] = []
+    for op in operations:
+        touched.append(op.file_path)
+        if op.operation == OperationType.MOVE and op.new_path:
+            touched.append(op.new_path)
+    return touched
 
 
 def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
@@ -237,6 +325,32 @@ def _count_occurrences(text: str, pattern: str) -> int:
     return count
 
 
+def _snapshot_file_state(file_ops: Any, path: str) -> Tuple[Optional[FileSnapshot], Optional[str]]:
+    """Capture whether a path exists and, if present, its sha256 digest."""
+    read_result = file_ops.read_file_raw(path)
+    if read_result.error:
+        if str(read_result.error).startswith("File not found:"):
+            return FileSnapshot(exists=False), None
+        return None, f"{path}: {read_result.error}"
+    return FileSnapshot(
+        exists=True,
+        sha256=hashlib.sha256(read_result.content.encode("utf-8")).hexdigest(),
+    ), None
+
+
+def _verify_snapshot_match(file_ops: Any, path: str, expected: FileSnapshot) -> Optional[str]:
+    """Return an error string if the current file state diverged from expected."""
+    current, error = _snapshot_file_state(file_ops, path)
+    if error:
+        return error
+    if current != expected:
+        return (
+            f"rollback could not safely proceed for {path}: current state no longer matches "
+            f"the post-apply state"
+        )
+    return None
+
+
 def _validate_operations(
     operations: List[PatchOperation],
     file_ops: Any,
@@ -323,7 +437,8 @@ def _validate_operations(
 
 
 def apply_v4a_operations(operations: List[PatchOperation],
-                          file_ops: Any) -> 'PatchResult':
+                          file_ops: Any,
+                          expected_hashes: Optional[dict[str, str]] = None) -> 'PatchResult':
     """Apply V4A patch operations using a file operations interface.
 
     Uses a two-phase validate-then-apply approach:
@@ -352,12 +467,41 @@ def apply_v4a_operations(operations: List[PatchOperation],
                   + "\n".join(f"  • {e}" for e in validation_errors),
         )
 
+    if expected_hashes:
+        missing_anchor_paths = [path for path in get_anchor_required_paths(operations) if path not in expected_hashes]
+        if missing_anchor_paths:
+            return PatchResult(
+                success=False,
+                error="\n".join(
+                    f"HASHLINE validation failed: missing '*** Hashline: {path} sha256:...' for patched file {path}"
+                    for path in missing_anchor_paths
+                ),
+            )
+        hash_errors: List[str] = []
+        for path, expected_sha256 in expected_hashes.items():
+            read_result = file_ops.read_file_raw(path)
+            if read_result.error:
+                hash_errors.append(f"HASHLINE validation failed: file not found: {path}")
+                continue
+            current_hash = hashlib.sha256(read_result.content.encode("utf-8")).hexdigest()
+            if current_hash.lower() != str(expected_sha256 or "").lower():
+                hash_errors.append(
+                    f"HASHLINE validation failed for {path}: expected sha256:{expected_sha256}, "
+                    f"got sha256:{current_hash}. Re-read the file before editing."
+                )
+        if hash_errors:
+            return PatchResult(
+                success=False,
+                error="\n".join(hash_errors),
+            )
+
     # ---- Phase 2: apply ----
     files_modified = []
     files_created = []
     files_deleted = []
     all_diffs = []
     errors = []
+    rollback_actions: List[tuple[str, str, Any]] = []
 
     for op in operations:
         try:
@@ -366,35 +510,136 @@ def apply_v4a_operations(operations: List[PatchOperation],
                 if result[0]:
                     files_created.append(op.file_path)
                     all_diffs.append(result[1])
+                    post_apply, snapshot_error = _snapshot_file_state(file_ops, op.file_path)
+                    if snapshot_error:
+                        errors.append(f"Failed to snapshot {op.file_path} after add: {snapshot_error}")
+                    else:
+                        rollback_actions.append(("delete", op.file_path, {"post_apply": post_apply}))
                 else:
                     errors.append(f"Failed to add {op.file_path}: {result[1]}")
 
             elif op.operation == OperationType.DELETE:
-                result = _apply_delete(op, file_ops)
+                original = file_ops.read_file_raw(op.file_path)
+                result = _apply_delete(
+                    op,
+                    file_ops,
+                    expected_sha256=(expected_hashes or {}).get(op.file_path),
+                )
                 if result[0]:
                     files_deleted.append(op.file_path)
                     all_diffs.append(result[1])
+                    if not original.error:
+                        post_apply, snapshot_error = _snapshot_file_state(file_ops, op.file_path)
+                        if snapshot_error:
+                            errors.append(f"Failed to snapshot {op.file_path} after delete: {snapshot_error}")
+                        else:
+                            rollback_actions.append((
+                                "write",
+                                op.file_path,
+                                {"content": original.content, "post_apply": post_apply},
+                            ))
                 else:
                     errors.append(f"Failed to delete {op.file_path}: {result[1]}")
 
             elif op.operation == OperationType.MOVE:
-                result = _apply_move(op, file_ops)
+                original = file_ops.read_file_raw(op.file_path)
+                result = _apply_move(
+                    op,
+                    file_ops,
+                    expected_sha256=(expected_hashes or {}).get(op.file_path),
+                )
                 if result[0]:
                     files_modified.append(f"{op.file_path} -> {op.new_path}")
                     all_diffs.append(result[1])
+                    if not original.error:
+                        source_post_apply, source_snapshot_error = _snapshot_file_state(file_ops, op.file_path)
+                        dest_post_apply, dest_snapshot_error = _snapshot_file_state(file_ops, op.new_path)
+                        snapshot_error = source_snapshot_error or dest_snapshot_error
+                        if snapshot_error:
+                            errors.append(f"Failed to snapshot move state for {op.file_path}: {snapshot_error}")
+                        else:
+                            rollback_actions.append((
+                                "move_back",
+                                op.file_path,
+                                {
+                                    "new_path": op.new_path,
+                                    "content": original.content,
+                                    "source_post_apply": source_post_apply,
+                                    "dest_post_apply": dest_post_apply,
+                                },
+                            ))
                 else:
                     errors.append(f"Failed to move {op.file_path}: {result[1]}")
 
             elif op.operation == OperationType.UPDATE:
-                result = _apply_update(op, file_ops)
+                original = file_ops.read_file_raw(op.file_path)
+                result = _apply_update(
+                    op,
+                    file_ops,
+                    expected_sha256=(expected_hashes or {}).get(op.file_path),
+                )
                 if result[0]:
                     files_modified.append(op.file_path)
                     all_diffs.append(result[1])
+                    if not original.error:
+                        post_apply, snapshot_error = _snapshot_file_state(file_ops, op.file_path)
+                        if snapshot_error:
+                            errors.append(f"Failed to snapshot {op.file_path} after update: {snapshot_error}")
+                        else:
+                            rollback_actions.append((
+                                "write",
+                                op.file_path,
+                                {"content": original.content, "post_apply": post_apply},
+                            ))
                 else:
                     errors.append(f"Failed to update {op.file_path}: {result[1]}")
 
         except Exception as e:
             errors.append(f"Error processing {op.file_path}: {str(e)}")
+
+        if errors:
+            break
+
+    rollback_errors: List[str] = []
+    if errors and rollback_actions:
+        for action, path, payload in reversed(rollback_actions):
+            try:
+                if action == "delete":
+                    verify_error = _verify_snapshot_match(file_ops, path, payload["post_apply"])
+                    if verify_error:
+                        rollback_errors.append(verify_error)
+                        continue
+                    delete_result = file_ops.delete_file(path)
+                    if delete_result.error:
+                        rollback_errors.append(f"rollback delete {path}: {delete_result.error}")
+                elif action == "write":
+                    verify_error = _verify_snapshot_match(file_ops, path, payload["post_apply"])
+                    if verify_error:
+                        rollback_errors.append(verify_error)
+                        continue
+                    write_result = file_ops.write_file(path, payload["content"])
+                    if write_result.error:
+                        rollback_errors.append(f"rollback write {path}: {write_result.error}")
+                elif action == "move_back":
+                    info = payload or {}
+                    moved_path = info.get("new_path")
+                    verify_error = _verify_snapshot_match(file_ops, path, info["source_post_apply"])
+                    if verify_error:
+                        rollback_errors.append(verify_error)
+                        continue
+                    verify_error = _verify_snapshot_match(file_ops, moved_path, info["dest_post_apply"])
+                    if verify_error:
+                        rollback_errors.append(verify_error)
+                        continue
+                    move_result = file_ops.move_file(moved_path, path)
+                    if move_result.error:
+                        rollback_errors.append(f"rollback move {moved_path} -> {path}: {move_result.error}")
+                    else:
+                        write_result = file_ops.write_file(path, info.get("content", ""))
+                        if write_result.error:
+                            rollback_errors.append(f"rollback restore {path}: {write_result.error}")
+            except Exception as exc:
+                rollback_errors.append(f"rollback {action} {path}: {exc}")
 
     # Run lint on all modified/created files
     lint_results = {}
@@ -406,6 +651,14 @@ def apply_v4a_operations(operations: List[PatchOperation],
     combined_diff = '\n'.join(all_diffs)
 
     if errors:
+        error_text = "Apply phase failed"
+        if rollback_errors:
+            error_text += " (rollback incomplete — run `git diff` to assess)"
+        else:
+            error_text += " (rollback restored earlier changes)"
+        error_text += ":\n" + "\n".join(f"  • {e}" for e in errors)
+        if rollback_errors:
+            error_text += "\nRollback issues:\n" + "\n".join(f"  • {e}" for e in rollback_errors)
         return PatchResult(
             success=False,
             diff=combined_diff,
@@ -413,8 +666,7 @@ def apply_v4a_operations(operations: List[PatchOperation],
             files_created=files_created,
             files_deleted=files_deleted,
             lint=lint_results if lint_results else None,
-            error="Apply phase failed (state may be inconsistent — run `git diff` to assess):\n"
-                  + "\n".join(f"  • {e}" for e in errors),
+            error=error_text,
         )
 
     return PatchResult(
@@ -448,7 +700,11 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff
 
 
-def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_delete(
+    op: PatchOperation,
+    file_ops: Any,
+    expected_sha256: Optional[str] = None,
+) -> Tuple[bool, str]:
     """Apply a delete file operation."""
     # Read before deleting so we can produce a real unified diff.
     # Validation already confirmed existence; this guards against races.
@@ -456,7 +712,10 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     if read_result.error:
         return False, f"Cannot delete {op.file_path}: file not found"
 
-    result = file_ops.delete_file(op.file_path)
+    if expected_sha256 and hasattr(file_ops, "conditional_delete_file"):
+        result = file_ops.conditional_delete_file(op.file_path, expected_sha256)
+    else:
+        result = file_ops.delete_file(op.file_path)
     if result.error:
         return False, result.error
 
@@ -469,9 +728,16 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff or f"# Deleted: {op.file_path}"
 
 
-def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_move(
+    op: PatchOperation,
+    file_ops: Any,
+    expected_sha256: Optional[str] = None,
+) -> Tuple[bool, str]:
     """Apply a move file operation."""
-    result = file_ops.move_file(op.file_path, op.new_path)
+    if expected_sha256 and hasattr(file_ops, "conditional_move_file"):
+        result = file_ops.conditional_move_file(op.file_path, op.new_path, expected_sha256)
+    else:
+        result = file_ops.move_file(op.file_path, op.new_path)
     if result.error:
         return False, result.error
 
@@ -479,7 +745,7 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff
 
 
-def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_update(op: PatchOperation, file_ops: Any, expected_sha256: Optional[str] = None) -> Tuple[bool, str]:
     """Apply an update file operation."""
     # Deferred import: breaks the patch_parser ↔ fuzzy_match circular dependency
     from tools.fuzzy_match import fuzzy_find_and_replace
@@ -564,7 +830,10 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
                 new_content = new_content.rstrip('\n') + '\n' + insert_text + '\n'
     
     # Write new content
-    write_result = file_ops.write_file(op.file_path, new_content)
+    if expected_sha256 and hasattr(file_ops, "conditional_write_file"):
+        write_result = file_ops.conditional_write_file(op.file_path, new_content, expected_sha256)
+    else:
+        write_result = file_ops.write_file(op.file_path, new_content)
     if write_result.error:
         return False, write_result.error
     

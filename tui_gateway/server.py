@@ -1230,7 +1230,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             continue
         if not (m.get("content") or "").strip():
             continue
-        messages.append({"role": role, "text": m.get("content") or ""})
+        payload = {"role": role, "text": m.get("content") or ""}
+        swarm = (m.get("metadata") or {}).get("swarm") if isinstance(m.get("metadata"), dict) else None
+        if role == "assistant" and isinstance(swarm, dict):
+            payload["swarm"] = swarm
+        messages.append(payload)
 
     return messages
 

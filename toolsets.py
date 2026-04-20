@@ -66,8 +66,9 @@ _HERMES_CORE_TOOLS = [
 _CODE_INTEL_TOOLS = [
     # AST structure and lightweight local source analysis
     "ast_list_defs", "ast_find_nodes",
-    # LSP-backed symbol lookup, definitions, and diagnostics
+    # LSP-backed symbol lookup, definitions, diagnostics, and rename/reference flows
     "lsp_document_symbols", "lsp_definition", "lsp_diagnostics",
+    "lsp_prepare_rename", "lsp_references", "lsp_rename",
 ]
 
 

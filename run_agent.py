@@ -61,6 +61,7 @@ else:
 
 # Import our tool system
 from model_tools import (
+    filter_tool_definitions_by_name,
     get_tool_definitions,
     get_toolset_for_tool,
     handle_function_call,
@@ -92,10 +93,21 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.continuation_engine import (
+    DEFAULT_MAX_RUNTIME_RESUMES,
+    build_continuation_snapshot,
+    build_runtime_resume_message,
+    should_use_continuation_engine,
+)
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, build_wave1_overlay_prompt_from_normalized, normalize_wave1_overlay_inputs
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.archetypes import resolve_archetype, resolve_specialist_mapping
+from agent.intent_preclassifier import preclassify_intent
+from agent.route_categories import BUILTIN_ROUTE_CATEGORIES, DEFAULT_ROUTE_CATEGORY, resolve_route_category
+from agent.runtime_modes import get_default_runtime_mode, resolve_runtime_mode
+from agent.task_contracts import build_named_workflow_artifact, validate_named_workflow_artifact, validate_task_contract
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -251,6 +263,30 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 )
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+_REVIEWER_ARCHETYPES = frozenset({"verifier"})
+_REVIEWER_SPECIALISTS = frozenset({"code_reviewer", "qa_guard"})
+_REVIEWER_DELEGATION_PROFILES = frozenset({"verification"})
+_REVIEWER_BLOCKED_TOOLS = frozenset({"write_file", "patch", "memory", "send_message"})
+_REVIEWER_EVIDENCE_TOOLS = frozenset({
+    "browser_console",
+    "browser_get_images",
+    "browser_navigate",
+    "browser_scroll",
+    "browser_snapshot",
+    "browser_vision",
+    "ha_get_state",
+    "ha_list_entities",
+    "ha_list_services",
+    "process",
+    "read_file",
+    "search_files",
+    "session_search",
+    "task",
+    "terminal",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
+})
 
 
 def _is_destructive_command(cmd: str) -> bool:
@@ -808,7 +844,8 @@ class AIAgent:
                 daemon=True,
             ).start()
 
-        self.tool_progress_callback = tool_progress_callback
+        self._external_tool_progress_callback = tool_progress_callback
+        self.tool_progress_callback = self._wrap_tool_progress_callback(tool_progress_callback)
         self.tool_start_callback = tool_start_callback
         self.tool_complete_callback = tool_complete_callback
         self.suppress_status_output = False
@@ -1214,7 +1251,16 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
-        
+
+        # Wave 2 parent-runtime activation state. This is refreshed at the start
+        # of each top-level turn before any delegation/tool orchestration can run.
+        self._runtime_activation_state: Dict[str, Any] = self._build_default_runtime_activation_state()
+        self.runtime_activation_state: Dict[str, Any] = copy.deepcopy(self._runtime_activation_state)
+        self._runtime_activation_snapshot: Dict[str, Any] = {"current": None, "last": None}
+        self._current_turn_runtime_activation_note: str = ""
+        self._supervisor_task_snapshot: List[Dict[str, Any]] = []
+        self._current_turn_swarm: Dict[str, Dict[str, Any]] = {}
+
         # Filesystem checkpoint manager (transparent — not a tool)
         from tools.checkpoint_manager import CheckpointManager
         self._checkpoint_mgr = CheckpointManager(
@@ -1240,6 +1286,12 @@ class AIAgent:
                     user_id=None,
                     parent_session_id=self._parent_session_id,
                 )
+                session_row = self._session_db.get_session(self.session_id)
+                if session_row:
+                    self._runtime_activation_snapshot = dict(
+                        session_row.get("runtime_activation_snapshot")
+                        or {"current": None, "last": None}
+                    )
             except Exception as e:
                 # Transient SQLite lock contention (e.g. CLI and gateway writing
                 # concurrently) must NOT permanently disable session_search for
@@ -2638,6 +2690,7 @@ class AIAgent:
                     reasoning=msg.get("reasoning") if role == "assistant" else None,
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                    metadata=msg.get("metadata") if role == "assistant" else None,
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -3328,7 +3381,88 @@ class AIAgent:
             "todoItems": todo_items,
             "activeTodos": active_todos,
             "responsePreview": response_preview,
+            "stopRequested": bool(payload.get("stopRequested") or payload.get("stop_requested")),
+            "retryRequested": bool(payload.get("retryRequested") or payload.get("retry_requested")),
         }
+
+    @staticmethod
+    def _runtime_continuation_message_flag(message: Any, *keys: str) -> Any:
+        if isinstance(message, dict):
+            for key in keys:
+                if key in message:
+                    return message.get(key)
+            return None
+        for key in keys:
+            if hasattr(message, key):
+                return getattr(message, key)
+        return None
+
+    def _build_runtime_continuation_turn_outcome(
+        self,
+        *,
+        assistant_message: Any,
+        final_response: str,
+        interrupted: bool = False,
+    ) -> dict[str, Any]:
+        outcome_status = str(
+            self._runtime_continuation_message_flag(assistant_message, "outcomeStatus", "outcome_status") or ""
+        ).strip().lower()
+        completed = bool(self._runtime_continuation_message_flag(assistant_message, "completed"))
+        failed = bool(self._runtime_continuation_message_flag(assistant_message, "failed"))
+        interrupted_flag = bool(interrupted or self._runtime_continuation_message_flag(assistant_message, "interrupted"))
+        if outcome_status == "completed":
+            completed = True
+        elif outcome_status == "failed":
+            failed = True
+        elif outcome_status == "interrupted":
+            interrupted_flag = True
+        return {
+            "final_response": final_response,
+            "completed": completed,
+            "failed": failed,
+            "interrupted": interrupted_flag,
+            "stopRequested": bool(
+                self._runtime_continuation_message_flag(assistant_message, "stopRequested", "stop_requested")
+            ),
+            "retryRequested": bool(
+                self._runtime_continuation_message_flag(assistant_message, "retryRequested", "retry_requested")
+            ),
+        }
+
+    def _maybe_enqueue_runtime_continuation(
+        self,
+        *,
+        messages: list,
+        assistant_message: Any,
+        finish_reason: str,
+        final_response: str,
+        runtime_resume_count: int,
+        turn_outcome: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        runtime_state = self.get_runtime_activation_state() if hasattr(self, "get_runtime_activation_state") else {}
+        runtime_mode = runtime_state.get("runtime_mode") if isinstance(runtime_state, dict) else None
+        snapshot = build_continuation_snapshot(
+            self,
+            dict(turn_outcome or {"final_response": final_response, "completed": False, "failed": False, "interrupted": False}),
+        )
+        if not should_use_continuation_engine(runtime_mode, snapshot):
+            return False
+        if runtime_resume_count >= DEFAULT_MAX_RUNTIME_RESUMES:
+            return False
+
+        continuation_prompt = build_runtime_resume_message(
+            snapshot,
+            runtime_mode=runtime_mode,
+            attempt=runtime_resume_count + 1,
+            max_attempts=DEFAULT_MAX_RUNTIME_RESUMES,
+        )
+        continuation_msg = self._build_assistant_message(assistant_message, finish_reason or "incomplete")
+        messages.append(continuation_msg)
+        messages.append({"role": "user", "content": continuation_prompt})
+        self._emit_status(
+            f"↻ Runtime continuation queued ({runtime_mode or 'default'} {runtime_resume_count + 1}/{DEFAULT_MAX_RUNTIME_RESUMES})"
+        )
+        return True
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine — call at actual session boundaries.
@@ -3520,6 +3654,416 @@ class AIAgent:
 
 
 
+    @staticmethod
+    def _build_default_runtime_activation_state() -> Dict[str, Any]:
+        default_archetype = resolve_archetype(None)
+        default_runtime_mode = get_default_runtime_mode()
+        default_route_category = resolve_route_category(default_archetype.default_route_category).name
+        default_delegation_profile = default_archetype.default_delegation_profile
+        return {
+            "archetype": default_archetype.name,
+            "specialist": None,
+            "route_category": default_route_category,
+            "runtime_mode": default_runtime_mode.name,
+            "delegation_profile": default_delegation_profile,
+            "activation_reason": "fallback: compatibility-safe default activation",
+            "task_contract": None,
+            "named_workflow": None,
+            "wave1_overlay_prompt": "",
+            "activation_note": "",
+            "activation_applied": False,
+            "inference_source": "wave2_intent_preclassifier",
+        }
+
+    def get_runtime_activation_state(self) -> Dict[str, Any]:
+        return copy.deepcopy(self.runtime_activation_state)
+
+    def get_runtime_activation_snapshot(self) -> Dict[str, Any]:
+        return copy.deepcopy(getattr(self, "_runtime_activation_snapshot", {"current": None, "last": None}))
+
+    @staticmethod
+    def _summarize_task_contract_for_snapshot(task_contract: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(task_contract, dict) or not task_contract:
+            return None
+
+        parts: list[str] = []
+        task = str(task_contract.get("task") or "").strip()
+        if task:
+            parts.append(task)
+
+        required_tools = task_contract.get("required_tools")
+        if isinstance(required_tools, list) and required_tools:
+            tools_preview = ", ".join(str(item) for item in required_tools[:3])
+            if len(required_tools) > 3:
+                tools_preview = f"{tools_preview}, +{len(required_tools) - 3} more"
+            parts.append(f"tools: {tools_preview}")
+
+        expected_outcome = str(task_contract.get("expected_outcome") or "").strip()
+        if expected_outcome:
+            parts.append(f"outcome: {expected_outcome}")
+
+        if not parts:
+            return "structured task contract present"
+        return " | ".join(parts)[:500]
+
+    @staticmethod
+    def _summarize_named_workflow_for_snapshot(named_workflow: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(named_workflow, dict) or not named_workflow:
+            return None
+        workflow_name = str(named_workflow.get("workflow_name") or "").strip()
+        mode = str(named_workflow.get("mode") or "").strip()
+        objective = str(named_workflow.get("objective") or "").strip()
+        parts = [part for part in (workflow_name, mode, objective) if part]
+        return " | ".join(parts)[:500] if parts else "named workflow artifact present"
+
+    def _build_runtime_activation_snapshot_entry(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        task_contract = state.get("task_contract") if isinstance(state, dict) else None
+        named_workflow = state.get("named_workflow") if isinstance(state, dict) else None
+        return {
+            "specialist": state.get("specialist"),
+            "archetype": state.get("archetype"),
+            "route_category": state.get("route_category"),
+            "delegation_profile": state.get("delegation_profile"),
+            "runtime_mode": state.get("runtime_mode"),
+            "task_contract_present": bool(task_contract),
+            "task_contract_summary": self._summarize_task_contract_for_snapshot(task_contract),
+            "named_workflow_present": bool(named_workflow),
+            "named_workflow_summary": self._summarize_named_workflow_for_snapshot(named_workflow),
+            "activation_source": state.get("inference_source") or "wave2_intent_preclassifier",
+            "activation_reason": state.get("activation_reason") or "fallback: compatibility-safe default activation",
+            "activation_applied": bool(state.get("activation_applied")),
+        }
+
+    def _persist_runtime_activation_snapshot(self) -> None:
+        if not self._session_db or not getattr(self, "session_id", None):
+            return
+        try:
+            self._session_db.update_runtime_activation_snapshot(
+                self.session_id,
+                copy.deepcopy(self._runtime_activation_snapshot),
+            )
+        except Exception as exc:
+            logger.debug("Session DB update_runtime_activation_snapshot failed: %s", exc)
+
+    def _update_runtime_activation_snapshot(self, state: Dict[str, Any]) -> None:
+        previous_current = copy.deepcopy(
+            (getattr(self, "_runtime_activation_snapshot", {}) or {}).get("current")
+        )
+        self._runtime_activation_snapshot = {
+            "current": self._build_runtime_activation_snapshot_entry(state),
+            "last": previous_current,
+        }
+        self._persist_runtime_activation_snapshot()
+
+    @staticmethod
+    def _should_apply_runtime_activation_state(state: Dict[str, Any]) -> bool:
+        if state.get("specialist"):
+            return True
+        if state.get("task_contract"):
+            return True
+        if state.get("named_workflow"):
+            return True
+        if state.get("archetype") != "generalist":
+            return True
+        if state.get("route_category") != DEFAULT_ROUTE_CATEGORY:
+            return True
+        if state.get("runtime_mode") != get_default_runtime_mode().name:
+            return True
+        return bool(state.get("delegation_profile") and state.get("delegation_profile") != "general")
+
+    def _get_named_role_policy(self) -> Dict[str, Any]:
+        state = getattr(self, "runtime_activation_state", None)
+        if not isinstance(state, dict):
+            state = getattr(self, "_runtime_activation_state", None)
+        if not isinstance(state, dict):
+            state = {}
+
+        raw_specialist = str(state.get("specialist") or "").strip().lower()
+        specialist_mapping = resolve_specialist_mapping(raw_specialist)
+        specialist = specialist_mapping.name if specialist_mapping is not None else raw_specialist
+        archetype = str(state.get("archetype") or "").strip().lower()
+        delegation_profile = str(state.get("delegation_profile") or "").strip().lower()
+        reviewer_like = bool(specialist in _REVIEWER_SPECIALISTS)
+        allowed_tool_names = set(getattr(self, "valid_tool_names", set()) or [])
+        if reviewer_like:
+            allowed_tool_names.difference_update(_REVIEWER_BLOCKED_TOOLS)
+        return {
+            "reviewer_like": reviewer_like,
+            "specialist": specialist or None,
+            "archetype": archetype or None,
+            "delegation_profile": delegation_profile or None,
+            "allowed_tool_names": allowed_tool_names,
+        }
+
+    def _get_runtime_scoped_tool_names(self) -> set[str]:
+        policy = self._get_named_role_policy()
+        allowed_tool_names = policy.get("allowed_tool_names")
+        if not isinstance(allowed_tool_names, set):
+            return set(getattr(self, "valid_tool_names", set()) or [])
+        return set(allowed_tool_names)
+
+    def _get_runtime_scoped_tools(self) -> List[Dict[str, Any]]:
+        return filter_tool_definitions_by_name(
+            getattr(self, "tools", None),
+            sorted(self._get_runtime_scoped_tool_names()),
+        )
+
+    def _maybe_block_named_role_tool_call(self, function_name: str, function_args: Optional[Dict[str, Any]]) -> Optional[str]:
+        policy = self._get_named_role_policy()
+        if not policy.get("reviewer_like"):
+            return None
+        if function_name in _REVIEWER_BLOCKED_TOOLS:
+            return (
+                "Reviewer/verifier runtime boundary: this role is read-only and cannot call "
+                f"'{function_name}'. Use read-only inspection, testing, or delegation instead."
+            )
+        if function_name == "terminal" and _is_destructive_command(str((function_args or {}).get("command") or "")):
+            return (
+                "Reviewer/verifier runtime boundary: destructive terminal commands are blocked in "
+                "read-only verification sessions."
+            )
+        return None
+
+    def _evaluate_named_role_completion_gate(self, messages: List[Dict[str, Any]]) -> Optional[str]:
+        policy = self._get_named_role_policy()
+        if not policy.get("reviewer_like"):
+            return None
+
+        tool_names: set[str] = set()
+        blocked_violation_seen = False
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    tool_name = str(tc.get("function", {}).get("name") or "").strip()
+                    if tool_name:
+                        tool_names.add(tool_name)
+            elif msg.get("role") == "tool":
+                content = str(msg.get("content") or "")
+                if "Reviewer/verifier runtime boundary:" in content:
+                    blocked_violation_seen = True
+
+        if blocked_violation_seen:
+            return "Reviewer/verifier completion gate blocked success after a read-only policy violation."
+        if not tool_names.intersection(_REVIEWER_EVIDENCE_TOOLS):
+            return (
+                "Reviewer/verifier completion gate blocked success: no verification evidence tool "
+                "was used in this run."
+            )
+        return None
+
+    def _build_runtime_activation_note(self, state: Dict[str, Any]) -> str:
+        if not self._should_apply_runtime_activation_state(state):
+            return ""
+
+        lines = [
+            "<wave2-runtime-activation>",
+            "Wave 2 Runtime Activation",
+            f"specialist: {state.get('specialist') or 'none'}",
+            f"activation_reason: {state.get('activation_reason') or 'fallback: compatibility-safe default activation'}",
+            f"inference_source: {state.get('inference_source') or 'wave2_intent_preclassifier'}",
+        ]
+        overlay_prompt = str(state.get("wave1_overlay_prompt") or "").strip()
+        if overlay_prompt:
+            lines.extend(["", overlay_prompt])
+        named_workflow = state.get("named_workflow")
+        if isinstance(named_workflow, dict) and named_workflow:
+            lines.extend(["", "<named-workflow>", json.dumps(named_workflow, indent=2, ensure_ascii=False), "</named-workflow>"])
+        lines.append("</wave2-runtime-activation>")
+        return "\n".join(lines)
+
+    def _reconcile_supervisor_tasks(self) -> list[dict[str, Any]]:
+        if getattr(self, "session_id", None) in (None, ""):
+            return []
+        try:
+            from agent.task_store import TaskStore
+
+            store = TaskStore()
+            records = store.reconcile_tasks(owner_session_id=self.session_id)
+        except Exception as exc:
+            logger.debug("Execution supervisor task reconciliation failed: %s", exc, exc_info=True)
+            return []
+
+        snapshots = [
+            {
+                "task_id": record.id,
+                "status": record.execution.status.value,
+                "archetype": record.archetype,
+                "route_category": record.route_category,
+                "delegation_profile": record.delegation_profile,
+                "runtime_mode": record.runtime_mode,
+                "summary": record.summary,
+            }
+            for record in records
+        ]
+        self._supervisor_task_snapshot = snapshots
+        return snapshots
+
+    def _build_execution_supervisor_note(self) -> str:
+        state = getattr(self, "runtime_activation_state", {}) or {}
+        if state.get("runtime_mode") != "execution_supervisor":
+            self._supervisor_task_snapshot = []
+            return ""
+
+        snapshots = self._reconcile_supervisor_tasks()
+        if not snapshots:
+            return ""
+
+        lines = [
+            "<execution-supervisor-state>",
+            "Persistent task state snapshot",
+        ]
+        for item in snapshots:
+            lines.append(
+                "- task_id={task_id} status={status} archetype={archetype} route_category={route_category} delegation_profile={delegation_profile} runtime_mode={runtime_mode}".format(
+                    task_id=item.get("task_id"),
+                    status=item.get("status"),
+                    archetype=item.get("archetype") or "none",
+                    route_category=item.get("route_category") or "none",
+                    delegation_profile=item.get("delegation_profile") or "none",
+                    runtime_mode=item.get("runtime_mode") or "none",
+                )
+            )
+            if item.get("summary"):
+                lines.append(f"  summary: {item['summary']}")
+        lines.append("</execution-supervisor-state>")
+        return "\n".join(lines)
+
+    def _resolve_runtime_activation_state(self, user_message: str) -> Dict[str, Any]:
+        if getattr(self, "_delegate_depth", 0) != 0:
+            state = self._build_default_runtime_activation_state()
+            delegate_resolution = dict(getattr(self, "_delegate_resolution", {}) or {})
+            specialist_mapping = resolve_specialist_mapping(delegate_resolution.get("specialist"))
+            resolved_specialist = specialist_mapping.name if specialist_mapping is not None else None
+            delegate_archetype = delegate_resolution.get("archetype") or state["archetype"]
+            if specialist_mapping is not None:
+                delegate_archetype = specialist_mapping.archetype_name
+            delegate_route_category = (
+                delegate_resolution.get("route_category_definition")
+                or delegate_resolution.get("route_category")
+                or (specialist_mapping.default_route_category if specialist_mapping is not None else None)
+                or state["route_category"]
+            )
+            delegate_delegation_profile = (
+                delegate_resolution.get("delegation_profile")
+                or (specialist_mapping.default_delegation_profile if specialist_mapping is not None else None)
+                or state["delegation_profile"]
+            )
+            normalized_inputs = normalize_wave1_overlay_inputs(
+                archetype_name=delegate_archetype,
+                route_category=delegate_route_category,
+                delegation_profile=delegate_delegation_profile,
+                runtime_mode=delegate_resolution.get("runtime_mode_definition") or delegate_resolution.get("runtime_mode") or state["runtime_mode"],
+                skills=delegate_resolution.get("skills"),
+                task_contract=delegate_resolution.get("task_contract"),
+                orchestration_hints=delegate_resolution.get("orchestration_hints"),
+            )
+            resolved_named_workflow = None
+            raw_named_workflow = delegate_resolution.get("named_workflow")
+            if isinstance(raw_named_workflow, dict) and raw_named_workflow:
+                try:
+                    resolved_named_workflow = validate_named_workflow_artifact(raw_named_workflow).model_dump(by_alias=True)
+                except Exception as exc:
+                    logger.debug("Ignoring invalid delegate named_workflow during runtime activation passthrough: %s", exc)
+            state.update({
+                "specialist": resolved_specialist,
+                "archetype": normalized_inputs["archetype"],
+                "route_category": normalized_inputs["route_category"],
+                "runtime_mode": normalized_inputs["runtime_mode"],
+                "delegation_profile": normalized_inputs["delegation_profile"],
+                "task_contract": normalized_inputs["task_contract"],
+                "named_workflow": resolved_named_workflow,
+                "wave1_overlay_prompt": build_wave1_overlay_prompt_from_normalized(normalized_inputs),
+            })
+            state["inference_source"] = "delegate_passthrough"
+            state["activation_note"] = self._build_runtime_activation_note(state)
+            state["activation_applied"] = bool(state["activation_note"])
+            return state
+
+        try:
+            preclassification = preclassify_intent(user_message)
+        except Exception as exc:
+            logger.debug("Wave 2 runtime activation preclassification failed: %s", exc, exc_info=True)
+            preclassification = preclassify_intent(None)
+
+        default_state = self._build_default_runtime_activation_state()
+        raw_specialist = getattr(preclassification, "inferred_specialist", None)
+        specialist_mapping = resolve_specialist_mapping(raw_specialist)
+        resolved_specialist = specialist_mapping.name if specialist_mapping is not None else None
+
+        inferred_archetype = specialist_mapping.archetype_name if specialist_mapping is not None else getattr(preclassification, "inferred_archetype", None)
+        resolved_archetype = resolve_archetype(inferred_archetype)
+        raw_route_category = str(getattr(preclassification, "inferred_route_category", "") or "").strip()
+        if raw_route_category and raw_route_category in BUILTIN_ROUTE_CATEGORIES:
+            route_category = resolve_route_category(raw_route_category).name
+        elif specialist_mapping is not None and specialist_mapping.default_route_category:
+            route_category = resolve_route_category(specialist_mapping.default_route_category).name
+        else:
+            route_category = resolve_route_category(resolved_archetype.default_route_category).name
+        runtime_mode = resolve_runtime_mode(getattr(preclassification, "inferred_runtime_mode", None)).name
+        delegation_profile = str(getattr(preclassification, "inferred_delegation_profile", "") or "").strip()
+        if not delegation_profile and specialist_mapping is not None and specialist_mapping.default_delegation_profile:
+            delegation_profile = specialist_mapping.default_delegation_profile
+        if not delegation_profile:
+            delegation_profile = resolved_archetype.default_delegation_profile or default_state["delegation_profile"]
+
+        task_contract_payload = None
+        raw_task_contract = getattr(preclassification, "task_contract", None)
+        if raw_task_contract not in (None, "", {}):
+            try:
+                task_contract_payload = validate_task_contract(raw_task_contract).model_dump()
+            except Exception as exc:
+                logger.debug("Ignoring invalid task_contract from runtime activation preclassifier: %s", exc)
+
+        normalized_inputs = normalize_wave1_overlay_inputs(
+            archetype_name=resolved_archetype.name,
+            route_category=route_category,
+            delegation_profile=delegation_profile,
+            runtime_mode=runtime_mode,
+            task_contract=task_contract_payload,
+        )
+
+        state = {
+            "archetype": normalized_inputs["archetype"],
+            "specialist": resolved_specialist,
+            "route_category": normalized_inputs["route_category"],
+            "runtime_mode": normalized_inputs["runtime_mode"],
+            "delegation_profile": normalized_inputs["delegation_profile"],
+            "activation_reason": str(
+                getattr(preclassification, "activation_reason", "")
+                or default_state["activation_reason"]
+            ).strip(),
+            "task_contract": normalized_inputs["task_contract"],
+            "inference_source": str(
+                getattr(preclassification, "inference_source", "")
+                or default_state["inference_source"]
+            ).strip(),
+        }
+        state["named_workflow"] = build_named_workflow_artifact(
+            objective=user_message,
+            specialist=resolved_specialist,
+            archetype=state["archetype"],
+            route_category=state["route_category"],
+            runtime_mode=state["runtime_mode"],
+            delegation_profile=state["delegation_profile"],
+            task_contract=state["task_contract"],
+        )
+        state["wave1_overlay_prompt"] = build_wave1_overlay_prompt_from_normalized(normalized_inputs)
+        state["activation_note"] = self._build_runtime_activation_note(state)
+        state["activation_applied"] = bool(state["activation_note"])
+        return state
+
+    def _activate_runtime_for_turn(self, user_message: str) -> Dict[str, Any]:
+        state = self._resolve_runtime_activation_state(user_message)
+        self._runtime_activation_state = copy.deepcopy(state)
+        self.runtime_activation_state = copy.deepcopy(state)
+        self._update_runtime_activation_snapshot(state)
+        self._current_turn_runtime_activation_note = state.get("activation_note") or ""
+        return self.runtime_activation_state
+
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
         Assemble the full system prompt from all layers.
@@ -3648,7 +4192,10 @@ class AIAgent:
             # other dev files — inflating token usage by ~10k for no benefit.
             _context_cwd = os.getenv("TERMINAL_CWD") or None
             context_files_prompt = build_context_files_prompt(
-                cwd=_context_cwd, skip_soul=_soul_loaded)
+                cwd=_context_cwd,
+                skip_soul=_soul_loaded,
+                task_contract=(self.get_runtime_activation_state() or {}).get("task_contract"),
+            )
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
@@ -4027,7 +4574,7 @@ class AIAgent:
 
     def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
-        source_tools = tools if tools is not None else self.tools
+        source_tools = tools if tools is not None else self._get_runtime_scoped_tools()
         if not source_tools:
             return None
 
@@ -6855,7 +7402,7 @@ class AIAgent:
             return build_anthropic_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
-                tools=self.tools,
+                tools=self._get_runtime_scoped_tools(),
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
@@ -6877,7 +7424,7 @@ class AIAgent:
                 **build_converse_kwargs(
                     model=self.model,
                     messages=api_messages,
-                    tools=self.tools,
+                    tools=self._get_runtime_scoped_tools(),
                     max_tokens=self.max_tokens or 4096,
                     temperature=None,  # Let the model use its default
                     guardrail_config=guardrail,
@@ -7052,8 +7599,9 @@ class AIAgent:
                 "sessionId": self.session_id or "hermes",
                 "promptId": str(uuid.uuid4()),
             }
-        if self.tools:
-            api_kwargs["tools"] = self.tools
+        active_tools = self._get_runtime_scoped_tools()
+        if active_tools:
+            api_kwargs["tools"] = active_tools
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -7221,6 +7769,155 @@ class AIAgent:
 
         return {"effort": requested_effort}
 
+    def _subagent_swarm_id(self, goal: str, task_index: Any) -> str:
+        return f"sa:{int(task_index or 0)}:{goal or 'subagent'}"
+
+    def _record_subagent_swarm_event(self, event_type: str, tool_name: str = None, preview: str = None, **kwargs) -> None:
+        if not isinstance(event_type, str) or not event_type.startswith("subagent."):
+            return
+        goal = str(kwargs.get("goal") or "")
+        task_index = int(kwargs.get("task_index") or 0)
+        task_count = int(kwargs.get("task_count") or 1)
+        item_id = self._subagent_swarm_id(goal, task_index)
+        entry = self._current_turn_swarm.get(item_id) or {
+            "durationSeconds": None,
+            "goal": goal,
+            "id": item_id,
+            "index": task_index,
+            "notes": [],
+            "status": "running",
+            "summary": None,
+            "taskCount": task_count,
+            "thinking": [],
+            "tools": [],
+        }
+        entry["goal"] = goal or entry.get("goal") or "subagent"
+        entry["taskCount"] = task_count or entry.get("taskCount") or 1
+        text = str(preview or "").strip()
+        if event_type == "subagent.start":
+            entry["status"] = "running"
+        elif event_type == "subagent.thinking":
+            if text and text not in entry["thinking"]:
+                entry["thinking"] = [*entry["thinking"], text][-6:]
+            if entry.get("status") != "completed":
+                entry["status"] = "running"
+        elif event_type == "subagent.tool":
+            tool_line = f"{tool_name}: {text}".strip(": ") if tool_name else text
+            if tool_line and tool_line not in entry["tools"]:
+                entry["tools"] = [*entry["tools"], tool_line][-8:]
+            if entry.get("status") != "completed":
+                entry["status"] = "running"
+        elif event_type == "subagent.progress":
+            if text and text not in entry["notes"]:
+                entry["notes"] = [*entry["notes"], text][-8:]
+            if entry.get("status") != "completed":
+                entry["status"] = "running"
+        elif event_type == "subagent.complete":
+            entry["status"] = str(kwargs.get("status") or "completed")
+            if kwargs.get("duration_seconds") is not None:
+                try:
+                    entry["durationSeconds"] = float(kwargs.get("duration_seconds"))
+                except (TypeError, ValueError):
+                    pass
+            summary = str(kwargs.get("summary") or text or "").strip()
+            if summary:
+                entry["summary"] = summary
+        self._current_turn_swarm[item_id] = entry
+
+    def _build_current_turn_swarm_snapshot(self) -> Optional[Dict[str, Any]]:
+        if not self._current_turn_swarm:
+            return None
+        subagents = sorted(
+            ({
+                "durationSeconds": item.get("durationSeconds"),
+                "goal": item.get("goal") or "subagent",
+                "id": item.get("id"),
+                "index": int(item.get("index") or 0),
+                "notes": list(item.get("notes") or []),
+                "status": str(item.get("status") or "running"),
+                "summary": item.get("summary"),
+                "taskCount": int(item.get("taskCount") or 1),
+                "thinking": list(item.get("thinking") or []),
+                "tools": list(item.get("tools") or []),
+            } for item in self._current_turn_swarm.values()),
+            key=lambda item: (item["index"], item["goal"]),
+        )
+        if not subagents:
+            return None
+        return {"swarm": {"subagents": subagents, "turnStatus": "persisted"}}
+
+    def _wrap_tool_progress_callback(self, callback):
+        if callback is None:
+            return None
+
+        def _wrapped(event_type, tool_name=None, preview=None, args=None, **kwargs):
+            try:
+                self._record_subagent_swarm_event(event_type, tool_name=tool_name, preview=preview, **kwargs)
+            except Exception:
+                pass
+            return callback(event_type, tool_name, preview, args, **kwargs)
+
+        return _wrapped
+
+    def _subagent_swarm_key(self, payload: Dict[str, Any]) -> Optional[str]:
+        goal = str(payload.get("goal") or "").strip()
+        index = payload.get("task_index", 0)
+        if not goal and index is None:
+            return None
+        return f"sa:{index}:{goal}"
+
+    def _record_subagent_swarm_event(self, event_type: str, tool_name=None, preview=None, **payload) -> None:
+        if not isinstance(event_type, str) or not event_type.startswith("subagent."):
+            return
+        key = self._subagent_swarm_key(payload)
+        if not key:
+            return
+        current = self._current_turn_swarm.get(key) or {
+            "goal": str(payload.get("goal") or "").strip(),
+            "id": key,
+            "index": int(payload.get("task_index", 0) or 0),
+            "notes": [],
+            "status": "running",
+            "summary": "",
+            "taskCount": payload.get("task_count"),
+            "thinking": [],
+            "tools": [],
+        }
+        current["goal"] = str(payload.get("goal") or current.get("goal") or "").strip()
+        current["index"] = int(payload.get("task_index", current.get("index", 0)) or 0)
+        if payload.get("task_count") is not None:
+            current["taskCount"] = payload.get("task_count")
+        if event_type == "subagent.thinking" and payload.get("text"):
+            current.setdefault("thinking", []).append(str(payload.get("text")))
+        elif event_type == "subagent.progress" and payload.get("text"):
+            current.setdefault("notes", []).append(str(payload.get("text")))
+        elif event_type == "subagent.tool":
+            label = preview or tool_name or payload.get("tool_name")
+            if label:
+                current.setdefault("tools", []).append(str(label))
+        elif event_type in {"subagent.complete", "subagent.error"}:
+            status = payload.get("status")
+            if isinstance(status, str) and status.strip():
+                current["status"] = status.strip()
+            elif event_type == "subagent.error":
+                current["status"] = "failed"
+            else:
+                current["status"] = "completed"
+            if payload.get("summary"):
+                current["summary"] = str(payload.get("summary"))
+            if payload.get("duration_seconds") is not None:
+                current["durationSeconds"] = payload.get("duration_seconds")
+        self._current_turn_swarm[key] = current
+
+    def _build_current_turn_swarm_snapshot(self) -> Optional[Dict[str, Any]]:
+        if not self._current_turn_swarm:
+            return None
+        subagents = sorted(
+            (copy.deepcopy(item) for item in self._current_turn_swarm.values()),
+            key=lambda item: (int(item.get("index", 0)), str(item.get("goal", ""))),
+        )
+        return {"swarm": {"subagents": subagents, "turnStatus": "persisted"}}
+
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
 
@@ -7271,6 +7968,11 @@ class AIAgent:
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
         }
+
+        if finish_reason != "tool_calls":
+            swarm_snapshot = self._build_current_turn_swarm_snapshot()
+            if swarm_snapshot:
+                msg["metadata"] = swarm_snapshot
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
@@ -7610,6 +8312,12 @@ class AIAgent:
                     source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     model=self.model,
                     parent_session_id=old_session_id,
+                    runtime_activation_snapshot=copy.deepcopy(self._runtime_activation_snapshot),
+                )
+                self._emit_status(
+                    "🧵 Context compacted — continuing the same conversation under a new "
+                    f"session id ({self.session_id}, was {old_session_id}). "
+                    "Work/state are preserved; this is not a reset."
                 )
                 # Auto-number the title for the continuation session
                 if old_title:
@@ -7701,6 +8409,10 @@ class AIAgent:
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
 
+        named_role_block = self._maybe_block_named_role_tool_call(function_name, function_args)
+        if named_role_block is not None:
+            return json.dumps({"error": named_role_block}, ensure_ascii=False)
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -7757,7 +8469,15 @@ class AIAgent:
                 toolsets=function_args.get("toolsets"),
                 tasks=function_args.get("tasks"),
                 category=function_args.get("category"),
+                archetype=function_args.get("archetype"),
+                route_category=function_args.get("route_category"),
+                delegation_profile=function_args.get("delegation_profile"),
+                runtime_mode=function_args.get("runtime_mode"),
+                skills=function_args.get("skills"),
+                task_contract=function_args.get("task_contract"),
                 max_iterations=function_args.get("max_iterations"),
+                persistent=bool(function_args.get("persistent", False)),
+                background=bool(function_args.get("background", False)),
                 acp_command=function_args.get("acp_command"),
                 acp_args=function_args.get("acp_args"),
                 parent_agent=self,
@@ -7767,7 +8487,7 @@ class AIAgent:
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
-                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                enabled_tools=sorted(self._get_runtime_scoped_tool_names()),
                 skip_pre_tool_call_hook=True,
             )
 
@@ -8259,7 +8979,18 @@ class AIAgent:
                         context=function_args.get("context"),
                         toolsets=function_args.get("toolsets"),
                         tasks=tasks_arg,
+                        category=function_args.get("category"),
+                        archetype=function_args.get("archetype"),
+                        route_category=function_args.get("route_category"),
+                        delegation_profile=function_args.get("delegation_profile"),
+                        runtime_mode=function_args.get("runtime_mode"),
+                        skills=function_args.get("skills"),
+                        task_contract=function_args.get("task_contract"),
                         max_iterations=function_args.get("max_iterations"),
+                        persistent=bool(function_args.get("persistent", False)),
+                        background=bool(function_args.get("background", False)),
+                        acp_command=function_args.get("acp_command"),
+                        acp_args=function_args.get("acp_args"),
                         parent_agent=self,
                     )
                     _delegate_result = function_result
@@ -8332,7 +9063,7 @@ class AIAgent:
                         function_name, function_args, effective_task_id,
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        enabled_tools=sorted(self._get_runtime_scoped_tool_names()),
                         skip_pre_tool_call_hook=True,
                     )
                     _spinner_result = function_result
@@ -8352,7 +9083,7 @@ class AIAgent:
                         function_name, function_args, effective_task_id,
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        enabled_tools=sorted(self._get_runtime_scoped_tool_names()),
                         skip_pre_tool_call_hook=True,
                     )
                 except Exception as tool_error:
@@ -8672,6 +9403,7 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        self._current_turn_swarm = {}
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -8742,6 +9474,7 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+        self._activate_runtime_for_turn(original_user_message)
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
@@ -8833,7 +9566,7 @@ class AIAgent:
             _preflight_tokens = estimate_request_tokens_rough(
                 messages,
                 system_prompt=active_system_prompt or "",
-                tools=self.tools or None,
+                tools=self._get_runtime_scoped_tools() or None,
             )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
@@ -8879,7 +9612,7 @@ class AIAgent:
                     _preflight_tokens = estimate_request_tokens_rough(
                         messages,
                         system_prompt=active_system_prompt or "",
-                        tools=self.tools or None,
+                        tools=self._get_runtime_scoped_tools() or None,
                     )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
@@ -8925,6 +9658,7 @@ class AIAgent:
         final_response = None
         interrupted = False
         codex_ack_continuations = 0
+        runtime_resume_count = 0
         length_continue_retries = 0
         truncated_tool_call_retries = 0
         truncated_response_prefix = ""
@@ -9047,6 +9781,11 @@ class AIAgent:
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
                     _injections = []
+                    if self._current_turn_runtime_activation_note:
+                        _injections.append(self._current_turn_runtime_activation_note)
+                    _execution_supervisor_note = self._build_execution_supervisor_note()
+                    if _execution_supervisor_note:
+                        _injections.append(_execution_supervisor_note)
                     if self._should_inject_orchestration_note(original_user_message, api_call_count):
                         _injections.append(self._build_orchestration_user_note())
                     if _ext_prefetch_cache:
@@ -11543,6 +12282,23 @@ class AIAgent:
                     ):
                         messages.pop()
 
+                    if self._maybe_enqueue_runtime_continuation(
+                        messages=messages,
+                        assistant_message=assistant_message,
+                        finish_reason=finish_reason,
+                        final_response=final_response,
+                        runtime_resume_count=runtime_resume_count,
+                        turn_outcome=self._build_runtime_continuation_turn_outcome(
+                            assistant_message=assistant_message,
+                            final_response=final_response,
+                            interrupted=interrupted,
+                        ),
+                    ):
+                        runtime_resume_count += 1
+                        self._session_messages = messages
+                        self._save_session_log(messages)
+                        continue
+
                     messages.append(final_msg)
                     
                     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
@@ -11675,6 +12431,12 @@ class AIAgent:
         else:
             logger.info(_diag_msg, *_diag_args)
 
+        if final_response and not interrupted:
+            named_role_completion_error = self._evaluate_named_role_completion_gate(messages)
+            if named_role_completion_error:
+                final_response = named_role_completion_error
+                completed = False
+
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
         # Plugins can use this to persist conversation data (e.g. sync
@@ -11714,6 +12476,7 @@ class AIAgent:
             "model": self.model,
             "provider": self.provider,
             "base_url": self.base_url,
+            "runtime_activation": self.get_runtime_activation_state(),
             "input_tokens": self.session_input_tokens,
             "output_tokens": self.session_output_tokens,
             "cache_read_tokens": self.session_cache_read_tokens,

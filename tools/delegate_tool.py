@@ -20,13 +20,31 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import shlex
+import sys
 import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from agent.archetypes import resolve_archetype, resolve_archetype_defaults, resolve_specialist_mapping
+from agent.continuation_engine import apply_bounded_continuation_engine, build_continuation_snapshot
+from agent.prompt_builder import build_wave1_overlay_prompt_from_normalized, normalize_wave1_overlay_inputs
+from agent.route_categories import BUILTIN_ROUTE_CATEGORIES, DEFAULT_ROUTE_CATEGORY
+from agent.runtime_modes import DEFAULT_RUNTIME_MODE_NAME, resolve_runtime_mode
+from agent.task_contracts import (
+    build_named_workflow_artifact,
+    validate_named_workflow_artifact,
+    validate_task_contract,
+)
+from agent.task_store import TaskStatus, TaskStore
+from tools.background_delegate_tools import (
+    BackgroundDelegateLaunchError,
+    launch_background_delegate_task,
+)
 from toolsets import TOOLSETS
 
 
@@ -82,8 +100,40 @@ def _get_max_concurrent_children() -> int:
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
-DEFAULT_DELEGATION_CATEGORY = "general"
-DEFAULT_CATEGORY_PROFILES = {
+DEFAULT_DELEGATION_PROFILE = "general"
+_REVIEWER_ARCHETYPES = frozenset({"verifier"})
+_REVIEWER_SPECIALISTS = frozenset({"code_reviewer", "qa_guard"})
+_REVIEWER_DELEGATION_PROFILES = frozenset({"verification"})
+_REVIEWER_READ_ONLY_TOOLS = frozenset({
+    "browser_console",
+    "browser_get_images",
+    "browser_navigate",
+    "browser_scroll",
+    "browser_snapshot",
+    "browser_vision",
+    "clarify",
+    "ha_get_state",
+    "ha_list_entities",
+    "ha_list_services",
+    "process",
+    "read_file",
+    "search_files",
+    "session_search",
+    "skill_view",
+    "skills_list",
+    "task",
+    "terminal",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
+})
+_REVIEWER_MUTATING_REQUIRED_TOOLS = frozenset({
+    "write_file",
+    "patch",
+    "memory",
+    "send_message",
+})
+DEFAULT_DELEGATION_PROFILES = {
     "general": {"max_concurrent_children": _DEFAULT_MAX_CONCURRENT_CHILDREN},
     "research": {
         "max_concurrent_children": 3,
@@ -106,6 +156,9 @@ DEFAULT_CATEGORY_PROFILES = {
         "toolsets": ["terminal", "file", "web"],
     },
 }
+# Back-compat export for pre-Wave-1 tests/imports.
+DEFAULT_DELEGATION_CATEGORY = DEFAULT_DELEGATION_PROFILE
+DEFAULT_CATEGORY_PROFILES = DEFAULT_DELEGATION_PROFILES
 
 
 def check_delegate_requirements() -> bool:
@@ -117,7 +170,9 @@ def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
     *,
+    wave1_overlay_prompt: Optional[str] = None,
     workspace_path: Optional[str] = None,
+    named_workflow: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent."""
     parts = [
@@ -127,6 +182,14 @@ def _build_child_system_prompt(
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    if wave1_overlay_prompt and wave1_overlay_prompt.strip():
+        parts.append(f"\nWAVE 1 DELEGATION INPUTS:\n{wave1_overlay_prompt.strip()}")
+    if isinstance(named_workflow, dict) and named_workflow:
+        parts.append(
+            "\nNAMED WORKFLOW ARTIFACT:\n"
+            f"{json.dumps(named_workflow, indent=2, ensure_ascii=False)}\n"
+            "Consume this structured artifact behaviorally. If it includes an execution_task_contract, follow that contract before freeform execution."
+        )
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -187,6 +250,518 @@ def _normalize_category_name(value: Optional[str]) -> str:
     return value.strip().lower().replace(" ", "_").replace("-", "_")
 
 
+def _normalize_named_string_list(values: Any) -> List[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _canonicalize_archetype_name(value: Optional[str]) -> str:
+    return resolve_archetype(value).name
+
+
+def _get_parent_runtime_activation_defaults(parent_agent) -> Dict[str, Any]:
+    if parent_agent is None:
+        return {}
+
+    state = None
+    getter = getattr(parent_agent, "get_runtime_activation_state", None)
+    if callable(getter):
+        try:
+            state = getter()
+        except Exception as exc:
+            logger.debug("Could not read parent runtime activation state via getter: %s", exc)
+
+    if not isinstance(state, dict):
+        state = getattr(parent_agent, "runtime_activation_state", None)
+    if not isinstance(state, dict):
+        state = getattr(parent_agent, "_runtime_activation_state", None)
+    if not isinstance(state, dict):
+        return {}
+
+    return {
+        "specialist": str(state.get("specialist") or "").strip() or None,
+        "archetype": str(state.get("archetype") or "").strip() or None,
+        "route_category": str(state.get("route_category") or "").strip() or None,
+        "delegation_profile": str(state.get("delegation_profile") or "").strip() or None,
+        "runtime_mode": str(state.get("runtime_mode") or "").strip() or None,
+        "task_contract": state.get("task_contract"),
+        "named_workflow": state.get("named_workflow"),
+        "activation_applied": bool(state.get("activation_applied")),
+    }
+
+
+def _resolve_contract_tool_requirements(
+    task_contract: Optional[Dict[str, Any]],
+    *,
+    parent_agent=None,
+) -> Dict[str, List[str]]:
+    if not isinstance(task_contract, dict):
+        return {"toolsets": [], "enabled_tools": [], "required_tools": []}
+
+    required_tools = _normalize_named_string_list(task_contract.get("required_tools"))
+    if not required_tools:
+        return {"toolsets": [], "enabled_tools": [], "required_tools": []}
+
+    parent_tool_names = set(getattr(parent_agent, "valid_tool_names", set()) or [])
+    resolved_toolsets: List[str] = []
+    resolved_enabled_tools: List[str] = []
+
+    for required in required_tools:
+        if required in TOOLSETS:
+            resolved_toolsets.append(required)
+            toolset_tools = TOOLSETS.get(required, {}).get("tools", [])
+            resolved_enabled_tools.extend(
+                tool_name
+                for tool_name in toolset_tools
+                if tool_name not in DELEGATE_BLOCKED_TOOLS
+                and (not parent_tool_names or tool_name in parent_tool_names)
+            )
+            continue
+
+        if required in DELEGATE_BLOCKED_TOOLS:
+            continue
+        if not parent_tool_names or required in parent_tool_names:
+            resolved_enabled_tools.append(required)
+
+    return {
+        "toolsets": list(dict.fromkeys(resolved_toolsets)),
+        "enabled_tools": list(dict.fromkeys(resolved_enabled_tools)),
+        "required_tools": required_tools,
+    }
+
+
+def _is_reviewer_like_resolution(resolved_inputs: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(resolved_inputs, dict):
+        return False
+    specialist = str(resolved_inputs.get("specialist") or "").strip().lower()
+    return bool(specialist in _REVIEWER_SPECIALISTS)
+
+
+def _apply_named_role_tool_policy(
+    *,
+    resolved_inputs: Dict[str, Any],
+    toolsets: Optional[List[str]],
+    enabled_tools: Optional[List[str]],
+    parent_agent=None,
+) -> tuple[Optional[List[str]], Optional[List[str]]]:
+    if not _is_reviewer_like_resolution(resolved_inputs):
+        return toolsets, enabled_tools
+
+    contract = resolved_inputs.get("task_contract") if isinstance(resolved_inputs, dict) else None
+    required_tools = []
+    if isinstance(contract, dict):
+        required_tools = _normalize_named_string_list(contract.get("required_tools"))
+    forbidden_required = sorted(tool for tool in required_tools if tool in _REVIEWER_MUTATING_REQUIRED_TOOLS)
+    if forbidden_required:
+        raise ValueError(
+            "Reviewer/verifier delegations are read-only and cannot require mutating tools: "
+            + ", ".join(forbidden_required)
+        )
+
+    parent_tool_names = set(getattr(parent_agent, "valid_tool_names", set()) or [])
+    available_read_only = sorted(
+        tool_name for tool_name in parent_tool_names if tool_name in _REVIEWER_READ_ONLY_TOOLS
+    )
+
+    requested_tools = _normalize_named_string_list(enabled_tools)
+    if requested_tools:
+        filtered_tools = [tool for tool in requested_tools if tool in _REVIEWER_READ_ONLY_TOOLS]
+    else:
+        filtered_tools = list(available_read_only)
+
+    if not filtered_tools and available_read_only:
+        filtered_tools = list(available_read_only)
+
+    existing_hints = resolved_inputs.get("orchestration_hints")
+    resolved_inputs["orchestration_hints"] = dict(existing_hints) if isinstance(existing_hints, dict) else {}
+    resolved_inputs["orchestration_hints"].update(
+        {
+            "behavior_boundary": "reviewer_read_only",
+            "completion_gate": "verification_evidence_required",
+            "read_only_tools": filtered_tools,
+        }
+    )
+
+    normalized_toolsets = _normalize_named_string_list(toolsets)
+    if "terminal" in filtered_tools and "terminal" not in normalized_toolsets:
+        normalized_toolsets.append("terminal")
+    if any(tool in filtered_tools for tool in ("read_file", "search_files")) and "file" not in normalized_toolsets:
+        normalized_toolsets.append("file")
+    if any(tool in filtered_tools for tool in ("web_search", "web_extract", "browser_navigate", "browser_snapshot", "browser_console", "browser_scroll", "browser_get_images", "browser_vision", "vision_analyze")) and "web" not in normalized_toolsets:
+        normalized_toolsets.append("web")
+    if any(tool in filtered_tools for tool in ("task",)) and "orchestration" not in normalized_toolsets:
+        normalized_toolsets.append("orchestration")
+
+    return normalized_toolsets or None, filtered_tools or None
+
+
+def _apply_named_role_completion_gate(
+    entry: Dict[str, Any],
+    *,
+    resolved_inputs: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not _is_reviewer_like_resolution(resolved_inputs):
+        return entry
+
+    tool_trace = entry.get("tool_trace") or []
+    tool_names = {
+        str(item.get("tool") or "").strip()
+        for item in tool_trace
+        if isinstance(item, dict)
+    }
+    evidence_tools = tool_names.intersection(_REVIEWER_READ_ONLY_TOOLS)
+    if entry.get("status") == "completed" and not evidence_tools:
+        entry["status"] = "failed"
+        entry["error"] = (
+            "Reviewer/verifier completion gate blocked success: no verification evidence tool "
+            "was used in this run."
+        )
+        entry["exit_reason"] = "verification_evidence_missing"
+    return entry
+
+
+def _resolve_route_category_entry(category_name: Optional[str], cfg: Dict[str, Any]) -> Dict[str, str]:
+    normalized_name = _normalize_category_name(category_name) or DEFAULT_ROUTE_CATEGORY
+    registry = cfg.get("route_categories") if isinstance(cfg, dict) else {}
+    if isinstance(registry, dict) and normalized_name in registry and isinstance(registry[normalized_name], dict):
+        entry = registry[normalized_name]
+        return {
+            "name": normalized_name,
+            "summary": str(entry.get("summary") or "").strip(),
+            "intensity": str(entry.get("intensity") or "").strip(),
+        }
+    builtin = BUILTIN_ROUTE_CATEGORIES.get(normalized_name)
+    if builtin is None:
+        raise ValueError(
+            f"Unknown route_category '{normalized_name}'. "
+            f"Expected one of: {', '.join(sorted(BUILTIN_ROUTE_CATEGORIES))}"
+        )
+    return {
+        "name": builtin.name,
+        "summary": builtin.summary,
+        "intensity": builtin.intensity,
+    }
+
+
+def _resolve_runtime_mode_entry(
+    runtime_mode_name: Optional[str],
+    cfg: Dict[str, Any],
+) -> Dict[str, str]:
+    resolved_builtin = resolve_runtime_mode(runtime_mode_name)
+    normalized_name = str(runtime_mode_name or resolved_builtin.name).strip() or resolved_builtin.name
+    registry = cfg.get("runtime_modes") if isinstance(cfg, dict) else {}
+    if isinstance(registry, dict) and normalized_name in registry and isinstance(registry[normalized_name], dict):
+        entry = registry[normalized_name]
+        return {
+            "name": normalized_name,
+            "description": str(entry.get("description") or resolved_builtin.description).strip(),
+            "operating_posture": str(entry.get("operating_posture") or resolved_builtin.operating_posture).strip(),
+            "kind": str(entry.get("kind") or resolved_builtin.kind).strip() or resolved_builtin.kind,
+        }
+    return {
+        "name": resolved_builtin.name,
+        "description": resolved_builtin.description,
+        "operating_posture": resolved_builtin.operating_posture,
+        "kind": resolved_builtin.kind,
+    }
+
+
+def _resolve_profile_runtime_mode(
+    task: Dict[str, Any],
+    top_level_runtime_mode: Optional[str],
+    cfg: Dict[str, Any],
+    delegation_profile: str,
+) -> Dict[str, str]:
+    explicit_runtime_mode = str(task.get("runtime_mode") or "").strip()
+    if explicit_runtime_mode:
+        return _resolve_runtime_mode_entry(explicit_runtime_mode, cfg)
+
+    inherited_runtime_mode = str(top_level_runtime_mode or "").strip()
+    if inherited_runtime_mode:
+        return _resolve_runtime_mode_entry(inherited_runtime_mode, cfg)
+
+    profile = _resolve_category_profile(cfg, delegation_profile)
+    profile_runtime_mode = str(profile.get("runtime_mode") or "").strip()
+    if profile_runtime_mode:
+        return _resolve_runtime_mode_entry(profile_runtime_mode, cfg)
+
+    configured_runtime_mode = str(cfg.get("runtime_mode") or "").strip()
+    return _resolve_runtime_mode_entry(configured_runtime_mode or DEFAULT_RUNTIME_MODE_NAME, cfg)
+
+
+def _resolve_task_delegation_profile_details(
+    task: Dict[str, Any],
+    top_level_delegation_profile: Optional[str],
+    top_level_category: Optional[str],
+    cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    explicit_profile = _normalize_category_name(task.get("delegation_profile"))
+    if explicit_profile:
+        return {
+            "value": explicit_profile,
+            "source": "delegation_profile",
+            "compatibility_only": False,
+            "legacy_category_input": None,
+        }
+
+    legacy_task_category = _normalize_category_name(task.get("category"))
+    if legacy_task_category:
+        return {
+            "value": legacy_task_category,
+            "source": "legacy_task_category",
+            "compatibility_only": True,
+            "legacy_category_input": str(task.get("category") or "").strip() or None,
+        }
+
+    inherited_profile = _normalize_category_name(top_level_delegation_profile)
+    if inherited_profile:
+        return {
+            "value": inherited_profile,
+            "source": "inherited_delegation_profile",
+            "compatibility_only": False,
+            "legacy_category_input": None,
+        }
+
+    inherited_legacy_category = _normalize_category_name(top_level_category)
+    if inherited_legacy_category:
+        return {
+            "value": inherited_legacy_category,
+            "source": "inherited_legacy_category",
+            "compatibility_only": True,
+            "legacy_category_input": str(top_level_category or "").strip() or None,
+        }
+
+    configured_profile = _normalize_category_name(cfg.get("default_delegation_profile"))
+    if configured_profile:
+        return {
+            "value": configured_profile,
+            "source": "default_delegation_profile",
+            "compatibility_only": False,
+            "legacy_category_input": None,
+        }
+
+    configured_legacy_category = _normalize_category_name(cfg.get("default_category"))
+    if configured_legacy_category:
+        return {
+            "value": configured_legacy_category,
+            "source": "default_legacy_category",
+            "compatibility_only": True,
+            "legacy_category_input": str(cfg.get("default_category") or "").strip() or None,
+        }
+
+    return {
+        "value": DEFAULT_DELEGATION_CATEGORY,
+        "source": "builtin_default_delegation_profile",
+        "compatibility_only": False,
+        "legacy_category_input": None,
+    }
+
+
+def _resolve_task_delegation_profile(
+    task: Dict[str, Any],
+    top_level_delegation_profile: Optional[str],
+    top_level_category: Optional[str],
+    cfg: Dict[str, Any],
+) -> str:
+    return _resolve_task_delegation_profile_details(
+        task,
+        top_level_delegation_profile=top_level_delegation_profile,
+        top_level_category=top_level_category,
+        cfg=cfg,
+    )["value"]
+
+
+def _resolve_wave1_task_inputs(
+    task: Dict[str, Any],
+    *,
+    cfg: Dict[str, Any],
+    top_level_archetype: Optional[str] = None,
+    inherited_parent_archetype: Optional[str] = None,
+    inherited_parent_specialist: Optional[str] = None,
+    top_level_route_category: Optional[str] = None,
+    inherited_parent_route_category: Optional[str] = None,
+    top_level_delegation_profile: Optional[str] = None,
+    inherited_parent_delegation_profile: Optional[str] = None,
+    top_level_runtime_mode: Optional[str] = None,
+    top_level_skills: Any = None,
+    top_level_task_contract: Optional[Dict[str, Any]] = None,
+    top_level_named_workflow: Optional[Dict[str, Any]] = None,
+    top_level_category: Optional[str] = None,
+) -> Dict[str, Any]:
+    explicit_task_archetype = str(task.get("archetype") or "").strip()
+    explicit_task_specialist = str(task.get("specialist") or "").strip()
+    inherited_named_workflow = top_level_named_workflow if isinstance(top_level_named_workflow, dict) else None
+    explicit_top_level_archetype = str(top_level_archetype or "").strip()
+    inherited_archetype = str(inherited_parent_archetype or "").strip()
+    requested_specialist = explicit_task_specialist or str(inherited_parent_specialist or "").strip()
+    specialist_mapping = resolve_specialist_mapping(requested_specialist)
+    resolved_specialist = specialist_mapping.name if specialist_mapping is not None else None
+    if specialist_mapping is not None and not explicit_task_archetype and not explicit_top_level_archetype:
+        inherited_archetype = specialist_mapping.archetype_name
+    configured_archetype = str(cfg.get("archetype") or "").strip()
+    requested_archetype = (
+        explicit_task_archetype
+        or explicit_top_level_archetype
+        or inherited_archetype
+        or configured_archetype
+    )
+    archetype_override_present = bool(explicit_task_archetype or explicit_top_level_archetype)
+    resolved_archetype = _canonicalize_archetype_name(requested_archetype)
+    archetype_defaults = resolve_archetype_defaults(resolved_archetype)
+
+    if archetype_override_present:
+        default_route_category = str(archetype_defaults.get("default_route_category") or DEFAULT_ROUTE_CATEGORY).strip()
+        default_delegation_profile = _normalize_category_name(archetype_defaults.get("default_delegation_profile"))
+        default_skills = _normalize_named_string_list(archetype_defaults.get("default_skills"))
+    else:
+        default_route_category = str(
+            cfg.get("route_category")
+            or cfg.get("default_route_category")
+            or archetype_defaults.get("default_route_category")
+            or DEFAULT_ROUTE_CATEGORY
+        ).strip()
+        default_delegation_profile = _normalize_category_name(
+            cfg.get("default_delegation_profile")
+            or archetype_defaults.get("default_delegation_profile")
+        )
+        default_skills = _normalize_named_string_list(
+            cfg.get("default_skills") or archetype_defaults.get("default_skills")
+        )
+
+    explicit_route_category = _normalize_category_name(task.get("route_category"))
+    explicit_top_level_route_category = _normalize_category_name(top_level_route_category)
+    inherited_route_category = _normalize_category_name(inherited_parent_route_category)
+    resolved_route_category_name = (
+        explicit_route_category
+        or explicit_top_level_route_category
+        or ("" if archetype_override_present else inherited_route_category)
+        or _normalize_category_name(default_route_category)
+        or DEFAULT_ROUTE_CATEGORY
+    )
+    resolved_route_category = _resolve_route_category_entry(resolved_route_category_name, cfg)
+
+    delegation_profile_resolution = _resolve_task_delegation_profile_details(
+        task,
+        top_level_delegation_profile=top_level_delegation_profile,
+        top_level_category=None if archetype_override_present else top_level_category,
+        cfg={
+            **cfg,
+            "default_delegation_profile": default_delegation_profile or cfg.get("default_delegation_profile"),
+        },
+    )
+    if (
+        not top_level_delegation_profile
+        and not archetype_override_present
+        and inherited_parent_delegation_profile
+        and not _normalize_category_name(task.get("category"))
+        and not _normalize_category_name(top_level_category)
+    ):
+        delegation_profile_resolution = _resolve_task_delegation_profile_details(
+            task,
+            top_level_delegation_profile=inherited_parent_delegation_profile,
+            top_level_category=top_level_category,
+            cfg={
+                **cfg,
+                "default_delegation_profile": default_delegation_profile or cfg.get("default_delegation_profile"),
+            },
+        )
+    resolved_delegation_profile = delegation_profile_resolution["value"]
+
+    resolved_skills = list(default_skills)
+    resolved_skills.extend(_normalize_named_string_list(top_level_skills))
+    resolved_skills.extend(_normalize_named_string_list(task.get("skills")))
+    resolved_skills = list(dict.fromkeys(skill for skill in resolved_skills if skill))
+
+    raw_task_contract = task.get("task_contract")
+    if raw_task_contract is None:
+        raw_task_contract = top_level_task_contract if top_level_task_contract is not None else cfg.get("task_contract")
+    resolved_task_contract = None
+    if raw_task_contract not in (None, "", {}):
+        try:
+            resolved_task_contract = validate_task_contract(raw_task_contract).model_dump()
+        except Exception as exc:
+            raise ValueError(f"Invalid task_contract for delegated task '{task.get('goal', '')}': {exc}") from exc
+
+    explicit_named_workflow = task.get("named_workflow")
+    resolved_named_workflow = None
+    for source_name, candidate_named_workflow in (
+        ("explicit", explicit_named_workflow),
+        ("inherited", inherited_named_workflow),
+    ):
+        if not isinstance(candidate_named_workflow, dict) or not candidate_named_workflow:
+            continue
+        try:
+            resolved_named_workflow = validate_named_workflow_artifact(candidate_named_workflow).model_dump(by_alias=True)
+            break
+        except Exception as exc:
+            if source_name == "explicit":
+                raise ValueError(f"Invalid named_workflow for delegated task '{task.get('goal', '')}': {exc}") from exc
+            logger.debug(
+                "Ignoring invalid inherited named_workflow for delegated task '%s': %s",
+                task.get("goal", ""),
+                exc,
+            )
+
+    resolved_runtime_mode = _resolve_profile_runtime_mode(
+        task,
+        top_level_runtime_mode=top_level_runtime_mode,
+        cfg=cfg,
+        delegation_profile=resolved_delegation_profile,
+    )
+    orchestration_hints = {
+        "permission_preset": str(cfg.get("permission_preset") or archetype_defaults.get("permission_preset") or "inherit").strip(),
+        "fallback_policy": str(cfg.get("fallback_policy") or archetype_defaults.get("fallback_policy") or "legacy_default_mapping").strip(),
+    }
+    normalized_overlay_inputs = normalize_wave1_overlay_inputs(
+        archetype_name=resolved_archetype,
+        route_category=resolved_route_category,
+        delegation_profile=resolved_delegation_profile,
+        runtime_mode=resolved_runtime_mode,
+        skills=resolved_skills,
+        task_contract=resolved_task_contract,
+        orchestration_hints=orchestration_hints,
+    )
+    if resolved_named_workflow is None:
+        resolved_named_workflow = build_named_workflow_artifact(
+            objective=str(task.get("goal") or "").strip(),
+            specialist=resolved_specialist,
+            archetype=normalized_overlay_inputs["archetype"],
+            route_category=normalized_overlay_inputs["route_category"],
+            runtime_mode=normalized_overlay_inputs["runtime_mode"],
+            delegation_profile=normalized_overlay_inputs["delegation_profile"],
+            task_contract=normalized_overlay_inputs["task_contract"],
+        )
+    overlay_prompt = build_wave1_overlay_prompt_from_normalized(normalized_overlay_inputs)
+
+    return {
+        "specialist": resolved_specialist,
+        "archetype": normalized_overlay_inputs["archetype"],
+        "route_category": normalized_overlay_inputs["route_category"],
+        "route_category_definition": normalized_overlay_inputs["route_category_definition"],
+        "route_category_source": "explicit_or_inherited_route_category" if (
+            explicit_route_category or explicit_top_level_route_category or inherited_route_category
+        ) else "default_route_category",
+        "delegation_profile": normalized_overlay_inputs["delegation_profile"],
+        "delegation_profile_source": delegation_profile_resolution["source"],
+        "delegation_profile_compatibility_only": bool(delegation_profile_resolution["compatibility_only"]),
+        "legacy_category_input": delegation_profile_resolution["legacy_category_input"],
+        "skills": normalized_overlay_inputs["skills"],
+        "task_contract": normalized_overlay_inputs["task_contract"],
+        "named_workflow": resolved_named_workflow,
+        "runtime_mode": normalized_overlay_inputs["runtime_mode"],
+        "runtime_mode_definition": normalized_overlay_inputs["runtime_mode_definition"],
+        "permission_preset": orchestration_hints["permission_preset"],
+        "fallback_policy": orchestration_hints["fallback_policy"],
+        "orchestration_hints": orchestration_hints,
+        "overlay_prompt": overlay_prompt,
+    }
+
+
 def _normalize_category_profile(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -195,9 +770,12 @@ def _normalize_category_profile(raw: Any) -> Dict[str, Any]:
         profile["toolsets"] = [str(t).strip() for t in raw["toolsets"] if str(t).strip()]
     if isinstance(raw.get("enabled_tools"), list):
         profile["enabled_tools"] = [str(t).strip() for t in raw["enabled_tools"] if str(t).strip()]
-    for key in ("model", "provider", "base_url", "api_key", "reasoning_effort", "acp_command"):
+    for key in ("model", "provider", "base_url", "api_key", "reasoning_effort", "acp_command", "routing_description"):
         if isinstance(raw.get(key), str) and raw.get(key).strip():
             profile[key] = raw.get(key).strip()
+    runtime_mode = str(raw.get("runtime_mode") or "").strip()
+    if runtime_mode:
+        profile["runtime_mode"] = _resolve_runtime_mode_entry(runtime_mode, {}).get("name", runtime_mode)
     if isinstance(raw.get("acp_args"), list):
         profile["acp_args"] = [str(v) for v in raw["acp_args"]]
     for key in ("max_iterations", "max_concurrent_children"):
@@ -205,7 +783,7 @@ def _normalize_category_profile(raw: Any) -> Dict[str, Any]:
             try:
                 profile[key] = max(1, int(raw.get(key)))
             except (TypeError, ValueError):
-                logger.warning("Ignoring invalid delegation category %s=%r", key, raw.get(key))
+                logger.warning("Ignoring invalid delegation profile %s=%r", key, raw.get(key))
     return profile
 
 
@@ -222,47 +800,78 @@ def _normalize_delegation_config(cfg: Any) -> Dict[str, Any]:
     if not isinstance(cfg, dict):
         cfg = {}
     normalized = dict(cfg)
-    categories = {name: dict(profile) for name, profile in DEFAULT_CATEGORY_PROFILES.items()}
+    profiles = {name: dict(profile) for name, profile in DEFAULT_DELEGATION_PROFILES.items()}
+
+    raw_profiles = cfg.get("delegation_profiles") if isinstance(cfg, dict) else None
+    if isinstance(raw_profiles, dict):
+        for name, raw_profile in raw_profiles.items():
+            normalized_name = _normalize_category_name(name)
+            if not normalized_name:
+                continue
+            profiles[normalized_name] = _merge_category_profile(
+                profiles.get(normalized_name, {}),
+                _normalize_category_profile(raw_profile),
+            )
+
     raw_categories = cfg.get("categories") if isinstance(cfg, dict) else None
     if isinstance(raw_categories, dict):
         for name, raw_profile in raw_categories.items():
             normalized_name = _normalize_category_name(name)
             if not normalized_name:
                 continue
-            categories[normalized_name] = _merge_category_profile(
-                categories.get(normalized_name, {}),
+            profiles[normalized_name] = _merge_category_profile(
+                profiles.get(normalized_name, {}),
                 _normalize_category_profile(raw_profile),
             )
-    normalized["categories"] = categories
+
+    normalized["delegation_profiles"] = profiles
+    normalized["categories"] = profiles
+
+    default_profile = _normalize_category_name(cfg.get("default_delegation_profile")) if isinstance(cfg, dict) else ""
     default_category = _normalize_category_name(cfg.get("default_category")) if isinstance(cfg, dict) else ""
-    normalized["default_category"] = default_category or DEFAULT_DELEGATION_CATEGORY
+    resolved_default_profile = default_profile or default_category or DEFAULT_DELEGATION_PROFILE
+    normalized["default_delegation_profile"] = resolved_default_profile
+    normalized["default_category"] = resolved_default_profile
     return normalized
 
 
-def _resolve_task_category(task: Dict[str, Any], top_level_category: Optional[str], cfg: Dict[str, Any]) -> str:
-    explicit = _normalize_category_name(task.get("category"))
-    if explicit:
-        return explicit
-    inherited = _normalize_category_name(top_level_category)
-    if inherited:
-        return inherited
-    return _normalize_category_name(cfg.get("default_category")) or DEFAULT_DELEGATION_CATEGORY
+def _resolve_task_category(
+    task: Dict[str, Any],
+    top_level_category: Optional[str],
+    cfg: Dict[str, Any],
+    top_level_delegation_profile: Optional[str] = None,
+) -> str:
+    return _resolve_task_delegation_profile(
+        task,
+        top_level_delegation_profile=top_level_delegation_profile,
+        top_level_category=top_level_category,
+        cfg=cfg,
+    )
 
 
 def _resolve_category_profile(cfg: Dict[str, Any], category: str) -> Dict[str, Any]:
-    categories = cfg.get("categories") if isinstance(cfg, dict) else {}
-    profile = categories.get(category) if isinstance(categories, dict) else None
+    profiles = {}
+    if isinstance(cfg, dict):
+        profiles = cfg.get("delegation_profiles") or cfg.get("categories") or {}
+    profile = profiles.get(category) if isinstance(profiles, dict) else None
     if profile:
         return _merge_category_profile({}, profile)
-    return _merge_category_profile({}, categories.get(DEFAULT_DELEGATION_CATEGORY, {})) if isinstance(categories, dict) else {}
+    fallback_name = cfg.get("default_delegation_profile") or DEFAULT_DELEGATION_PROFILE if isinstance(cfg, dict) else DEFAULT_DELEGATION_PROFILE
+    if isinstance(profiles, dict):
+        return _merge_category_profile({}, profiles.get(fallback_name, {}) or profiles.get(DEFAULT_DELEGATION_PROFILE, {}))
+    return {}
 
 
 def _enforce_category_concurrency(
     task_list: List[Dict[str, Any]],
     cfg: Dict[str, Any],
     top_level_category: Optional[str] = None,
+    top_level_delegation_profile: Optional[str] = None,
 ) -> Optional[str]:
-    categories = [_resolve_task_category(task, top_level_category, cfg) for task in task_list]
+    categories = [
+        _resolve_task_category(task, top_level_category, cfg, top_level_delegation_profile)
+        for task in task_list
+    ]
     counts = Counter(categories)
     for category, count in counts.items():
         profile = _resolve_category_profile(cfg, category)
@@ -285,6 +894,7 @@ def _resolve_batch_concurrency_limit(
     task_list: List[Dict[str, Any]],
     top_level_category: Optional[str],
     cfg: Dict[str, Any],
+    top_level_delegation_profile: Optional[str] = None,
 ) -> tuple[int, Optional[str]]:
     """Return the effective concurrency limit for one delegation batch.
 
@@ -296,13 +906,22 @@ def _resolve_batch_concurrency_limit(
     if not task_list:
         return base_limit, None
 
-    resolved_categories = [_resolve_task_category(task, top_level_category, cfg) for task in task_list]
+    resolved_categories = [
+        _resolve_task_category(task, top_level_category, cfg, top_level_delegation_profile)
+        for task in task_list
+    ]
     if len(set(resolved_categories)) != 1:
         return base_limit, None
 
     category_name = resolved_categories[0]
-    explicit_top_level = _normalize_category_name(top_level_category)
-    explicit_per_task = all(_normalize_category_name(task.get("category")) == category_name for task in task_list)
+    explicit_top_level = _normalize_category_name(top_level_delegation_profile) or _normalize_category_name(top_level_category)
+    explicit_per_task = all(
+        (
+            _normalize_category_name(task.get("delegation_profile"))
+            or _normalize_category_name(task.get("category"))
+        ) == category_name
+        for task in task_list
+    )
     if explicit_top_level != category_name and not explicit_per_task:
         return base_limit, None
 
@@ -443,6 +1062,8 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    wave1_overlay_prompt: Optional[str] = None,
+    delegate_resolution: Optional[Dict[str, Any]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -495,7 +1116,21 @@ def _build_child_agent(
         })
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
-    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
+    resolved_named_workflow = None
+    if isinstance(delegate_resolution, dict):
+        candidate_named_workflow = delegate_resolution.get("named_workflow")
+        if isinstance(candidate_named_workflow, dict) and candidate_named_workflow:
+            try:
+                resolved_named_workflow = validate_named_workflow_artifact(candidate_named_workflow).model_dump(by_alias=True)
+            except Exception as exc:
+                logger.debug("Ignoring invalid delegate_resolution named_workflow while building child prompt: %s", exc)
+    child_prompt = _build_child_system_prompt(
+        goal,
+        context,
+        wave1_overlay_prompt=wave1_overlay_prompt,
+        workspace_path=workspace_hint,
+        named_workflow=resolved_named_workflow,
+    )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -581,6 +1216,7 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, '_print_fn', None)
+    child._delegate_resolution = dict(delegate_resolution or {})
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
@@ -681,6 +1317,15 @@ def _run_single_child(
                 logger.debug("Progress callback start failed: %s", e)
 
         result = child.run_conversation(user_message=goal)
+        resolution = getattr(child, "_delegate_resolution", None) or {}
+        runtime_mode = resolution.get("runtime_mode") if isinstance(resolution, dict) else None
+        continuation_state = apply_bounded_continuation_engine(
+            child,
+            result,
+            runtime_mode=runtime_mode,
+        )
+        result = continuation_state["result"]
+        final_snapshot = continuation_state["snapshot"]
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
@@ -694,14 +1339,20 @@ def _run_single_child(
         summary = result.get("final_response") or ""
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
-        api_calls = result.get("api_calls", 0)
+        api_calls = int(result.get("api_calls", 0) or 0)
+        api_calls += sum(int(snapshot.get("apiCalls", 0) or 0) for snapshot in continuation_state.get("snapshots", [])[1:])
+        outcome_status = str(final_snapshot.get("outcomeStatus") or "").strip().lower()
+        has_open_todos = bool(final_snapshot.get("activeTodos"))
 
-        if interrupted:
+        if outcome_status == "completed" and not has_open_todos:
+            status = "completed"
+        elif outcome_status == "interrupted" or interrupted:
+            status = "interrupted"
+        elif outcome_status == "failed":
+            status = "failed"
+        elif has_open_todos:
             status = "interrupted"
         elif summary:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
             status = "completed"
         else:
             status = "failed"
@@ -745,7 +1396,11 @@ def _run_single_child(
                         tool_trace[-1].update(result_meta)
 
         # Determine exit reason
-        if interrupted:
+        if status == "completed":
+            exit_reason = "completed"
+        elif continuation_state.get("exhausted"):
+            exit_reason = "continuation_exhausted"
+        elif outcome_status == "interrupted" or interrupted:
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
@@ -770,9 +1425,23 @@ def _run_single_child(
                 "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
             },
             "tool_trace": tool_trace,
+            "orchestration": final_snapshot,
+            "continuation": {
+                "mode": continuation_state.get("mode"),
+                "attempt_count": continuation_state.get("attempt_count"),
+                "resume_count": continuation_state.get("resume_count"),
+                "final_outcome_status": outcome_status,
+                "open_todos": final_snapshot.get("activeTodos") or [],
+                "exhausted": bool(continuation_state.get("exhausted")),
+            },
         }
-        if status == "failed":
+        if resolution:
+            entry["resolved_inputs"] = resolution
+        entry = _apply_named_role_completion_gate(entry, resolved_inputs=resolution)
+        if entry.get("status") == "failed" and not entry.get("error"):
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+        elif entry.get("status") == "interrupted" and not summary:
+            entry["error"] = result.get("error") or "Subagent stopped with unfinished work remaining."
 
         if child_progress_cb:
             try:
@@ -854,13 +1523,175 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+
+def _build_persistent_launch_spec(
+    *,
+    goal: str,
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+    enabled_tools: Optional[List[str]],
+    resolved_inputs: Dict[str, Any],
+    creds: Dict[str, Any],
+    max_iterations: int,
+    parent_agent,
+    acp_command: Optional[str],
+    acp_args: Optional[List[str]],
+    wave1_overlay_prompt: Optional[str],
+) -> Dict[str, Any]:
+    parent_api_key = getattr(parent_agent, "api_key", None)
+    if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
+        parent_api_key = parent_agent._client_kwargs.get("api_key")
+
+    return {
+        "runner": "delegate",
+        "task_index": 0,
+        "goal": goal,
+        "context": context,
+        "toolsets": list(toolsets or []),
+        "enabled_tools": list(enabled_tools or []),
+        "model": creds.get("model") or getattr(parent_agent, "model", None),
+        "provider": creds.get("provider") or getattr(parent_agent, "provider", None),
+        "base_url": creds.get("base_url") or getattr(parent_agent, "base_url", None),
+        "api_key": creds.get("api_key") or parent_api_key,
+        "api_mode": creds.get("api_mode") or getattr(parent_agent, "api_mode", None),
+        "acp_command": acp_command,
+        "acp_args": list(acp_args or []),
+        "max_iterations": max_iterations,
+        "wave1_overlay_prompt": wave1_overlay_prompt,
+        "delegate_resolution": dict(resolved_inputs or {}),
+        "parent_enabled_toolsets": list(getattr(parent_agent, "enabled_toolsets", None) or []),
+        "parent_valid_tool_names": sorted(getattr(parent_agent, "valid_tool_names", set()) or []),
+        "platform": getattr(parent_agent, "platform", None),
+        "providers_allowed": getattr(parent_agent, "providers_allowed", None),
+        "providers_ignored": getattr(parent_agent, "providers_ignored", None),
+        "providers_order": getattr(parent_agent, "providers_order", None),
+        "provider_sort": getattr(parent_agent, "provider_sort", None),
+        "reasoning_config": getattr(parent_agent, "reasoning_config", None),
+        "max_tokens": getattr(parent_agent, "max_tokens", None),
+        "prefill_messages": getattr(parent_agent, "prefill_messages", None),
+        "parent_session_id": getattr(parent_agent, "session_id", None),
+    }
+
+
+def _build_persistent_parent_agent(launch_spec: Dict[str, Any]):
+    parent = SimpleNamespace()
+    parent.base_url = launch_spec.get("base_url")
+    parent.api_key = launch_spec.get("api_key")
+    parent.provider = launch_spec.get("provider")
+    parent.api_mode = launch_spec.get("api_mode")
+    parent.model = launch_spec.get("model")
+    parent.platform = launch_spec.get("platform")
+    parent.providers_allowed = launch_spec.get("providers_allowed")
+    parent.providers_ignored = launch_spec.get("providers_ignored")
+    parent.providers_order = launch_spec.get("providers_order")
+    parent.provider_sort = launch_spec.get("provider_sort")
+    parent._session_db = None
+    parent._delegate_depth = 0
+    parent._active_children = []
+    parent._active_children_lock = threading.Lock()
+    parent._print_fn = None
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    parent.enabled_toolsets = list(launch_spec.get("parent_enabled_toolsets") or []) or None
+    parent.valid_tool_names = set(launch_spec.get("parent_valid_tool_names") or [])
+    parent.reasoning_config = launch_spec.get("reasoning_config")
+    parent.max_tokens = launch_spec.get("max_tokens")
+    parent.prefill_messages = launch_spec.get("prefill_messages")
+    parent.session_id = launch_spec.get("parent_session_id")
+    parent.acp_command = launch_spec.get("acp_command")
+    parent.acp_args = list(launch_spec.get("acp_args") or [])
+    return parent
+
+
+def launch_persistent_delegate_task(task_id: str, *, store: Optional[TaskStore] = None, process_registry_obj=None) -> dict[str, Any]:
+    return launch_background_delegate_task(
+        task_id,
+        store=store,
+        process_registry_obj=process_registry_obj,
+    )
+
+
+def run_persistent_delegate_task(task_id: str, store_root: Optional[str] = None) -> None:
+    task_store = TaskStore(store_root)
+    record = task_store.require_task(task_id)
+    launch_spec = dict(record.launch_spec or {})
+    if launch_spec.get("runner") != "delegate":
+        raise ValueError(f"task {task_id} is not a delegate-backed persistent task")
+
+    task_store.transition_task(task_id, TaskStatus.running)
+    parent = _build_persistent_parent_agent(launch_spec)
+    try:
+        child = _build_child_agent(
+            task_index=0,
+            goal=str(launch_spec.get("goal") or record.goal),
+            context=launch_spec.get("context") or record.context,
+            toolsets=launch_spec.get("toolsets"),
+            enabled_tools=launch_spec.get("enabled_tools"),
+            model=launch_spec.get("model"),
+            max_iterations=int(launch_spec.get("max_iterations") or DEFAULT_MAX_ITERATIONS),
+            task_count=1,
+            parent_agent=parent,
+            override_provider=launch_spec.get("provider"),
+            override_base_url=launch_spec.get("base_url"),
+            override_api_key=launch_spec.get("api_key"),
+            override_api_mode=launch_spec.get("api_mode"),
+            override_acp_command=launch_spec.get("acp_command"),
+            override_acp_args=launch_spec.get("acp_args"),
+            wave1_overlay_prompt=launch_spec.get("wave1_overlay_prompt"),
+            delegate_resolution=launch_spec.get("delegate_resolution") or record.resolved_inputs,
+        )
+        result = _run_single_child(0, record.goal, child=child, parent_agent=parent)
+        continuation = dict(result.get("continuation") or {})
+        orchestration = dict(result.get("orchestration") or {})
+        open_todos = continuation.get("open_todos") or orchestration.get("activeTodos") or []
+        if result.get("status") == "completed" and not open_todos:
+            task_store.clear_continuation(task_id)
+            final_status = TaskStatus.completed
+        else:
+            task_store.update_continuation(
+                task_id,
+                mode=continuation.get("mode") or record.runtime_mode,
+                status="retry_requested" if open_todos else "resolved",
+                open_todos=open_todos,
+                latest_response_preview=orchestration.get("responsePreview") or result.get("summary"),
+                last_outcome_status=continuation.get("final_outcome_status") or orchestration.get("outcomeStatus"),
+                resume_count=continuation.get("resume_count"),
+                attempt_count=continuation.get("attempt_count"),
+            )
+            final_status = TaskStatus.failed
+        task_store.record_result(
+            task_id,
+            status=final_status,
+            result=result,
+            summary=result.get("summary"),
+            error=result.get("error") or ("unfinished work remains" if open_todos else None),
+        )
+    except Exception as exc:
+        task_store.record_result(
+            task_id,
+            status=TaskStatus.failed,
+            result={"error": str(exc)},
+            summary=None,
+            error=str(exc),
+        )
+        raise
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     category: Optional[str] = None,
+    archetype: Optional[str] = None,
+    route_category: Optional[str] = None,
+    delegation_profile: Optional[str] = None,
+    runtime_mode: Optional[str] = None,
+    skills: Optional[List[str]] = None,
+    task_contract: Optional[Dict[str, Any]] = None,
     max_iterations: Optional[int] = None,
+    persistent: bool = False,
+    background: bool = False,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
@@ -902,11 +1733,28 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    parent_activation_defaults = _get_parent_runtime_activation_defaults(parent_agent)
+    explicit_top_level_archetype = str(archetype or "").strip() or None
+    explicit_top_level_route_category = str(route_category or "").strip() or None
+    explicit_top_level_delegation_profile = str(delegation_profile or "").strip() or None
+    inherited_parent_specialist = parent_activation_defaults.get("specialist")
+    inherited_parent_archetype = parent_activation_defaults.get("archetype")
+    inherited_parent_route_category = parent_activation_defaults.get("route_category")
+    inherited_parent_delegation_profile = parent_activation_defaults.get("delegation_profile")
+    effective_archetype = explicit_top_level_archetype or inherited_parent_archetype
+    effective_route_category = explicit_top_level_route_category or inherited_parent_route_category
+    effective_delegation_profile = explicit_top_level_delegation_profile or inherited_parent_delegation_profile
+    effective_runtime_mode = runtime_mode or parent_activation_defaults.get("runtime_mode")
+    effective_task_contract = task_contract if task_contract is not None else parent_activation_defaults.get("task_contract")
+    effective_named_workflow = parent_activation_defaults.get("named_workflow")
+    effective_category = category or effective_delegation_profile
+
     # Normalize to task list
     max_children, limit_category = _resolve_batch_concurrency_limit(
         task_list=tasks or [],
-        top_level_category=category,
+        top_level_category=effective_category,
         cfg=cfg,
+        top_level_delegation_profile=effective_delegation_profile,
     )
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
@@ -925,7 +1773,13 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets, "category": category}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "acp_command": acp_command,
+            "acp_args": acp_args,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -937,7 +1791,12 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
-    category_error = _enforce_category_concurrency(task_list, cfg, top_level_category=category)
+    category_error = _enforce_category_concurrency(
+        task_list,
+        cfg,
+        top_level_category=effective_category,
+        top_level_delegation_profile=effective_delegation_profile,
+    )
     if category_error:
         return tool_error(category_error)
 
@@ -960,13 +1819,60 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_category = _resolve_task_category(t, category, cfg)
-            category_profile = _resolve_category_profile(cfg, task_category)
+            try:
+                resolved_inputs = _resolve_wave1_task_inputs(
+                    t,
+                    cfg=cfg,
+                    top_level_archetype=explicit_top_level_archetype,
+                    inherited_parent_archetype=inherited_parent_archetype,
+                    inherited_parent_specialist=inherited_parent_specialist,
+                    top_level_route_category=explicit_top_level_route_category,
+                    inherited_parent_route_category=inherited_parent_route_category,
+                    top_level_delegation_profile=explicit_top_level_delegation_profile,
+                    inherited_parent_delegation_profile=inherited_parent_delegation_profile,
+                    top_level_runtime_mode=effective_runtime_mode,
+                    top_level_skills=skills,
+                    top_level_task_contract=effective_task_contract,
+                    top_level_named_workflow=effective_named_workflow,
+                    top_level_category=effective_category,
+                )
+            except (TypeError, ValueError, KeyError) as exc:
+                return tool_error(str(exc))
+            resolved_profile = resolved_inputs["delegation_profile"]
+            category_profile = _resolve_category_profile(cfg, resolved_profile)
             merged_cfg = _merge_category_profile(cfg, category_profile)
             category_creds = _resolve_delegation_credentials(merged_cfg, parent_agent)
-            task_toolsets = t.get("toolsets") or category_profile.get("toolsets") or toolsets
-            task_enabled_tools = category_profile.get("enabled_tools")
+            contract_tool_policy = _resolve_contract_tool_requirements(
+                resolved_inputs.get("task_contract"),
+                parent_agent=parent_agent,
+            )
+            task_toolsets = list(dict.fromkeys(
+                _normalize_named_string_list(t.get("toolsets") or category_profile.get("toolsets") or toolsets)
+                + contract_tool_policy["toolsets"]
+            )) or None
+            task_enabled_tools = list(dict.fromkeys(
+                _normalize_named_string_list(category_profile.get("enabled_tools"))
+                + contract_tool_policy["enabled_tools"]
+            )) or None
+            task_toolsets, task_enabled_tools = _apply_named_role_tool_policy(
+                resolved_inputs=resolved_inputs,
+                toolsets=task_toolsets,
+                enabled_tools=task_enabled_tools,
+                parent_agent=parent_agent,
+            )
             task_max_iter = int(category_profile.get("max_iterations") or effective_max_iter)
+            task_overlay_prompt = build_wave1_overlay_prompt_from_normalized(
+                normalize_wave1_overlay_inputs(
+                    archetype_name=resolved_inputs["archetype"],
+                    route_category=resolved_inputs.get("route_category_definition") or resolved_inputs["route_category"],
+                    delegation_profile=resolved_inputs["delegation_profile"],
+                    runtime_mode=resolved_inputs.get("runtime_mode_definition") or resolved_inputs["runtime_mode"],
+                    skills=resolved_inputs.get("skills"),
+                    task_contract=resolved_inputs.get("task_contract"),
+                    orchestration_hints=resolved_inputs.get("orchestration_hints"),
+                )
+            )
+            resolved_inputs["overlay_prompt"] = task_overlay_prompt
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=task_toolsets, enabled_tools=task_enabled_tools, model=category_creds["model"] or creds["model"],
@@ -976,17 +1882,121 @@ def delegate_task(
                 override_api_mode=category_creds["api_mode"] or creds["api_mode"],
                 override_acp_command=t.get("acp_command") or category_profile.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or category_profile.get("acp_args") or acp_args,
+                wave1_overlay_prompt=task_overlay_prompt,
+                delegate_resolution={key: value for key, value in resolved_inputs.items() if key != "overlay_prompt"},
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
+            children.append((i, t, child, task_max_iter, task_overlay_prompt))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
+    if persistent or background:
+        if n_tasks != 1:
+            return tool_error("Persistent/background delegation currently supports exactly one task.")
+        _i, _t, child, task_max_iter, task_overlay_prompt = children[0]
+        delegate_resolution = dict(getattr(child, "_delegate_resolution", {}) or {})
+        resolved_hints = dict(delegate_resolution.get("orchestration_hints") or {})
+        launch_spec = _build_persistent_launch_spec(
+            goal=_t["goal"],
+            context=_t.get("context"),
+            toolsets=list(getattr(child, "enabled_toolsets", None) or []),
+            enabled_tools=list(getattr(child, "enabled_tools", None) or []),
+            resolved_inputs=delegate_resolution,
+            creds={
+                "model": getattr(child, "model", None),
+                "provider": getattr(child, "provider", None),
+                "base_url": getattr(child, "base_url", None),
+                "api_key": getattr(child, "api_key", None),
+                "api_mode": getattr(child, "api_mode", None),
+            },
+            max_iterations=task_max_iter,
+            parent_agent=parent_agent,
+            acp_command=getattr(child, "acp_command", None),
+            acp_args=getattr(child, "acp_args", None),
+            wave1_overlay_prompt=task_overlay_prompt,
+        )
+        store = TaskStore()
+        record = store.create_task(
+            goal=_t["goal"],
+            context=_t.get("context"),
+            owner_session_id=getattr(parent_agent, "session_id", None),
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            archetype=delegate_resolution.get("archetype"),
+            specialist=delegate_resolution.get("specialist"),
+            route_category=delegate_resolution.get("route_category"),
+            delegation_profile=delegate_resolution.get("delegation_profile"),
+            runtime_mode=delegate_resolution.get("runtime_mode"),
+            skills=list(delegate_resolution.get("skills") or []),
+            task_contract=delegate_resolution.get("task_contract"),
+            permissions={
+                "permission_preset": delegate_resolution.get("permission_preset") or resolved_hints.get("permission_preset") or cfg.get("permission_preset"),
+                "fallback_policy": delegate_resolution.get("fallback_policy") or resolved_hints.get("fallback_policy") or cfg.get("fallback_policy"),
+            },
+            resolved_inputs=delegate_resolution,
+            launch_spec=launch_spec,
+        )
+        if background:
+            try:
+                launch_result = launch_background_delegate_task(record.id, store=store)
+            except BackgroundDelegateLaunchError as exc:
+                try:
+                    child.close()
+                except Exception:
+                    logger.debug("Failed to close prebuilt child after background launch failure")
+                try:
+                    if hasattr(parent_agent, "_active_children") and child in parent_agent._active_children:
+                        parent_agent._active_children.remove(child)
+                except Exception:
+                    pass
+                return tool_error(f"Background delegate launch failed: {exc}")
+            try:
+                child.close()
+            except Exception:
+                logger.debug("Failed to close prebuilt child after persistent launch")
+            try:
+                if hasattr(parent_agent, "_active_children") and child in parent_agent._active_children:
+                    parent_agent._active_children.remove(child)
+            except Exception:
+                pass
+            return json.dumps(launch_result, ensure_ascii=False)
+
+        store.transition_task(record.id, TaskStatus.queued)
+        store.transition_task(record.id, TaskStatus.running)
+        try:
+            result = _run_single_child(0, _t["goal"], child, parent_agent)
+            status = TaskStatus.completed if result.get("status") == "completed" else TaskStatus.failed
+            store.record_result(
+                record.id,
+                status=status,
+                result=result,
+                summary=result.get("summary"),
+                error=result.get("error"),
+            )
+        except Exception as exc:
+            store.record_result(
+                record.id,
+                status=TaskStatus.failed,
+                result={"error": str(exc)},
+                summary=None,
+                error=str(exc),
+            )
+            raise
+        return json.dumps(
+            {
+                "task_id": record.id,
+                "persistent": True,
+                "background": False,
+                "results": [result],
+                "total_duration_seconds": round(time.monotonic() - overall_start, 2),
+            },
+            ensure_ascii=False,
+        )
+
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
-        _i, _t, child = children[0]
+        _i, _t, child, _task_max_iter, _task_overlay_prompt = children[0]
         result = _run_single_child(0, _t["goal"], child, parent_agent)
         results.append(result)
     else:
@@ -996,7 +2006,7 @@ def delegate_task(
 
         with ThreadPoolExecutor(max_workers=min(max_children, n_tasks)) as executor:
             futures = {}
-            for i, t, child in children:
+            for i, t, child, _task_max_iter, _task_overlay_prompt in children:
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
@@ -1362,7 +2372,32 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "category": {
                             "type": "string",
-                            "description": "Optional delegation policy category (e.g. research, implementation, verification). Category profiles can constrain concurrency, tool access, and model/runtime defaults.",
+                            "description": "Legacy delegation-profile alias (e.g. research, implementation, verification). Category profiles can still constrain concurrency, tool access, and model/runtime defaults.",
+                        },
+                        "archetype": {
+                            "type": "string",
+                            "description": "Optional Wave 1 archetype override for this task.",
+                        },
+                        "route_category": {
+                            "type": "string",
+                            "description": "Optional Wave 1 route category override for this task. Distinct from delegation_profile/category.",
+                        },
+                        "delegation_profile": {
+                            "type": "string",
+                            "description": "Optional Wave 1 delegation profile override for this task. Distinct from route_category.",
+                        },
+                        "runtime_mode": {
+                            "type": "string",
+                            "description": "Optional Wave 1 runtime mode override for this task. Distinct from route_category and delegation_profile/category.",
+                        },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional additive Wave 1 skills overlay for this task.",
+                        },
+                        "task_contract": {
+                            "type": "object",
+                            "description": "Optional canonical structured Wave 1 task contract for this task.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -1387,7 +2422,32 @@ DELEGATE_TASK_SCHEMA = {
             },
             "category": {
                 "type": "string",
-                "description": "Optional delegation policy category (e.g. research, implementation, verification). Applies to all tasks unless a task overrides it.",
+                "description": "Legacy delegation-profile alias. Applies to all tasks unless a task overrides it. Preserves pre-Wave-1 delegation behavior when archetype/task_contract are absent.",
+            },
+            "archetype": {
+                "type": "string",
+                "description": "Optional Wave 1 archetype/task blueprint to seed defaults without replacing route category, delegation profile, skills, or task_contract.",
+            },
+            "route_category": {
+                "type": "string",
+                "description": "Optional Wave 1 route category (for example: ultrabrain, deep, quick, visual, writing, unspecified_low, unspecified_high). Distinct from delegation_profile/category.",
+            },
+            "delegation_profile": {
+                "type": "string",
+                "description": "Optional Wave 1 delegation profile. Distinct from route_category; falls back to the legacy category/default-mapping path when omitted.",
+            },
+            "runtime_mode": {
+                "type": "string",
+                "description": "Optional Wave 1 runtime mode. Resolved separately from route_category and delegation_profile/category, then rendered as its own prompt layer.",
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional additive Wave 1 skills overlay. These remain separate from route category, delegation profile, and task_contract.",
+            },
+            "task_contract": {
+                "type": "object",
+                "description": "Optional canonical structured Wave 1 task contract. When omitted, legacy delegation behavior is preserved through default mapping.",
             },
             "max_iterations": {
                 "type": "integer",
@@ -1395,6 +2455,14 @@ DELEGATE_TASK_SCHEMA = {
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
                 ),
+            },
+            "persistent": {
+                "type": "boolean",
+                "description": "Persist the delegated task in the Wave 3 task store, even when run in the foreground.",
+            },
+            "background": {
+                "type": "boolean",
+                "description": "Launch the delegated task as a persistent background task using Hermes process_registry and return immediately with task/process IDs.",
             },
             "acp_command": {
                 "type": "string",
@@ -1432,7 +2500,15 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         category=args.get("category"),
+        archetype=args.get("archetype"),
+        route_category=args.get("route_category"),
+        delegation_profile=args.get("delegation_profile"),
+        runtime_mode=args.get("runtime_mode"),
+        skills=args.get("skills"),
+        task_contract=args.get("task_contract"),
         max_iterations=args.get("max_iterations"),
+        persistent=bool(args.get("persistent", False)),
+        background=bool(args.get("background", False)),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),

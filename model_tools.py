@@ -188,7 +188,44 @@ _LEGACY_TOOLSET_MAP = {
     "tts_tools": ["text_to_speech"],
 }
 
-_LSP_TOOL_NAMES = {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"}
+_LSP_TOOL_NAMES = {
+    "lsp_document_symbols",
+    "lsp_definition",
+    "lsp_diagnostics",
+    "lsp_prepare_rename",
+    "lsp_references",
+    "lsp_rename",
+}
+
+
+def filter_tool_definitions_by_name(
+    tool_definitions: Optional[List[Dict[str, Any]]],
+    enabled_tools: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Return tool definitions filtered to the enabled tool-name set.
+
+    Preserves declaration order and ignores unknown names so caller-side runtime
+    overlays can narrow an already-resolved tool surface without mutating the
+    registry or re-running discovery.
+    """
+    if not tool_definitions:
+        return []
+    if enabled_tools is None:
+        return list(tool_definitions)
+
+    allowed = {
+        str(name).strip()
+        for name in enabled_tools
+        if isinstance(name, str) and str(name).strip()
+    }
+    if not allowed:
+        return []
+
+    return [
+        tool_def
+        for tool_def in tool_definitions
+        if str(tool_def.get("function", {}).get("name") or "").strip() in allowed
+    ]
 
 
 def _append_description_suffix(description: str, suffix: str) -> str:
@@ -519,11 +556,11 @@ def handle_function_call(
             # Still fire the hook for observers — just don't check for blocking
             # (the caller already did that).
             try:
-                from hermes_cli.plugins import invoke_hook
-                invoke_hook(
+                from hermes_cli.plugins import invoke_legacy_tool_hook
+                invoke_legacy_tool_hook(
                     "pre_tool_call",
-                    tool_name=function_name,
-                    args=function_args,
+                    function_name,
+                    function_args,
                     task_id=task_id or "",
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
@@ -557,11 +594,11 @@ def handle_function_call(
             )
 
         try:
-            from hermes_cli.plugins import invoke_hook
-            invoke_hook(
+            from hermes_cli.plugins import invoke_legacy_tool_hook
+            invoke_legacy_tool_hook(
                 "post_tool_call",
-                tool_name=function_name,
-                args=function_args,
+                function_name,
+                function_args,
                 result=result,
                 task_id=task_id or "",
                 session_id=session_id or "",
@@ -594,7 +631,42 @@ def get_toolset_for_tool(tool_name: str) -> Optional[str]:
 
 def get_available_toolsets() -> Dict[str, dict]:
     """Return toolset availability info for UI display."""
-    return registry.get_available_toolsets()
+    from toolsets import get_all_toolsets, resolve_toolset
+
+    registry_toolsets = registry.get_available_toolsets()
+    availability_by_toolset = registry.check_toolset_requirements()
+    combined: Dict[str, dict] = {}
+
+    for name, metadata in get_all_toolsets().items():
+        resolved_tools = resolve_toolset(name)
+        requirements = []
+        available = True
+        for tool_name in resolved_tools:
+            owning_toolset = registry.get_toolset_for_tool(tool_name)
+            if owning_toolset is None:
+                continue
+            available = available and availability_by_toolset.get(owning_toolset, True)
+            registry_meta = registry_toolsets.get(owning_toolset, {})
+            for requirement in registry_meta.get("requirements", []):
+                if requirement not in requirements:
+                    requirements.append(requirement)
+        combined[name] = {
+            "available": available,
+            "tools": resolved_tools,
+            "description": metadata.get("description", ""),
+            "requirements": requirements,
+            "canonical_name": metadata.get("canonical_name", name),
+            "source": metadata.get("source"),
+            "is_builtin": metadata.get("is_builtin", False),
+            "is_additive": metadata.get("is_additive", False),
+            "is_alias": metadata.get("is_alias", False),
+            "is_canonical_knowledge_surface": metadata.get(
+                "is_canonical_knowledge_surface", False
+            ),
+            "boundary_note": metadata.get("boundary_note"),
+        }
+
+    return combined
 
 
 def check_toolset_requirements() -> Dict[str, bool]:

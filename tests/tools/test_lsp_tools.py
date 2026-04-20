@@ -8,23 +8,39 @@ from tools.lsp_tools import (
     LSP_DIAGNOSTICS_SCHEMA,
     LSP_DOCUMENT_SYMBOLS_SCHEMA,
     LSP_DEFINITION_SCHEMA,
+    LSP_PREPARE_RENAME_SCHEMA,
+    LSP_REFERENCES_SCHEMA,
+    LSP_RENAME_SCHEMA,
     get_host_lsp_capabilities,
     lsp_definition_tool,
     lsp_diagnostics_tool,
     lsp_document_symbols_tool,
+    lsp_prepare_rename_tool,
+    lsp_references_tool,
+    lsp_rename_tool,
 )
 
 
 class TestLspRepoCodeKnowledgeFraming:
     def test_repo_code_knowledge_toolset_treats_lsp_primitives_as_canonical(self):
         repo_code_tools = set(resolve_toolset("repo-code-knowledge"))
-        assert {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"} <= repo_code_tools
+        assert {
+            "lsp_document_symbols",
+            "lsp_definition",
+            "lsp_diagnostics",
+            "lsp_prepare_rename",
+            "lsp_references",
+            "lsp_rename",
+        } <= repo_code_tools
 
     def test_lsp_schemas_mention_repo_code_knowledge_grounding(self):
         assert "repo/code knowledge primitive" in LSP_DOCUMENT_SYMBOLS_SCHEMA["description"]
         assert "semantic local source grounding" in LSP_DOCUMENT_SYMBOLS_SCHEMA["description"]
         assert "repo/code knowledge primitive" in LSP_DEFINITION_SCHEMA["description"]
         assert "repo/code knowledge primitive" in LSP_DIAGNOSTICS_SCHEMA["description"]
+        assert "repo/code knowledge primitive" in LSP_PREPARE_RENAME_SCHEMA["description"]
+        assert "repo/code knowledge primitive" in LSP_REFERENCES_SCHEMA["description"]
+        assert "repo/code knowledge primitive" in LSP_RENAME_SCHEMA["description"]
 
 
 def _frame(payload):
@@ -57,12 +73,22 @@ class _FakeProcess:
 class TestLspToolRegistration:
     def test_exports_expected_tools_and_schemas(self):
         names = {tool["name"] for tool in LSP_TOOLS}
-        assert names == {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"}
+        assert names == {
+            "lsp_document_symbols",
+            "lsp_definition",
+            "lsp_diagnostics",
+            "lsp_prepare_rename",
+            "lsp_references",
+            "lsp_rename",
+        }
 
         for schema in [
             LSP_DOCUMENT_SYMBOLS_SCHEMA,
             LSP_DEFINITION_SCHEMA,
             LSP_DIAGNOSTICS_SCHEMA,
+            LSP_PREPARE_RENAME_SCHEMA,
+            LSP_REFERENCES_SCHEMA,
+            LSP_RENAME_SCHEMA,
         ]:
             assert "name" in schema
             assert "description" in schema
@@ -70,7 +96,14 @@ class TestLspToolRegistration:
 
     def test_code_intel_toolset_lists_lsp_tools(self):
         code_intel_tools = set(resolve_toolset("code_intel"))
-        assert {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"} <= code_intel_tools
+        assert {
+            "lsp_document_symbols",
+            "lsp_definition",
+            "lsp_diagnostics",
+            "lsp_prepare_rename",
+            "lsp_references",
+            "lsp_rename",
+        } <= code_intel_tools
 
     def test_model_tool_definitions_expose_lsp_tools_when_server_exists(self, monkeypatch):
         monkeypatch.setattr("tools.lsp_tools.shutil.which", lambda name: "/usr/bin/fake-lsp")
@@ -78,7 +111,14 @@ class TestLspToolRegistration:
             tool["function"]["name"]
             for tool in get_tool_definitions(enabled_toolsets=["code_intel"], quiet_mode=True)
         }
-        assert {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"} <= model_tool_names
+        assert {
+            "lsp_document_symbols",
+            "lsp_definition",
+            "lsp_diagnostics",
+            "lsp_prepare_rename",
+            "lsp_references",
+            "lsp_rename",
+        } <= model_tool_names
 
     def test_model_tool_definitions_hide_lsp_tools_when_no_server_exists(self, monkeypatch):
         monkeypatch.setattr("tools.lsp_tools.shutil.which", lambda name: None)
@@ -86,7 +126,14 @@ class TestLspToolRegistration:
             tool["function"]["name"]
             for tool in get_tool_definitions(enabled_toolsets=["code_intel"], quiet_mode=True)
         }
-        assert {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"}.isdisjoint(model_tool_names)
+        assert {
+            "lsp_document_symbols",
+            "lsp_definition",
+            "lsp_diagnostics",
+            "lsp_prepare_rename",
+            "lsp_references",
+            "lsp_rename",
+        }.isdisjoint(model_tool_names)
 
     def test_host_capability_helper_reports_language_specific_auto_detection(self, monkeypatch):
         available_binaries = {
@@ -119,7 +166,14 @@ class TestLspToolRegistration:
         descriptions = {
             tool["function"]["name"]: tool["function"]["description"]
             for tool in tool_definitions
-            if tool["function"]["name"] in {"lsp_document_symbols", "lsp_definition", "lsp_diagnostics"}
+            if tool["function"]["name"] in {
+                "lsp_document_symbols",
+                "lsp_definition",
+                "lsp_diagnostics",
+                "lsp_prepare_rename",
+                "lsp_references",
+                "lsp_rename",
+            }
         }
 
         assert descriptions

@@ -128,7 +128,9 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        mock_ops.patch_replace.assert_called_once_with(
+            "/tmp/f.py", "foo", "bar", False
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_replace_all_flag(self, mock_get):
@@ -144,10 +146,54 @@ class TestPatchHandler:
         mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_hashline_uses_backend_file_ops_for_non_host_paths(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "replacements": 1}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        result = json.loads(
+            patch_tool(
+                mode="replace",
+                path="/backend-only/worktree/sample.txt",
+                old_string="# HASHLINE sha256:" + "a" * 64 + "\nhello",
+                new_string="world",
+                task_id="backend-hashline-replace",
+            )
+        )
+
+        assert result["status"] == "ok"
+        mock_ops.patch_replace.assert_called_once_with(
+            "/backend-only/worktree/sample.txt",
+            "hello",
+            "world",
+            False,
+            expected_sha256="a" * 64,
+        )
+
+    @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_missing_path_errors(self, mock_get):
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="replace", path=None, old_string="a", new_string="b"))
         assert "error" in result
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_rejects_malformed_hashline_before_backend_call(self, mock_get):
+        from tools.file_tools import patch_tool
+
+        result = json.loads(
+            patch_tool(
+                mode="replace",
+                path="/backend-only/worktree/sample.txt",
+                old_string="# HASHLINE sha256:not-a-digest\nhello",
+                new_string="world",
+            )
+        )
+
+        assert "Invalid HASHLINE directive" in result["error"]
+        mock_get.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_missing_strings_errors(self, mock_get):
@@ -167,6 +213,32 @@ class TestPatchHandler:
         result = json.loads(patch_tool(mode="patch", patch="*** Begin Patch\n..."))
         assert result["status"] == "ok"
         mock_ops.patch_v4a.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_mode_hashline_uses_backend_file_ops_for_non_host_paths(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "operations": 1}
+        mock_ops.patch_v4a.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        patch_text = """*** Begin Patch
+*** Hashline: /backend-only/worktree/sample.txt sha256:{hash}
+*** Update File: /backend-only/worktree/sample.txt
+@@
+-old
++new
+*** End Patch
+""".format(hash="b" * 64)
+
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(mode="patch", patch=patch_text, task_id="backend-hashline-patch"))
+
+        assert result["status"] == "ok"
+        mock_ops.patch_v4a.assert_called_once_with(
+            "*** Begin Patch\n*** Update File: /backend-only/worktree/sample.txt\n@@\n-old\n+new\n*** End Patch\n",
+            expected_hashes={"/backend-only/worktree/sample.txt": "b" * 64},
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_mode_missing_content_errors(self, mock_get):

@@ -995,6 +995,20 @@ class SessionStore:
         entries.sort(key=lambda e: e.updated_at, reverse=True)
 
         return entries
+
+    def get_runtime_activation_snapshot(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load the persisted runtime activation snapshot for a session."""
+        if not self._db:
+            return None
+        try:
+            session = self._db.get_session(session_id)
+        except Exception as e:
+            logger.debug("Could not load runtime activation snapshot for %s: %s", session_id, e)
+            return None
+        if not session:
+            return None
+        snapshot = session.get("runtime_activation_snapshot")
+        return dict(snapshot) if isinstance(snapshot, dict) else None
     
     def get_transcript_path(self, session_id: str) -> Path:
         """Get the path to a session's legacy transcript file."""

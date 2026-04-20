@@ -983,7 +983,28 @@ def test_session_resume_reopens_persisted_history_into_a_fresh_runtime_session(m
         def get_messages_as_conversation(self, _sid):
             return [
                 {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "world"},
+                {
+                    "role": "assistant",
+                    "content": "world",
+                    "metadata": {
+                        "swarm": {
+                            "subagents": [
+                                {
+                                    "goal": "Audit slash routes",
+                                    "id": "sa:0:Audit slash routes",
+                                    "index": 0,
+                                    "notes": ["confirmed"],
+                                    "status": "completed",
+                                    "summary": "done",
+                                    "taskCount": 1,
+                                    "thinking": [],
+                                    "tools": []
+                                }
+                            ],
+                            "turnStatus": "persisted"
+                        }
+                    }
+                },
             ]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -1006,6 +1027,8 @@ def test_session_resume_reopens_persisted_history_into_a_fresh_runtime_session(m
 
     assert resp["result"]["resumed"] == "persisted-session"
     assert resp["result"]["message_count"] == 2
+    assert resp["result"]["messages"][1]["swarm"]["turnStatus"] == "persisted"
+    assert resp["result"]["messages"][1]["swarm"]["subagents"][0]["goal"] == "Audit slash routes"
     assert reopened == ["persisted-session"]
     assert captured["session_key"] == "persisted-session"
     assert captured["sid"] != "persisted-session"

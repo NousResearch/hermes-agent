@@ -8,21 +8,22 @@ breaking existing file-tool callers.
 """
 
 import errno
-import hashlib
 import json
 import logging
 import os
-import re
 import threading
 from pathlib import Path
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
+from tools.patch_parser import (
+    get_touched_paths,
+    parse_patch_hashlines,
+    parse_replace_hashline,
+    parse_v4a_patch,
+)
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
-
-_REPLACE_HASHLINE_RE = re.compile(r"^\s*#\s*HASHLINE\s+sha256:([0-9a-fA-F]{64})\s*$")
-_PATCH_HASHLINE_RE = re.compile(r"^\*\*\*\s+Hashline:\s+(.+?)\s+sha256:([0-9a-fA-F]{64})\s*$")
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
@@ -128,58 +129,14 @@ def _check_sensitive_path(filepath: str) -> str | None:
     return None
 
 
-def _compute_file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(os.path.expanduser(path), "rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _extract_replace_hashline(payload: str) -> tuple[str | None, str, str | None]:
+    expectation, stripped_payload, error = parse_replace_hashline(payload)
+    return (expectation.expected_sha256 if expectation else None), stripped_payload, error
 
 
-def _extract_replace_hashline(payload: str) -> tuple[str | None, str]:
-    if not isinstance(payload, str):
-        return None, payload
-    if "\n" in payload:
-        first_line, remainder = payload.split("\n", 1)
-    else:
-        first_line, remainder = payload, ""
-    match = _REPLACE_HASHLINE_RE.match(first_line)
-    if not match:
-        return None, payload
-    return match.group(1).lower(), remainder
-
-
-def _extract_patch_hashlines(payload: str) -> tuple[dict[str, str], str]:
-    if not isinstance(payload, str):
-        return {}, payload
-    expected_hashes: dict[str, str] = {}
-    kept_lines: list[str] = []
-    for line in payload.splitlines():
-        match = _PATCH_HASHLINE_RE.match(line)
-        if match:
-            expected_hashes[match.group(1).strip()] = match.group(2).lower()
-            continue
-        kept_lines.append(line)
-    rebuilt = "\n".join(kept_lines)
-    if payload.endswith("\n"):
-        rebuilt += "\n"
-    return expected_hashes, rebuilt
-
-
-def _validate_hashline_expectation(path: str, expected_sha256: str) -> str | None:
-    expanded = os.path.expanduser(path)
-    if not os.path.exists(expanded):
-        return f"HASHLINE validation failed: file not found: {path}"
-    try:
-        current_hash = _compute_file_sha256(expanded)
-    except Exception as exc:
-        return f"HASHLINE validation failed for {path}: {exc}"
-    if current_hash.lower() != str(expected_sha256 or "").lower():
-        return (
-            f"HASHLINE validation failed for {path}: expected sha256:{expected_sha256}, "
-            f"got sha256:{current_hash}. Re-read the file before editing."
-        )
-    return None
+def _extract_patch_hashlines(payload: str) -> tuple[dict[str, str], str, str | None]:
+    expectations, stripped_payload, error = parse_patch_hashlines(payload)
+    return {path: expectation.expected_sha256 for path, expectation in expectations.items()}, stripped_payload, error
 
 
 def _is_expected_write_exception(exc: Exception) -> bool:
@@ -707,35 +664,31 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     """Patch a file using replace mode or V4A patch format."""
     old_string_hash = None
     patch_hashes: dict[str, str] = {}
+    patch_operations = []
+
     if mode == "replace" and isinstance(old_string, str):
-        old_string_hash, old_string = _extract_replace_hashline(old_string)
+        old_string_hash, old_string, replace_hashline_error = _extract_replace_hashline(old_string)
+        if replace_hashline_error:
+            return tool_error(replace_hashline_error)
     elif mode == "patch" and isinstance(patch, str):
-        patch_hashes, patch = _extract_patch_hashlines(patch)
-    # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
+        patch_hashes, patch, patch_hashline_error = _extract_patch_hashlines(patch)
+        if patch_hashline_error:
+            return tool_error(patch_hashline_error)
+        patch_operations, parse_error = parse_v4a_patch(patch)
+        if parse_error:
+            return tool_error(f"Failed to parse patch: {parse_error}")
+
+    # Check sensitive paths for both replace (explicit path) and V4A patch operations.
     _paths_to_check = []
     if path:
         _paths_to_check.append(path)
-    if mode == "patch" and patch:
-        import re as _re
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
+    if mode == "patch" and patch_operations:
+        _paths_to_check.extend(get_touched_paths(patch_operations))
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p)
         if sensitive_err:
             return tool_error(sensitive_err)
-    if mode == "replace" and old_string_hash:
-        hashline_err = _validate_hashline_expectation(path or "", old_string_hash)
-        if hashline_err:
-            return tool_error(hashline_err)
-    if mode == "patch" and patch_hashes:
-        for _p in _paths_to_check:
-            if _p not in patch_hashes:
-                return tool_error(
-                    f"HASHLINE validation failed: missing '*** Hashline: {_p} sha256:...' for patched file {_p}"
-                )
-            hashline_err = _validate_hashline_expectation(_p, patch_hashes[_p])
-            if hashline_err:
-                return tool_error(hashline_err)
+
     try:
         # Check staleness for all files this patch will touch.
         stale_warnings = []
@@ -745,20 +698,29 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 stale_warnings.append(_sw)
 
         file_ops = _get_file_ops(task_id)
-        
+
         if mode == "replace":
             if not path:
                 return tool_error("path required")
             if old_string is None or new_string is None:
                 return tool_error("old_string and new_string required")
-            result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+            patch_kwargs = {}
+            if old_string_hash:
+                patch_kwargs["expected_sha256"] = old_string_hash
+            result = file_ops.patch_replace(
+                path,
+                old_string,
+                new_string,
+                replace_all,
+                **patch_kwargs,
+            )
         elif mode == "patch":
             if not patch:
                 return tool_error("patch content required")
-            result = file_ops.patch_v4a(patch)
+            result = file_ops.patch_v4a(patch, expected_hashes=patch_hashes or None)
         else:
             return tool_error(f"Unknown mode: {mode}")
-        
+
         result_dict = result.to_dict()
         if stale_warnings:
             result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
@@ -890,7 +852,7 @@ WRITE_FILE_SCHEMA = {
 
 PATCH_SCHEMA = {
     "name": "patch",
-    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
+    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nHermes-native anchored safe-edit contract: in replace mode, prefix old_string with '# HASHLINE sha256:<64-hex-digest>' to require the file snapshot to match before and during the write. In patch mode, add '*** Hashline: path/to/file sha256:<64-hex-digest>' for each existing file being updated, deleted, or moved. Malformed or stale anchors are rejected before mutation.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -28,6 +28,7 @@ Usage:
 import os
 import re
 import difflib
+import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
@@ -400,6 +401,12 @@ class ShellFileOperations(FileOperations):
             result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
+
+    def _python_cmd(self) -> str:
+        """Return an available Python command inside the terminal environment."""
+        if self._has_command("python3"):
+            return "python3"
+        return "python"
     
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
@@ -742,13 +749,147 @@ class ShellFileOperations(FileOperations):
             bytes_written=bytes_written,
             dirs_created=dirs_created
         )
+
+    def conditional_write_file(self, path: str, content: str, expected_sha256: str) -> WriteResult:
+        """Write only if the current file snapshot still matches expected_sha256."""
+        path = self._expand_path(path)
+
+        if _is_write_denied(path):
+            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+
+        parent = os.path.dirname(path)
+        dirs_created = False
+        if parent:
+            mkdir_cmd = f"mkdir -p {self._escape_shell_arg(parent)}"
+            mkdir_result = self._exec(mkdir_cmd)
+            if mkdir_result.exit_code == 0:
+                dirs_created = True
+
+        python_cmd = self._python_cmd()
+        script = r'''import hashlib, sys
+path = sys.argv[1]
+expected = sys.argv[2].lower()
+data = sys.stdin.buffer.read()
+try:
+    with open(path, "rb") as fh:
+        current = fh.read()
+except FileNotFoundError:
+    print(f"HASHLINE validation failed: file not found: {path}")
+    raise SystemExit(3)
+current_hash = hashlib.sha256(current).hexdigest()
+if current_hash != expected:
+    print(
+        f"HASHLINE validation failed for {path}: expected sha256:{expected}, "
+        f"got sha256:{current_hash}. Re-read the file before editing."
+    )
+    raise SystemExit(3)
+with open(path, "wb") as fh:
+    fh.write(data)
+'''
+        write_cmd = (
+            f"{python_cmd} -c {self._escape_shell_arg(script)} "
+            f"{self._escape_shell_arg(path)} {self._escape_shell_arg(str(expected_sha256 or '').lower())}"
+        )
+        write_result = self._exec(write_cmd, stdin_data=content)
+        if write_result.exit_code != 0:
+            message = write_result.stdout.strip() or f"Failed to write file: {path}"
+            return WriteResult(error=message)
+
+        return WriteResult(
+            bytes_written=len(content.encode("utf-8")),
+            dirs_created=dirs_created,
+        )
+
+    def conditional_delete_file(self, path: str, expected_sha256: str) -> WriteResult:
+        """Delete only if the current file snapshot still matches expected_sha256."""
+        path = self._expand_path(path)
+        if _is_write_denied(path):
+            return WriteResult(error=f"Delete denied: {path} is a protected path")
+
+        python_cmd = self._python_cmd()
+        script = r'''import hashlib, os, sys
+path = sys.argv[1]
+expected = sys.argv[2].lower()
+try:
+    with open(path, "rb") as fh:
+        current = fh.read()
+except FileNotFoundError:
+    print(f"HASHLINE validation failed: file not found: {path}")
+    raise SystemExit(3)
+current_hash = hashlib.sha256(current).hexdigest()
+if current_hash != expected:
+    print(
+        f"HASHLINE validation failed for {path}: expected sha256:{expected}, "
+        f"got sha256:{current_hash}. Re-read the file before editing."
+    )
+    raise SystemExit(3)
+os.remove(path)
+'''
+        delete_cmd = (
+            f"{python_cmd} -c {self._escape_shell_arg(script)} "
+            f"{self._escape_shell_arg(path)} {self._escape_shell_arg(str(expected_sha256 or '').lower())}"
+        )
+        delete_result = self._exec(delete_cmd)
+        if delete_result.exit_code != 0:
+            message = delete_result.stdout.strip() or f"Failed to delete {path}"
+            return WriteResult(error=message)
+        return WriteResult()
+
+    def conditional_move_file(self, src: str, dst: str, expected_sha256: str) -> WriteResult:
+        """Move only if the source file snapshot still matches expected_sha256."""
+        src = self._expand_path(src)
+        dst = self._expand_path(dst)
+        for p in (src, dst):
+            if _is_write_denied(p):
+                return WriteResult(error=f"Move denied: {p} is a protected path")
+
+        parent = os.path.dirname(dst)
+        if parent:
+            mkdir_cmd = f"mkdir -p {self._escape_shell_arg(parent)}"
+            mkdir_result = self._exec(mkdir_cmd)
+            if mkdir_result.exit_code != 0:
+                return WriteResult(error=f"Failed to prepare destination directory for {dst}: {mkdir_result.stdout}")
+
+        python_cmd = self._python_cmd()
+        script = r'''import hashlib, os, shutil, sys
+src = sys.argv[1]
+dst = sys.argv[2]
+expected = sys.argv[3].lower()
+try:
+    with open(src, "rb") as fh:
+        current = fh.read()
+except FileNotFoundError:
+    print(f"HASHLINE validation failed: file not found: {src}")
+    raise SystemExit(3)
+current_hash = hashlib.sha256(current).hexdigest()
+if current_hash != expected:
+    print(
+        f"HASHLINE validation failed for {src}: expected sha256:{expected}, "
+        f"got sha256:{current_hash}. Re-read the file before editing."
+    )
+    raise SystemExit(3)
+if os.path.exists(dst):
+    print(f"Failed to move {src} -> {dst}: destination already exists")
+    raise SystemExit(2)
+shutil.move(src, dst)
+'''
+        move_cmd = (
+            f"{python_cmd} -c {self._escape_shell_arg(script)} "
+            f"{self._escape_shell_arg(src)} {self._escape_shell_arg(dst)} "
+            f"{self._escape_shell_arg(str(expected_sha256 or '').lower())}"
+        )
+        move_result = self._exec(move_cmd)
+        if move_result.exit_code != 0:
+            message = move_result.stdout.strip() or f"Failed to move {src} -> {dst}"
+            return WriteResult(error=message)
+        return WriteResult()
     
     # =========================================================================
     # PATCH Implementation (Replace Mode)
     # =========================================================================
     
     def patch_replace(self, path: str, old_string: str, new_string: str,
-                      replace_all: bool = False) -> PatchResult:
+                      replace_all: bool = False, expected_sha256: str = None) -> PatchResult:
         """
         Replace text in a file using fuzzy matching.
 
@@ -776,6 +917,15 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to read file: {path}")
         
         content = read_result.stdout
+        if expected_sha256:
+            current_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if current_hash.lower() != str(expected_sha256).lower():
+                return PatchResult(
+                    error=(
+                        f"HASHLINE validation failed for {path}: expected sha256:{expected_sha256}, "
+                        f"got sha256:{current_hash}. Re-read the file before editing."
+                    )
+                )
         
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
@@ -791,7 +941,10 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Could not find match for old_string in {path}")
         
         # Write back
-        write_result = self.write_file(path, new_content)
+        if expected_sha256:
+            write_result = self.conditional_write_file(path, new_content, expected_sha256)
+        else:
+            write_result = self.write_file(path, new_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
         
@@ -808,7 +961,7 @@ class ShellFileOperations(FileOperations):
             lint=lint_result.to_dict() if lint_result else None
         )
     
-    def patch_v4a(self, patch_content: str) -> PatchResult:
+    def patch_v4a(self, patch_content: str, expected_hashes: Optional[Dict[str, str]] = None) -> PatchResult:
         """
         Apply a V4A format patch.
         
@@ -835,7 +988,7 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
         
         # Apply operations
-        result = apply_v4a_operations(operations, self)
+        result = apply_v4a_operations(operations, self, expected_hashes=expected_hashes)
         return result
     
     def _check_lint(self, path: str) -> LintResult:

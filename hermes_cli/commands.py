@@ -95,8 +95,22 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
-    CommandDef("resume", "Resume a previously-named session", "Session",
-               args_hint="[name]"),
+    CommandDef("resume", "Resume or attach to a previous session by name or session ID", "Session",
+               args_hint="[name|session-id]"),
+    CommandDef("attach", "Show attachable handoff targets or attach this chat to a session", "Session",
+               gateway_only=True, args_hint="[name|session-id]"),
+    CommandDef("handoff", "Create or consume a structured task-contract handoff (not chat attach)", "Session",
+               args_hint="[request|<task-contract-json>]"),
+    CommandDef("stop-continuation", "Block the current continuation retry queue entry", "Session",
+               args_hint="[session-id]"),
+    CommandDef("init-deep", "Start a deep initialization pass with a structured task contract", "Session",
+               args_hint="[objective]"),
+    CommandDef("start-work", "Start scoped work using a structured task contract", "Session",
+               args_hint="[objective]"),
+    CommandDef("ralph-loop", "Run the Ralph loop with bounded retry/stop semantics and a structured task contract", "Session",
+              args_hint="[objective]"),
+    CommandDef("ulw-loop", "Run the ULW loop with open-work completion gating and a structured task contract", "Session",
+              args_hint="[objective]"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
@@ -190,12 +204,33 @@ def _build_command_lookup() -> dict[str, CommandDef]:
 _COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
 
 
+def normalize_command_name(name: str) -> str:
+    """Normalize a slash-command token without changing non-Telegram aliases.
+
+    Accepts names with or without a leading slash. If *name* already matches a
+    canonical command or explicit alias, it is preserved as-is (lowercased).
+    Otherwise, an underscore variant is translated back to the registered
+    hyphenated spelling when that lookup exists. This lets Telegram menu
+    commands like ``/start_work`` resolve to ``start-work`` without affecting
+    existing aliases like ``reload_mcp`` or ``reset``.
+    """
+    normalized = name.lower().lstrip("/")
+    if not normalized:
+        return normalized
+    if normalized in _COMMAND_LOOKUP:
+        return normalized
+    hyphenated = normalized.replace("_", "-")
+    if hyphenated in _COMMAND_LOOKUP:
+        return hyphenated
+    return normalized
+
+
 def resolve_command(name: str) -> CommandDef | None:
     """Resolve a command name or alias to its CommandDef.
 
     Accepts names with or without the leading slash.
     """
-    return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+    return _COMMAND_LOOKUP.get(normalize_command_name(name))
 
 
 def _build_description(cmd: CommandDef) -> str:
@@ -276,6 +311,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "restart",
         "status",
         "stop",
+        "stop-continuation",
         "update",
     }
 )

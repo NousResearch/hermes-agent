@@ -70,10 +70,12 @@ _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 # Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
 # OSS / open-weight models prioritized first, then closed-source by family.
+# Slugs match Vercel's actual /v1/models catalog (e.g. alibaba/ for Qwen,
+# zai/ and xai/ without hyphens).
 AI_GATEWAY_MODELS: list[tuple[str, str]] = [
-    ("moonshotai/kimi-k2.5",                 "recommended"),
-    ("qwen/qwen3.6-plus",                    ""),
-    ("z-ai/glm-5.1",                         ""),
+    ("moonshotai/kimi-k2.6",                 "recommended"),
+    ("alibaba/qwen3.6-plus",                 ""),
+    ("zai/glm-5.1",                          ""),
     ("minimax/minimax-m2.7",                 ""),
     ("anthropic/claude-sonnet-4.6",          ""),
     ("anthropic/claude-opus-4.7",            ""),
@@ -83,9 +85,9 @@ AI_GATEWAY_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.4-mini",                  ""),
     ("openai/gpt-5.3-codex",                 ""),
     ("google/gemini-3.1-pro-preview",        ""),
-    ("google/gemini-3-flash-preview",        ""),
+    ("google/gemini-3-flash",                ""),
     ("google/gemini-3.1-flash-lite-preview", ""),
-    ("x-ai/grok-4.20",                       ""),
+    ("xai/grok-4.20-reasoning",              ""),
 ]
 
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None

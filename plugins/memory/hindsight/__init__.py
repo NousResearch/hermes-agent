@@ -3,6 +3,8 @@
 Long-term memory with knowledge graph, entity resolution, and multi-strategy
 retrieval. Supports cloud (API key) and local modes.
 
+Configurable timeout via HINDSIGHT_TIMEOUT env var or config.json.
+
 Original PR #1811 by benfrank241, adapted to MemoryProvider ABC.
 
 Config via environment variables:
@@ -11,6 +13,7 @@ Config via environment variables:
   HINDSIGHT_BUDGET                 — recall budget: low/mid/high (default: mid)
   HINDSIGHT_API_URL                — API endpoint
   HINDSIGHT_MODE                   — cloud or local (default: cloud)
+  HINDSIGHT_TIMEOUT                — API request timeout in seconds (default: 120)
   HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
@@ -41,6 +44,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
+_DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
@@ -98,7 +102,7 @@ def _get_loop() -> asyncio.AbstractEventLoop:
         return _loop
 
 
-def _run_sync(coro, timeout: float = 120.0):
+def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     """Schedule *coro* on the shared loop and block until done."""
     loop = _get_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
@@ -347,6 +351,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_identity = ""
         self._turn_index = 0
         self._client = None
+        self._timeout = _DEFAULT_TIMEOUT
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
@@ -532,6 +537,11 @@ class HindsightMemoryProvider(MemoryProvider):
         # Step 4: Save everything
         provider_config["bank_id"] = "hermes"
         provider_config["recall_budget"] = "mid"
+        # Read existing timeout from config if present, otherwise use default
+        existing_timeout = self._config.get("timeout") if self._config else None
+        timeout_val = existing_timeout if existing_timeout else _DEFAULT_TIMEOUT
+        provider_config["timeout"] = timeout_val
+        env_writes["HINDSIGHT_TIMEOUT"] = str(timeout_val)
         config["memory"]["provider"] = "hindsight"
         save_config(config)
 
@@ -618,6 +628,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
+            {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
         ]
 
     def _get_client(self):
@@ -648,11 +659,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = HindsightEmbedded(**kwargs)
             else:
                 from hindsight_client import Hindsight
-                kwargs = {"base_url": self._api_url, "timeout": 30.0}
+                timeout = self._timeout or _DEFAULT_TIMEOUT
+                kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
                 if self._api_key:
                     kwargs["api_key"] = self._api_key
-                logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s)",
-                             self._api_url, bool(self._api_key))
+                logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
+                             self._api_url, bool(self._api_key), kwargs["timeout"])
                 self._client = Hindsight(**kwargs)
         return self._client
 
@@ -699,6 +711,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_index = 0
         self._session_turns = []
         self._mode = self._config.get("mode", "cloud")
+        # Read timeout from config or env var, fall back to default
+        self._timeout = self._config.get("timeout") or int(os.environ.get("HINDSIGHT_TIMEOUT", str(_DEFAULT_TIMEOUT)))
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
             self._mode = "local_embedded"

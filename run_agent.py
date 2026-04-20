@@ -2523,6 +2523,20 @@ class AIAgent:
           4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
              ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
              case-insensitive.
+
+        Additionally strips standalone tool-call XML blocks that some open
+        models (notably Gemma variants on OpenRouter) emit inside assistant
+        content instead of via the structured ``tool_calls`` field:
+          * ``<tool_call>…</tool_call>``
+          * ``<tool_calls>…</tool_calls>``
+          * ``<tool_result>…</tool_result>``
+          * ``<function_call>…</function_call>``
+          * ``<function_calls>…</function_calls>``
+          * ``<function name="…">…</function>`` (Gemma style)
+        Ported from openclaw/openclaw#67318. The ``<function>`` variant is
+        boundary-gated (only strips when the tag sits at start-of-line or
+        after punctuation and carries a ``name="..."`` attribute) so prose
+        mentions like "Use <function> in JavaScript" are preserved.
         """
         if not content:
             return ""
@@ -2534,6 +2548,30 @@ class AIAgent:
         content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
+        #     generic tag names first — they have no attribute gating since
+        #     a literal <tool_call> in prose is already vanishingly rare.
+        for _tc_name in ("tool_call", "tool_calls", "tool_result",
+                          "function_call", "function_calls"):
+            content = re.sub(
+                rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>',
+                '',
+                content,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+        # 1c. <function name="...">...</function> — Gemma-style standalone
+        #     tool call. Only strip when the tag sits at a block boundary
+        #     (start of text, after a newline, or after sentence-ending
+        #     punctuation) AND carries a name="..." attribute. This keeps
+        #     prose mentions like "Use <function> to declare" safe.
+        content = re.sub(
+            r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
+            r'<function\b[^>]*\bname\s*=[^>]*>'
+            r'(?:(?:(?!</function>).)*)</function>',
+            '',
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
         # 2. Unterminated reasoning block — open tag at a block boundary
         #    (start of text, or after a newline) with no matching close.
         #    Strip from the tag to end of string.  Fixes #8878 / #9568
@@ -2547,6 +2585,16 @@ class AIAgent:
         # 3. Stray orphan open/close tags that slipped through.
         content = re.sub(
             r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+            '',
+            content,
+            flags=re.IGNORECASE,
+        )
+        # 3b. Stray tool-call closers. (We do NOT strip bare <function> or
+        #     unterminated <function name="..."> because a truncated tail
+        #     during streaming may still be valuable to the user; matches
+        #     OpenClaw's intentional asymmetry.)
+        content = re.sub(
+            r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
             '',
             content,
             flags=re.IGNORECASE,

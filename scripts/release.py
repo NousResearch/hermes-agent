@@ -177,6 +177,7 @@ AUTHOR_MAP = {
     "364939526@qq.com": "luyao618",
     "hgk324@gmail.com": "houziershi",
     "176644217+PStarH@users.noreply.github.com": "PStarH",
+    "51058514+Sanjays2402@users.noreply.github.com": "Sanjays2402",
     "906014227@qq.com": "bingo906",
     "aaronwong1999@icloud.com": "AaronWong1999",
     "agents@kylefrench.dev": "DeployFaith",

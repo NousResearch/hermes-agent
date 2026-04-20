@@ -7,9 +7,14 @@ import { createInterface } from 'node:readline'
 import type { GatewayEvent } from './gatewayTypes.js'
 
 const MAX_GATEWAY_LOG_LINES = 200
+const MAX_LOG_LINE_BYTES = 4096
+const MAX_BUFFERED_EVENTS = 2000
 const MAX_LOG_PREVIEW = 240
 const STARTUP_TIMEOUT_MS = Math.max(5000, parseInt(process.env.HERMES_TUI_STARTUP_TIMEOUT_MS ?? '15000', 10) || 15000)
 const REQUEST_TIMEOUT_MS = Math.max(30000, parseInt(process.env.HERMES_TUI_RPC_TIMEOUT_MS ?? '120000', 10) || 120000)
+
+const truncateLine = (line: string) =>
+  line.length > MAX_LOG_LINE_BYTES ? `${line.slice(0, MAX_LOG_LINE_BYTES)}… [truncated ${line.length} bytes]` : line
 
 const resolvePython = (root: string) => {
   const configured = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim()
@@ -69,7 +74,9 @@ export class GatewayClient extends EventEmitter {
       return void this.emit('event', ev)
     }
 
-    this.bufferedEvents.push(ev)
+    if (this.bufferedEvents.push(ev) > MAX_BUFFERED_EVENTS) {
+      this.bufferedEvents.splice(0, this.bufferedEvents.length - MAX_BUFFERED_EVENTS)
+    }
   }
 
   start() {
@@ -121,7 +128,7 @@ export class GatewayClient extends EventEmitter {
 
     this.stderrRl = createInterface({ input: this.proc.stderr! })
     this.stderrRl.on('line', raw => {
-      const line = raw.trim()
+      const line = truncateLine(raw.trim())
 
       if (!line) {
         return
@@ -181,7 +188,7 @@ export class GatewayClient extends EventEmitter {
   }
 
   private pushLog(line: string) {
-    if (this.logs.push(line) > MAX_GATEWAY_LOG_LINES) {
+    if (this.logs.push(truncateLine(line)) > MAX_GATEWAY_LOG_LINES) {
       this.logs.splice(0, this.logs.length - MAX_GATEWAY_LOG_LINES)
     }
   }

@@ -16,6 +16,28 @@ import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
 import type { PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
 
+const PASTE_SNIP_MAX_COUNT = 32
+const PASTE_SNIP_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+
+const trimSnips = (snips: PasteSnippet[]): PasteSnippet[] => {
+  let total = 0
+  const out: PasteSnippet[] = []
+
+  for (let i = snips.length - 1; i >= 0; i--) {
+    const snip = snips[i]!
+    const size = snip.text.length
+
+    if (out.length >= PASTE_SNIP_MAX_COUNT || total + size > PASTE_SNIP_MAX_TOTAL_BYTES) {
+      break
+    }
+
+    total += size
+    out.unshift(snip)
+  }
+
+  return out.length === snips.length ? snips : out
+}
+
 export function useComposerState({ gw, onClipboardPaste, submitRef }: UseComposerStateOptions): UseComposerStateResult {
   const [input, setInput] = useState('')
   const [inputBuf, setInputBuf] = useState<string[]>([])
@@ -31,6 +53,7 @@ export function useComposerState({ gw, onClipboardPaste, submitRef }: UseCompose
   const clearIn = useCallback(() => {
     setInput('')
     setInputBuf([])
+    setPasteSnips([])
     setQueueEdit(null)
     setHistoryIdx(null)
     historyDraftRef.current = ''
@@ -68,7 +91,7 @@ export function useComposerState({ gw, onClipboardPaste, submitRef }: UseCompose
       const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
       const insert = `${lead}${label}${tail}`
 
-      setPasteSnips(prev => [...prev, { label, text: cleanedText }].slice(-32))
+      setPasteSnips(prev => trimSnips([...prev, { label, text: cleanedText }]))
 
       void gw
         .request<{ path?: string }>('paste.collapse', { text: cleanedText })

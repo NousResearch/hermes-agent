@@ -171,6 +171,8 @@ _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
 })
 
+_LITERAL_ENV_REF_PATTERN = re.compile(r"^\$(?:\{)?[A-Za-z_][A-Za-z0-9_]*(?:\})?$")
+
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
     r"(?:"
@@ -191,6 +193,91 @@ _CREDENTIAL_PATTERN = re.compile(
 # Security helpers
 # ---------------------------------------------------------------------------
 
+def _is_unresolved_env_reference(value: object) -> bool:
+    return isinstance(value, str) and bool(_LITERAL_ENV_REF_PATTERN.fullmatch(value.strip()))
+
+
+def _sanitize_user_env(user_env: Optional[dict]) -> dict:
+    """Drop unresolved shell-style placeholders from configured env values."""
+    sanitized: dict[str, Any] = {}
+    for key, value in (user_env or {}).items():
+        if _is_unresolved_env_reference(value):
+            logger.warning(
+                "MCP env '%s' contained unresolved placeholder %r; dropping it",
+                key,
+                value,
+            )
+            continue
+        sanitized[key] = value
+    return sanitized
+
+
+def _wants_onecli_env_proxy(user_env: dict) -> bool:
+    value = str(user_env.get("NODE_USE_ENV_PROXY", "") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _apply_onecli_bootstrap_env(env: dict, user_env: dict) -> dict:
+    """Inject OneCLI proxy and CA env for MCP subprocesses that opt in."""
+    if not _wants_onecli_env_proxy(user_env):
+        return env
+
+    updated = dict(env)
+    explicit_proxy = any(
+        isinstance(user_env.get(name), str) and user_env.get(name, "").strip()
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+    )
+    explicit_ca = any(
+        isinstance(user_env.get(name), str) and user_env.get(name, "").strip()
+        for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
+    )
+    if not explicit_proxy:
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            value = os.environ.get(name, "")
+            if isinstance(value, str) and value.strip() and not _is_unresolved_env_reference(value):
+                updated.setdefault(name, value.strip())
+    if not explicit_ca:
+        for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"):
+            value = os.environ.get(name, "")
+            if isinstance(value, str) and value.strip() and not _is_unresolved_env_reference(value):
+                updated.setdefault(name, value.strip())
+
+    if (explicit_proxy or any(updated.get(name) for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"))) and (
+        explicit_ca or any(updated.get(name) for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"))
+    ):
+        return updated
+
+    try:
+        from hermes_cli.onecli_bootstrap import (
+            DEFAULT_CONFIG_URLS,
+            extract_bootstrap_env,
+            fetch_first_container_config,
+        )
+
+        config, _source_url = fetch_first_container_config(DEFAULT_CONFIG_URLS, timeout=1.5)
+        bootstrap_env = extract_bootstrap_env(config)
+    except Exception as exc:
+        logger.debug("Failed to load OneCLI bootstrap env for MCP subprocess: %s", exc)
+        return updated
+    proxy_url = bootstrap_env.get("ONECLI_BOOTSTRAP_PROXY_URL", "").strip()
+    ssl_cert_file = bootstrap_env.get("ONECLI_BOOTSTRAP_SSL_CERT_FILE", "").strip()
+    node_extra_ca = bootstrap_env.get("ONECLI_BOOTSTRAP_NODE_EXTRA_CA_CERTS", "").strip()
+
+    if proxy_url and not explicit_proxy:
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            updated.setdefault(name, proxy_url)
+    if ssl_cert_file and not explicit_ca:
+        updated.setdefault("SSL_CERT_FILE", ssl_cert_file)
+        updated.setdefault("REQUESTS_CA_BUNDLE", ssl_cert_file)
+        updated.setdefault("CURL_CA_BUNDLE", ssl_cert_file)
+    if node_extra_ca:
+        updated.setdefault("NODE_EXTRA_CA_CERTS", node_extra_ca)
+
+    for key, value in bootstrap_env.items():
+        updated.setdefault(key, value)
+    return updated
+
+
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Build a filtered environment dict for stdio subprocesses.
 
@@ -205,9 +292,10 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key, value in os.environ.items():
         if key in _SAFE_ENV_KEYS or key.startswith("XDG_"):
             env[key] = value
-    if user_env:
-        env.update(user_env)
-    return env
+    sanitized_user_env = _sanitize_user_env(user_env)
+    if sanitized_user_env:
+        env.update(sanitized_user_env)
+    return _apply_onecli_bootstrap_env(env, sanitized_user_env)
 
 
 def _sanitize_error(text: str) -> str:

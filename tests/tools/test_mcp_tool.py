@@ -946,6 +946,90 @@ class TestBuildSafeEnv:
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
 
+    def test_unresolved_env_placeholders_are_dropped(self):
+        """Literal shell placeholders in configured env are not passed through."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            result = _build_safe_env(
+                {
+                    "HTTPS_PROXY": "${https_proxy}",
+                    "http_proxy": "$http_proxy",
+                    "MY_CUSTOM_VAR": "hello",
+                }
+            )
+
+        assert "HTTPS_PROXY" not in result
+        assert "http_proxy" not in result
+        assert result["MY_CUSTOM_VAR"] == "hello"
+
+    def test_node_use_env_proxy_bootstraps_onecli_env(self):
+        """NODE_USE_ENV_PROXY opt-in injects proxy and CA env from OneCLI bootstrap."""
+        from tools.mcp_tool import _build_safe_env
+
+        fake_bootstrap = {
+            "ONECLI_BOOTSTRAP_PROXY_URL": "http://x:token@127.0.0.1:10255",
+            "ONECLI_BOOTSTRAP_SSL_CERT_FILE": "/tmp/onecli-combined-ca.pem",
+            "ONECLI_BOOTSTRAP_NODE_EXTRA_CA_CERTS": "/tmp/onecli-gateway-ca.pem",
+        }
+
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            with patch("hermes_cli.onecli_bootstrap.fetch_first_container_config", return_value=({}, "mock://cfg")), \
+                 patch("hermes_cli.onecli_bootstrap.extract_bootstrap_env", return_value=fake_bootstrap):
+                result = _build_safe_env({"NODE_USE_ENV_PROXY": "1"})
+
+        assert result["HTTPS_PROXY"] == "http://x:token@127.0.0.1:10255"
+        assert result["https_proxy"] == "http://x:token@127.0.0.1:10255"
+        assert result["SSL_CERT_FILE"] == "/tmp/onecli-combined-ca.pem"
+        assert result["REQUESTS_CA_BUNDLE"] == "/tmp/onecli-combined-ca.pem"
+        assert result["CURL_CA_BUNDLE"] == "/tmp/onecli-combined-ca.pem"
+        assert result["NODE_EXTRA_CA_CERTS"] == "/tmp/onecli-gateway-ca.pem"
+
+    def test_node_use_env_proxy_prefers_parent_proxy_and_ca_env(self):
+        """Launcher inherits parent proxy and CA env directly before falling back to bootstrap."""
+        from tools.mcp_tool import _build_safe_env
+
+        parent_env = {
+            "PATH": "/usr/bin",
+            "HTTPS_PROXY": "http://x:token@127.0.0.1:10255",
+            "https_proxy": "http://x:token@127.0.0.1:10255",
+            "SSL_CERT_FILE": "/tmp/onecli-combined-ca.pem",
+            "REQUESTS_CA_BUNDLE": "/tmp/onecli-combined-ca.pem",
+            "NODE_EXTRA_CA_CERTS": "/tmp/onecli-gateway-ca.pem",
+        }
+        with patch.dict("os.environ", parent_env, clear=True):
+            result = _build_safe_env({"NODE_USE_ENV_PROXY": "1"})
+
+        assert result["HTTPS_PROXY"] == "http://x:token@127.0.0.1:10255"
+        assert result["https_proxy"] == "http://x:token@127.0.0.1:10255"
+        assert result["SSL_CERT_FILE"] == "/tmp/onecli-combined-ca.pem"
+        assert result["REQUESTS_CA_BUNDLE"] == "/tmp/onecli-combined-ca.pem"
+        assert result["NODE_EXTRA_CA_CERTS"] == "/tmp/onecli-gateway-ca.pem"
+
+    def test_explicit_proxy_and_ca_override_bootstrap(self):
+        """Explicit env values win over bootstrap-derived proxy and CA settings."""
+        from tools.mcp_tool import _build_safe_env
+
+        fake_bootstrap = {
+            "ONECLI_BOOTSTRAP_PROXY_URL": "http://x:token@127.0.0.1:10255",
+            "ONECLI_BOOTSTRAP_SSL_CERT_FILE": "/tmp/onecli-combined-ca.pem",
+            "ONECLI_BOOTSTRAP_NODE_EXTRA_CA_CERTS": "/tmp/onecli-gateway-ca.pem",
+        }
+
+        user_env = {
+            "NODE_USE_ENV_PROXY": "1",
+            "HTTPS_PROXY": "http://explicit-proxy:8080",
+            "SSL_CERT_FILE": "/tmp/explicit-ca.pem",
+        }
+
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            with patch("hermes_cli.onecli_bootstrap.fetch_first_container_config", return_value=({}, "mock://cfg")), \
+                 patch("hermes_cli.onecli_bootstrap.extract_bootstrap_env", return_value=fake_bootstrap):
+                result = _build_safe_env(user_env)
+
+        assert result["HTTPS_PROXY"] == "http://explicit-proxy:8080"
+        assert result["SSL_CERT_FILE"] == "/tmp/explicit-ca.pem"
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_error

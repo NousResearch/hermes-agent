@@ -1,7 +1,7 @@
 ---
 name: xurl
 description: Interact with X/Twitter via xurl, the official X API CLI. Use for posting, replying, quoting, searching, timelines, mentions, likes, reposts, bookmarks, follows, DMs, media upload, and raw v2 endpoint access.
-version: 1.0.0
+version: 1.1.0
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -90,18 +90,24 @@ These steps must be performed by the user directly, NOT by the agent, because th
    ```bash
    xurl auth apps add my-app --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
    ```
-5. Authenticate:
+5. Authenticate (specify `--app` to bind the token to your app):
    ```bash
-   xurl auth oauth2
+   xurl auth oauth2 --app my-app
    ```
    (This opens a browser for the OAuth 2.0 PKCE flow.)
-6. Verify:
+6. Set the app as default so all commands use it:
+   ```bash
+   xurl auth default my-app
+   ```
+7. Verify:
    ```bash
    xurl auth status
    xurl whoami
    ```
 
 After this, the agent can use any command below without further setup. OAuth 2.0 tokens auto-refresh.
+
+> **Common pitfall:** If you omit `--app my-app` from `xurl auth oauth2`, the OAuth token is saved to the built-in `default` app profile — which has no client-id or client-secret. Commands will fail with auth errors even though the OAuth flow appeared to succeed. If you hit this, re-run `xurl auth oauth2 --app my-app` and `xurl auth default my-app`.
 
 ---
 
@@ -359,11 +365,26 @@ xurl --app staging /2/users/me             # one-off against staging
 ## Agent Workflow
 
 1. Verify prerequisites: `xurl --help` and `xurl auth status`.
-2. If auth is missing, stop and direct the user to the "One-Time User Setup" section — do NOT attempt to register apps or pass secrets yourself.
-3. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
-4. Confirm the target post/user and the user's intent before any write action (post, reply, like, repost, DM, follow, block, delete).
-5. Use JSON output directly — every response is already structured.
-6. Never paste `~/.xurl` contents back into the conversation.
+2. **Check default app has credentials.** Parse the `auth status` output. The default app is marked with `▸`. If the default app shows `oauth2: (none)` but another app has a valid oauth2 user, tell the user to run `xurl auth default <that-app>` to fix it. This is the most common setup mistake — the user added an app with a custom name but never set it as default, so xurl keeps trying the empty `default` profile.
+3. If auth is missing entirely, stop and direct the user to the "One-Time User Setup" section — do NOT attempt to register apps or pass secrets yourself.
+4. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
+5. Confirm the target post/user and the user's intent before any write action (post, reply, like, repost, DM, follow, block, delete).
+6. Use JSON output directly — every response is already structured.
+7. Never paste `~/.xurl` contents back into the conversation.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Auth errors after successful OAuth flow | Token saved to `default` app (no client-id/secret) instead of your named app | `xurl auth oauth2 --app my-app` then `xurl auth default my-app` |
+| `unauthorized_client` during OAuth | App type set to "Native App" in X dashboard | Change to "Web app, automated app or bot" in User Authentication Settings |
+| 401 on every request | Token expired or wrong default app | Check `xurl auth status` — verify `▸` points to an app with oauth2 tokens |
+| `client-forbidden` / `client-not-enrolled` | X platform enrollment issue | Dashboard → Apps → Manage → Move to "Pay-per-use" package → Production environment |
+| `CreditsDepleted` | $0 balance on X API | Buy credits (min $5) in Developer Console → Billing |
+| `media processing failed` on image upload | Default category is `amplify_video` | Add `--category tweet_image --media-type image/png` |
+| Two "Client Secret" values in X dashboard | UI bug — first is actually Client ID | Confirm on the "Keys and tokens" page; ID ends in `MTpjaQ` |
 
 ---
 

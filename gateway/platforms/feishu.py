@@ -190,7 +190,6 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
-_FEISHU_ACK_EMOJI = "OK"
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -306,6 +305,7 @@ class FeishuAdapterSettings:
     webhook_host: str
     webhook_port: int
     webhook_path: str
+    ack_emoji: str = "👍"  # Default ACK reaction emoji
     ws_reconnect_nonce: int = 30
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
@@ -1214,6 +1214,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
                 or _DEFAULT_WEBHOOK_PATH
             ),
+            ack_emoji=str(extra.get("ack_emoji", "👍")).strip(),
             ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
@@ -1247,6 +1248,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_host = settings.webhook_host
         self._webhook_port = settings.webhook_port
         self._webhook_path = settings.webhook_path
+        self._ack_emoji = settings.ack_emoji
         self._ws_reconnect_nonce = settings.ws_reconnect_nonce
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
@@ -2055,7 +2057,7 @@ class FeishuAdapter(BasePlatformAdapter):
         loop = self._loop
         if (
             operator_type in {"bot", "app"}
-            or emoji_type == _FEISHU_ACK_EMOJI
+            or emoji_type == self._ack_emoji
             or not message_id
             or loop is None
             or bool(getattr(loop, "is_closed", lambda: False)())
@@ -2305,7 +2307,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             body = (
                 CreateMessageReactionRequestBody.builder()
-                .reaction_type({"emoji_type": _FEISHU_ACK_EMOJI})
+                .reaction_type({"emoji_type": self._ack_emoji})
                 .build()
             )
             request = (

@@ -1,0 +1,40 @@
+router:
+  version: "0.3"
+  default_model: "claude-sonnet-4.6"
+
+base_by_task:
+  chat: "claude-sonnet-4.6"
+  coding: "gpt-5.4"
+  writing: "claude-sonnet-4.6"
+  research: "claude-sonnet-4.6"
+  batch: "ollama"
+  trivial: "flash_or_o4_mini"
+
+fallbacks:
+  claude-sonnet-4.6: ["gpt-5.4", "deepseek", "ollama"]
+  gpt-5.4: ["claude-sonnet-4.6", "deepseek", "ollama"]
+  deepseek: ["claude-sonnet-4.6", "gpt-5.4", "ollama"]
+  ollama: ["deepseek", "gpt-5.4", "claude-sonnet-4.6"]
+  flash_or_o4_mini: ["deepseek", "claude-sonnet-4.6"]
+
+mode_overrides:
+  execute:
+    coding: "gpt-5.4"
+  review:
+    coding: "claude-sonnet-4.6"
+    writing: "claude-sonnet-4.6"
+
+reviewers:
+  high:
+    coding: "claude-sonnet-4.6"
+    writing: "claude-sonnet-4.6"
+    research: "claude-sonnet-4.6"
+
+policy_overrides:
+  - name: "auto-chat-medium-critical"
+    when:
+      task_type: "chat"
+      priority: "medium"
+      quota: "critical"
+    force: "claude-sonnet-4.6"
+    reason: "telemetry: avoid weak routing for chat+medium+critical"

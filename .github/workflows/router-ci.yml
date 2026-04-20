@@ -1,0 +1,57 @@
+name: Router CI
+
+on:
+  push:
+    paths:
+      - "model_router/**"
+      - ".github/workflows/router-ci.yml"
+  pull_request:
+    paths:
+      - "model_router/**"
+      - ".github/workflows/router-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: model_router
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: model_router/pyproject.toml
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Validate router config
+        run: |
+          validate-router-config router_config.yaml
+
+      - name: Run end-to-end demo workflow
+        run: |
+          python scripts/demo_workflow.py > /tmp/model-router-demo.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('/tmp/model-router-demo.json').read_text(encoding='utf-8'))
+          assert data['summary']['total_decisions'] == 3
+          assert data['summary']['total_feedback_events'] == 3
+          assert data['patched_config_valid'] is True
+          assert Path(data['log_path']).exists()
+          print('demo workflow OK')
+          PY
+
+      - name: Run test suite
+        run: |
+          pytest -q

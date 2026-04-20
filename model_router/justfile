@@ -1,0 +1,63 @@
+set shell := ["bash", "-cu"]
+
+config := "router_config.yaml"
+log_path := "logs/router-decisions.jsonl"
+
+default:
+    just --list
+
+install:
+    python3 -m pip install -e .
+
+install-dev:
+    python3 -m pip install -e .[dev]
+
+test:
+    pytest -q
+
+validate-config:
+    validate-router-config {{config}}
+
+check:
+    validate-router-config {{config}}
+    pytest -q
+
+route:
+    route-model --task-type coding --mode execute --priority high --has-code --json
+
+analyze:
+    analyze-router-telemetry {{log_path}}
+
+analyze-json:
+    analyze-router-telemetry {{log_path}} --json
+
+suggest:
+    suggest-router-changes {{log_path}}
+
+suggest-segments:
+    suggest-router-segments {{log_path}}
+
+propose-patch:
+    propose-router-patch {{log_path}} --config {{config}}
+
+propose-patch-full:
+    propose-router-patch {{log_path}} --config {{config}} --full-config
+
+demo:
+    python3 scripts/demo_workflow.py
+
+review:
+    echo "== validate config =="
+    validate-router-config {{config}}
+    echo
+    echo "== telemetry summary =="
+    analyze-router-telemetry {{log_path}}
+    echo
+    echo "== general suggestions =="
+    suggest-router-changes {{log_path}}
+    echo
+    echo "== segment suggestions =="
+    suggest-router-segments {{log_path}}
+    echo
+    echo "== proposed patch =="
+    propose-router-patch {{log_path}} --config {{config}}

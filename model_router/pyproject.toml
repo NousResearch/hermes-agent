@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "model-router"
+version = "0.1.0"
+description = "Operational model routing with telemetry, feedback analysis, suggestions, and policy patch proposals"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+validate-router-config = "validate_router_config:main"
+route-model = "route_cli:main"
+log-router-feedback = "log_router_feedback:main"
+analyze-router-telemetry = "analyze_telemetry:main"
+suggest-router-changes = "suggest_router_changes:main"
+suggest-router-segments = "suggest_router_changes_v2:main"
+propose-router-patch = "propose_config_patch:main"
+
+[tool.setuptools]
+py-modules = ["validate_router_config", "model_router", "route_cli", "telemetry", "log_router_feedback", "analyze_telemetry", "suggest_router_changes", "suggest_router_changes_v2", "propose_config_patch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

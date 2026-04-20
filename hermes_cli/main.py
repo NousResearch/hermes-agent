@@ -1003,6 +1003,17 @@ def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
     )
     env.setdefault("HERMES_PYTHON", sys.executable)
     env.setdefault("HERMES_CWD", os.getcwd())
+    # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
+    # ~1.5–4GB depending on version and can fatal-OOM on long sessions with
+    # large transcripts / reasoning blobs. Append (don't clobber) any user
+    # NODE_OPTIONS.
+    _existing_node_opts = env.get("NODE_OPTIONS", "").strip()
+    _hermes_tui_node_opts = "--max-old-space-size=8192 --expose-gc"
+    env["NODE_OPTIONS"] = (
+        f"{_existing_node_opts} {_hermes_tui_node_opts}".strip()
+        if _hermes_tui_node_opts not in _existing_node_opts
+        else _existing_node_opts
+    )
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 

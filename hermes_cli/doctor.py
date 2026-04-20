@@ -277,6 +277,86 @@ def run_doctor(args):
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
         check_ok(f"{_DHH}/config.yaml exists")
+
+        # Validate model.provider and model.default values
+        try:
+            import yaml as _yaml
+            cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            model_section = cfg.get("model") or {}
+            provider_raw = (model_section.get("provider") or "").strip()
+            provider = provider_raw.lower()
+            default_model = (model_section.get("default") or model_section.get("model") or "").strip()
+
+            known_providers: set = set()
+            try:
+                from hermes_cli.auth import PROVIDER_REGISTRY
+                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+            except Exception:
+                pass
+            try:
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+            except Exception:
+                _resolve_provider = None
+
+            canonical_provider = provider
+            if provider and _resolve_provider is not None and provider != "auto":
+                try:
+                    canonical_provider = _resolve_provider(provider)
+                except Exception:
+                    canonical_provider = None
+
+            if provider and provider != "auto":
+                if canonical_provider is None or (known_providers and canonical_provider not in known_providers):
+                    known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
+                    check_fail(
+                        f"model.provider '{provider_raw}' is not a recognised provider",
+                        f"(known: {known_list})",
+                    )
+                    issues.append(
+                        f"model.provider '{provider_raw}' is unknown. "
+                        f"Valid providers: {known_list}. "
+                        f"Fix: run 'hermes config set model.provider <valid_provider>'"
+                    )
+
+            # Warn if model is set to a provider-prefixed name on a provider that doesn't use them
+            if default_model and "/" in default_model and canonical_provider and canonical_provider not in ("openrouter", "custom", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "nous"):
+                check_warn(
+                    f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
+                    "(vendor-prefixed slugs belong to aggregators like openrouter)",
+                )
+                issues.append(
+                    f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
+                    "Either set model.provider to 'openrouter', or drop the vendor prefix."
+                )
+
+            # Check credentials for the configured provider.
+            # Limit to API-key providers in PROVIDER_REGISTRY — other provider
+            # types (OAuth, SDK, openrouter/anthropic/custom/auto) have their
+            # own env-var checks elsewhere in doctor, and get_auth_status()
+            # returns a bare {logged_in: False} for anything it doesn't
+            # explicitly dispatch, which would produce false positives.
+            if canonical_provider and canonical_provider not in ("auto", "custom", "openrouter"):
+                try:
+                    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
+                    pconfig = PROVIDER_REGISTRY.get(canonical_provider)
+                    if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
+                        status = get_auth_status(canonical_provider) or {}
+                        configured = bool(status.get("configured") or status.get("logged_in") or status.get("api_key"))
+                        if not configured:
+                            check_fail(
+                                f"model.provider '{canonical_provider}' is set but no API key is configured",
+                                "(check ~/.hermes/.env or run 'hermes setup')",
+                            )
+                            issues.append(
+                                f"No credentials found for provider '{canonical_provider}'. "
+                                f"Run 'hermes setup' or set the provider's API key in {_DHH}/.env, "
+                                f"or switch providers with 'hermes config set model.provider <name>'"
+                            )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            check_warn("Could not validate model/provider config", f"({e})")
     else:
         fallback_config = PROJECT_ROOT / 'cli-config.yaml'
         if fallback_config.exists():
@@ -373,7 +453,11 @@ def run_doctor(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
+        from hermes_cli.auth import (
+            get_nous_auth_status,
+            get_codex_auth_status,
+            get_gemini_oauth_auth_status,
+        )
 
         nous_status = get_nous_auth_status()
         if nous_status.get("logged_in"):
@@ -388,6 +472,20 @@ def run_doctor(args):
             check_warn("OpenAI Codex auth", "(not logged in)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
+
+        gemini_status = get_gemini_oauth_auth_status()
+        if gemini_status.get("logged_in"):
+            email = gemini_status.get("email") or ""
+            project = gemini_status.get("project_id") or ""
+            pieces = []
+            if email:
+                pieces.append(email)
+            if project:
+                pieces.append(f"project={project}")
+            suffix = f" ({', '.join(pieces)})" if pieces else ""
+            check_ok("Google Gemini OAuth", f"(logged in{suffix})")
+        else:
+            check_warn("Google Gemini OAuth", "(not logged in)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
@@ -760,6 +858,16 @@ def run_doctor(args):
             elif response.status_code == 401:
                 print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
                 issues.append("Check OPENROUTER_API_KEY in .env")
+            elif response.status_code == 402:
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(out of credits — payment required)', Colors.DIM)}")
+                issues.append(
+                    "OpenRouter account has insufficient credits. "
+                    "Fix: run 'hermes config set model.provider <provider>' to switch providers, "
+                    "or fund your OpenRouter account at https://openrouter.ai/settings/credits"
+                )
+            elif response.status_code == 429:
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(rate limited)', Colors.DIM)}                ")
+                issues.append("OpenRouter rate limit hit — consider switching to a different provider or waiting")
             else:
                 print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
         except Exception as e:
@@ -807,6 +915,7 @@ def run_doctor(args):
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
+        ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
         # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
         ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
@@ -876,8 +985,8 @@ def run_doctor(args):
                 _model_count = len(_br_resp.get("modelSummaries", []))
                 print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'({_auth_var}, {_region}, {_model_count} models)', Colors.DIM)}           ")
             except ImportError:
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color('(boto3 not installed — pip install hermes-agent[bedrock])', Colors.DIM)}           ")
-                issues.append("Install boto3 for Bedrock: pip install hermes-agent[bedrock]")
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(boto3 not installed — {sys.executable} -m pip install boto3)', Colors.DIM)}           ")
+                issues.append(f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3")
             except Exception as _e:
                 _err_name = type(_e).__name__
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_err_name}: {_e})', Colors.DIM)}           ")

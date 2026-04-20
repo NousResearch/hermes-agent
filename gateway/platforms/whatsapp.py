@@ -289,33 +289,35 @@ class WhatsAppAdapter(BasePlatformAdapter):
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         
         # Acquire scoped lock to prevent duplicate sessions
+        lock_acquired = False
         try:
             if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
                 return False
+            lock_acquired = True
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
-        # Auto-install npm dependencies if node_modules doesn't exist
-        bridge_dir = bridge_path.parent
-        if not (bridge_dir / "node_modules").exists():
-            print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-            try:
-                install_result = subprocess.run(
-                    ["npm", "install", "--silent"],
-                    cwd=str(bridge_dir),
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-                if install_result.returncode != 0:
-                    print(f"[{self.name}] npm install failed: {install_result.stderr}")
-                    return False
-                print(f"[{self.name}] Dependencies installed")
-            except Exception as e:
-                print(f"[{self.name}] Failed to install dependencies: {e}")
-                return False
-        
         try:
+            # Auto-install npm dependencies if node_modules doesn't exist
+            bridge_dir = bridge_path.parent
+            if not (bridge_dir / "node_modules").exists():
+                print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
+                try:
+                    install_result = subprocess.run(
+                        ["npm", "install", "--silent"],
+                        cwd=str(bridge_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if install_result.returncode != 0:
+                        print(f"[{self.name}] npm install failed: {install_result.stderr}")
+                        return False
+                    print(f"[{self.name}] Dependencies installed")
+                except Exception as e:
+                    print(f"[{self.name}] Failed to install dependencies: {e}")
+                    return False
+
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
             
@@ -452,10 +454,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
             
         except Exception as e:
-            self._release_platform_lock()
             logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
-            self._close_bridge_log()
             return False
+        finally:
+            if not self._running:
+                if lock_acquired:
+                    self._release_platform_lock()
+                self._close_bridge_log()
     
     def _close_bridge_log(self) -> None:
         """Close the bridge log file handle if open."""
@@ -655,6 +660,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent message via the WhatsApp bridge."""
         if not self._running or not self._http_session:

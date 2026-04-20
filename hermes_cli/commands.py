@@ -87,8 +87,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("bg",), args_hint="<prompt>"),
     CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
                args_hint="<question>"),
+    CommandDef("agents", "Show active agents and running tasks", "Session",
+               aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
+    CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
+               args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -99,9 +103,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
+    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--provider name] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
+    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info"),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
@@ -119,7 +124,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[normal|fast|status]",
                subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
-               cli_only=True, args_hint="[name]"),
+               args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 
@@ -154,7 +159,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
-    CommandDef("paste", "Check clipboard for an image and attach it", "Info",
+    CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
+               cli_only=True, args_hint="[number]"),
+    CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
                cli_only=True),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>"),
@@ -251,6 +258,53 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     if not cmd.cli_only or cmd.gateway_config_gate
     for name in (cmd.name, *cmd.aliases)
 )
+
+
+# Commands with explicit Level-2 running-agent handlers in gateway/run.py.
+# Listed here for introspection / tests; semantically a subset of
+# "all resolvable commands" — which is the real bypass set (see
+# should_bypass_active_session below).
+ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
+    {
+        "agents",
+        "approve",
+        "background",
+        "commands",
+        "deny",
+        "help",
+        "new",
+        "profile",
+        "queue",
+        "restart",
+        "status",
+        "steer",
+        "stop",
+        "update",
+    }
+)
+
+
+def should_bypass_active_session(command_name: str | None) -> bool:
+    """Return True for any resolvable slash command.
+
+    Rationale: every gateway-registered slash command either has a
+    specific Level-2 handler in gateway/run.py (/stop, /new, /model,
+    /approve, etc.) or reaches the running-agent catch-all that returns
+    a "busy — wait or /stop first" response. In both paths the command
+    is dispatched, not queued.
+
+    Queueing is always wrong for a recognized slash command because the
+    safety net in gateway.run discards any command text that reaches
+    the pending queue — which meant a mid-run /model (or /reasoning,
+    /voice, /insights, /title, /resume, /retry, /undo, /compress,
+    /usage, /provider, /reload-mcp, /sethome, /reset) would silently
+    interrupt the agent AND get discarded, producing a zero-char
+    response. See issue #5057 / PRs #6252, #10370, #4665.
+
+    ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
+    explicit Level-2 handlers; the rest fall through to the catch-all.
+    """
+    return resolve_command(command_name) is not None if command_name else False
 
 
 def _resolve_config_gates() -> set[str]:
@@ -1043,6 +1097,51 @@ class SlashCommandCompleter(Completer):
                 display_meta=f"{fp}  {meta}" if meta else fp,
             )
 
+    @staticmethod
+    def _skin_completions(sub_text: str, sub_lower: str):
+        """Yield completions for /skin from available skins."""
+        try:
+            from hermes_cli.skin_engine import list_skins
+            for s in list_skins():
+                name = s["name"]
+                if name.startswith(sub_lower) and name != sub_lower:
+                    yield Completion(
+                        name,
+                        start_position=-len(sub_text),
+                        display=name,
+                        display_meta=s.get("description", "") or s.get("source", ""),
+                    )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _personality_completions(sub_text: str, sub_lower: str):
+        """Yield completions for /personality from configured personalities."""
+        try:
+            from hermes_cli.config import load_config
+            personalities = load_config().get("agent", {}).get("personalities", {})
+            if "none".startswith(sub_lower) and "none" != sub_lower:
+                yield Completion(
+                    "none",
+                    start_position=-len(sub_text),
+                    display="none",
+                    display_meta="clear personality overlay",
+                )
+            for name, prompt in personalities.items():
+                if name.startswith(sub_lower) and name != sub_lower:
+                    if isinstance(prompt, dict):
+                        meta = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                    else:
+                        meta = str(prompt)[:50]
+                    yield Completion(
+                        name,
+                        start_position=-len(sub_text),
+                        display=name,
+                        display_meta=meta,
+                    )
+        except Exception:
+            pass
+
     def _model_completions(self, sub_text: str, sub_lower: str):
         """Yield completions for /model from config aliases + built-in aliases."""
         seen = set()
@@ -1097,10 +1196,17 @@ class SlashCommandCompleter(Completer):
             sub_text = parts[1] if len(parts) > 1 else ""
             sub_lower = sub_text.lower()
 
-            # Dynamic model alias completions for /model
-            if " " not in sub_text and base_cmd == "/model":
-                yield from self._model_completions(sub_text, sub_lower)
-                return
+            # Dynamic completions for commands with runtime lists
+            if " " not in sub_text:
+                if base_cmd == "/model":
+                    yield from self._model_completions(sub_text, sub_lower)
+                    return
+                if base_cmd == "/skin":
+                    yield from self._skin_completions(sub_text, sub_lower)
+                    return
+                if base_cmd == "/personality":
+                    yield from self._personality_completions(sub_text, sub_lower)
+                    return
 
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):

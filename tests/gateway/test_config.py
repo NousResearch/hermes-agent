@@ -71,6 +71,51 @@ class TestGetConnectedPlatforms:
         config = GatewayConfig()
         assert config.get_connected_platforms() == []
 
+    def test_dingtalk_recognised_via_extras(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(
+                    enabled=True,
+                    extra={"client_id": "cid", "client_secret": "sec"},
+                ),
+            },
+        )
+        assert Platform.DINGTALK in config.get_connected_platforms()
+
+    def test_dingtalk_recognised_via_env_vars(self, monkeypatch):
+        """DingTalk configured via env vars (no extras) should still be
+        recognised as connected — covers the case where _apply_env_overrides
+        hasn't populated extras yet."""
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "env_cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "env_sec")
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(enabled=True, extra={}),
+            },
+        )
+        assert Platform.DINGTALK in config.get_connected_platforms()
+
+    def test_dingtalk_missing_creds_not_connected(self, monkeypatch):
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(enabled=True, extra={}),
+            },
+        )
+        assert Platform.DINGTALK not in config.get_connected_platforms()
+
+    def test_dingtalk_disabled_not_connected(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(
+                    enabled=False,
+                    extra={"client_id": "cid", "client_secret": "sec"},
+                ),
+            },
+        )
+        assert Platform.DINGTALK not in config.get_connected_platforms()
+
 
 class TestSessionResetPolicy:
     def test_roundtrip(self):

@@ -1122,6 +1122,7 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is True
         assert data["gateway_pid"] == 999
         assert data["gateway_state"] == "running"
+        assert data["gateway_health_url"] == "http://gw:8642"
 
     def test_status_remote_probe_not_attempted_when_local_pid_found(self, monkeypatch):
         """When local PID check succeeds, the remote probe is never called."""
@@ -1158,6 +1159,7 @@ class TestStatusRemoteGateway:
         assert resp.status_code == 200
         data = resp.json()
         assert data["gateway_running"] is False
+        assert data["gateway_health_url"] is None
 
     def test_status_remote_running_null_pid(self, monkeypatch):
         """Remote gateway running but PID not in response — pid should be None."""

@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
+    "transform_terminal_output",
     "pre_llm_call",
     "post_llm_call",
     "pre_api_request",

@@ -449,20 +449,6 @@ class TestRunDebug:
 # Argparse integration
 # ---------------------------------------------------------------------------
 
-class TestArgparseIntegration:
-    def test_module_imports_clean(self):
-        from hermes_cli.debug import run_debug, run_debug_share
-        assert callable(run_debug)
-        assert callable(run_debug_share)
-
-    def test_cmd_debug_dispatches(self):
-        from hermes_cli.main import cmd_debug
-
-        args = MagicMock()
-        args.debug_command = None
-        cmd_debug(args)
-
-
 # ---------------------------------------------------------------------------
 # Delete / auto-delete
 # ---------------------------------------------------------------------------
@@ -515,40 +501,272 @@ class TestDeletePaste:
 
 
 class TestScheduleAutoDelete:
-    def test_spawns_detached_process(self):
+    """``_schedule_auto_delete`` used to spawn a detached Python subprocess
+    per call (one per paste URL batch).  Those subprocesses slept 6 hours
+    and accumulated forever under repeated use — 15+ orphaned interpreters
+    were observed in production.
+
+    The new implementation is stateless: it records pending deletions to
+    ``~/.hermes/pastes/pending.json`` and lets ``_sweep_expired_pastes``
+    handle the DELETE requests synchronously on the next ``hermes debug``
+    invocation.
+    """
+
+    def test_does_not_spawn_subprocess(self, hermes_home):
+        """Regression guard: _schedule_auto_delete must NEVER spawn subprocesses.
+
+        We assert this structurally rather than by mocking Popen: the new
+        implementation doesn't even import ``subprocess`` at module scope,
+        so a mock patch wouldn't find it.
+        """
+        import ast
+        import inspect
         from hermes_cli.debug import _schedule_auto_delete
 
-        with patch("subprocess.Popen") as mock_popen:
-            _schedule_auto_delete(
-                ["https://paste.rs/abc", "https://paste.rs/def"],
-                delay_seconds=10,
-            )
+        # Strip the docstring before scanning so the regression-rationale
+        # prose inside it doesn't trigger our banned-word checks.
+        source = inspect.getsource(_schedule_auto_delete)
+        tree = ast.parse(source)
+        func_node = tree.body[0]
+        if (
+            func_node.body
+            and isinstance(func_node.body[0], ast.Expr)
+            and isinstance(func_node.body[0].value, ast.Constant)
+            and isinstance(func_node.body[0].value.value, str)
+        ):
+            func_node.body = func_node.body[1:]
+        code_only = ast.unparse(func_node)
 
-        mock_popen.assert_called_once()
-        call_args = mock_popen.call_args
-        # Verify detached
-        assert call_args[1]["start_new_session"] is True
-        # Verify the script references both URLs
-        script = call_args[0][0][2]  # [python, -c, script]
-        assert "paste.rs/abc" in script
-        assert "paste.rs/def" in script
-        assert "time.sleep(10)" in script
+        assert "Popen" not in code_only, (
+            "_schedule_auto_delete must not spawn subprocesses — "
+            "use pending.json + _sweep_expired_pastes instead"
+        )
+        assert "subprocess" not in code_only, (
+            "_schedule_auto_delete must not reference subprocess at all"
+        )
+        assert "time.sleep" not in code_only, (
+            "Regression: sleeping in _schedule_auto_delete is the bug being fixed"
+        )
 
-    def test_skips_non_paste_rs_urls(self):
-        from hermes_cli.debug import _schedule_auto_delete
+        # And verify that calling it doesn't produce any orphaned children
+        # (it should just write pending.json synchronously).
+        import os as _os
+        before = set(_os.listdir("/proc")) if _os.path.exists("/proc") else None
+        _schedule_auto_delete(
+            ["https://paste.rs/abc", "https://paste.rs/def"],
+            delay_seconds=10,
+        )
+        if before is not None:
+            after = set(_os.listdir("/proc"))
+            new = after - before
+            # Filter to only integer-named entries (process PIDs)
+            new_pids = [p for p in new if p.isdigit()]
+            # It's fine if unrelated processes appeared — we just need to make
+            # sure we didn't spawn a long-sleeping one.  The old bug spawned
+            # a python interpreter whose cmdline contained "time.sleep".
+            for pid in new_pids:
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as f:
+                        cmdline = f.read().decode("utf-8", errors="replace")
+                    assert "time.sleep" not in cmdline, (
+                        f"Leaked sleeper subprocess PID {pid}: {cmdline}"
+                    )
+                except OSError:
+                    pass  # process exited already
 
-        with patch("subprocess.Popen") as mock_popen:
-            _schedule_auto_delete(["https://dpaste.com/something"])
+    def test_records_pending_to_json(self, hermes_home):
+        """Scheduled URLs are persisted to pending.json with expiration."""
+        from hermes_cli.debug import _schedule_auto_delete, _pending_file
+        import json
 
-        mock_popen.assert_not_called()
+        _schedule_auto_delete(
+            ["https://paste.rs/abc", "https://paste.rs/def"],
+            delay_seconds=10,
+        )
 
-    def test_handles_popen_failure_gracefully(self):
-        from hermes_cli.debug import _schedule_auto_delete
+        pending_path = _pending_file()
+        assert pending_path.exists()
 
-        with patch("subprocess.Popen",
-                    side_effect=OSError("no such file")):
-            # Should not raise
-            _schedule_auto_delete(["https://paste.rs/abc"])
+        entries = json.loads(pending_path.read_text())
+        assert len(entries) == 2
+        urls = {e["url"] for e in entries}
+        assert urls == {"https://paste.rs/abc", "https://paste.rs/def"}
+
+        # expire_at is ~now + delay_seconds
+        import time
+        for e in entries:
+            assert e["expire_at"] > time.time()
+            assert e["expire_at"] <= time.time() + 15
+
+    def test_skips_non_paste_rs_urls(self, hermes_home):
+        """dpaste.com URLs auto-expire — don't track them."""
+        from hermes_cli.debug import _schedule_auto_delete, _pending_file
+
+        _schedule_auto_delete(["https://dpaste.com/something"])
+
+        # pending.json should not be created for non-paste.rs URLs
+        assert not _pending_file().exists()
+
+    def test_merges_with_existing_pending(self, hermes_home):
+        """Subsequent calls merge into existing pending.json."""
+        from hermes_cli.debug import _schedule_auto_delete, _load_pending
+
+        _schedule_auto_delete(["https://paste.rs/first"], delay_seconds=10)
+        _schedule_auto_delete(["https://paste.rs/second"], delay_seconds=10)
+
+        entries = _load_pending()
+        urls = {e["url"] for e in entries}
+        assert urls == {"https://paste.rs/first", "https://paste.rs/second"}
+
+    def test_dedupes_same_url(self, hermes_home):
+        """Same URL recorded twice → one entry with the later expire_at."""
+        from hermes_cli.debug import _schedule_auto_delete, _load_pending
+
+        _schedule_auto_delete(["https://paste.rs/dup"], delay_seconds=10)
+        _schedule_auto_delete(["https://paste.rs/dup"], delay_seconds=100)
+
+        entries = _load_pending()
+        assert len(entries) == 1
+        assert entries[0]["url"] == "https://paste.rs/dup"
+
+
+class TestSweepExpiredPastes:
+    """Test the opportunistic sweep that replaces the sleeping subprocess."""
+
+    def test_sweep_empty_is_noop(self, hermes_home):
+        from hermes_cli.debug import _sweep_expired_pastes
+
+        deleted, remaining = _sweep_expired_pastes()
+        assert deleted == 0
+        assert remaining == 0
+
+    def test_sweep_deletes_expired_entries(self, hermes_home):
+        from hermes_cli.debug import (
+            _sweep_expired_pastes,
+            _save_pending,
+            _load_pending,
+        )
+        import time
+
+        # Seed pending.json with one expired + one future entry
+        _save_pending([
+            {"url": "https://paste.rs/expired", "expire_at": time.time() - 100},
+            {"url": "https://paste.rs/future", "expire_at": time.time() + 3600},
+        ])
+
+        delete_calls = []
+
+        def fake_delete(url):
+            delete_calls.append(url)
+            return True
+
+        with patch("hermes_cli.debug.delete_paste", side_effect=fake_delete):
+            deleted, remaining = _sweep_expired_pastes()
+
+        assert delete_calls == ["https://paste.rs/expired"]
+        assert deleted == 1
+        assert remaining == 1
+
+        entries = _load_pending()
+        urls = {e["url"] for e in entries}
+        assert urls == {"https://paste.rs/future"}
+
+    def test_sweep_leaves_future_entries_alone(self, hermes_home):
+        from hermes_cli.debug import _sweep_expired_pastes, _save_pending
+        import time
+
+        _save_pending([
+            {"url": "https://paste.rs/future1", "expire_at": time.time() + 3600},
+            {"url": "https://paste.rs/future2", "expire_at": time.time() + 7200},
+        ])
+
+        with patch("hermes_cli.debug.delete_paste") as mock_delete:
+            deleted, remaining = _sweep_expired_pastes()
+
+        mock_delete.assert_not_called()
+        assert deleted == 0
+        assert remaining == 2
+
+    def test_sweep_survives_network_failure(self, hermes_home):
+        """Failed DELETEs stay in pending.json until the 24h grace window."""
+        from hermes_cli.debug import (
+            _sweep_expired_pastes,
+            _save_pending,
+            _load_pending,
+        )
+        import time
+
+        _save_pending([
+            {"url": "https://paste.rs/flaky", "expire_at": time.time() - 100},
+        ])
+
+        with patch(
+            "hermes_cli.debug.delete_paste",
+            side_effect=Exception("network down"),
+        ):
+            deleted, remaining = _sweep_expired_pastes()
+
+        # Failure within 24h grace → kept for retry
+        assert deleted == 0
+        assert remaining == 1
+        assert len(_load_pending()) == 1
+
+    def test_sweep_drops_entries_past_grace_window(self, hermes_home):
+        """After 24h past expiration, give up even on network failures."""
+        from hermes_cli.debug import (
+            _sweep_expired_pastes,
+            _save_pending,
+            _load_pending,
+        )
+        import time
+
+        # Expired 25 hours ago → past the 24h grace window
+        very_old = time.time() - (25 * 3600)
+        _save_pending([
+            {"url": "https://paste.rs/ancient", "expire_at": very_old},
+        ])
+
+        with patch(
+            "hermes_cli.debug.delete_paste",
+            side_effect=Exception("network down"),
+        ):
+            deleted, remaining = _sweep_expired_pastes()
+
+        assert deleted == 1
+        assert remaining == 0
+        assert _load_pending() == []
+
+
+class TestRunDebugSweepsOnInvocation:
+    """``run_debug`` must sweep expired pastes on every invocation."""
+
+    def test_run_debug_calls_sweep(self, hermes_home):
+        from hermes_cli.debug import run_debug
+
+        args = MagicMock()
+        args.debug_command = None  # default → prints help
+
+        with patch("hermes_cli.debug._sweep_expired_pastes") as mock_sweep:
+            run_debug(args)
+
+        mock_sweep.assert_called_once()
+
+    def test_run_debug_survives_sweep_failure(self, hermes_home, capsys):
+        """If the sweep throws, the subcommand still runs."""
+        from hermes_cli.debug import run_debug
+
+        args = MagicMock()
+        args.debug_command = None
+
+        with patch(
+            "hermes_cli.debug._sweep_expired_pastes",
+            side_effect=RuntimeError("boom"),
+        ):
+            run_debug(args)  # must not raise
+
+        # Default subcommand still printed help
+        out = capsys.readouterr().out
+        assert "Usage: hermes debug" in out
 
 
 class TestRunDebugDelete:

@@ -892,13 +892,15 @@ class AIAgent:
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         
-        # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
-        # Reduces input costs by ~75% on multi-turn conversations by caching the
-        # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
-        is_openrouter = self._is_openrouter_url()
-        is_claude = "claude" in self.model.lower()
-        is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
-        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        # Anthropic prompt caching: auto-enabled for Claude models on native
+        # Anthropic, OpenRouter, and third-party gateways that speak the
+        # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
+        # input costs by ~75% on multi-turn conversations. Uses system_and_3
+        # strategy (4 breakpoints). See ``_anthropic_prompt_cache_policy``
+        # for the layout-vs-transport decision.
+        self._use_prompt_caching, self._use_native_cache_layout = (
+            self._anthropic_prompt_cache_policy()
+        )
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Iteration budget: the LLM is only notified when it actually exhausts
@@ -1013,8 +1015,15 @@ class AIAgent:
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = base_url
+                # Only mark the session as OAuth-authenticated when the token
+                # genuinely belongs to native Anthropic.  Third-party providers
+                # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
+                # Anthropic protocol must never trip OAuth code paths — doing
+                # so injects Claude-Code identity headers and system prompts
+                # that cause 401/403 on their endpoints.  Guards #1739 and
+                # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
-                self._is_anthropic_oauth = _is_oat(effective_key)
+                self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
                 self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
@@ -1227,7 +1236,12 @@ class AIAgent:
         
         # Show prompt caching status
         if self._use_prompt_caching and not self.quiet_mode:
-            source = "native Anthropic" if is_native_anthropic else "Claude via OpenRouter"
+            if self._use_native_cache_layout and self.provider == "anthropic":
+                source = "native Anthropic"
+            elif self._use_native_cache_layout:
+                source = "Anthropic-compatible endpoint"
+            else:
+                source = "Claude via OpenRouter"
             print(f"💾 Prompt caching: ENABLED ({source}, {self._cache_ttl} TTL)")
         
         # Session logging setup - auto-save conversation trajectories for debugging
@@ -1701,6 +1715,7 @@ class AIAgent:
             "api_key": getattr(self, "api_key", ""),
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
+            "use_native_cache_layout": self._use_native_cache_layout,
             # Context engine state that _try_activate_fallback() overwrites.
             # Use getattr for model/base_url/api_key/provider since plugin
             # engines may not have these (they're ContextCompressor-specific).
@@ -1822,7 +1837,7 @@ class AIAgent:
                 effective_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
-            self._is_anthropic_oauth = _is_oauth_token(effective_key)
+            self._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
             self.client = None
             self._client_kwargs = {}
         else:
@@ -1842,10 +1857,13 @@ class AIAgent:
             )
 
         # ── Re-evaluate prompt caching ──
-        is_native_anthropic = api_mode == "anthropic_messages" and new_provider == "anthropic"
-        self._use_prompt_caching = (
-            ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
-            or is_native_anthropic
+        self._use_prompt_caching, self._use_native_cache_layout = (
+            self._anthropic_prompt_cache_policy(
+                provider=new_provider,
+                base_url=self.base_url,
+                api_mode=api_mode,
+                model=new_model,
+            )
         )
 
         # ── Update context compressor ──
@@ -1880,6 +1898,7 @@ class AIAgent:
             "api_key": getattr(self, "api_key", ""),
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
+            "use_native_cache_layout": self._use_native_cache_layout,
             "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
             "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -2142,6 +2161,55 @@ class AIAgent:
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
+
+    def _anthropic_prompt_cache_policy(
+        self,
+        *,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> tuple[bool, bool]:
+        """Decide whether to apply Anthropic prompt caching and which layout to use.
+
+        Returns ``(should_cache, use_native_layout)``:
+          * ``should_cache`` — inject ``cache_control`` breakpoints for this
+            request (applies to OpenRouter Claude, native Anthropic, and
+            third-party gateways that speak the native Anthropic protocol).
+          * ``use_native_layout`` — place markers on the *inner* content
+            blocks (native Anthropic accepts and requires this layout);
+            when False markers go on the message envelope (OpenRouter and
+            OpenAI-wire proxies expect the looser layout).
+
+        Third-party providers using the native Anthropic transport
+        (``api_mode == 'anthropic_messages'`` + Claude-named model) get
+        caching with the native layout so they benefit from the same
+        cost reduction as direct Anthropic callers, provided their
+        gateway implements the Anthropic cache_control contract
+        (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
+        """
+        eff_provider = (provider if provider is not None else self.provider) or ""
+        eff_base_url = base_url if base_url is not None else (self.base_url or "")
+        eff_api_mode = api_mode if api_mode is not None else (self.api_mode or "")
+        eff_model = (model if model is not None else self.model) or ""
+
+        base_lower = eff_base_url.lower()
+        is_claude = "claude" in eff_model.lower()
+        is_openrouter = "openrouter" in base_lower
+        is_anthropic_wire = eff_api_mode == "anthropic_messages"
+        is_native_anthropic = (
+            is_anthropic_wire
+            and (eff_provider == "anthropic" or "api.anthropic.com" in base_lower)
+        )
+
+        if is_native_anthropic:
+            return True, True
+        if is_openrouter and is_claude:
+            return True, False
+        if is_anthropic_wire and is_claude:
+            # Third-party Anthropic-compatible gateway.
+            return True, True
+        return False, False
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -5322,9 +5390,12 @@ class AIAgent:
             return False
 
         self._anthropic_api_key = new_token
-        # Update OAuth flag — token type may have changed (API key ↔ OAuth)
+        # Update OAuth flag — token type may have changed (API key ↔ OAuth).
+        # Only treat as OAuth on native Anthropic; third-party endpoints using
+        # the Anthropic protocol must not trip OAuth paths (#1739 & third-party
+        # identity-injection guard).
         from agent.anthropic_adapter import _is_oauth_token
-        self._is_anthropic_oauth = _is_oauth_token(new_token)
+        self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
@@ -5367,7 +5438,7 @@ class AIAgent:
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
-            self._is_anthropic_oauth = _is_oauth_token(runtime_key)
+            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
             self.base_url = runtime_base
             return
@@ -6523,7 +6594,7 @@ class AIAgent:
                 self._anthropic_client = build_anthropic_client(
                     effective_key, self._anthropic_base_url, timeout=_fb_timeout,
                 )
-                self._is_anthropic_oauth = _is_oauth_token(effective_key)
+                self._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
                 self.client = None
                 self._client_kwargs = {}
             else:
@@ -6554,10 +6625,13 @@ class AIAgent:
                     self._replace_primary_openai_client(reason="fallback_timeout_apply")
 
             # Re-evaluate prompt caching for the new provider/model
-            is_native_anthropic = fb_api_mode == "anthropic_messages" and fb_provider == "anthropic"
-            self._use_prompt_caching = (
-                ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
-                or is_native_anthropic
+            self._use_prompt_caching, self._use_native_cache_layout = (
+                self._anthropic_prompt_cache_policy(
+                    provider=fb_provider,
+                    base_url=fb_base_url,
+                    api_mode=fb_api_mode,
+                    model=fb_model,
+                )
             )
 
             # Update context compressor limits for the fallback model.
@@ -6617,6 +6691,12 @@ class AIAgent:
             self.api_key = rt["api_key"]
             self._client_kwargs = dict(rt["client_kwargs"])
             self._use_prompt_caching = rt["use_prompt_caching"]
+            # Default to native layout when the restored snapshot predates the
+            # native-vs-proxy split (older sessions saved before this PR).
+            self._use_native_cache_layout = rt.get(
+                "use_native_cache_layout",
+                self.api_mode == "anthropic_messages" and self.provider == "anthropic",
+            )
 
             # ── Rebuild client for the primary provider ──
             if self.api_mode == "anthropic_messages":
@@ -9317,12 +9397,19 @@ class AIAgent:
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
-            # Apply Anthropic prompt caching for Claude models via OpenRouter.
-            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
-            # inject cache_control breakpoints (system + last 3 messages) to reduce
-            # input token costs by ~75% on multi-turn conversations.
+            # Apply Anthropic prompt caching for Claude models on native
+            # Anthropic, OpenRouter, and third-party Anthropic-compatible
+            # gateways. Auto-detected: if ``_use_prompt_caching`` is set,
+            # inject cache_control breakpoints (system + last 3 messages)
+            # to reduce input token costs by ~75% on multi-turn
+            # conversations. Layout is chosen per endpoint by
+            # ``_anthropic_prompt_cache_policy``.
             if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl, native_anthropic=(self.api_mode == 'anthropic_messages'))
+                api_messages = apply_anthropic_cache_control(
+                    api_messages,
+                    cache_ttl=self._cache_ttl,
+                    native_anthropic=self._use_native_cache_layout,
+                )
 
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  Runs unconditionally — not
@@ -9779,25 +9866,30 @@ class AIAgent:
                     if finish_reason == "length":
                         self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
 
+                        # Normalize the truncated response to a single OpenAI-style
+                        # message shape so text-continuation and tool-call retry
+                        # work uniformly across chat_completions, bedrock_converse,
+                        # and anthropic_messages.  For Anthropic we use the same
+                        # adapter the agent loop already relies on so the rebuilt
+                        # interim assistant message is byte-identical to what
+                        # would have been appended in the non-truncated path.
+                        _trunc_msg = None
+                        if self.api_mode in ("chat_completions", "bedrock_converse"):
+                            _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
+                        elif self.api_mode == "anthropic_messages":
+                            from agent.anthropic_adapter import normalize_anthropic_response
+                            _trunc_msg, _ = normalize_anthropic_response(
+                                response, strip_tool_prefix=self._is_anthropic_oauth
+                            )
+
+                        _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
+                        _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+
                         # ── Detect thinking-budget exhaustion ──────────────
                         # When the model spends ALL output tokens on reasoning
                         # and has none left for the response, continuation
                         # retries are pointless.  Detect this early and give a
                         # targeted error instead of wasting 3 API calls.
-                        _trunc_content = None
-                        _trunc_has_tool_calls = False
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
-                            _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
-                            _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
-                            _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
-                        elif self.api_mode == "anthropic_messages":
-                            # Anthropic response.content is a list of blocks
-                            _text_parts = []
-                            for _blk in getattr(response, "content", []):
-                                if getattr(_blk, "type", None) == "text":
-                                    _text_parts.append(getattr(_blk, "text", ""))
-                            _trunc_content = "\n".join(_text_parts) if _text_parts else None
-
                         # A response is "thinking exhausted" only when the model
                         # actually produced reasoning blocks but no visible text after
                         # them.  Models that do not use <think> tags (e.g. GLM-4.7 on
@@ -9854,9 +9946,9 @@ class AIAgent:
                                 "error": _exhaust_error,
                             }
 
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
-                            assistant_message = response.choices[0].message
-                            if not assistant_message.tool_calls:
+                        if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
+                            assistant_message = _trunc_msg
+                            if assistant_message is not None and not _trunc_has_tool_calls:
                                 length_continue_retries += 1
                                 interim_msg = self._build_assistant_message(assistant_message, finish_reason)
                                 messages.append(interim_msg)
@@ -9894,9 +9986,9 @@ class AIAgent:
                                     "error": "Response remained truncated after 3 continuation attempts",
                                 }
 
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
-                            assistant_message = response.choices[0].message
-                            if assistant_message.tool_calls:
+                        if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
+                            assistant_message = _trunc_msg
+                            if assistant_message is not None and _trunc_has_tool_calls:
                                 if truncated_tool_call_retries < 1:
                                     truncated_tool_call_retries += 1
                                     self._vprint(

@@ -38,14 +38,21 @@ def _normalize_custom_provider_name(value: str) -> str:
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """Auto-detect api_mode from the resolved base URL.
 
-    Direct api.openai.com endpoints need the Responses API for GPT-5.x
-    tool calls with reasoning (chat/completions returns 400).
+    - Direct api.openai.com endpoints need the Responses API for GPT-5.x
+      tool calls with reasoning (chat/completions returns 400).
+    - Third-party Anthropic-compatible gateways (MiniMax, Zhipu GLM,
+      LiteLLM proxies, etc.) conventionally expose the native Anthropic
+      protocol under a ``/anthropic`` suffix — treat those as
+      ``anthropic_messages`` transport instead of the default
+      ``chat_completions``.
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     if "api.x.ai" in normalized:
         return "codex_responses"
     if "api.openai.com" in normalized and "openrouter" not in normalized:
         return "codex_responses"
+    if normalized.endswith("/anthropic"):
+        return "anthropic_messages"
     return None
 
 
@@ -194,8 +201,12 @@ def _resolve_runtime_from_pool_entry(
         elif provider in ("opencode-zen", "opencode-go"):
             from hermes_cli.models import opencode_model_api_mode
             api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
-        elif base_url.rstrip("/").endswith("/anthropic"):
-            api_mode = "anthropic_messages"
+        else:
+            # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
+            # api.openai.com → codex_responses, api.x.ai → codex_responses).
+            detected = _detect_api_mode_for_url(base_url)
+            if detected:
+                api_mode = detected
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
@@ -642,8 +653,11 @@ def _resolve_explicit_runtime(
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
                 api_mode = configured_mode
-            elif base_url.rstrip("/").endswith("/anthropic"):
-                api_mode = "anthropic_messages"
+            else:
+                # Auto-detect Anthropic-compatible endpoints (/anthropic suffix).
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
 
         return {
             "provider": provider,
@@ -965,10 +979,13 @@ def resolve_runtime_provider(
             elif provider in ("opencode-zen", "opencode-go"):
                 from hermes_cli.models import opencode_model_api_mode
                 api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
-            # Auto-detect Anthropic-compatible endpoints by URL convention
-            # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
-            elif base_url.rstrip("/").endswith("/anthropic"):
-                api_mode = "anthropic_messages"
+            else:
+                # Auto-detect Anthropic-compatible endpoints by URL convention
+                # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
+                # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
             base_url = re.sub(r"/v1/?$", "", base_url)

@@ -1098,7 +1098,7 @@ def _validate_base_url(base_url: str) -> None:
         ) from exc
 
 
-def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     runtime = _resolve_custom_runtime()
     if len(runtime) == 2:
         custom_base, custom_key = runtime
@@ -1114,6 +1114,23 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=custom_base)
         return CodexAuxiliaryClient(real_client, model), model
+    if custom_mode == "anthropic_messages":
+        # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
+        # LiteLLM proxies, etc.).  Must NEVER be treated as OAuth —
+        # Anthropic OAuth claims only apply to api.anthropic.com.
+        try:
+            from agent.anthropic_adapter import build_anthropic_client
+            real_client = build_anthropic_client(custom_key, custom_base)
+        except ImportError:
+            logger.warning(
+                "Custom endpoint declares api_mode=anthropic_messages but the "
+                "anthropic SDK is not installed — falling back to OpenAI-wire."
+            )
+            return OpenAI(api_key=custom_key, base_url=custom_base), model
+        return (
+            AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
+            model,
+        )
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 

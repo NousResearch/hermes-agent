@@ -80,6 +80,13 @@ AUTHOR_MAP = {
     "nish3451@users.noreply.github.com": "nish3451",
     "Mibayy@users.noreply.github.com": "Mibayy",
     "135070653+sgaofen@users.noreply.github.com": "sgaofen",
+    "nocoo@users.noreply.github.com": "nocoo",
+    "30841158+n-WN@users.noreply.github.com": "n-WN",
+    "leoyuan0099@gmail.com": "keyuyuan",
+    "bxzt2006@163.com": "Only-Code-A",
+    "i@troy-y.org": "TroyMitchell911",
+    "mygamez@163.com": "zhongyueming1121",
+    "hansnow@users.noreply.github.com": "hansnow",
     # contributors (manual mapping from git names)
     "ahmedsherif95@gmail.com": "asheriif",
     "liujinkun@bytedance.com": "liujinkun2025",

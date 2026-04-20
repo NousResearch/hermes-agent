@@ -2732,6 +2732,17 @@ def _update_config_for_provider(
         # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
 
+    # Clear stale api_key/api_mode left over from a previous custom provider.
+    # When the user switches from e.g. a MiniMax custom endpoint
+    # (api_mode=anthropic_messages, api_key=mxp-...) to a built-in provider
+    # (e.g. OpenRouter), the stale api_key/api_mode would override the new
+    # provider's credentials and transport choice.  Built-in providers that
+    # need a specific api_mode (copilot, xai) set it at request-resolution
+    # time via `_copilot_runtime_api_mode` / `_detect_api_mode_for_url`, so
+    # removing the persisted value here is safe.
+    model_cfg.pop("api_key", None)
+    model_cfg.pop("api_mode", None)
+
     # When switching to a non-OpenRouter provider, ensure model.default is
     # valid for the new provider.  An OpenRouter-formatted name like
     # "anthropic/claude-opus-4.6" will fail on direct-API providers.

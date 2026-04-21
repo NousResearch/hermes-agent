@@ -2280,6 +2280,17 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        # Slack authorization is split by surface:
+        # - DMs honor SLACK_ALLOWED_USERS / pairing / allow-all
+        # - Public channels rely on channel gating + @mention rules instead
+        #   of a per-user allowlist so any member can @mention the bot in an
+        #   approved channel.
+        if (
+            source.platform == Platform.SLACK
+            and getattr(source, "chat_type", None) != "dm"
+        ):
+            return True
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",

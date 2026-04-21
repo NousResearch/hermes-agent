@@ -51,6 +51,22 @@ def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
     )
 
 
+def _make_source(
+    platform: Platform,
+    user_id: str,
+    chat_id: str,
+    *,
+    chat_type: str = "dm",
+) -> SessionSource:
+    return SessionSource(
+        platform=platform,
+        user_id=user_id,
+        chat_id=chat_id,
+        user_name="tester",
+        chat_type=chat_type,
+    )
+
+
 def _make_runner(platform: Platform, config: GatewayConfig):
     from gateway.run import GatewayRunner
 
@@ -128,6 +144,41 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
         chat_type="dm",
     )
     assert runner._is_user_authorized(source) is True
+
+
+def test_slack_dm_allowlist_still_applies(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_ALLOWED")
+
+    runner, _adapter = _make_runner(
+        Platform.SLACK,
+        GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="xoxb-fake")}),
+    )
+
+    allowed_dm = _make_source(Platform.SLACK, "U_ALLOWED", "D123", chat_type="dm")
+    blocked_dm = _make_source(Platform.SLACK, "U_BLOCKED", "D456", chat_type="dm")
+
+    assert runner._is_user_authorized(allowed_dm) is True
+    assert runner._is_user_authorized(blocked_dm) is False
+
+
+def test_slack_channel_mentions_bypass_user_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_DM_ONLY")
+
+    runner, _adapter = _make_runner(
+        Platform.SLACK,
+        GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="xoxb-fake")}),
+    )
+
+    public_source = _make_source(
+        Platform.SLACK,
+        "U_SOMEONE_ELSE",
+        "C123",
+        chat_type="channel",
+    )
+
+    assert runner._is_user_authorized(public_source) is True
 
 
 @pytest.mark.asyncio

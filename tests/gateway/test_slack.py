@@ -573,6 +573,27 @@ class TestMessageRouting:
         assert "<@U_BOT>" not in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_channel_message_uses_body_team_id_when_event_omits_it(self, adapter):
+        """Socket Mode envelopes can carry team_id only on the outer body."""
+        event = {
+            "text": "<@U_BOT> hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        body = {
+            "authorizations": [
+                {"team_id": "T_TEAM"}
+            ]
+        }
+
+        await adapter._handle_slack_message(event, body=body)
+
+        assert adapter._channel_team["C123"] == "T_TEAM"
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_bot_messages_ignored(self, adapter):
         """Messages from bots should be ignored."""
         event = {
@@ -1192,10 +1213,10 @@ class TestThreadReplyHandling:
         adapter_with_session_store.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_thread_reply_without_mention_with_session_processed(
+    async def test_thread_reply_without_mention_with_session_ignored(
         self, adapter_with_session_store, mock_session_store
     ):
-        """Thread replies without mention should be processed if there's an active session."""
+        """Thread replies without mention should still be ignored in channels."""
         # Simulate an active session for this thread
         session_key = "agent:main:slack:group:C123:123.000:U_USER"
         mock_session_store._entries = {session_key: MagicMock()}
@@ -1210,11 +1231,7 @@ class TestThreadReplyHandling:
             "team": "T_TEAM",
         }
         await adapter_with_session_store._handle_slack_message(event)
-        adapter_with_session_store.handle_message.assert_called_once()
-
-        # Verify the text is passed through unchanged (no mention stripping needed)
-        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
-        assert msg_event.text == "Follow-up question"
+        adapter_with_session_store.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_thread_reply_with_mention_strips_bot_id(

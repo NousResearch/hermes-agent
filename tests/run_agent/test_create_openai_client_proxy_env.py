@@ -67,6 +67,14 @@ def test_get_proxy_from_env_ignores_blank_values(monkeypatch):
     assert _get_proxy_from_env() == "http://real-proxy:8080"
 
 
+def test_get_proxy_from_env_normalizes_socks_alias(monkeypatch):
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080/")
+    assert _get_proxy_from_env() == "socks5://127.0.0.1:1080/"
+
+
 @patch("run_agent.OpenAI")
 def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeypatch):
     """With HTTPS_PROXY set, the custom httpx.Client must mount an HTTPProxy pool.

@@ -197,6 +197,39 @@ def env_bool(key: str, default: bool = False) -> bool:
     return is_truthy_value(os.getenv(key, ""), default=default)
 
 
+# ─── Proxy Helpers ────────────────────────────────────────────────────────────
+
+
+_PROXY_ENV_KEYS = (
+    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+    "https_proxy", "http_proxy", "all_proxy",
+)
+
+
+def normalize_proxy_url(proxy_url: str | None) -> str | None:
+    """Normalize proxy URLs for httpx/aiohttp compatibility.
+
+    WSL/Clash-style environments often export SOCKS proxies as
+    ``socks://127.0.0.1:PORT``. httpx rejects that alias and expects the
+    explicit ``socks5://`` scheme instead.
+    """
+    candidate = str(proxy_url or "").strip()
+    if not candidate:
+        return None
+    if candidate.lower().startswith("socks://"):
+        return f"socks5://{candidate[len('socks://'):]}"
+    return candidate
+
+
+def normalize_proxy_env_vars() -> None:
+    """Rewrite supported proxy env vars to canonical URL forms in-place."""
+    for key in _PROXY_ENV_KEYS:
+        value = os.getenv(key, "")
+        normalized = normalize_proxy_url(value)
+        if normalized and normalized != value:
+            os.environ[key] = normalized
+
+
 # ─── URL Parsing Helpers ──────────────────────────────────────────────────────
 
 
@@ -236,4 +269,3 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
-

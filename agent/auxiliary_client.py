@@ -48,7 +48,7 @@ from openai import OpenAI
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -1027,6 +1027,8 @@ def _validate_proxy_env_urls() -> None:
     error that doesn't name the offending env var.
     """
     from urllib.parse import urlparse
+
+    normalize_proxy_env_vars()
 
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):

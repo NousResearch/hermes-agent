@@ -19,6 +19,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from utils import normalize_proxy_env_vars
 
 try:
     import anthropic as _anthropic_sdk
@@ -308,6 +309,9 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
             "The 'anthropic' package is required for the Anthropic provider. "
             "Install it with: pip install 'anthropic>=0.39.0'"
         )
+
+    normalize_proxy_env_vars()
+
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)

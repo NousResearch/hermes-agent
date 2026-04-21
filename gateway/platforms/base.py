@@ -19,6 +19,8 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from utils import normalize_proxy_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -159,13 +161,13 @@ def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
         if value:
-            return value
+            return normalize_proxy_url(value)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
         if value:
-            return value
-    return _detect_macos_system_proxy()
+            return normalize_proxy_url(value)
+    return normalize_proxy_url(_detect_macos_system_proxy())
 
 
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:

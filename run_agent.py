@@ -124,7 +124,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 
 
 
@@ -187,7 +187,7 @@ def _get_proxy_from_env() -> Optional[str]:
                 "https_proxy", "http_proxy", "all_proxy"):
         value = os.environ.get(key, "").strip()
         if value:
-            return value
+            return normalize_proxy_url(value)
     return None
 
 

@@ -2785,10 +2785,11 @@ class AIAgent:
     ) -> None:
         """Spawn a background thread to review the conversation for memory/skill saves.
 
-        Creates a full AIAgent fork with the same model, tools, and context as the
-        main session. The review prompt is appended as the next user turn in the
-        forked conversation. Writes directly to the shared memory/skill stores.
-        Never modifies the main conversation history or produces user-visible output.
+        Runs a forked AIAgent session using the same model/provider settings as the
+        main agent, but with a reduced review-only toolset (memory and/or skills)
+        and a capped slice of the conversation history. The review prompt is
+        appended as the next user turn; writes go to the shared memory/skill stores.
+        Does not modify the main conversation history or produce user-visible output.
         """
         import threading
 
@@ -2804,6 +2805,28 @@ class AIAgent:
             import contextlib
             review_agent = None
             try:
+                if review_memory and review_skills:
+                    _enabled_toolsets = ["memory", "skills"]
+                    _rk = "memory+skills"
+                elif review_memory:
+                    _enabled_toolsets = ["memory"]
+                    _rk = "memory"
+                else:
+                    _enabled_toolsets = ["skills"]
+                    _rk = "skills"
+                review_history = (
+                    messages_snapshot[-12:]
+                    if len(messages_snapshot) > 12
+                    else messages_snapshot
+                )
+                logger.info(
+                    "Background %s review: model=%r provider=%r enabled_toolsets=%s history_len=%d",
+                    _rk,
+                    self.model,
+                    self.provider,
+                    _enabled_toolsets,
+                    len(review_history),
+                )
                 with open(os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
@@ -2813,6 +2836,7 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        enabled_toolsets=_enabled_toolsets,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
@@ -2822,7 +2846,7 @@ class AIAgent:
 
                     review_agent.run_conversation(
                         user_message=prompt,
-                        conversation_history=messages_snapshot,
+                        conversation_history=review_history,
                     )
 
                 # Scan the review agent's messages for successful tool actions

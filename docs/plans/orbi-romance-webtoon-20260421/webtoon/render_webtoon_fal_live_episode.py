@@ -32,7 +32,10 @@ FONT_CANDIDATES = [
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render one romance webtoon episode with live fal generation.")
+    parser = argparse.ArgumentParser(
+        prog="render_webtoon_fal_live_episode.py",
+        description="Render one romance webtoon episode with live fal generation.",
+    )
     parser.add_argument("--episode-dir", required=True)
     parser.add_argument("--project-root", required=True)
     parser.add_argument("--output-name", default=None)
@@ -125,7 +128,7 @@ def download(url: str, path: Path) -> None:
         raise last_error
 
 
-def build_legacy_style_prompt(panel_data: dict[str, Any]) -> str:
+def style_prompt(panel_data: dict[str, Any]) -> str:
     positive = panel_data["style_anchor"]["positive"]
     negative = ", ".join(panel_data["style_anchor"]["negative"])
     return (
@@ -134,7 +137,7 @@ def build_legacy_style_prompt(panel_data: dict[str, Any]) -> str:
     )
 
 
-def build_legacy_prompt(panel_data: dict[str, Any], panel_spec: dict[str, Any]) -> str:
+def build_prompt(panel_data: dict[str, Any], panel_spec: dict[str, Any]) -> str:
     chars = []
     for key in panel_spec.get("visible_characters", []):
         info = panel_data["characters"].get(key, {})
@@ -143,7 +146,7 @@ def build_legacy_prompt(panel_data: dict[str, Any], panel_spec: dict[str, Any]) 
     return ", ".join(
         part
         for part in [
-            build_legacy_style_prompt(panel_data),
+            style_prompt(panel_data),
             panel_spec["prompt"],
             char_block,
             "mobile vertical webtoon panel with strong facial acting and clean composition",
@@ -309,7 +312,7 @@ def _legacy_render_episode(
 
     for panel_spec in panel_data["panels"]:
         panel_id = panel_spec["panel_id"]
-        prompt = build_legacy_prompt(panel_data, panel_spec)
+        prompt = build_prompt(panel_data, panel_spec)
         if dry_run:
             url = f"dry-run://{panel_id}"
             final_prompt = sanitize_prompt_for_policy(prompt)

@@ -228,11 +228,11 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
 
 
 def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
-    candidate = Path(path_text)
-    if not candidate.is_absolute():
-        raise PermissionError("ACP file-system paths must be absolute.")
-    resolved = candidate.resolve()
     root = Path(cwd).resolve()
+    candidate = Path(path_text).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
     try:
         resolved.relative_to(root)
     except ValueError as exc:

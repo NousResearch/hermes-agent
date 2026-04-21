@@ -26,6 +26,7 @@ export type TerminalSetupResult = {
 
 const DEFAULT_FILE_OPS: FileOps = { copyFile, mkdir, readFile, writeFile }
 const MULTILINE_SEQUENCE = '\\\r\n'
+
 const TERMINAL_META: Record<SupportedTerminal, { appName: string; label: string }> = {
   vscode: { appName: 'Code', label: 'VS Code' },
   cursor: { appName: 'Cursor', label: 'Cursor' },
@@ -99,18 +100,22 @@ export function stripJsonComments(content: string): string {
     // String literal — copy as-is, including any comment-like chars inside
     if (ch === '"') {
       let j = i + 1
+
       while (j < len) {
         if (content[j] === '\\') {
           j += 2 // skip escaped char
         } else if (content[j] === '"') {
           j++
+
           break
         } else {
           j++
         }
       }
+
       result += content.slice(i, j)
       i = j
+
       continue
     }
 
@@ -118,6 +123,7 @@ export function stripJsonComments(content: string): string {
     if (ch === '/' && content[i + 1] === '/') {
       const eol = content.indexOf('\n', i)
       i = eol === -1 ? len : eol
+
       continue
     }
 
@@ -125,6 +131,7 @@ export function stripJsonComments(content: string): string {
     if (ch === '/' && content[i + 1] === '*') {
       const end = content.indexOf('*/', i + 2)
       i = end === -1 ? len : end + 2
+
       continue
     }
 
@@ -208,19 +215,23 @@ export async function configureTerminalKeybindings(
 
     let keybindings: unknown[] = []
     let hasExistingFile = false
+
     try {
       const content = await ops.readFile(keybindingsFile, 'utf8')
       hasExistingFile = true
       const parsed: unknown = JSON.parse(stripJsonComments(content))
+
       if (!Array.isArray(parsed)) {
         return {
           success: false,
           message: `${meta.label} keybindings.json is not a JSON array: ${keybindingsFile}`
         }
       }
+
       keybindings = parsed
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
+
       if (code !== 'ENOENT') {
         return {
           success: false,
@@ -230,7 +241,9 @@ export async function configureTerminalKeybindings(
     }
 
     const conflicts = TARGET_BINDINGS.filter(target =>
-      keybindings.some(existing => isKeybinding(existing) && existing.key === target.key && !sameBinding(existing, target))
+      keybindings.some(
+        existing => isKeybinding(existing) && existing.key === target.key && !sameBinding(existing, target)
+      )
     )
 
     if (conflicts.length) {
@@ -242,8 +255,10 @@ export async function configureTerminalKeybindings(
     }
 
     let added = 0
+
     for (const target of TARGET_BINDINGS.slice().reverse()) {
       const exists = keybindings.some(existing => isKeybinding(existing) && sameBinding(existing, target))
+
       if (!exists) {
         keybindings.unshift(target)
         added += 1
@@ -320,11 +335,14 @@ export async function shouldPromptForTerminalSetup(options?: {
   try {
     const content = await ops.readFile(join(configDir, 'keybindings.json'), 'utf8')
     const parsed: unknown = JSON.parse(stripJsonComments(content))
+
     if (!Array.isArray(parsed)) {
       return true
     }
 
-    return TARGET_BINDINGS.some(target => !parsed.some(existing => isKeybinding(existing) && sameBinding(existing, target)))
+    return TARGET_BINDINGS.some(
+      target => !parsed.some(existing => isKeybinding(existing) && sameBinding(existing, target))
+    )
   } catch {
     return true
   }

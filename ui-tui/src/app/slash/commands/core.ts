@@ -9,6 +9,7 @@ import type {
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
+import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -224,9 +225,38 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'paste clipboard image',
+    help: 'attach clipboard image',
     name: 'paste',
     run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+  },
+
+  {
+    help: 'configure IDE terminal keybindings for multiline + undo/redo',
+    name: 'terminal-setup',
+    run: (arg, ctx) => {
+      const target = arg.trim().toLowerCase()
+
+      if (target && !['auto', 'cursor', 'vscode', 'windsurf'].includes(target)) {
+        return ctx.transcript.sys('usage: /terminal-setup [auto|vscode|cursor|windsurf]')
+      }
+
+      const runner = !target || target === 'auto' ? configureDetectedTerminalKeybindings() : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
+
+      void runner.then(result => {
+        if (ctx.stale()) {
+          return
+        }
+
+        ctx.transcript.sys(result.message)
+        if (result.success && result.requiresRestart) {
+          ctx.transcript.sys('restart the IDE terminal for the new keybindings to take effect')
+        }
+      }).catch(error => {
+        if (!ctx.stale()) {
+          ctx.transcript.sys(`terminal setup failed: ${String(error)}`)
+        }
+      })
+    }
   },
 
   {

@@ -15,7 +15,7 @@ export const HOTKEYS: [string, string][] = [
   [action + '+D', 'exit'],
   [action + '+G', 'open $EDITOR for prompt'],
   [action + '+L', 'new session (clear)'],
-  [paste + '+V / /paste', 'paste clipboard image'],
+  [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
   [action + '+A/E', 'home / end of line'],

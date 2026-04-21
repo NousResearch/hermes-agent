@@ -1,6 +1,6 @@
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
-import { imageTokenMeta } from '../domain/messages.js'
+import { attachedImageNotice } from '../domain/messages.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse, ShellExecResponse } from '../gatewayTypes.js'
@@ -83,9 +83,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           }
 
           if (r.is_image) {
-            const meta = imageTokenMeta(r)
-
-            turnController.pushActivity(`attached image: ${r.name}${meta ? ` · ${meta}` : ''}`)
+            turnController.pushActivity(attachedImageNotice(r))
           } else {
             turnController.pushActivity(`detected file: ${r.name}`)
           }

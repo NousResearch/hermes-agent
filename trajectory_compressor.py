@@ -40,6 +40,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from utils import base_url_host_matches, base_url_hostname
 import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
@@ -432,22 +434,29 @@ class TrajectoryCompressor:
 
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""
-        url = (self.config.base_url or "").lower()
-        if "openrouter" in url:
+        url = self.config.base_url or ""
+        if base_url_host_matches(url, "openrouter.ai"):
             return "openrouter"
-        if "nousresearch.com" in url:
+        if base_url_host_matches(url, "nousresearch.com"):
             return "nous"
-        if "chatgpt.com/backend-api/codex" in url:
+        if (
+            base_url_hostname(url) == "chatgpt.com"
+            and "/backend-api/codex" in url.lower()
+        ):
             return "codex"
-        if "api.z.ai" in url:
+        if base_url_host_matches(url, "z.ai"):
             return "zai"
-        if "moonshot.ai" in url or "moonshot.cn" in url or "api.kimi.com" in url:
+        if (
+            base_url_host_matches(url, "moonshot.ai")
+            or base_url_host_matches(url, "moonshot.cn")
+            or base_url_host_matches(url, "api.kimi.com")
+        ):
             return "kimi-coding"
-        if "arcee.ai" in url:
+        if base_url_host_matches(url, "arcee.ai"):
             return "arcee"
-        if "minimaxi.com" in url:
+        if base_url_host_matches(url, "minimaxi.com"):
             return "minimax-cn"
-        if "minimax.io" in url:
+        if base_url_host_matches(url, "minimax.io"):
             return "minimax"
         # Unknown base_url — not a known provider
         return ""

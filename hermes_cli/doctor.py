@@ -30,6 +30,7 @@ load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
+from utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
@@ -952,7 +953,7 @@ def run_doctor(args):
                     _base = _to_openai_base_url(_base)
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
-                if "api.kimi.com" in _url.lower():
+                if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "KimiCLI/1.30.0"
                 _resp = httpx.get(
                     _url,

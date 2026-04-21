@@ -216,3 +216,24 @@ def base_url_hostname(base_url: str) -> str:
     parsed = urlparse(raw if "://" in raw else f"//{raw}")
     return (parsed.hostname or "").lower().rstrip(".")
 
+
+def base_url_host_matches(base_url: str, domain: str) -> bool:
+    """Return True when the base URL's hostname is ``domain`` or a subdomain.
+
+    Safer counterpart to ``domain in base_url``, which is the substring
+    false-positive class documented on ``base_url_hostname``. Accepts bare
+    hosts, full URLs, and URLs with paths.
+
+        base_url_host_matches("https://api.moonshot.ai/v1", "moonshot.ai") == True
+        base_url_host_matches("https://moonshot.ai", "moonshot.ai")        == True
+        base_url_host_matches("https://evil.com/moonshot.ai/v1", "moonshot.ai") == False
+        base_url_host_matches("https://moonshot.ai.evil/v1", "moonshot.ai")     == False
+    """
+    hostname = base_url_hostname(base_url)
+    if not hostname:
+        return False
+    domain = (domain or "").strip().lower().rstrip(".")
+    if not domain:
+        return False
+    return hostname == domain or hostname.endswith("." + domain)
+

@@ -86,7 +86,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write, is_truthy_value
+from utils import atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -5661,7 +5661,7 @@ class GatewayRunner:
 
         # Cache notice
         cache_enabled = (
-            ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
+            (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
             or result.api_mode == "anthropic_messages"
         )
         if cache_enabled:

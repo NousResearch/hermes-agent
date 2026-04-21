@@ -115,3 +115,26 @@ def test_final_assistant_content_can_leave_markdown_raw():
 
     output = _render_to_text(renderable)
     assert "***Bold italic***" in output
+
+
+def test_strip_mode_preserves_intraword_underscores_in_snake_case_identifiers():
+    renderable = _render_final_assistant_content(
+        "Let me look at recover_with_credential_pool and MY_CONST "
+        "then /home/user/path_with_stuff/file.py",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "recover_with_credential_pool" in output
+    assert "MY_CONST" in output
+    assert "path_with_stuff" in output
+
+
+def test_strip_mode_still_strips_boundary_underscore_emphasis():
+    renderable = _render_final_assistant_content(
+        "say _hi_ and __bold__ now",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "say hi and bold now" in output

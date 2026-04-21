@@ -206,6 +206,13 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         duration: Duration of each beep in seconds.
         count: Number of beeps to play (with short gap between).
     """
+    # macOS: avoid PortAudio/sounddevice output for cue beeps.
+    # Crash reports show CoreAudio output-thread crashes in the
+    # sounddevice -> PortAudio -> CoreAudio path while voice mode is active.
+    # Beeps are optional UX, so fail safe here.
+    if platform.system() == "Darwin":
+        return
+
     try:
         sd, np = _import_audio()
     except (ImportError, OSError):
@@ -859,7 +866,37 @@ def play_audio_file(file_path: str) -> bool:
         logger.warning("Audio file not found: %s", file_path)
         return False
 
-    # Try sounddevice for WAV files
+    system = platform.system()
+
+    # macOS: prefer afplay first to avoid the PortAudio/CoreAudio output
+    # path that has been observed crashing during voice mode.
+    if system == "Darwin":
+        afplay = shutil.which("afplay")
+        if afplay:
+            try:
+                proc = subprocess.Popen(
+                    [afplay, file_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                with _playback_lock:
+                    _active_playback = proc
+                proc.wait(timeout=300)
+                with _playback_lock:
+                    _active_playback = None
+                return True
+            except subprocess.TimeoutExpired:
+                logger.warning("afplay timed out, killing process")
+                proc.kill()
+                proc.wait()
+                with _playback_lock:
+                    _active_playback = None
+            except Exception as e:
+                logger.debug("afplay failed: %s", e)
+                with _playback_lock:
+                    _active_playback = None
+
+    # Try sounddevice for WAV files on non-macOS, or as fallback.
     if file_path.endswith(".wav"):
         try:
             sd, np = _import_audio()
@@ -883,7 +920,6 @@ def play_audio_file(file_path: str) -> bool:
             logger.debug("sounddevice playback failed: %s", e)
 
     # Fall back to system audio players (using Popen for interruptability)
-    system = platform.system()
     players = []
 
     if system == "Darwin":

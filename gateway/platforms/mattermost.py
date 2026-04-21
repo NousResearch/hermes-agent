@@ -410,7 +410,6 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
-        import asyncio
         import aiohttp
 
         last_exc = None

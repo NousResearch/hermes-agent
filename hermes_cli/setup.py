@@ -849,7 +849,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
 def _check_espeak_ng() -> bool:
     """Check if espeak-ng is installed."""
-    import shutil
     return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
 
 
@@ -1084,8 +1083,6 @@ def setup_tts(config: dict):
 def setup_terminal_backend(config: dict):
     """Configure the terminal execution backend."""
     import platform as _platform
-    import shutil
-
     print_header("Terminal Backend")
     print_info("Choose where Hermes runs shell commands and code.")
     print_info("This affects tool execution, file access, and isolation.")

@@ -217,7 +217,6 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     directly from /dev/tty with echo disabled.
     """
     import sys
-    import time as time_module
     
     # Use the registered callback when available (prompt_toolkit-compatible)
     if _sudo_password_callback is not None:
@@ -278,7 +277,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     
     try:
         os.environ["HERMES_SPINNER_PAUSE"] = "1"
-        time_module.sleep(0.2)
+        time.sleep(0.2)
         
         print()
         print("┌" + "─" * 58 + "┐")

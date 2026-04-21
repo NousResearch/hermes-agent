@@ -391,12 +391,9 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
-    import asyncio
     import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    _log = logging.getLogger(__name__)
 
-    last_exc = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -414,7 +411,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                 response.raise_for_status()
                 return cache_image_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
                 if attempt < retries:
@@ -430,7 +426,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -510,12 +505,9 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
-    import asyncio
     import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    _log = logging.getLogger(__name__)
 
-    last_exc = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -533,7 +525,6 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                 response.raise_for_status()
                 return cache_audio_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
                 if attempt < retries:
@@ -549,7 +540,6 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
 
 
 # ---------------------------------------------------------------------------
@@ -1787,8 +1777,6 @@ class BasePlatformAdapter(ABC):
           HERMES_HUMAN_DELAY_MIN_MS: minimum delay in ms (default 800, custom mode)
           HERMES_HUMAN_DELAY_MAX_MS: maximum delay in ms (default 2500, custom mode)
         """
-        import random
-
         mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
         if mode == "off":
             return 0.0

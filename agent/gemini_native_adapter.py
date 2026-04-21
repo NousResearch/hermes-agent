@@ -613,7 +613,8 @@ def gemini_http_error(response: httpx.Response) -> GeminiAPIError:
         err_obj = {}
     err_status = str(err_obj.get("status") or "").strip()
     err_message = str(err_obj.get("message") or "").strip()
-    details_list = err_obj.get("details") if isinstance(err_obj.get("details"), list) else []
+    _raw_details = err_obj.get("details")
+    details_list = _raw_details if isinstance(_raw_details, list) else []
 
     reason = ""
     retry_after: Optional[float] = None

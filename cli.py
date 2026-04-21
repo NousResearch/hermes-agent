@@ -529,7 +529,6 @@ def load_cli_config() -> Dict[str, Any]:
             if _file_has_terminal_config or env_var not in os.environ:
                 val = terminal_config[config_key]
                 if isinstance(val, list):
-                    import json
                     os.environ[env_var] = json.dumps(val)
                 else:
                     os.environ[env_var] = str(val)
@@ -1144,8 +1143,6 @@ def _rich_text_from_ansi(text: str) -> _RichText:
 
 def _strip_markdown_syntax(text: str) -> str:
     """Best-effort markdown marker removal for plain-text display."""
-    import re
-
     plain = _rich_text_from_ansi(text or "").plain
     plain = re.sub(r"^\s{0,3}(?:[-*_]\s*){3,}$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
@@ -2002,8 +1999,7 @@ class HermesCLI:
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
-        import time as _time
-        now = _time.monotonic()
+        now = time.monotonic()
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
@@ -2221,8 +2217,7 @@ class HermesCLI:
             return ""
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:
-            import time as _time
-            elapsed = _time.monotonic() - t0
+            elapsed = time.monotonic() - t0
             if elapsed >= 60:
                 _m, _s = int(elapsed // 60), int(elapsed % 60)
                 elapsed_str = f"{_m}m {_s}s"
@@ -2477,9 +2472,6 @@ class HermesCLI:
 
     def _emit_reasoning_preview(self, reasoning_text: str) -> None:
         """Render a buffered reasoning preview as a single [thinking] block."""
-        import re
-        import textwrap
-
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
@@ -2598,9 +2590,7 @@ class HermesCLI:
         """Expand [Pasted text #N -> file] placeholders into file contents."""
         if not isinstance(text, str) or "[Pasted text #" not in text:
             return text or ""
-        import re as _re
-
-        paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+        paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
         def _expand_ref(match):
             path = Path(match.group(1))
@@ -2923,9 +2913,7 @@ class HermesCLI:
 
     def _command_spinner_frame(self) -> str:
         """Return the current spinner frame for slow slash commands."""
-        import time as _time
-
-        frame_idx = int(_time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
+        frame_idx = int(time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
         return _COMMAND_SPINNER_FRAMES[frame_idx]
 
     @contextmanager
@@ -3936,7 +3924,6 @@ class HermesCLI:
         image later with ``vision_analyze`` if needed.
         """
         import asyncio as _asyncio
-        import json as _json
         from tools.vision_tools import vision_analyze_tool
 
         analysis_prompt = (
@@ -3956,7 +3943,7 @@ class HermesCLI:
                 result_json = _asyncio.run(
                     vision_analyze_tool(image_url=str(img_path), user_prompt=analysis_prompt)
                 )
-                result = _json.loads(result_json)
+                result = json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
                     enriched_parts.append(
@@ -6282,8 +6269,7 @@ class HermesCLI:
                 # with the output (fixes #2718).
                 if self._app:
                     self._app.invalidate()
-                    import time as _tmod
-                    _tmod.sleep(0.05)  # brief pause for refresh
+                    time.sleep(0.05)  # brief pause for refresh
                 print()
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
@@ -6323,8 +6309,7 @@ class HermesCLI:
                 # Same TUI refresh pattern as success path (#2718)
                 if self._app:
                     self._app.invalidate()
-                    import time as _tmod
-                    _tmod.sleep(0.05)
+                    time.sleep(0.05)
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
@@ -6544,7 +6529,6 @@ class HermesCLI:
                 _launched = self._try_launch_chrome_debug(_port, _plat.system())
                 if _launched:
                     # Wait for the port to come up
-                    import time as _time
                     for _wait in range(10):
                         try:
                             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -6554,7 +6538,7 @@ class HermesCLI:
                             _already_open = True
                             break
                         except (OSError, socket.timeout):
-                            _time.sleep(0.5)
+                            time.sleep(0.5)
                     if _already_open:
                         print(f"   ✓ Chrome launched and listening on port {_port}")
                     else:
@@ -7084,7 +7068,6 @@ class HermesCLI:
         known state.  When a change is detected, triggers _reload_mcp() and
         informs the user so they know the tool list has been refreshed.
         """
-        import time
         import yaml as _yaml
 
         CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
@@ -7943,7 +7926,9 @@ class HermesCLI:
             return
 
         selected = state.get("selected", 0)
-        choices = state.get("choices") or []
+        choices = state.get("choices")
+        if not isinstance(choices, list):
+            choices = []
         if not (0 <= selected < len(choices)):
             return
 
@@ -10025,7 +10010,8 @@ class HermesCLI:
             if stage == "provider":
                 title = "⚙ Model Picker — Select Provider"
                 choices = []
-                for p in state.get("providers") or []:
+                _providers = state.get("providers")
+                for p in _providers if isinstance(_providers, list) else []:
                     count = p.get("total_models", len(p.get("models", [])))
                     label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
                     if p.get("is_current"):

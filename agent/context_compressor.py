@@ -807,7 +807,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
                 self.summary_model = ""  # empty = use main model
                 self._summary_failure_cooldown_until = 0.0  # no cooldown
-                return self._generate_summary(messages, summary_budget)  # retry immediately
+                return self._generate_summary(turns_to_summarize)  # retry immediately
 
             # Transient errors (timeout, rate limit, network) — shorter cooldown
             _transient_cooldown = 60

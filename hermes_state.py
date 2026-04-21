@@ -22,6 +22,8 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+
+from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
@@ -1199,7 +1201,10 @@ class SessionDB:
 
         messages = []
         for row in rows:
-            msg = {"role": row["role"], "content": row["content"]}
+            content = row["content"]
+            if row["role"] in {"user", "assistant"} and isinstance(content, str):
+                content = sanitize_context(content).strip()
+            msg = {"role": row["role"], "content": content}
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:

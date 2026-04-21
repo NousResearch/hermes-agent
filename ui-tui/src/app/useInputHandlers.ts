@@ -289,9 +289,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (key.upArrow && !cState.inputBuf.length) {
       const inputSel = getInputSelection()
-      const atStart = !cState.input || (!!inputSel && inputSel.start === 0 && inputSel.end === 0)
+      const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+      const noLineAbove =
+        !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
 
-      if (atStart) {
+      if (noLineAbove) {
         cycleQueue(1) || cycleHistory(-1)
 
         return
@@ -300,11 +302,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (key.downArrow && !cState.inputBuf.length) {
       const inputSel = getInputSelection()
-      const atEnd =
-        !cState.input ||
-        (!!inputSel && inputSel.start === cState.input.length && inputSel.end === cState.input.length)
+      const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+      const noLineBelow = !cState.input || (cursor !== null && cState.input.indexOf('\n', cursor) < 0)
 
-      if (atEnd || cState.historyIdx !== null) {
+      if (noLineBelow || cState.historyIdx !== null) {
         cycleQueue(-1) || cycleHistory(1)
 
         return

@@ -28,12 +28,15 @@ Usage:
 import os
 import re
 import difflib
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from tools.binary_extensions import BINARY_EXTENSIONS
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -438,13 +441,29 @@ class ShellFileOperations(FileOperations):
     def _expand_path(self, path: str) -> str:
         """
         Expand shell-style paths like ~ and ~user to absolute paths.
-        
+
+        Also redirects bare filenames (no path separator, no leading . or ~) to HERMES_HOME if a match exists there.
+
         This must be done BEFORE shell escaping, since ~ doesn't expand
         inside single quotes.
         """
         if not path:
             return path
-        
+
+        # Redirect bare filenames to HERMES_HOME when a match exists there (LocalEnvironment only).
+        if Path(path).name == path and not path.startswith(('.', '~')):
+            try:
+                from tools.environments.local import LocalEnvironment
+                if isinstance(self.env, LocalEnvironment):
+                    candidate = get_hermes_home() / path
+                    if candidate.exists():
+                        resolved = candidate.resolve()
+                        hermes_home_resolved = get_hermes_home().resolve()
+                        if str(resolved).startswith(str(hermes_home_resolved)):
+                            return str(resolved)
+            except (OSError, ImportError) as e:
+                logger.debug("bare-filename HERMES_HOME lookup failed for %r", path, exc_info=True)
+
         # Handle ~ and ~user
         if path.startswith('~'):
             # Get home directory via the terminal environment

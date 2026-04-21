@@ -4409,13 +4409,10 @@ class AIAgent:
                 _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
             elif hasattr(_socket, "TCP_KEEPALIVE"):
                 _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
-            # When a custom transport is provided, httpx won't auto-read proxy
-            # from env vars (allow_env_proxies = trust_env and transport is None).
-            # Explicitly read proxy settings to ensure HTTP_PROXY/HTTPS_PROXY work.
-            _proxy = _get_proxy_from_env()
+            # Use trust_env (default True) so httpx reads proxy env vars
+            # AND respects NO_PROXY — explicit proxy= bypasses that check.
             return _httpx.Client(
                 transport=_httpx.HTTPTransport(socket_options=_sock_opts),
-                proxy=_proxy,
             )
         except Exception:
             return None

@@ -862,12 +862,12 @@ class SlashCommandCompleter(Completer):
 
             # Build the completion text (what replaces the typed word)
             if word.startswith("~"):
-                display_path = "~/" + os.path.relpath(full_path, os.path.expanduser("~"))
+                display_path = "~/" + _safe_relpath(full_path, os.path.expanduser("~"))
             elif os.path.isabs(word):
                 display_path = full_path
             else:
                 # Keep relative
-                display_path = os.path.relpath(full_path)
+                display_path = _safe_relpath(full_path)
 
             if is_dir:
                 display_path += "/"
@@ -966,7 +966,7 @@ class SlashCommandCompleter(Completer):
                         continue
                     if count >= limit:
                         break
-                    display_path = os.path.relpath(full_path)
+                    display_path = _safe_relpath(full_path)
                     suffix = "/" if is_dir else ""
                     meta = "dir" if is_dir else _file_size_label(full_path)
                     completion = f"{prefix}{display_path}{suffix}"
@@ -1013,7 +1013,7 @@ class SlashCommandCompleter(Completer):
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:
-                        rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        rel = _safe_relpath(p, cwd) if os.path.isabs(p) else p
                         files.append(rel)
                     break
             except (subprocess.TimeoutExpired, OSError):
@@ -1337,6 +1337,19 @@ class SlashCommandAutoSuggest(AutoSuggest):
         if self._history:
             return self._history.get_suggestion(buffer, document)
         return None
+
+
+def _safe_relpath(path: str, start: str | None = None) -> str:
+    """Return *os.path.relpath* or fall back to *path* on cross-drive errors.
+
+    On Windows, ``os.path.relpath`` raises ``ValueError`` when *path*
+    and the CWD (or *start*) sit on different drive letters.  In that
+    case the absolute path is already the most compact representation.
+    """
+    try:
+        return os.path.relpath(path) if start is None else os.path.relpath(path, start)
+    except ValueError:
+        return path
 
 
 def _file_size_label(path: str) -> str:

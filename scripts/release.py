@@ -112,6 +112,7 @@ AUTHOR_MAP = {
     "xaydinoktay@gmail.com": "aydnOktay",
     "abdullahfarukozden@gmail.com": "Farukest",
     "lovre.pesut@gmail.com": "rovle",
+    "xjtumj@gmail.com": "mengjian-github",
     "kevinskysunny@gmail.com": "kevinskysunny",
     "xiewenxuan462@gmail.com": "yule975",
     "yiweimeng.dlut@hotmail.com": "meng93",

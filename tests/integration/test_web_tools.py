@@ -589,6 +589,164 @@ class WebToolsTester:
             print_warning(f"Failed to save results: {e}")
 
 
+DEFAULT_EXTRACT_URLS = [
+    "https://docs.firecrawl.dev/introduction",
+    "https://www.python.org/about/",
+]
+
+
+def _parse_json_response(raw: str, context: str) -> dict:
+    """Parse a JSON response from a web tool call and fail loudly on bad JSON."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        pytest.fail(f"{context} returned invalid JSON: {exc}\nRaw response: {raw[:500]}")
+
+
+def _run_async(coro):
+    """Run an async helper from a sync pytest test."""
+    return asyncio.run(coro)
+
+
+@pytest.fixture(scope="module")
+def web_backend():
+    """Skip the module when no supported web backend credentials are available."""
+    if not check_web_api_key():
+        pytest.skip(
+            "Web backend credentials are missing. Set PARALLEL_API_KEY, FIRECRAWL_API_KEY, "
+            "FIRECRAWL_API_URL, TAVILY_API_KEY, or EXA_API_KEY."
+        )
+    return _get_backend()
+
+
+@pytest.fixture(scope="module")
+def web_tools_sample(web_backend):
+    """Run the search harness once and reuse its validated URLs in downstream tests."""
+    search_cases = [
+        ("Python web scraping tutorial", 5),
+        ("Firecrawl API documentation", 3),
+        ("inflammatory arthritis symptoms treatment", 8),
+    ]
+
+    search_runs = []
+    extracted_urls = []
+
+    for query, limit in search_cases:
+        response = _parse_json_response(
+            web_search_tool(query, limit),
+            f"web_search_tool({query!r}, limit={limit})",
+        )
+
+        assert "error" not in response, f"Search for {query!r} returned error: {response.get('error')}"
+        assert response.get("success") is True
+
+        results = response.get("data", {}).get("web", [])
+        assert results, f"Search for {query!r} returned no results"
+
+        for result in results:
+            for field in ("url", "title", "description"):
+                assert result.get(field), f"Search result missing {field}: {result}"
+
+        search_runs.append({"query": query, "limit": limit, "results": results})
+        if len(extracted_urls) < 2:
+            extracted_urls.extend(
+                result["url"]
+                for result in results
+                if result.get("url") and result["url"] not in extracted_urls
+            )
+
+    return {
+        "backend": web_backend,
+        "search_runs": search_runs,
+        "extract_urls": (extracted_urls[:2] or DEFAULT_EXTRACT_URLS[:2]),
+    }
+
+
+class TestWebToolsPytest:
+    def test_web_search_returns_valid_results(self, web_tools_sample):
+        """Pytest-collectable wrapper around the existing manual search harness."""
+        assert web_tools_sample["backend"] in {"parallel", "firecrawl", "tavily", "exa"}
+        assert len(web_tools_sample["search_runs"]) == 3
+
+    def test_web_extract_without_llm_returns_content(self, web_tools_sample):
+        """Verify extraction returns structured content without requiring an LLM."""
+        response = _parse_json_response(
+            _run_async(
+                web_extract_tool(
+                    web_tools_sample["extract_urls"],
+                    format="markdown",
+                    use_llm_processing=False,
+                )
+            ),
+            "web_extract_tool(..., use_llm_processing=False)",
+        )
+
+        assert "error" not in response, f"Extraction returned error: {response.get('error')}"
+        results = response.get("results", [])
+        assert results, "Extraction returned no results"
+
+        valid_results = [result for result in results if result.get("content") and not result.get("error")]
+        assert valid_results, f"No extracted pages contained content: {results}"
+
+        for result in results:
+            assert "url" in result
+            assert "title" in result
+            assert "content" in result
+
+    def test_web_extract_with_llm_returns_processed_content(self, web_tools_sample):
+        """Run the LLM path only when an auxiliary model is available."""
+        if not check_auxiliary_model():
+            pytest.skip("Auxiliary LLM provider is not configured")
+
+        response = _parse_json_response(
+            _run_async(
+                web_extract_tool(
+                    web_tools_sample["extract_urls"][:1],
+                    format="markdown",
+                    use_llm_processing=True,
+                    min_length=1000,
+                )
+            ),
+            "web_extract_tool(..., use_llm_processing=True)",
+        )
+
+        assert "error" not in response, f"LLM extraction returned error: {response.get('error')}"
+        results = response.get("results", [])
+        assert results, "LLM extraction returned no results"
+
+        result = results[0]
+        assert result.get("content"), "LLM extraction did not return processed content"
+
+    def test_web_crawl_returns_pages(self, web_backend):
+        """Verify crawl responses return page data for the supported backend."""
+        crawl_cases = [
+            ("https://docs.firecrawl.dev", 2),
+            ("https://firecrawl.dev", 3),
+        ]
+
+        for url, expected_min_pages in crawl_cases:
+            response = _parse_json_response(
+                _run_async(
+                    web_crawl_tool(
+                        url,
+                        instructions=None,
+                        use_llm_processing=False,
+                    )
+                ),
+                f"web_crawl_tool({url!r})",
+            )
+
+            assert "error" not in response, f"Crawl for {url!r} returned error: {response.get('error')}"
+            results = response.get("results", [])
+            assert results, f"Crawl for {url!r} returned no pages"
+
+            valid_pages = [page for page in results if page.get("content") and not page.get("error")]
+            assert len(valid_pages) >= expected_min_pages, (
+                f"Crawl for {url!r} returned only {len(valid_pages)} pages with content; "
+                f"expected at least {expected_min_pages}"
+            )
+
+
 async def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Test Web Tools Module")

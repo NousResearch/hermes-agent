@@ -58,6 +58,7 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -72,6 +73,7 @@ function RootRedirect() {
 /** Built-in route → page component. Used for routing and for plugin `tab.path` / `tab.override` resolution. */
 const BUILTIN_ROUTES: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/chat": ChatPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/logs": LogsPage,
@@ -83,6 +85,7 @@ const BUILTIN_ROUTES: Record<string, ComponentType> = {
 };
 
 const BUILTIN_NAV: NavItem[] = [
+  { path: "/chat", labelKey: "chat", label: "Chat", icon: Terminal },
   {
     path: "/sessions",
     labelKey: "sessions",

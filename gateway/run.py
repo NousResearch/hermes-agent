@@ -4972,6 +4972,21 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    def _status_total_tokens(self, session_entry: "SessionEntry") -> int:
+        """Return total tokens for /status, preferring SQLite session stats."""
+        if self._session_db:
+            try:
+                row = self._session_db.get_session(session_entry.session_id)
+            except Exception:
+                row = None
+            if row:
+                input_tokens = int(row.get("input_tokens") or 0)
+                output_tokens = int(row.get("output_tokens") or 0)
+                cache_read_tokens = int(row.get("cache_read_tokens") or 0)
+                cache_write_tokens = int(row.get("cache_write_tokens") or 0)
+                return input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+        return int(getattr(session_entry, "total_tokens", 0) or 0)
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -4990,6 +5005,8 @@ class GatewayRunner:
             except Exception:
                 title = None
 
+        total_tokens = self._status_total_tokens(session_entry)
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
@@ -5000,7 +5017,7 @@ class GatewayRunner:
         lines.extend([
             f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Tokens:** {session_entry.total_tokens:,}",
+            f"**Tokens:** {total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",

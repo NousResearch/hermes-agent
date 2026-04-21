@@ -54,6 +54,7 @@ def _make_runner(session_entry: SessionEntry):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = MagicMock()
+    runner._session_db.get_session.return_value = None
     runner._session_db.get_session_title.return_value = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -111,6 +112,31 @@ async def test_status_command_includes_session_title_when_present():
 
     assert "**Session ID:** `sess-1`" in result
     assert "**Title:** My titled session" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_sqlite_token_counts_over_session_store_entry():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session.return_value = {
+        "id": "sess-1",
+        "input_tokens": 120,
+        "output_tokens": 45,
+        "cache_read_tokens": 30,
+        "cache_write_tokens": 5,
+    }
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Tokens:** 200" in result
 
 
 @pytest.mark.asyncio

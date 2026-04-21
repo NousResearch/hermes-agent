@@ -161,7 +161,7 @@ def test_import_codex_cli_tokens_missing(tmp_path, monkeypatch):
 
 
 def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
-    """Verify Hermes never writes to ~/.codex/auth.json."""
+    """Verify _save_codex_tokens writes only to Hermes auth store, not ~/.codex/."""
     hermes_home = tmp_path / "hermes"
     codex_home = tmp_path / "codex-cli"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -173,7 +173,7 @@ def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
 
     _save_codex_tokens({"access_token": "hermes-at", "refresh_token": "hermes-rt"})
 
-    # ~/.codex/auth.json should NOT exist
+    # ~/.codex/auth.json should NOT exist — _save_codex_tokens only touches Hermes store
     assert not (codex_home / "auth.json").exists()
 
     # Hermes auth store should have the tokens

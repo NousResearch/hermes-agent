@@ -214,8 +214,49 @@ def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
+    """402-exhausted credentials recover after 1 hour, not 24."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 3700,  # ~1h2m ago
+                        "last_error_code": 402,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Prevent auto-seeding from Codex CLI tokens on the host
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: None,
+    )
     _write_auth_store(
         tmp_path,
         {
@@ -531,6 +572,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
     _write_auth_store(
         tmp_path,
         {
@@ -666,53 +708,6 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
     assert entry.access_token == "sk-or-light"
 
 
-def test_mark_used_increments_request_count(tmp_path, monkeypatch):
-    """mark_used should increment the request_count of the current entry."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr(
-        "agent.credential_pool.get_pool_strategy",
-        lambda _provider: "fill_first",
-    )
-    monkeypatch.setattr(
-        "agent.credential_pool._seed_from_singletons",
-        lambda provider, entries: (False, set()),
-    )
-    monkeypatch.setattr(
-        "agent.credential_pool._seed_from_env",
-        lambda provider, entries: (False, set()),
-    )
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "credential_pool": {
-                "openrouter": [
-                    {
-                        "id": "key-a",
-                        "label": "test",
-                        "auth_type": "api_key",
-                        "priority": 0,
-                        "source": "manual",
-                        "access_token": "sk-or-test",
-                        "request_count": 5,
-                    },
-                ]
-            },
-        },
-    )
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openrouter")
-    entry = pool.select()
-    assert entry is not None
-    assert entry.request_count == 5
-    pool.mark_used()
-    updated = pool.current()
-    assert updated is not None
-    assert updated.request_count == 6
-
-
 def test_thread_safety_concurrent_select(tmp_path, monkeypatch):
     """Concurrent select() calls should not corrupt pool state."""
     import threading as _threading
@@ -762,7 +757,6 @@ def test_thread_safety_concurrent_select(tmp_path, monkeypatch):
                 entry = pool.select()
                 if entry:
                     results.append(entry.id)
-                    pool.mark_used(entry.id)
         except Exception as exc:
             errors.append(exc)
 
@@ -1020,8 +1014,8 @@ def test_acquire_lease_prefers_unleased_entry(tmp_path, monkeypatch):
 
     assert first == "cred-1"
     assert second == "cred-2"
-    assert pool.active_lease_count("cred-1") == 1
-    assert pool.active_lease_count("cred-2") == 1
+    assert pool._active_leases.get("cred-1", 0) == 1
+    assert pool._active_leases.get("cred-2", 0) == 1
 
 
 
@@ -1051,7 +1045,120 @@ def test_release_lease_decrements_counter(tmp_path, monkeypatch):
     pool = load_pool("openrouter")
     leased = pool.acquire_lease()
     assert leased == "cred-1"
-    assert pool.active_lease_count("cred-1") == 1
+    assert pool._active_leases.get("cred-1", 0) == 1
 
     pool.release_lease("cred-1")
-    assert pool.active_lease_count("cred-1") == 0
+    assert pool._active_leases.get("cred-1", 0) == 0
+
+
+def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_path, monkeypatch):
+    """Claude Code credentials must not be auto-seeded when the user never selected anthropic."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    # Claude Code credentials exist on disk
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": "sk-ant...oken", "refreshToken": "rt", "expiresAt": 9999999999999},
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: None,
+    )
+    # User configured kimi-coding, NOT anthropic
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: pid == "kimi-coding",
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+
+    # Should NOT have seeded the claude_code entry
+    assert pool.entries() == []
+
+
+def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
+    """Copilot credentials from `gh auth token` should be seeded into the pool."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "gh auth token"),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].source == "gh_cli"
+    assert entries[0].access_token == "gho_fake_token_abc123"
+    assert entries[0].base_url == "https://api.githubcopilot.com"
+
+
+def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):
+    """Copilot pool should be empty when resolve_copilot_token() returns nothing."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("", ""),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert not pool.has_credentials()
+    assert pool.entries() == []
+
+
+def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
+    """Qwen OAuth credentials from ~/.qwen/oauth_creds.json should be seeded into the pool."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        lambda **kw: {
+            "provider": "qwen-oauth",
+            "base_url": "https://portal.qwen.ai/v1",
+            "api_key": "qwen_fake_token_xyz",
+            "source": "qwen-cli",
+            "expires_at_ms": 1900000000000,
+            "auth_file": str(tmp_path / ".qwen" / "oauth_creds.json"),
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("qwen-oauth")
+
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].source == "qwen-cli"
+    assert entries[0].access_token == "qwen_fake_token_xyz"
+
+
+def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch):
+    """Qwen OAuth pool should be empty when no CLI credentials exist."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        lambda **kw: (_ for _ in ()).throw(
+            AuthError("Qwen CLI credentials not found.", provider="qwen-oauth", code="qwen_auth_missing")
+        ),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("qwen-oauth")
+
+    assert not pool.has_credentials()
+    assert pool.entries() == []

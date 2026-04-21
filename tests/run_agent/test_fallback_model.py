@@ -11,6 +11,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
+import run_agent
+
+
+@pytest.fixture(autouse=True)
+def _no_fallback_wait(monkeypatch):
+    """Short-circuit time.sleep in fallback/recovery paths so tests don't
+    block on the ``min(3 + retry_count, 8)`` wait before a primary retry."""
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -36,6 +46,7 @@ def _make_agent(fallback_model=None):
     ):
         agent = AIAgent(
             api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -112,6 +123,25 @@ class TestTryActivateFallback:
             assert agent.model == "glm-5"
             assert agent.provider == "zai"
             assert agent.client is mock_client
+
+    def test_fallback_uses_resolved_normalized_model(self):
+        agent = _make_agent(
+            fallback_model={"provider": "zai", "model": "zai/glm-5.1"},
+        )
+        mock_client = _mock_resolve(
+            api_key="sk-zai-key",
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "glm-5.1"),
+        ):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.model == "glm-5.1"
+        assert agent.provider == "zai"
+        assert agent.client is mock_client
 
     def test_activates_kimi_fallback(self):
         agent = _make_agent(

@@ -127,6 +127,16 @@ async def test_shutdown_fires_finalize_for_active_agents(mock_invoke_hook):
     runner._shutdown_event = MagicMock()
     runner.adapters = {}
     runner._exit_reason = "test"
+    runner._exit_code = None
+    runner._draining = False
+    runner._restart_requested = False
+    runner._restart_task_started = False
+    runner._restart_detached = False
+    runner._restart_via_service = False
+    runner._restart_drain_timeout = 0.0
+    runner._stop_task = None
+    runner._running_agents_ts = {}
+    runner._update_runtime_status = MagicMock()
 
     agent1 = MagicMock()
     agent1.session_id = "sess-a"

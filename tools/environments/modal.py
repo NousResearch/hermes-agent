@@ -5,19 +5,28 @@ wrapper, while preserving Hermes' persistent snapshot behavior across sessions.
 """
 
 import asyncio
+import base64
+import io
 import logging
 import shlex
+import tarfile
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
-    _file_mtime_key,
     _load_json_store,
     _save_json_store,
+)
+from tools.environments.file_sync import (
+    FileSyncManager,
+    iter_sync_files,
+    quoted_mkdir_command,
+    quoted_rm_command,
+    unique_parent_dirs,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,7 +159,7 @@ class ModalEnvironment(BaseEnvironment):
         image: str,
         cwd: str = "/root",
         timeout: int = 60,
-        modal_sandbox_kwargs: Optional[Dict[str, Any]] = None,
+        modal_sandbox_kwargs: Optional[dict[str, Any]] = None,
         persistent_filesystem: bool = True,
         task_id: str = "default",
     ):
@@ -158,12 +167,10 @@ class ModalEnvironment(BaseEnvironment):
 
         self._persistent = persistent_filesystem
         self._task_id = task_id
-        self._base_image = image
         self._sandbox = None
         self._app = None
         self._worker = _AsyncWorker()
-        self._synced_files: Dict[str, tuple] = {}
-        self._last_sync_time: float = 0
+        self._sync_manager: FileSyncManager | None = None  # initialized after sandbox creation
 
         sandbox_kwargs = dict(modal_sandbox_kwargs or {})
 
@@ -256,52 +263,129 @@ class ModalEnvironment(BaseEnvironment):
             raise
 
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
+
+        self._sync_manager = FileSyncManager(
+            get_files_fn=lambda: iter_sync_files("/root/.hermes"),
+            upload_fn=self._modal_upload,
+            delete_fn=self._modal_delete,
+            bulk_upload_fn=self._modal_bulk_upload,
+            bulk_download_fn=self._modal_bulk_download,
+        )
+        self._sync_manager.sync(force=True)
         self.init_session()
 
-    def _push_file_to_sandbox(self, host_path: str, container_path: str) -> bool:
-        """Push a single file into the sandbox if changed."""
-        file_key = _file_mtime_key(host_path)
-        if file_key is None:
-            return False
-        if self._synced_files.get(container_path) == file_key:
-            return False
-        try:
-            content = Path(host_path).read_bytes()
-        except Exception:
-            return False
-
-        import base64
+    def _modal_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via base64 piped through stdin."""
+        content = Path(host_path).read_bytes()
         b64 = base64.b64encode(content).decode("ascii")
-        container_dir = str(Path(container_path).parent)
+        container_dir = str(Path(remote_path).parent)
         cmd = (
             f"mkdir -p {shlex.quote(container_dir)} && "
-            f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(container_path)}"
+            f"base64 -d > {shlex.quote(remote_path)}"
         )
 
         async def _write():
             proc = await self._sandbox.exec.aio("bash", "-c", cmd)
+            offset = 0
+            chunk_size = self._STDIN_CHUNK_SIZE
+            while offset < len(b64):
+                proc.stdin.write(b64[offset:offset + chunk_size])
+                await proc.stdin.drain.aio()
+                offset += chunk_size
+            proc.stdin.write_eof()
+            await proc.stdin.drain.aio()
             await proc.wait.aio()
 
-        self._worker.run_coroutine(_write(), timeout=15)
-        self._synced_files[container_path] = file_key
-        return True
+        self._worker.run_coroutine(_write(), timeout=30)
 
-    def _sync_files(self) -> None:
-        """Push credential, skill, and cache files into the running sandbox."""
-        try:
-            from tools.credential_files import (
-                get_credential_file_mounts,
-                iter_skills_files,
-                iter_cache_files,
+    # Modal SDK stdin buffer limit (legacy server path).  The command-router
+    # path allows 16 MB, but we must stay under the smaller 2 MB cap for
+    # compatibility.  Chunks are written below this threshold and flushed
+    # individually via drain().
+    _STDIN_CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB — safe for both transport paths
+
+    def _modal_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files via tar archive piped through stdin.
+
+        Builds a gzipped tar archive in memory and streams it into a
+        ``base64 -d | tar xzf -`` pipeline via the process's stdin,
+        avoiding the Modal SDK's 64 KB ``ARG_MAX_BYTES`` exec-arg limit.
+        """
+        if not files:
+            return
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for host_path, remote_path in files:
+                tar.add(host_path, arcname=remote_path.lstrip("/"))
+        payload = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        parents = unique_parent_dirs(files)
+        mkdir_part = quoted_mkdir_command(parents)
+        cmd = f"{mkdir_part} && base64 -d | tar xzf - -C /"
+
+        async def _bulk():
+            proc = await self._sandbox.exec.aio("bash", "-c", cmd)
+
+            # Stream payload through stdin in chunks to stay under the
+            # SDK's per-write buffer limit (2 MB legacy / 16 MB router).
+            offset = 0
+            chunk_size = self._STDIN_CHUNK_SIZE
+            while offset < len(payload):
+                proc.stdin.write(payload[offset:offset + chunk_size])
+                await proc.stdin.drain.aio()
+                offset += chunk_size
+
+            proc.stdin.write_eof()
+            await proc.stdin.drain.aio()
+
+            exit_code = await proc.wait.aio()
+            if exit_code != 0:
+                stderr_text = await proc.stderr.read.aio()
+                raise RuntimeError(
+                    f"Modal bulk upload failed (exit {exit_code}): {stderr_text}"
+                )
+
+        self._worker.run_coroutine(_bulk(), timeout=120)
+
+    def _modal_bulk_download(self, dest: Path) -> None:
+        """Download remote .hermes/ as a tar archive.
+
+        Modal sandboxes always run as root, so /root/.hermes is hardcoded
+        (consistent with iter_sync_files call on line 269).
+        """
+        async def _download():
+            proc = await self._sandbox.exec.aio(
+                "bash", "-c", "tar cf - -C / root/.hermes"
             )
-            for entry in get_credential_file_mounts():
-                self._push_file_to_sandbox(entry["host_path"], entry["container_path"])
-            for entry in iter_skills_files():
-                self._push_file_to_sandbox(entry["host_path"], entry["container_path"])
-            for entry in iter_cache_files():
-                self._push_file_to_sandbox(entry["host_path"], entry["container_path"])
-        except Exception as e:
-            logger.debug("Modal: file sync failed: %s", e)
+            data = await proc.stdout.read.aio()
+            exit_code = await proc.wait.aio()
+            if exit_code != 0:
+                raise RuntimeError(f"Modal bulk download failed (exit {exit_code})")
+            return data
+
+        tar_bytes = self._worker.run_coroutine(_download(), timeout=120)
+        if isinstance(tar_bytes, str):
+            tar_bytes = tar_bytes.encode()
+        dest.write_bytes(tar_bytes)
+
+    def _modal_delete(self, remote_paths: list[str]) -> None:
+        """Batch-delete remote files via exec."""
+        rm_cmd = quoted_rm_command(remote_paths)
+
+        async def _rm():
+            proc = await self._sandbox.exec.aio("bash", "-c", rm_cmd)
+            await proc.wait.aio()
+
+        self._worker.run_coroutine(_rm(), timeout=15)
+
+    def _before_execute(self) -> None:
+        """Sync files to sandbox via FileSyncManager (rate-limited internally)."""
+        self._sync_manager.sync()
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
@@ -341,6 +425,10 @@ class ModalEnvironment(BaseEnvironment):
         """Snapshot the filesystem (if persistent) then stop the sandbox."""
         if self._sandbox is None:
             return
+
+        if self._sync_manager:
+            logger.info("Modal: syncing files from sandbox...")
+            self._sync_manager.sync_back()
 
         if self._persistent:
             try:

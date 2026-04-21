@@ -66,8 +66,8 @@ class TestStructuredContentPreservation:
         data = json.loads(raw)
         assert data == {"result": "hello"}
 
-    def test_structured_content_is_the_result(self, _patch_mcp_server):
-        """When structuredContent is present, it becomes the result directly."""
+    def test_both_content_and_structured(self, _patch_mcp_server):
+        """When both content and structuredContent are present, combine them."""
         session = _patch_mcp_server
         payload = {"value": "secret-123", "revealed": True}
         session.call_tool = AsyncMock(
@@ -79,7 +79,27 @@ class TestStructuredContentPreservation:
         handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         raw = handler({})
         data = json.loads(raw)
-        assert data["result"] == payload
+        # content is the primary result, structuredContent is supplementary
+        assert data["result"] == "OK"
+        assert data["structuredContent"] == payload
+
+    def test_both_content_and_structured_desktop_commander(self, _patch_mcp_server):
+        """Real-world case: Desktop Commander returns file text in content,
+        metadata in structuredContent.  Agent must see file contents."""
+        session = _patch_mcp_server
+        file_text = "import os\nprint('hello')\n"
+        metadata = {"fileName": "main.py", "filePath": "/tmp/main.py", "fileType": "python"}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(file_text)],
+                structuredContent=metadata,
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler({})
+        data = json.loads(raw)
+        assert data["result"] == file_text
+        assert data["structuredContent"] == metadata
 
     def test_structured_content_none_falls_back_to_text(self, _patch_mcp_server):
         """When structuredContent is explicitly None, fall back to text."""

@@ -99,23 +99,41 @@ def _load_hermes_env_vars() -> dict[str, str]:
 
 
 def find_docker() -> Optional[str]:
-    """Locate the docker CLI binary.
+    """Locate the docker (or podman) CLI binary.
 
-    Checks ``shutil.which`` first (respects PATH), then probes well-known
-    install locations on macOS where Docker Desktop may not be in PATH
-    (e.g. when running as a gateway service via launchd).
+    Resolution order:
+    1. ``HERMES_DOCKER_BINARY`` env var — explicit override (e.g. ``/usr/bin/podman``)
+    2. ``docker`` on PATH via ``shutil.which``
+    3. ``podman`` on PATH via ``shutil.which``
+    4. Well-known macOS Docker Desktop install locations
 
-    Returns the absolute path, or ``None`` if docker cannot be found.
+    Returns the absolute path, or ``None`` if neither runtime can be found.
     """
     global _docker_executable
     if _docker_executable is not None:
         return _docker_executable
 
+    # 1. Explicit override via env var (e.g. for Podman on immutable distros)
+    override = os.getenv("HERMES_DOCKER_BINARY")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        _docker_executable = override
+        logger.info("Using HERMES_DOCKER_BINARY override: %s", override)
+        return override
+
+    # 2. docker on PATH
     found = shutil.which("docker")
     if found:
         _docker_executable = found
         return found
 
+    # 3. podman on PATH (drop-in compatible for our use case)
+    found = shutil.which("podman")
+    if found:
+        _docker_executable = found
+        logger.info("Using podman as container runtime: %s", found)
+        return found
+
+    # 4. Well-known macOS Docker Desktop locations
     for path in _DOCKER_SEARCH_PATHS:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             _docker_executable = path
@@ -246,7 +264,6 @@ class DockerEnvironment(BaseEnvironment):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
-        self._base_image = image
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
@@ -410,11 +427,12 @@ class DockerEnvironment(BaseEnvironment):
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
         run_cmd = [
             self._docker_exe, "run", "-d",
+            "--init",           # tini/catatonit as PID 1 — reaps zombie children
             "--name", container_name,
             "-w", cwd,
             *all_run_args,
             image,
-            "sleep", "2h",
+            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
         ]
         logger.debug(f"Starting container: {' '.join(run_cmd)}")
         result = subprocess.run(

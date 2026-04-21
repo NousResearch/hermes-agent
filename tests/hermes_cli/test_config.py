@@ -10,6 +10,7 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     get_hermes_home,
     ensure_hermes_home,
+    get_compatible_custom_providers,
     load_config,
     load_env,
     migrate_config,
@@ -68,6 +69,7 @@ class TestLoadConfigDefaults:
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
+            assert config["display"]["interim_assistant_messages"] is True
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -421,3 +423,220 @@ class TestAnthropicTokenMigration:
         }):
             migrate_config(interactive=False, quiet=True)
             assert load_env().get("ANTHROPIC_TOKEN") == "current-token"
+
+
+class TestCustomProviderCompatibility:
+    """Custom provider compatibility across legacy and v12+ config schemas."""
+
+    def test_v11_upgrade_moves_custom_providers_into_providers(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "model": {
+                        "default": "openai/gpt-5.4",
+                        "provider": "openrouter",
+                    },
+                    "custom_providers": [
+                        {
+                            "name": "OpenAI Direct",
+                            "base_url": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "api_mode": "codex_responses",
+                            "model": "gpt-5-mini",
+                        }
+                    ],
+                    "fallback_providers": [
+                        {"provider": "openai-direct", "model": "gpt-5-mini"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["providers"]["openai-direct"] == {
+            "api": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "default_model": "gpt-5-mini",
+            "name": "OpenAI Direct",
+            "transport": "codex_responses",
+        }
+        # custom_providers removed by migration — runtime reads via compat layer
+        assert "custom_providers" not in raw
+
+    def test_providers_dict_resolves_at_runtime(self, tmp_path):
+        """After migration deleted custom_providers, get_compatible_custom_providers
+        still finds entries from the providers dict."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "openai-direct": {
+                            "api": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "default_model": "gpt-5-mini",
+                            "name": "OpenAI Direct",
+                            "transport": "codex_responses",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 1
+        assert compatible[0]["name"] == "OpenAI Direct"
+        assert compatible[0]["base_url"] == "https://api.openai.com/v1"
+        assert compatible[0]["provider_key"] == "openai-direct"
+        assert compatible[0]["api_mode"] == "codex_responses"
+
+    def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
+        """URL field precedence is base_url > url > api (PR #9332)."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "my-provider": {
+                            "name": "My Provider",
+                            "api": "https://api.example.com/v1",
+                            "url": "https://url.example.com/v1",
+                            "base_url": "https://base.example.com/v1",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == [
+            {
+                "name": "My Provider",
+                "base_url": "https://base.example.com/v1",
+                "provider_key": "my-provider",
+            }
+        ]
+
+    def test_dedup_across_legacy_and_providers(self, tmp_path):
+        """Same name+url in both schemas should not produce duplicates."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "custom_providers": [
+                        {
+                            "name": "OpenAI Direct",
+                            "base_url": "https://api.openai.com/v1",
+                            "api_key": "legacy-key",
+                        }
+                    ],
+                    "providers": {
+                        "openai-direct": {
+                            "api": "https://api.openai.com/v1",
+                            "api_key": "new-key",
+                            "name": "OpenAI Direct",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 1
+        # Legacy entry wins (read first)
+        assert compatible[0]["api_key"] == "legacy-key"
+
+    def test_dedup_preserves_entries_with_different_models(self, tmp_path):
+        """Entries with same name+URL but different models must not be collapsed."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "custom_providers": [
+                        {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "qwen3-coder"},
+                        {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "glm-5.1"},
+                        {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "kimi-k2.5"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 3
+        models = [e.get("model") for e in compatible]
+        assert models == ["qwen3-coder", "glm-5.1", "kimi-k2.5"]
+
+
+class TestInterimAssistantMessageConfig:
+    """Test the explicit gateway interim-message config gate."""
+
+    def test_default_config_enables_interim_assistant_messages(self):
+        assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
+
+    def test_migrate_to_v15_adds_interim_assistant_message_gate(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": 14, "display": {"tool_progress": "off"}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["display"]["tool_progress"] == "off"
+        assert raw["display"]["interim_assistant_messages"] is True
+
+
+class TestDiscordChannelPromptsConfig:
+    def test_default_config_includes_discord_channel_prompts(self):
+        assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
+
+    def test_migrate_adds_discord_channel_prompts_default(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": 17, "discord": {"auto_thread": True}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["discord"]["auto_thread"] is True
+        assert raw["discord"]["channel_prompts"] == {}
+
+
+class TestUserMessagePreviewConfig:
+    def test_default_config_preview_line_counts(self):
+        preview = DEFAULT_CONFIG["display"]["user_message_preview"]
+        assert preview["first_lines"] == 2
+        assert preview["last_lines"] == 2

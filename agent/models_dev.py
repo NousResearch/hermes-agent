@@ -18,10 +18,8 @@ Other modules should import the dataclasses and query functions from here
 rather than parsing the raw JSON themselves.
 """
 
-import difflib
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,9 +133,6 @@ class ProviderInfo:
     doc: str = ""                   # documentation URL
     model_count: int = 0
 
-    def has_api_url(self) -> bool:
-        return bool(self.api)
-
 
 # ---------------------------------------------------------------------------
 # Provider ID mapping: Hermes ↔ models.dev
@@ -147,8 +142,11 @@ class ProviderInfo:
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
     "anthropic": "anthropic",
+    "openai": "openai",
+    "openai-codex": "openai",
     "zai": "zai",
     "kimi-coding": "kimi-for-coding",
+    "kimi-coding-cn": "kimi-for-coding",
     "minimax": "minimax",
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",
@@ -164,24 +162,19 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "gemini": "google",
     "google": "google",
     "xai": "xai",
+    "xiaomi": "xiaomi",
     "nvidia": "nvidia",
     "groq": "groq",
     "mistral": "mistral",
     "togetherai": "togetherai",
     "perplexity": "perplexity",
     "cohere": "cohere",
+    "ollama-cloud": "ollama-cloud",
 }
 
 # Reverse mapping: models.dev → Hermes (built lazily)
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
 
-
-def _get_reverse_mapping() -> Dict[str, str]:
-    """Return models.dev ID → Hermes provider ID mapping."""
-    global _MODELS_DEV_TO_PROVIDER
-    if _MODELS_DEV_TO_PROVIDER is None:
-        _MODELS_DEV_TO_PROVIDER = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
-    return _MODELS_DEV_TO_PROVIDER
 
 
 def _get_cache_path() -> Path:
@@ -386,7 +379,14 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
 
     # Extract capability flags (default to False if missing)
     supports_tools = bool(entry.get("tool_call", False))
-    supports_vision = bool(entry.get("attachment", False))
+    # Vision: check both the `attachment` flag and `modalities.input` for "image".
+    # Some models (e.g. gemma-4) list image in input modalities but not attachment.
+    input_mods = entry.get("modalities", {})
+    if isinstance(input_mods, dict):
+        input_mods = input_mods.get("input", [])
+    else:
+        input_mods = []
+    supports_vision = bool(entry.get("attachment", False)) or "image" in input_mods
     supports_reasoning = bool(entry.get("reasoning", False))
 
     # Extract limits
@@ -420,7 +420,10 @@ def list_provider_models(provider: str) -> List[str]:
     models = _get_provider_models(provider)
     if models is None:
         return []
-    return list(models.keys())
+    return [
+        mid for mid in models.keys()
+        if not _should_hide_from_provider_catalog(provider, mid)
+    ]
 
 
 # Patterns that indicate non-agentic or noise models (TTS, embedding,
@@ -431,6 +434,43 @@ _NOISE_PATTERNS: re.Pattern = re.compile(
     r"-image\b|-image-preview\b|-customtools\b",
     re.IGNORECASE,
 )
+
+# Google's live Gemini catalogs currently include a mix of stale slugs and
+# Gemma models whose TPM quotas are too small for normal Hermes agent traffic.
+# Keep capability metadata available for direct/manual use, but hide these from
+# the Gemini model catalogs we surface in setup and model selection.
+_GOOGLE_HIDDEN_MODELS = frozenset({
+    # Low-TPM Gemma models that trip Google input-token quota walls under
+    # agent-style traffic despite advertising large context windows.
+    "gemma-4-31b-it",
+    "gemma-4-26b-it",
+    "gemma-4-26b-a4b-it",
+    "gemma-3-1b",
+    "gemma-3-1b-it",
+    "gemma-3-2b",
+    "gemma-3-2b-it",
+    "gemma-3-4b",
+    "gemma-3-4b-it",
+    "gemma-3-12b",
+    "gemma-3-12b-it",
+    "gemma-3-27b",
+    "gemma-3-27b-it",
+    # Stale/retired Google slugs that still surface through models.dev-backed
+    # Gemini selection but 404 on the current Google endpoints.
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-8b",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+})
+
+
+def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
+    provider_lower = (provider or "").strip().lower()
+    model_lower = (model_id or "").strip().lower()
+    if provider_lower in {"gemini", "google"} and model_lower in _GOOGLE_HIDDEN_MODELS:
+        return True
+    return False
 
 
 def list_agentic_models(provider: str) -> List[str]:
@@ -448,6 +488,8 @@ def list_agentic_models(provider: str) -> List[str]:
     for mid, entry in models.items():
         if not isinstance(entry, dict):
             continue
+        if _should_hide_from_provider_catalog(provider, mid):
+            continue
         if not entry.get("tool_call", False):
             continue
         if _NOISE_PATTERNS.search(mid):
@@ -455,93 +497,6 @@ def list_agentic_models(provider: str) -> List[str]:
         result.append(mid)
     return result
 
-
-def search_models_dev(
-    query: str, provider: str = None, limit: int = 5
-) -> List[Dict[str, Any]]:
-    """Fuzzy search across models.dev catalog. Returns matching model entries.
-
-    Args:
-        query: Search string to match against model IDs.
-        provider: Optional Hermes provider ID to restrict search scope.
-                  If None, searches across all providers in PROVIDER_TO_MODELS_DEV.
-        limit: Maximum number of results to return.
-
-    Returns:
-        List of dicts, each containing 'provider', 'model_id', and the full
-        model 'entry' from models.dev.
-    """
-    data = fetch_models_dev()
-    if not data:
-        return []
-
-    # Build list of (provider_id, model_id, entry) candidates
-    candidates: List[tuple] = []
-
-    if provider is not None:
-        # Search only the specified provider
-        mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
-        if not mdev_provider_id:
-            return []
-        provider_data = data.get(mdev_provider_id, {})
-        if isinstance(provider_data, dict):
-            models = provider_data.get("models", {})
-            if isinstance(models, dict):
-                for mid, mdata in models.items():
-                    candidates.append((provider, mid, mdata))
-    else:
-        # Search across all mapped providers
-        for hermes_prov, mdev_prov in PROVIDER_TO_MODELS_DEV.items():
-            provider_data = data.get(mdev_prov, {})
-            if isinstance(provider_data, dict):
-                models = provider_data.get("models", {})
-                if isinstance(models, dict):
-                    for mid, mdata in models.items():
-                        candidates.append((hermes_prov, mid, mdata))
-
-    if not candidates:
-        return []
-
-    # Use difflib for fuzzy matching — case-insensitive comparison
-    model_ids_lower = [c[1].lower() for c in candidates]
-    query_lower = query.lower()
-
-    # First try exact substring matches (more intuitive than pure edit-distance)
-    substring_matches = []
-    for prov, mid, mdata in candidates:
-        if query_lower in mid.lower():
-            substring_matches.append({"provider": prov, "model_id": mid, "entry": mdata})
-
-    # Then add difflib fuzzy matches for any remaining slots
-    fuzzy_ids = difflib.get_close_matches(
-        query_lower, model_ids_lower, n=limit * 2, cutoff=0.4
-    )
-
-    seen_ids: set = set()
-    results: List[Dict[str, Any]] = []
-
-    # Prioritize substring matches
-    for match in substring_matches:
-        key = (match["provider"], match["model_id"])
-        if key not in seen_ids:
-            seen_ids.add(key)
-            results.append(match)
-            if len(results) >= limit:
-                return results
-
-    # Add fuzzy matches
-    for fid in fuzzy_ids:
-        # Find original-case candidates matching this lowered ID
-        for prov, mid, mdata in candidates:
-            if mid.lower() == fid:
-                key = (prov, mid)
-                if key not in seen_ids:
-                    seen_ids.add(key)
-                    results.append({"provider": prov, "model_id": mid, "entry": mdata})
-                    if len(results) >= limit:
-                        return results
-
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -634,43 +589,6 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
     return _parse_provider_info(mdev_id, raw)
 
 
-def list_all_providers() -> Dict[str, ProviderInfo]:
-    """Return all providers from models.dev as {provider_id: ProviderInfo}.
-
-    Returns the full catalog — 109+ providers.  For providers that have
-    a Hermes alias, both the models.dev ID and the Hermes ID are included.
-    """
-    data = fetch_models_dev()
-    result: Dict[str, ProviderInfo] = {}
-
-    for pid, pdata in data.items():
-        if isinstance(pdata, dict):
-            info = _parse_provider_info(pid, pdata)
-            result[pid] = info
-
-    return result
-
-
-def get_providers_for_env_var(env_var: str) -> List[str]:
-    """Reverse lookup: find all providers that use a given env var.
-
-    Useful for auto-detection: "user has ANTHROPIC_API_KEY set, which
-    providers does that enable?"
-
-    Returns list of models.dev provider IDs.
-    """
-    data = fetch_models_dev()
-    matches: List[str] = []
-
-    for pid, pdata in data.items():
-        if isinstance(pdata, dict):
-            env = pdata.get("env", [])
-            if isinstance(env, list) and env_var in env:
-                matches.append(pid)
-
-    return matches
-
-
 # ---------------------------------------------------------------------------
 # Model-level queries (rich ModelInfo)
 # ---------------------------------------------------------------------------
@@ -706,76 +624,3 @@ def get_model_info(
             return _parse_model_info(mid, mdata, mdev_id)
 
     return None
-
-
-def get_model_info_any_provider(model_id: str) -> Optional[ModelInfo]:
-    """Search all providers for a model by ID.
-
-    Useful when you have a full slug like "anthropic/claude-sonnet-4.6" or
-    a bare name and want to find it anywhere.  Checks Hermes-mapped providers
-    first, then falls back to all models.dev providers.
-    """
-    data = fetch_models_dev()
-
-    # Try Hermes-mapped providers first (more likely what the user wants)
-    for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        pdata = data.get(mdev_id)
-        if not isinstance(pdata, dict):
-            continue
-        models = pdata.get("models", {})
-        if not isinstance(models, dict):
-            continue
-
-        raw = models.get(model_id)
-        if isinstance(raw, dict):
-            return _parse_model_info(model_id, raw, mdev_id)
-
-        # Case-insensitive
-        model_lower = model_id.lower()
-        for mid, mdata in models.items():
-            if mid.lower() == model_lower and isinstance(mdata, dict):
-                return _parse_model_info(mid, mdata, mdev_id)
-
-    # Fall back to ALL providers
-    for pid, pdata in data.items():
-        if pid in _get_reverse_mapping():
-            continue  # already checked
-        if not isinstance(pdata, dict):
-            continue
-        models = pdata.get("models", {})
-        if not isinstance(models, dict):
-            continue
-
-        raw = models.get(model_id)
-        if isinstance(raw, dict):
-            return _parse_model_info(model_id, raw, pid)
-
-    return None
-
-
-def list_provider_model_infos(provider_id: str) -> List[ModelInfo]:
-    """Return all models for a provider as ModelInfo objects.
-
-    Filters out deprecated models by default.
-    """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
-
-    data = fetch_models_dev()
-    pdata = data.get(mdev_id)
-    if not isinstance(pdata, dict):
-        return []
-
-    models = pdata.get("models", {})
-    if not isinstance(models, dict):
-        return []
-
-    result: List[ModelInfo] = []
-    for mid, mdata in models.items():
-        if not isinstance(mdata, dict):
-            continue
-        status = mdata.get("status", "")
-        if status == "deprecated":
-            continue
-        result.append(_parse_model_info(mid, mdata, mdev_id))
-
-    return result

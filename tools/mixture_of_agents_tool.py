@@ -416,29 +416,6 @@ def check_moa_requirements() -> bool:
     return check_openrouter_api_key()
 
 
-def get_debug_session_info() -> Dict[str, Any]:
-    """
-    Get information about the current debug session.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing debug session information
-    """
-    return _debug.get_session_info()
-
-
-def get_available_models() -> Dict[str, List[str]]:
-    """
-    Get information about available models for MoA processing.
-    
-    Returns:
-        Dict[str, List[str]]: Dictionary with reference and aggregator models
-    """
-    return {
-        "reference_models": REFERENCE_MODELS,
-        "aggregator_models": [AGGREGATOR_MODEL],
-        "supported_models": REFERENCE_MODELS + [AGGREGATOR_MODEL]
-    }
-
 
 def get_moa_configuration() -> Dict[str, Any]:
     """

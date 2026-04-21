@@ -160,7 +160,9 @@ class TestExchangeAuthCode:
         assert flow.state == "saved-state"
         assert flow.code_verifier == "saved-verifier"
         assert flow.fetch_token_calls == [{"code": "4/test-auth-code"}]
-        assert json.loads(setup_module.TOKEN_PATH.read_text())["token"] == "access-token"
+        saved = json.loads(setup_module.TOKEN_PATH.read_text())
+        assert saved["token"] == "access-token"
+        assert saved["type"] == "authorized_user"
         assert not setup_module.PENDING_AUTH_PATH.exists()
 
     def test_extracts_code_from_redirect_url_and_checks_state(self, setup_module):
@@ -211,14 +213,15 @@ class TestExchangeAuthCode:
         assert setup_module.PENDING_AUTH_PATH.exists()
         assert not setup_module.TOKEN_PATH.exists()
 
-    def test_refuses_to_overwrite_existing_token_with_narrower_scopes(self, setup_module, capsys):
+    def test_accepts_narrower_scopes_with_warning(self, setup_module, capsys):
+        """Partial scopes are accepted with a warning (gws migration: v2.0)."""
         setup_module.PENDING_AUTH_PATH.write_text(
             json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})
         )
-        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "existing-token", "scopes": setup_module.SCOPES}))
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "***", "scopes": setup_module.SCOPES}))
         FakeFlow.credentials_payload = {
-            "token": "narrow-token",
-            "refresh_token": "refresh-token",
+            "token": "***",
+            "refresh_token": "***",
             "token_uri": "https://oauth2.googleapis.com/token",
             "client_id": "client-id",
             "client_secret": "client-secret",
@@ -228,10 +231,12 @@ class TestExchangeAuthCode:
             ],
         }
 
-        with pytest.raises(SystemExit):
-            setup_module.exchange_auth_code("4/test-auth-code")
+        setup_module.exchange_auth_code("4/test-auth-code")
 
         out = capsys.readouterr().out
-        assert "refusing to save incomplete google workspace token" in out.lower()
-        assert json.loads(setup_module.TOKEN_PATH.read_text())["token"] == "existing-token"
-        assert setup_module.PENDING_AUTH_PATH.exists()
+        assert "warning" in out.lower()
+        assert "missing" in out.lower()
+        # Token is saved (partial scopes accepted)
+        assert setup_module.TOKEN_PATH.exists()
+        # Pending auth is cleaned up
+        assert not setup_module.PENDING_AUTH_PATH.exists()

@@ -54,7 +54,7 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
 
     assert models[: len(DEFAULT_CODEX_MODELS)] == DEFAULT_CODEX_MODELS
     assert "gpt-5.4" in models
-    assert "gpt-5.3-codex-spark" in models
+    assert "gpt-5.3-codex-spark" not in models
 
 
 def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
@@ -65,7 +65,7 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
-    assert models == ["gpt-5.2-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex", "gpt-5.3-codex-spark"]
+    assert models == ["gpt-5.2-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
 
 
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
@@ -149,6 +149,12 @@ class TestNormalizeModelForProvider:
         changed = cli._normalize_model_for_provider("openrouter")
         assert changed is False
         assert cli.model == "gpt-5.4"
+
+    def test_native_provider_prefix_is_stripped_before_agent_startup(self):
+        cli = _make_cli(model="zai/glm-5.1")
+        changed = cli._normalize_model_for_provider("zai")
+        assert changed is True
+        assert cli.model == "glm-5.1"
 
     def test_bare_codex_model_passes_through(self):
         cli = _make_cli(model="gpt-5.3-codex")

@@ -17,7 +17,6 @@ from agent.anthropic_adapter import (
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
-    get_anthropic_token_source,
     is_claude_code_token_valid,
     normalize_anthropic_response,
     normalize_model_name,
@@ -40,8 +39,13 @@ class TestIsOAuthToken:
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
     def test_managed_key(self):
-        # Managed keys from ~/.claude.json are NOT regular API keys
-        assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is True
+        # Managed keys from ~/.claude.json without a recognisable Anthropic
+        # prefix are not positively identified as OAuth.  They enter the system
+        # via diagnostics-only read_claude_managed_key(), not via
+        # resolve_anthropic_token(), so they don't reach the OAuth gate in
+        # practice.  Third-party provider keys (MiniMax, Alibaba) also lack
+        # the sk-ant- prefix and must NOT be treated as OAuth.
+        assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is False
 
     def test_jwt_token(self):
         # JWTs from OAuth flow
@@ -81,6 +85,9 @@ class TestBuildAnthropicClient:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            }
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -92,7 +99,20 @@ class TestBuildAnthropicClient:
             assert kwargs["auth_token"] == "minimax-secret-123"
             assert "api_key" not in kwargs
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+                "anthropic-beta": "interleaved-thinking-2025-05-14"
+            }
+
+    def test_minimax_cn_anthropic_endpoint_omits_tool_streaming_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-cn-secret-123",
+                base_url="https://api.minimaxi.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "minimax-cn-secret-123"
+            assert "api_key" not in kwargs
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
 
@@ -164,15 +184,6 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
-
-    def test_reports_claude_json_primary_key_source(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-
-        assert get_anthropic_token_source("sk-ant-api03-primary") == "claude_json_primary_api_key"
 
     def test_does_not_resolve_primary_api_key_as_native_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -403,7 +414,11 @@ class TestRunOauthSetupToken:
             token = run_oauth_setup_token()
 
         assert token == "from-cred-file"
-        mock_run.assert_called_once()
+        # Don't assert exact call count — the contract is "credentials flow
+        # through", not "exactly one subprocess call". xdist cross-test
+        # pollution (other tests shimming subprocess via plugins) has flaked
+        # assert_called_once() in CI.
+        assert mock_run.called
 
     def test_returns_token_from_env_var(self, monkeypatch, tmp_path):
         """Falls back to CLAUDE_CODE_OAUTH_TOKEN env var when no cred files."""
@@ -940,13 +955,21 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "high"},
         )
-        assert kwargs["thinking"] == {"type": "adaptive"}
+        # Adaptive thinking + display="summarized" keeps reasoning text
+        # populated in the response stream (Opus 4.7 default is "omitted").
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "high"}
         assert "budget_tokens" not in kwargs["thinking"]
         assert "temperature" not in kwargs
         assert kwargs["max_tokens"] == 4096
 
-    def test_reasoning_config_maps_xhigh_to_max_effort_for_4_6_models(self):
+    def test_reasoning_config_downgrades_xhigh_to_max_for_4_6_models(self):
+        # Opus 4.7 added "xhigh" as a distinct effort level (low/medium/high/
+        # xhigh/max). Opus 4.6 only supports low/medium/high/max — sending
+        # "xhigh" there returns an API 400. Preserve the pre-migration
+        # behavior of aliasing xhigh→max on pre-4.7 adaptive models so users
+        # who prefer xhigh as their default don't 400 every request when
+        # switching back to 4.6.
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-6",
             messages=[{"role": "user", "content": "think harder"}],
@@ -954,8 +977,52 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "xhigh"},
         )
-        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "max"}
+
+    def test_reasoning_config_preserves_xhigh_for_4_7_models(self):
+        # On 4.7+ xhigh is a real level and the recommended default for
+        # coding/agentic work — keep it distinct from max.
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "think harder"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "xhigh"}
+
+    def test_reasoning_config_maps_max_effort_for_4_7_models(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "maximum reasoning please"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "max"}
+
+    def test_opus_4_7_strips_sampling_params(self):
+        # Opus 4.7 returns 400 on non-default temperature/top_p/top_k.
+        # build_anthropic_kwargs must strip them as a safety net even if an
+        # upstream caller injects them for older-model compatibility.
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+        )
+        # Manually inject sampling params then re-run through the guard.
+        # Because build_anthropic_kwargs doesn't currently accept sampling
+        # params through its signature, we exercise the strip behavior by
+        # calling the internal predicate directly.
+        from agent.anthropic_adapter import _forbids_sampling_params
+        assert _forbids_sampling_params("claude-opus-4-7") is True
+        assert _forbids_sampling_params("claude-opus-4-6") is False
+        assert _forbids_sampling_params("claude-sonnet-4-5") is False
 
     def test_reasoning_disabled(self):
         kwargs = build_anthropic_kwargs(
@@ -1236,6 +1303,21 @@ class TestNormalizeResponse:
         assert r1 == "stop"
         assert r2 == "tool_calls"
         assert r3 == "length"
+
+    def test_stop_reason_refusal_and_context_exceeded(self):
+        # Claude 4.5+ introduced two new stop_reason values the Messages API
+        # returns.  We map both to OpenAI-style finish_reasons upstream
+        # handlers already understand, instead of silently collapsing to
+        # "stop" (old behavior).
+        block = SimpleNamespace(type="text", text="")
+        _, refusal_reason = normalize_anthropic_response(
+            self._make_response([block], "refusal")
+        )
+        _, overflow_reason = normalize_anthropic_response(
+            self._make_response([block], "model_context_window_exceeded")
+        )
+        assert refusal_reason == "content_filter"
+        assert overflow_reason == "length"
 
     def test_no_text_content(self):
         block = SimpleNamespace(

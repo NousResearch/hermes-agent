@@ -76,10 +76,15 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
-    # Telegram, WhatsApp & Signal can't enumerate chats -- pull from session history
-    for plat_name in ("telegram", "whatsapp", "signal", "email", "sms", "bluebubbles"):
-        if plat_name not in platforms:
-            platforms[plat_name] = _build_from_sessions(plat_name)
+    # Platforms that don't support direct channel enumeration get session-based
+    # discovery automatically.  Skip infrastructure entries that aren't messaging
+    # platforms — everything else falls through to _build_from_sessions().
+    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
+    for plat in Platform:
+        plat_name = plat.value
+        if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
+            continue
+        platforms[plat_name] = _build_from_sessions(plat_name)
 
     directory = {
         "updated_at": datetime.now().isoformat(),
@@ -95,7 +100,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
 
 def _build_discord(adapter) -> List[Dict[str, str]]:
-    """Enumerate all text channels the Discord bot can see."""
+    """Enumerate all text channels and forum channels the Discord bot can see."""
     channels = []
     client = getattr(adapter, "_client", None)
     if not client:
@@ -113,6 +118,15 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
                 "name": ch.name,
                 "guild": guild.name,
                 "type": "channel",
+            })
+        # Forum channels (type 15) — creating a message auto-spawns a thread post.
+        forums = getattr(guild, "forum_channels", None) or []
+        for ch in forums:
+            channels.append({
+                "id": str(ch.id),
+                "name": ch.name,
+                "guild": guild.name,
+                "type": "forum",
             })
         # Also include DM-capable users we've interacted with is not
         # feasible via guild enumeration; those come from sessions.
@@ -184,6 +198,15 @@ def load_directory() -> Dict[str, Any]:
             return json.load(f)
     except Exception:
         return {"updated_at": None, "platforms": {}}
+
+
+def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
+    """Return the channel ``type`` string (e.g. ``"channel"``, ``"forum"``) for *chat_id*, or *None* if unknown."""
+    directory = load_directory()
+    for ch in directory.get("platforms", {}).get(platform_name, []):
+        if ch.get("id") == chat_id:
+            return ch.get("type")
+    return None
 
 
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:

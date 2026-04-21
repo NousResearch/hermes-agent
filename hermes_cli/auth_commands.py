@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from getpass import getpass
 import math
+import sys
 import time
 from types import SimpleNamespace
 import uuid
@@ -32,29 +33,27 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"}
 
 
 def _get_custom_provider_names() -> list:
-    """Return list of (display_name, pool_key) tuples for custom_providers in config."""
+    """Return list of (display_name, pool_key, provider_key) tuples."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import get_compatible_custom_providers, load_config
 
         config = load_config()
     except Exception:
         return []
-    custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
-        return []
     result = []
-    for entry in custom_providers:
+    for entry in get_compatible_custom_providers(config):
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
         pool_key = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
-        result.append((name.strip(), pool_key))
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        result.append((name.strip(), pool_key, provider_key))
     return result
 
 
@@ -66,8 +65,10 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     # Direct match on 'custom:name' format
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
-    for display_name, pool_key in _get_custom_provider_names():
+    for display_name, pool_key, provider_key in _get_custom_provider_names():
         if _normalize_custom_pool_name(display_name) == normalized:
+            return pool_key
+        if provider_key and provider_key.strip().lower() == normalized:
             return pool_key
     return None
 
@@ -147,7 +148,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"} else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -160,7 +161,10 @@ def auth_add_command(args) -> None:
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:
-            label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            if sys.stdin.isatty():
+                label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            else:
+                label = default_label
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
@@ -213,22 +217,21 @@ def auth_add_command(args) -> None:
             ca_bundle=getattr(args, "ca_bundle", None),
             min_key_ttl_seconds=max(60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))),
         )
-        label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds.get("access_token", ""),
-            _oauth_default_label(provider, len(pool.entries()) + 1),
+        # Honor `--label <name>` so nous matches other providers' UX.  The
+        # helper embeds this into providers.nous so that label_from_token
+        # doesn't overwrite it on every subsequent load_pool("nous").
+        custom_label = (getattr(args, "label", None) or "").strip() or None
+        entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
+        shown_label = entry.label if entry is not None else label_from_token(
+            creds.get("access_token", ""), _oauth_default_label(provider, 1),
         )
-        entry = PooledCredential.from_dict(provider, {
-            **creds,
-            "label": label,
-            "auth_type": AUTH_TYPE_OAUTH,
-            "source": f"{SOURCE_MANUAL}:device_code",
-            "base_url": creds.get("inference_base_url"),
-        })
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        print(f'Saved {provider} OAuth device-code credentials: "{shown_label}"')
         return
 
     if provider == "openai-codex":
+        # Clear any existing suppression marker so a re-link after `hermes auth
+        # remove openai-codex` works without the new tokens being skipped.
+        auth_mod.unsuppress_credential_source(provider, "device_code")
         creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
@@ -245,6 +248,27 @@ def auth_add_command(args) -> None:
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
             last_refresh=creds.get("last_refresh"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "google-gemini-cli":
+        from agent.google_oauth import run_gemini_oauth_login_pure
+
+        creds = run_gemini_oauth_login_pure()
+        label = (getattr(args, "label", None) or "").strip() or (
+            creds.get("email") or _oauth_default_label(provider, len(pool.entries()) + 1)
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:google_pkce",
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
@@ -327,7 +351,34 @@ def auth_remove_command(args) -> None:
     # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
     # clear the underlying auth store / credential file so it doesn't get
     # re-seeded on the next load_pool() call.
-    elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
+    elif provider == "openai-codex" and (
+        removed.source == "device_code" or removed.source.endswith(":device_code")
+    ):
+        # Codex tokens live in TWO places: the Hermes auth store and
+        # ~/.codex/auth.json (the Codex CLI shared file).  On every refresh,
+        # refresh_codex_oauth_pure() writes to both.  So clearing only the
+        # Hermes auth store is not enough — _seed_from_singletons() will
+        # auto-import from ~/.codex/auth.json on the next load_pool() and
+        # the removal is instantly undone.  Mark the source as suppressed
+        # so auto-import is skipped; leave ~/.codex/auth.json untouched so
+        # the Codex CLI itself keeps working.
+        from hermes_cli.auth import (
+            _load_auth_store, _save_auth_store, _auth_store_lock,
+            suppress_credential_source,
+        )
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            providers_dict = auth_store.get("providers")
+            if isinstance(providers_dict, dict) and provider in providers_dict:
+                del providers_dict[provider]
+                _save_auth_store(auth_store)
+                print(f"Cleared {provider} OAuth tokens from auth store")
+        suppress_credential_source(provider, "device_code")
+        print("Suppressed openai-codex device_code source — it will not be re-seeded.")
+        print("Note: Codex CLI credentials still live in ~/.codex/auth.json")
+        print("Run `hermes auth add openai-codex` to re-enable if needed.")
+
+    elif removed.source == "device_code" and provider == "nous":
         from hermes_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
         )
@@ -347,8 +398,11 @@ def auth_remove_command(args) -> None:
             print("Cleared Hermes Anthropic OAuth credentials")
 
     elif removed.source == "claude_code" and provider == "anthropic":
-        print("Note: Claude Code credentials live in ~/.claude/.credentials.json")
-        print("      Remove them manually if you want to deauthorize Claude Code.")
+        from hermes_cli.auth import suppress_credential_source
+        suppress_credential_source(provider, "claude_code")
+        print("Suppressed claude_code credential — it will not be re-seeded.")
+        print("Note: Claude Code credentials still live in ~/.claude/.credentials.json")
+        print("Run `hermes auth add anthropic` to re-enable if needed.")
 
 
 def auth_reset_command(args) -> None:
@@ -365,6 +419,27 @@ def _interactive_auth() -> None:
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
+
+    # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
+    try:
+        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        if has_aws_credentials():
+            auth_source = resolve_aws_auth_env_var() or "unknown"
+            region = resolve_bedrock_region()
+            print(f"bedrock (AWS SDK credential chain):")
+            print(f"  Auth: {auth_source}")
+            print(f"  Region: {region}")
+            try:
+                import boto3
+                sts = boto3.client("sts", region_name=region)
+                identity = sts.get_caller_identity()
+                arn = identity.get("Arn", "unknown")
+                print(f"  Identity: {arn}")
+            except Exception:
+                print(f"  Identity: (could not resolve — boto3 STS call failed)")
+            print()
+    except ImportError:
+        pass  # boto3 or bedrock_adapter not available
     print()
 
     # Main menu
@@ -402,7 +477,7 @@ def _pick_provider(prompt: str = "Provider") -> str:
     known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
     custom_names = _get_custom_provider_names()
     if custom_names:
-        custom_display = [name for name, _key in custom_names]
+        custom_display = [name for name, _key, _provider_key in custom_names]
         print(f"\nKnown providers: {', '.join(known)}")
         print(f"Custom endpoints: {', '.join(custom_display)}")
     else:

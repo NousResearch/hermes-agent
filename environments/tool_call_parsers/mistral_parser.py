@@ -89,6 +89,8 @@ class MistralToolCallParser(ToolCallParser):
                         parsed = [parsed]
 
                     for tc in parsed:
+                        if "name" not in tc:
+                            continue
                         args = tc.get("arguments", {})
                         if isinstance(args, dict):
                             args = json.dumps(args, ensure_ascii=False)

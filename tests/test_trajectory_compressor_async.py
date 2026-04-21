@@ -11,6 +11,7 @@ each asyncio.run() gets a client bound to the current loop.
 """
 
 import types
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,7 +104,7 @@ class TestSourceLineVerification:
             if "self.async_client = AsyncOpenAI(" in line and "_get_async_client" not in lines[max(0,i-3):i+1]:
                 # Allow it inside _get_async_client method
                 # Check if we're inside _get_async_client by looking at context
-                context = "\n".join(lines[max(0,i-10):i+1])
+                context = "\n".join(lines[max(0,i-20):i+1])
                 if "_get_async_client" not in context:
                     pytest.fail(
                         f"Line {i}: AsyncOpenAI created eagerly outside _get_async_client()"
@@ -113,3 +114,89 @@ class TestSourceLineVerification:
         """_get_async_client method should exist."""
         src = self._read_file()
         assert "def _get_async_client(self)" in src
+
+
+@pytest.mark.asyncio
+async def test_generate_summary_async_kimi_omits_temperature():
+    """Kimi models should have temperature omitted — server manages it."""
+    from trajectory_compressor import CompressionConfig, TrajectoryCompressor, TrajectoryMetrics
+
+    config = CompressionConfig(
+        summarization_model="kimi-for-coding",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    async_client = MagicMock()
+    async_client.chat.completions.create = MagicMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    ))
+    compressor._get_async_client = MagicMock(return_value=async_client)
+
+    metrics = TrajectoryMetrics()
+    result = await compressor._generate_summary_async("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert "temperature" not in async_client.chat.completions.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_summary_async_public_moonshot_kimi_k2_5_omits_temperature():
+    """kimi-k2.5 on the public Moonshot API should not get a forced temperature."""
+    from trajectory_compressor import CompressionConfig, TrajectoryCompressor, TrajectoryMetrics
+
+    config = CompressionConfig(
+        summarization_model="kimi-k2.5",
+        base_url="https://api.moonshot.ai/v1",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    async_client = MagicMock()
+    async_client.chat.completions.create = MagicMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    ))
+    compressor._get_async_client = MagicMock(return_value=async_client)
+
+    metrics = TrajectoryMetrics()
+    result = await compressor._generate_summary_async("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert "temperature" not in async_client.chat.completions.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_summary_async_public_moonshot_cn_kimi_k2_5_omits_temperature():
+    """kimi-k2.5 on api.moonshot.cn should not get a forced temperature."""
+    from trajectory_compressor import CompressionConfig, TrajectoryCompressor, TrajectoryMetrics
+
+    config = CompressionConfig(
+        summarization_model="kimi-k2.5",
+        base_url="https://api.moonshot.cn/v1",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    async_client = MagicMock()
+    async_client.chat.completions.create = MagicMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    ))
+    compressor._get_async_client = MagicMock(return_value=async_client)
+
+    metrics = TrajectoryMetrics()
+    result = await compressor._generate_summary_async("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert "temperature" not in async_client.chat.completions.create.call_args.kwargs

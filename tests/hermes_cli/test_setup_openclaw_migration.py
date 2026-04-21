@@ -44,7 +44,7 @@ class TestOfferOpenclawMigration:
             assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
 
     def test_runs_migration_when_user_accepts(self, tmp_path):
-        """Should dynamically load the script and run the Migrator."""
+        """Should run dry-run preview first, then execute after confirmation."""
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
 
@@ -60,6 +60,7 @@ class TestOfferOpenclawMigration:
         fake_migrator = MagicMock()
         fake_migrator.migrate.return_value = {
             "summary": {"migrated": 3, "skipped": 1, "conflict": 0, "error": 0},
+            "items": [{"kind": "config", "status": "migrated", "destination": "/tmp/x"}],
             "output_dir": str(hermes_home / "migration"),
         }
         fake_mod.Migrator = MagicMock(return_value=fake_migrator)
@@ -70,6 +71,7 @@ class TestOfferOpenclawMigration:
         with (
             patch("hermes_cli.setup.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            # Both prompts answered Yes: preview offer + proceed confirmation
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
             patch("importlib.util.spec_from_file_location") as mock_spec_fn,
@@ -91,13 +93,75 @@ class TestOfferOpenclawMigration:
         fake_mod.resolve_selected_options.assert_called_once_with(
             None, None, preset="full"
         )
-        fake_mod.Migrator.assert_called_once()
-        call_kwargs = fake_mod.Migrator.call_args[1]
-        assert call_kwargs["execute"] is True
-        assert call_kwargs["overwrite"] is True
-        assert call_kwargs["migrate_secrets"] is True
-        assert call_kwargs["preset_name"] == "full"
-        fake_migrator.migrate.assert_called_once()
+        # Migrator called twice: once for dry-run preview, once for execution
+        assert fake_mod.Migrator.call_count == 2
+
+        # First call: dry-run preview (execute=False, overwrite=True to show all)
+        preview_kwargs = fake_mod.Migrator.call_args_list[0][1]
+        assert preview_kwargs["execute"] is False
+        assert preview_kwargs["overwrite"] is True
+        assert preview_kwargs["migrate_secrets"] is True
+        assert preview_kwargs["preset_name"] == "full"
+
+        # Second call: actual execution (execute=True, overwrite=False to preserve)
+        exec_kwargs = fake_mod.Migrator.call_args_list[1][1]
+        assert exec_kwargs["execute"] is True
+        assert exec_kwargs["overwrite"] is False
+        assert exec_kwargs["migrate_secrets"] is True
+        assert exec_kwargs["preset_name"] == "full"
+
+        # migrate() called twice (once per Migrator instance)
+        assert fake_migrator.migrate.call_count == 2
+
+    def test_user_declines_after_preview(self, tmp_path):
+        """Should return False when user sees preview but declines to proceed."""
+        openclaw_dir = tmp_path / ".openclaw"
+        openclaw_dir.mkdir()
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("agent:\n  max_turns: 90\n")
+
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value={"soul", "memory"})
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 3, "skipped": 0, "conflict": 0, "error": 0},
+            "items": [{"kind": "config", "status": "migrated", "destination": "/tmp/x"}],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
+
+        script = tmp_path / "openclaw_to_hermes.py"
+        script.write_text("# placeholder")
+
+        # First prompt (preview): Yes, Second prompt (proceed): No
+        prompt_responses = iter([True, False])
+
+        with (
+            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            patch.object(setup_mod, "prompt_yes_no", side_effect=prompt_responses),
+            patch.object(setup_mod, "get_config_path", return_value=config_path),
+            patch("importlib.util.spec_from_file_location") as mock_spec_fn,
+        ):
+            mock_spec = MagicMock()
+            mock_spec.loader = MagicMock()
+            mock_spec_fn.return_value = mock_spec
+
+            def exec_module(mod):
+                mod.resolve_selected_options = fake_mod.resolve_selected_options
+                mod.Migrator = fake_mod.Migrator
+
+            mock_spec.loader.exec_module = exec_module
+
+            result = setup_mod._offer_openclaw_migration(hermes_home)
+
+        assert result is False
+        # Only dry-run Migrator was created, not the execute one
+        assert fake_mod.Migrator.call_count == 1
+        preview_kwargs = fake_mod.Migrator.call_args[1]
+        assert preview_kwargs["execute"] is False
 
     def test_handles_migration_error_gracefully(self, tmp_path):
         """Should catch exceptions and return False."""
@@ -372,6 +436,112 @@ class TestGetSectionConfigSummary:
         with patch.object(setup_mod, "get_env_value", side_effect=env_side):
             result = setup_mod._get_section_config_summary({}, "tools")
         assert "Browser" in result
+
+    # Regression tests for issue #13025: the model / gateway summaries used
+    # stale, hardcoded env-var allowlists that drifted from the real setup +
+    # status flows.  Every case below would previously return ``None`` and
+    # force OpenClaw migration to re-run setup for an already-configured
+    # section.
+
+    def test_model_recognises_zai_glm_api_key(self):
+        """GLM_API_KEY (zai provider) should count as configured."""
+        def env_side(key):
+            return "glm-test-key" if key == "GLM_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(
+                {"model": {"provider": "zai", "default": "glm-5"}}, "model"
+            )
+        assert result == "glm-5"
+
+    def test_model_recognises_minimax_api_key(self):
+        """MINIMAX_API_KEY should count as configured."""
+        def env_side(key):
+            return "minimax-key" if key == "MINIMAX_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(
+                {"model": {"provider": "minimax", "default": "MiniMax-M1"}},
+                "model",
+            )
+        assert result == "MiniMax-M1"
+
+    def test_gateway_recognises_whatsapp_enabled(self):
+        """WhatsApp uses WHATSAPP_ENABLED (not WHATSAPP_PHONE_NUMBER_ID)."""
+        def env_side(key):
+            return "true" if key == "WHATSAPP_ENABLED" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+        assert result is not None
+        assert "WhatsApp" in result
+
+    def test_gateway_recognises_signal_http_url(self):
+        """Signal uses SIGNAL_HTTP_URL (not SIGNAL_ACCOUNT)."""
+        def env_side(key):
+            return "http://signal.local" if key == "SIGNAL_HTTP_URL" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+        assert result is not None
+        assert "Signal" in result
+
+    def test_model_ignores_bare_gh_token(self):
+        """GH_TOKEN is commonly set for `gh` / git and must NOT count as a
+        configured inference provider on its own — mirrors the copilot
+        exclusion in resolve_provider()."""
+        def env_side(key):
+            return "gho_xxx" if key == "GH_TOKEN" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "model")
+        assert result is None
+
+    def test_model_ignores_bare_github_token(self):
+        """GITHUB_TOKEN is commonly set in CI and must not trigger skip."""
+        def env_side(key):
+            return "ghp_xxx" if key == "GITHUB_TOKEN" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "model")
+        assert result is None
+
+    def test_model_ignores_claude_code_oauth_token(self):
+        """CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself and must not
+        trigger skip — mirrors the _IMPLICIT_ENV_VARS guard in
+        is_provider_explicitly_configured()."""
+        def env_side(key):
+            return "sk-ant-oat01-xxx" if key == "CLAUDE_CODE_OAUTH_TOKEN" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "model")
+        assert result is None
+
+    def test_model_copilot_recognised_when_explicitly_chosen(self):
+        """If the user picked copilot in config, GH_TOKEN *does* count —
+        only the auto-detect path excludes it."""
+        def env_side(key):
+            return "gho_xxx" if key == "GH_TOKEN" else ""
+
+        cfg = {"model": {"provider": "copilot", "default": "gpt-5"}}
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(cfg, "model")
+        assert result == "gpt-5"
+
+    def test_gateway_matches_platform_registry(self):
+        """Every platform in _GATEWAY_PLATFORMS should be recognised by its
+        own env-var sentinel — i.e. the summary must not drift from the
+        registry used by the setup checklist."""
+        for label, env_var, _fn in setup_mod._GATEWAY_PLATFORMS:
+            def env_side(key, _target=env_var):
+                return "x" if key == _target else ""
+            with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+                result = setup_mod._get_section_config_summary({}, "gateway")
+            expected = setup_mod._gateway_platform_short_label(label)
+            assert result is not None, f"{label} ({env_var}) not recognised"
+            assert expected in result, (
+                f"{label} ({env_var}) recognised but label missing from summary: {result!r}"
+            )
 
 
 class TestSkipConfiguredSection:

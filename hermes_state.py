@@ -383,10 +383,19 @@ class SessionDB:
         return session_id
 
     def end_session(self, session_id: str, end_reason: str) -> None:
-        """Mark a session as ended."""
+        """Mark a session as ended.
+
+        No-ops when the session is already ended. The first end_reason wins:
+        compression-split sessions must keep their ``end_reason = 'compression'``
+        record even if a later stale ``end_session()`` call (e.g. from a
+        desynced CLI session_id after ``/resume`` or ``/branch``) targets them
+        with a different reason. Use ``reopen_session()`` first if you
+        intentionally need to re-end a closed session with a new reason.
+        """
         def _do(conn):
             conn.execute(
-                "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+                "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                "WHERE id = ? AND ended_at IS NULL",
                 (time.time(), end_reason, session_id),
             )
         self._execute_write(_do)
@@ -517,72 +526,6 @@ class SessionDB:
                    (id, source, model, started_at)
                    VALUES (?, ?, ?, ?)""",
                 (session_id, source, model, time.time()),
-            )
-        self._execute_write(_do)
-
-    def set_token_counts(
-        self,
-        session_id: str,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        model: str = None,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
-        reasoning_tokens: int = 0,
-        estimated_cost_usd: Optional[float] = None,
-        actual_cost_usd: Optional[float] = None,
-        cost_status: Optional[str] = None,
-        cost_source: Optional[str] = None,
-        pricing_version: Optional[str] = None,
-        billing_provider: Optional[str] = None,
-        billing_base_url: Optional[str] = None,
-        billing_mode: Optional[str] = None,
-    ) -> None:
-        """Set token counters to absolute values (not increment).
-
-        Use this when the caller provides cumulative totals from a completed
-        conversation run (e.g. the gateway, where the cached agent's
-        session_prompt_tokens already reflects the running total).
-        """
-        def _do(conn):
-            conn.execute(
-                """UPDATE sessions SET
-                   input_tokens = ?,
-                   output_tokens = ?,
-                   cache_read_tokens = ?,
-                   cache_write_tokens = ?,
-                   reasoning_tokens = ?,
-                   estimated_cost_usd = ?,
-                   actual_cost_usd = CASE
-                       WHEN ? IS NULL THEN actual_cost_usd
-                       ELSE ?
-                   END,
-                   cost_status = COALESCE(?, cost_status),
-                   cost_source = COALESCE(?, cost_source),
-                   pricing_version = COALESCE(?, pricing_version),
-                   billing_provider = COALESCE(billing_provider, ?),
-                   billing_base_url = COALESCE(billing_base_url, ?),
-                   billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?)
-                   WHERE id = ?""",
-                (
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    cache_write_tokens,
-                    reasoning_tokens,
-                    estimated_cost_usd,
-                    actual_cost_usd,
-                    actual_cost_usd,
-                    cost_status,
-                    cost_source,
-                    pricing_version,
-                    billing_provider,
-                    billing_base_url,
-                    billing_mode,
-                    model,
-                    session_id,
-                ),
             )
         self._execute_write(_do)
 
@@ -780,6 +723,42 @@ class SessionDB:
 
         return f"{base} #{max_num + 1}"
 
+    def get_compression_tip(self, session_id: str) -> Optional[str]:
+        """Walk the compression-continuation chain forward and return the tip.
+
+        A compression continuation is a child session where:
+        1. The parent's ``end_reason = 'compression'``
+        2. The child was created AFTER the parent was ended (started_at >= ended_at)
+
+        The second condition distinguishes compression continuations from
+        delegate subagents or branch children, which can also have a
+        ``parent_session_id`` but were created while the parent was still live.
+
+        Returns the session_id of the latest continuation in the chain, or the
+        input ``session_id`` if it isn't part of a compression chain (or if the
+        input itself doesn't exist).
+        """
+        current = session_id
+        # Bound the walk defensively — compression chains this deep are
+        # pathological and shouldn't happen in practice. 100 = plenty.
+        for _ in range(100):
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE parent_session_id = ? "
+                    "  AND started_at >= ("
+                    "      SELECT ended_at FROM sessions "
+                    "      WHERE id = ? AND end_reason = 'compression'"
+                    "  ) "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (current, current),
+                )
+                row = cursor.fetchone()
+            if row is None:
+                return current
+            current = row["id"]
+        return current
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -787,6 +766,7 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
+        project_compression_tips: bool = True,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -798,6 +778,14 @@ class SessionDB:
 
         By default, child sessions (subagent runs, compression continuations)
         are excluded.  Pass ``include_children=True`` to include them.
+
+        With ``project_compression_tips=True`` (default), sessions that are
+        roots of compression chains are projected forward to their latest
+        continuation — one logical conversation = one list entry, showing the
+        live continuation's id/message_count/title/last_active. This prevents
+        compressed continuations from being invisible to users while keeping
+        delegate subagents and branches hidden. Pass ``False`` to return the
+        raw root rows (useful for admin/debug UIs).
         """
         where_clauses = []
         params = []
@@ -848,7 +836,76 @@ class SessionDB:
                 s["preview"] = ""
             sessions.append(s)
 
+        # Project compression roots forward to their tips. Each row whose
+        # end_reason is 'compression' has a continuation child; replace the
+        # surfaced fields (id, message_count, title, last_active, ended_at,
+        # end_reason, preview) with the tip's values so the list entry acts
+        # as the live conversation. Keep the root's started_at to preserve
+        # chronological ordering by original conversation start.
+        if project_compression_tips and not include_children:
+            projected = []
+            for s in sessions:
+                if s.get("end_reason") != "compression":
+                    projected.append(s)
+                    continue
+                tip_id = self.get_compression_tip(s["id"])
+                if tip_id == s["id"]:
+                    projected.append(s)
+                    continue
+                tip_row = self._get_session_rich_row(tip_id)
+                if not tip_row:
+                    projected.append(s)
+                    continue
+                # Preserve the root's started_at for stable sort order, but
+                # surface the tip's identity and activity data.
+                merged = dict(s)
+                for key in (
+                    "id", "ended_at", "end_reason", "message_count",
+                    "tool_call_count", "title", "last_active", "preview",
+                    "model", "system_prompt",
+                ):
+                    if key in tip_row:
+                        merged[key] = tip_row[key]
+                merged["_lineage_root_id"] = s["id"]
+                projected.append(merged)
+            sessions = projected
+
         return sessions
+
+    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single session with the same enriched columns as
+        ``list_sessions_rich`` (preview + last_active). Returns None if the
+        session doesn't exist.
+        """
+        query = """
+            SELECT s.*,
+                COALESCE(
+                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                     FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                     ORDER BY m.timestamp, m.id LIMIT 1),
+                    ''
+                ) AS _preview_raw,
+                COALESCE(
+                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                    s.started_at
+                ) AS last_active
+            FROM sessions s
+            WHERE s.id = ?
+        """
+        with self._lock:
+            cursor = self._conn.execute(query, (session_id,))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        s = dict(row)
+        raw = s.pop("_preview_raw", "").strip()
+        if raw:
+            text = raw[:60]
+            s["preview"] = text + ("..." if len(raw) > 60 else "")
+        else:
+            s["preview"] = ""
+        return s
 
     # =========================================================================
     # Message storage
@@ -944,7 +1001,8 @@ class SessionDB:
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
+                    msg["tool_calls"] = []
             result.append(msg)
         return result
 
@@ -972,7 +1030,8 @@ class SessionDB:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
+                    msg["tool_calls"] = []
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -983,12 +1042,14 @@ class SessionDB:
                     try:
                         msg["reasoning_details"] = json.loads(row["reasoning_details"])
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        logger.warning("Failed to deserialize reasoning_details, falling back to None")
+                        msg["reasoning_details"] = None
                 if row["codex_reasoning_items"]:
                     try:
                         msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
+                        msg["codex_reasoning_items"] = None
             messages.append(msg)
         return messages
 
@@ -1048,6 +1109,22 @@ class SessionDB:
             sanitized = sanitized.replace(f"\x00Q{i}\x00", quoted)
 
         return sanitized.strip()
+
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        """Check if text contains CJK (Chinese, Japanese, Korean) characters."""
+        for ch in text:
+            cp = ord(ch)
+            if (0x4E00 <= cp <= 0x9FFF or    # CJK Unified Ideographs
+                0x3400 <= cp <= 0x4DBF or    # CJK Extension A
+                0x20000 <= cp <= 0x2A6DF or  # CJK Extension B
+                0x3000 <= cp <= 0x303F or    # CJK Symbols
+                0x3040 <= cp <= 0x309F or    # Hiragana
+                0x30A0 <= cp <= 0x30FF or    # Katakana
+                0xAC00 <= cp <= 0xD7AF):     # Hangul Syllables
+                return True
+        return False
 
     def search_messages(
         self,
@@ -1124,8 +1201,47 @@ class SessionDB:
                 cursor = self._conn.execute(sql, params)
             except sqlite3.OperationalError:
                 # FTS5 query syntax error despite sanitization — return empty
-                return []
-            matches = [dict(row) for row in cursor.fetchall()]
+                # unless query contains CJK (fall back to LIKE below)
+                if not self._contains_cjk(query):
+                    return []
+                matches = []
+            else:
+                matches = [dict(row) for row in cursor.fetchall()]
+
+        # LIKE fallback for CJK queries: FTS5 default tokenizer splits CJK
+        # characters individually, causing multi-character queries to fail.
+        if not matches and self._contains_cjk(query):
+            raw_query = query.strip('"').strip()
+            like_where = ["m.content LIKE ?"]
+            like_params: list = [f"%{raw_query}%"]
+            if source_filter is not None:
+                like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+                like_params.extend(source_filter)
+            if exclude_sources is not None:
+                like_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+                like_params.extend(exclude_sources)
+            if role_filter:
+                like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+                like_params.extend(role_filter)
+            like_sql = f"""
+                SELECT m.id, m.session_id, m.role,
+                       substr(m.content,
+                              max(1, instr(m.content, ?) - 40),
+                              120) AS snippet,
+                       m.content, m.timestamp, m.tool_name,
+                       s.source, s.model, s.started_at AS session_started
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE {' AND '.join(like_where)}
+                ORDER BY m.timestamp DESC
+                LIMIT ? OFFSET ?
+            """
+            like_params.extend([limit, offset])
+            # instr() parameter goes first in the bound list
+            like_params = [raw_query] + like_params
+            with self._lock:
+                like_cursor = self._conn.execute(like_sql, like_params)
+                matches = [dict(row) for row in like_cursor.fetchall()]
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
@@ -1133,10 +1249,37 @@ class SessionDB:
             try:
                 with self._lock:
                     ctx_cursor = self._conn.execute(
-                        """SELECT role, content FROM messages
-                           WHERE session_id = ? AND id >= ? - 1 AND id <= ? + 1
-                           ORDER BY id""",
-                        (match["session_id"], match["id"], match["id"]),
+                        """WITH target AS (
+                               SELECT session_id, timestamp, id
+                               FROM messages
+                               WHERE id = ?
+                           )
+                           SELECT role, content
+                           FROM (
+                               SELECT m.id, m.timestamp, m.role, m.content
+                               FROM messages m
+                               JOIN target t ON t.session_id = m.session_id
+                               WHERE (m.timestamp < t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
+                               ORDER BY m.timestamp DESC, m.id DESC
+                               LIMIT 1
+                           )
+                           UNION ALL
+                           SELECT role, content
+                           FROM messages
+                           WHERE id = ?
+                           UNION ALL
+                           SELECT role, content
+                           FROM (
+                               SELECT m.id, m.timestamp, m.role, m.content
+                               FROM messages m
+                               JOIN target t ON t.session_id = m.session_id
+                               WHERE (m.timestamp > t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
+                               ORDER BY m.timestamp ASC, m.id ASC
+                               LIMIT 1
+                           )""",
+                        (match["id"], match["id"]),
                     )
                     context_msgs = [
                         {"role": r["role"], "content": (r["content"] or "")[:200]}
@@ -1235,10 +1378,10 @@ class SessionDB:
         self._execute_write(_do)
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session, its child sessions, and all their messages.
+        """Delete a session and all its messages.
 
-        Child sessions (subagent runs, compression continuations) are deleted
-        first to satisfy the ``parent_session_id`` foreign key constraint.
+        Child sessions are orphaned (parent_session_id set to NULL) rather
+        than cascade-deleted, so they remain accessible independently.
         Returns True if the session was found and deleted.
         """
         def _do(conn):
@@ -1247,15 +1390,12 @@ class SessionDB:
             )
             if cursor.fetchone()[0] == 0:
                 return False
-            # Delete child sessions first (FK constraint)
-            child_ids = [r[0] for r in conn.execute(
-                "SELECT id FROM sessions WHERE parent_session_id = ?",
+            # Orphan child sessions so FK constraint is satisfied
+            conn.execute(
+                "UPDATE sessions SET parent_session_id = NULL "
+                "WHERE parent_session_id = ?",
                 (session_id,),
-            ).fetchall()]
-            for cid in child_ids:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
-            # Delete the session itself
+            )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
@@ -1264,9 +1404,9 @@ class SessionDB:
     def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
         """Delete sessions older than N days. Returns count of deleted sessions.
 
-        Only prunes ended sessions (not active ones).  Child sessions whose
-        parents are being pruned are deleted first to satisfy the
-        ``parent_session_id`` foreign key constraint.
+        Only prunes ended sessions (not active ones).  Child sessions outside
+        the prune window are orphaned (parent_session_id set to NULL) rather
+        than cascade-deleted.
         """
         cutoff = time.time() - (older_than_days * 86400)
 
@@ -1284,17 +1424,16 @@ class SessionDB:
                 )
             session_ids = set(row["id"] for row in cursor.fetchall())
 
-            # Delete children first whose parents are in the prune set
-            # (avoids FK constraint errors)
-            for sid in list(session_ids):
-                child_ids = [r[0] for r in conn.execute(
-                    "SELECT id FROM sessions WHERE parent_session_id = ?",
-                    (sid,),
-                ).fetchall()]
-                for cid in child_ids:
-                    conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
-                    conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
-                    session_ids.discard(cid)  # don't double-delete
+            if not session_ids:
+                return 0
+
+            # Orphan any sessions whose parent is about to be deleted
+            placeholders = ",".join("?" * len(session_ids))
+            conn.execute(
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({placeholders})",
+                list(session_ids),
+            )
 
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))

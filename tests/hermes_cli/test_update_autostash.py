@@ -213,8 +213,12 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
     assert "git stash drop stash@{0}" in out
 
 
-def test_restore_stashed_changes_prompts_before_reset_on_conflict(monkeypatch, tmp_path, capsys):
-    """When conflicts occur interactively, user is prompted before reset."""
+def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path, capsys):
+    """Conflicts always auto-reset (no prompt) and return False, even interactively.
+
+    Leaving conflict markers in source files makes hermes unrunnable (SyntaxError).
+    The stash is preserved for manual recovery; cmd_update continues normally.
+    """
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -230,43 +234,17 @@ def test_restore_stashed_changes_prompts_before_reset_on_conflict(monkeypatch, t
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
     monkeypatch.setattr("builtins.input", lambda: "y")
 
-    with pytest.raises(SystemExit, match="1"):
-        hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+    result = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
 
+    assert result is False
     out = capsys.readouterr().out
     assert "Conflicted files:" in out
     assert "hermes_cli/main.py" in out
     assert "stashed changes are preserved" in out
-    assert "Reset working tree to clean state" in out
     assert "Working tree reset to clean state" in out
+    assert "git stash apply abc123" in out
     reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
     assert len(reset_calls) == 1
-
-
-def test_restore_stashed_changes_user_declines_reset(monkeypatch, tmp_path, capsys):
-    """When user declines reset, working tree is left as-is."""
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        if cmd[1:3] == ["stash", "apply"]:
-            return SimpleNamespace(stdout="", stderr="conflict\n", returncode=1)
-        if cmd[1:3] == ["diff", "--name-only"]:
-            return SimpleNamespace(stdout="cli.py\n", stderr="", returncode=0)
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
-    # First input: "y" to restore, second input: "n" to decline reset
-    inputs = iter(["y", "n"])
-    monkeypatch.setattr("builtins.input", lambda: next(inputs))
-
-    with pytest.raises(SystemExit, match="1"):
-        hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
-
-    out = capsys.readouterr().out
-    assert "left as-is" in out
-    reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
-    assert len(reset_calls) == 0
 
 
 def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_path, capsys):

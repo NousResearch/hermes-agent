@@ -18,11 +18,11 @@ import json
 import logging
 import os
 import re
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -96,10 +96,8 @@ class MattermostAdapter(BasePlatformAdapter):
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
 
-        # Dedup cache: post_id → timestamp (prevent reprocessing)
-        self._seen_posts: Dict[str, float] = {}
-        self._SEEN_MAX = 2000
-        self._SEEN_TTL = 300  # 5 minutes
+        # Dedup cache (prevent reprocessing)
+        self._dedup = MessageDeduplicator()
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -306,7 +304,7 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
     ) -> SendResult:
         """Edit an existing post."""
         formatted = self.format_message(content)
@@ -412,7 +410,6 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
-        import asyncio
         import aiohttp
 
         last_exc = None
@@ -604,10 +601,8 @@ class MattermostAdapter(BasePlatformAdapter):
         post_id = post.get("id", "")
 
         # Dedup.
-        self._prune_seen()
-        if post_id in self._seen_posts:
+        if self._dedup.is_duplicate(post_id):
             return
-        self._seen_posts[post_id] = time.time()
 
         # Build message event.
         channel_id = post.get("channel_id", "")
@@ -722,6 +717,12 @@ class MattermostAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
+        # Per-channel ephemeral prompt
+        from gateway.platforms.base import resolve_channel_prompt
+        _channel_prompt = resolve_channel_prompt(
+            self.config.extra, channel_id, None,
+        )
+
         msg_event = MessageEvent(
             text=message_text,
             message_type=msg_type,
@@ -730,17 +731,9 @@ class MattermostAdapter(BasePlatformAdapter):
             message_id=post_id,
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
+            channel_prompt=_channel_prompt,
         )
 
         await self.handle_message(msg_event)
 
-    def _prune_seen(self) -> None:
-        """Remove expired entries from the dedup cache."""
-        if len(self._seen_posts) < self._SEEN_MAX:
-            return
-        now = time.time()
-        self._seen_posts = {
-            pid: ts
-            for pid, ts in self._seen_posts.items()
-            if now - ts < self._SEEN_TTL
-        }
+

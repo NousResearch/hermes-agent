@@ -30,7 +30,7 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 /cron add 30m "Remind me to check the build"
 /cron add "every 2h" "Check server status"
 /cron add "every 1h" "Summarize new feed items" --skill blogwatcher
-/cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill find-nearby
+/cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill maps
 ```
 
 ### From the standalone CLI
@@ -40,7 +40,7 @@ hermes cron create "every 2h" "Check server status"
 hermes cron create "every 1h" "Summarize new feed items" --skill blogwatcher
 hermes cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
-  --skill find-nearby \
+  --skill maps \
   --name "Skill combo"
 ```
 
@@ -77,7 +77,7 @@ Skills are loaded in order. The prompt becomes the task instruction layered on t
 ```python
 cronjob(
     action="create",
-    skills=["blogwatcher", "find-nearby"],
+    skills=["blogwatcher", "maps"],
     prompt="Look for new local events and interesting nearby places, then combine them into one short brief.",
     schedule="every 6h",
     name="Local brief",
@@ -95,7 +95,7 @@ You do not need to delete and recreate jobs just to change them.
 ```bash
 /cron edit <job_id> --schedule "every 4h"
 /cron edit <job_id> --prompt "Use the revised task"
-/cron edit <job_id> --skill blogwatcher --skill find-nearby
+/cron edit <job_id> --skill blogwatcher --skill maps
 /cron edit <job_id> --remove-skill blogwatcher
 /cron edit <job_id> --clear-skills
 ```
@@ -105,8 +105,8 @@ You do not need to delete and recreate jobs just to change them.
 ```bash
 hermes cron edit <job_id> --schedule "every 4h"
 hermes cron edit <job_id> --prompt "Use the revised task"
-hermes cron edit <job_id> --skill blogwatcher --skill find-nearby
-hermes cron edit <job_id> --add-skill find-nearby
+hermes cron edit <job_id> --skill blogwatcher --skill maps
+hermes cron edit <job_id> --add-skill maps
 hermes cron edit <job_id> --remove-skill blogwatcher
 hermes cron edit <job_id> --clear-skills
 ```
@@ -202,6 +202,9 @@ When scheduling jobs, you specify where the output goes:
 | `"dingtalk"` | DingTalk | |
 | `"feishu"` | Feishu/Lark | |
 | `"wecom"` | WeCom | |
+| `"weixin"` | Weixin (WeChat) | |
+| `"bluebubbles"` | BlueBubbles (iMessage) | |
+| `"qqbot"` | QQ Bot (Tencent QQ) | |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
 
@@ -238,6 +241,27 @@ Otherwise, report the issue.
 ```
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced.
+
+## Script timeout
+
+Pre-run scripts (attached via the `script` parameter) have a default timeout of 120 seconds. If your scripts need longer — for example, to include randomized delays that avoid bot-like timing patterns — you can increase this:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  script_timeout_seconds: 300   # 5 minutes
+```
+
+Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 120s default.
+
+## Provider recovery
+
+Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:
+
+- **Fall back to an alternate provider** if you have `fallback_providers` (or the legacy `fallback_model`) configured in `config.yaml`
+- **Rotate to the next credential** in your [credential pool](/docs/user-guide/configuration#credential-pool-strategies) for the same provider
+
+This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
 
 ## Schedule formats
 

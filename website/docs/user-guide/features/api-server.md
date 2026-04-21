@@ -83,9 +83,30 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 }
 ```
 
-**Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. When streaming is enabled in config, tokens are emitted live as the LLM generates them. When disabled, the full response is sent as a single SSE chunk.
+**Inline image input:** user messages may send `content` as an array of `text` and `image_url` parts. Both remote `http(s)` URLs and `data:image/...` URLs are supported:
 
-**Tool progress in streams**: When the agent calls tools during a streaming request, brief progress indicators are injected into the content stream as the tools start executing (e.g. `` `💻 pwd` ``, `` `🔍 Python docs` ``). These appear as inline markdown before the agent's response text, giving frontends like Open WebUI real-time visibility into tool execution.
+```json
+{
+  "model": "hermes-agent",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}}
+      ]
+    }
+  ]
+}
+```
+
+Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+
+**Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
+
+**Tool progress in streams**:
+- **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
+- **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
 ### POST /v1/responses
 
@@ -117,6 +138,25 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
 }
 ```
 
+**Inline image input:** `input[].content` can contain `input_text` and `input_image` parts. Both remote URLs and `data:image/...` URLs are supported:
+
+```json
+{
+  "model": "hermes-agent",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "Describe this screenshot."},
+        {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0K..."}
+      ]
+    }
+  ]
+}
+```
+
+Uploaded files (`input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+
 #### Multi-turn with previous_response_id
 
 Chain responses to maintain full context (including tool calls) across turns:
@@ -128,7 +168,7 @@ Chain responses to maintain full context (including tool calls) across turns:
 }
 ```
 
-The server reconstructs the full conversation from the stored response chain — all previous tool calls and results are preserved.
+The server reconstructs the full conversation from the stored response chain — all previous tool calls and results are preserved. Chained requests also share the same session, so multi-turn conversations appear as a single entry in the dashboard and session history.
 
 #### Named conversations
 
@@ -152,11 +192,63 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Lists `hermes-agent` as an available model. Required by most frontends for model discovery.
+Lists the agent as an available model. The advertised model name defaults to the [profile](/docs/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.
+
+### GET /health/detailed
+
+Extended health check that also reports active sessions, running agents, and resource usage. Useful for monitoring/observability tooling.
+
+## Runs API (streaming-friendly alternative)
+
+In addition to `/v1/chat/completions` and `/v1/responses`, the server exposes a **runs** API for long-form sessions where the client wants to subscribe to progress events instead of managing streaming themselves.
+
+### POST /v1/runs
+
+Create a new agent run. Returns a `run_id` that can be used to subscribe to progress events.
+
+### GET /v1/runs/\{run_id\}/events
+
+Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+
+## Jobs API (background scheduled work)
+
+The server exposes a lightweight jobs CRUD surface for managing scheduled / background agent runs from a remote client. All endpoints are gated behind the same bearer auth.
+
+### GET /api/jobs
+
+List all scheduled jobs.
+
+### POST /api/jobs
+
+Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target.
+
+### GET /api/jobs/\{job_id\}
+
+Fetch a single job's definition and last-run state.
+
+### PATCH /api/jobs/\{job_id\}
+
+Update fields on an existing job (prompt, schedule, etc.). Partial updates are merged.
+
+### DELETE /api/jobs/\{job_id\}
+
+Remove a job. Also cancels any in-flight run.
+
+### POST /api/jobs/\{job_id\}/pause
+
+Pause a job without deleting it. Next-scheduled-run timestamps are suspended until resumed.
+
+### POST /api/jobs/\{job_id\}/resume
+
+Resume a previously paused job.
+
+### POST /api/jobs/\{job_id\}/run
+
+Trigger the job to run immediately, out of schedule.
 
 ## System Prompt Handling
 
@@ -177,7 +269,7 @@ Authorization: Bearer ***
 Configure the key via `API_SERVER_KEY` env var. If you need a browser to call Hermes directly, also set `API_SERVER_CORS_ORIGINS` to an explicit allowlist.
 
 :::warning Security
-The API server gives full access to hermes-agent's toolset, **including terminal commands**. If you change the bind address to `0.0.0.0` (network-accessible), **always set `API_SERVER_KEY`** and keep `API_SERVER_CORS_ORIGINS` narrow — without that, remote callers may be able to execute arbitrary commands on your machine.
+The API server gives full access to hermes-agent's toolset, **including terminal commands**. When binding to a non-loopback address like `0.0.0.0`, `API_SERVER_KEY` is **required**. Also keep `API_SERVER_CORS_ORIGINS` narrow to control browser access.
 
 The default bind address (`127.0.0.1`) is for local-only use. Browser access is disabled by default; enable it only for explicit trusted origins.
 :::
@@ -193,6 +285,7 @@ The default bind address (`127.0.0.1`) is for local-only use. Browser access is 
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address (localhost only by default) |
 | `API_SERVER_KEY` | _(none)_ | Bearer token for auth |
 | `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
+| `API_SERVER_MODEL_NAME` | _(profile name)_ | Model name on `/v1/models`. Defaults to profile name, or `hermes-agent` for default profile. |
 
 ### config.yaml
 
@@ -242,8 +335,44 @@ Any frontend that supports the OpenAI API format works. Tested/documented integr
 | OpenAI Python SDK | — | `OpenAI(base_url="http://localhost:8642/v1")` |
 | curl | — | Direct HTTP requests |
 
+## Multi-User Setup with Profiles
+
+To give multiple users their own isolated Hermes instance (separate config, memory, skills), use [profiles](/docs/user-guide/profiles):
+
+```bash
+# Create a profile per user
+hermes profile create alice
+hermes profile create bob
+
+# Configure each profile's API server on a different port
+hermes -p alice config set API_SERVER_ENABLED true
+hermes -p alice config set API_SERVER_PORT 8643
+hermes -p alice config set API_SERVER_KEY alice-secret
+
+hermes -p bob config set API_SERVER_ENABLED true
+hermes -p bob config set API_SERVER_PORT 8644
+hermes -p bob config set API_SERVER_KEY bob-secret
+
+# Start each profile's gateway
+hermes -p alice gateway &
+hermes -p bob gateway &
+```
+
+Each profile's API server automatically advertises the profile name as the model ID:
+
+- `http://localhost:8643/v1/models` → model `alice`
+- `http://localhost:8644/v1/models` → model `bob`
+
+In Open WebUI, add each as a separate connection. The model dropdown shows `alice` and `bob` as distinct models, each backed by a fully isolated Hermes instance. See the [Open WebUI guide](/docs/user-guide/messaging/open-webui#multi-user-setup-with-profiles) for details.
+
 ## Limitations
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
-- **No file upload** — vision/document analysis via uploaded files is not yet supported through the API.
+- **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
 - **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.
+
+## Proxy Mode
+
+The API server also serves as the backend for **gateway proxy mode**. When another Hermes gateway instance is configured with `GATEWAY_PROXY_URL` pointing at this API server, it forwards all messages here instead of running its own agent. This enables split deployments — for example, a Docker container handling Matrix E2EE that relays to a host-side agent.
+
+See [Matrix Proxy Mode](/docs/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos) for the full setup guide.

@@ -49,6 +49,25 @@ class TestCliSkinPromptIntegration:
         set_active_skin("ares")
         assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ❯ ")]
 
+    def test_narrow_terminals_compact_voice_prompt_fragments(self):
+        cli = _make_cli_stub()
+        cli._voice_mode = True
+
+        with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=50):
+            assert cli._get_tui_prompt_fragments() == [("class:voice-prompt", "🎤 ")]
+
+    def test_narrow_terminals_compact_voice_recording_prompt_fragments(self):
+        cli = _make_cli_stub()
+        cli._voice_recording = True
+        cli._voice_recorder = SimpleNamespace(current_rms=3000)
+
+        with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=50):
+            frags = cli._get_tui_prompt_fragments()
+
+        assert frags[0][0] == "class:voice-recording"
+        assert frags[0][1].startswith("●")
+        assert "❯" not in frags[0][1]
+
     def test_icon_only_skin_symbol_still_visible_in_special_states(self):
         cli = _make_cli_stub()
         cli._secret_state = {"response_queue": object()}

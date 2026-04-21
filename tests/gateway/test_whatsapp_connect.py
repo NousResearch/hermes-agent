@@ -211,6 +211,30 @@ class TestFileHandleClosedOnError:
         assert adapter._bridge_log_fh is None
 
 
+class TestConnectCleanup:
+    """Verify failure paths release the scoped session lock."""
+
+    @pytest.mark.asyncio
+    async def test_releases_lock_when_npm_install_fails(self):
+        adapter = _make_adapter()
+
+        def _path_exists(path_obj):
+            return not str(path_obj).endswith("node_modules")
+
+        install_result = MagicMock(returncode=1, stderr="install failed")
+
+        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
+             patch("subprocess.run", return_value=install_result), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock") as mock_release:
+            result = await adapter.connect()
+
+        assert result is False
+        mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
+        assert adapter._platform_lock_identity is None
+
+
 class TestBridgeRuntimeFailure:
     """Verify runtime bridge death is surfaced as a fatal adapter error."""
 
@@ -428,6 +452,33 @@ class TestKillPortProcess:
 
 class TestHttpSessionLifecycle:
     """Verify persistent aiohttp.ClientSession is created and cleaned up."""
+
+    @pytest.mark.asyncio
+    async def test_disconnect_uses_taskkill_tree_on_windows(self):
+        """Windows disconnect should target the bridge process tree, not just the parent PID."""
+        adapter = _make_adapter()
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.side_effect = [0]
+        adapter._bridge_process = mock_proc
+        adapter._poll_task = None
+        adapter._http_session = None
+        adapter._running = True
+        adapter._session_lock_identity = None
+
+        with patch("gateway.platforms.whatsapp._IS_WINDOWS", True), \
+             patch("gateway.platforms.whatsapp.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run, \
+             patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock):
+            await adapter.disconnect()
+
+        mock_run.assert_called_once_with(
+            ["taskkill", "/PID", "12345", "/T"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        mock_proc.terminate.assert_not_called()
+        mock_proc.kill.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_session_closed_on_disconnect(self):

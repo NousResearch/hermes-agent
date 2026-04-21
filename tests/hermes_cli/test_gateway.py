@@ -1,6 +1,5 @@
 """Tests for hermes_cli.gateway."""
 
-import signal
 from types import SimpleNamespace
 from unittest.mock import patch, call
 
@@ -10,6 +9,7 @@ import hermes_cli.gateway as gateway
 class TestSystemdLingerStatus:
     def test_reports_enabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setenv("USER", "alice")
         monkeypatch.setattr(
             gateway.subprocess,
@@ -22,6 +22,7 @@ class TestSystemdLingerStatus:
 
     def test_reports_disabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setenv("USER", "alice")
         monkeypatch.setattr(
             gateway.subprocess,
@@ -31,6 +32,81 @@ class TestSystemdLingerStatus:
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
 
         assert gateway.get_systemd_linger_status() == (False, "")
+
+    def test_reports_termux_as_not_supported(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_termux", lambda: True)
+
+        assert gateway.get_systemd_linger_status() == (None, "not supported in Termux")
+
+
+class TestContainerSystemdSupport:
+    def test_supports_systemd_services_in_container_with_user_manager(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway, "is_container", lambda: True)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(gateway, "_systemd_operational", lambda system=False: not system)
+
+        assert gateway.supports_systemd_services() is True
+
+    def test_supports_systemd_services_in_container_with_system_manager(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway, "is_container", lambda: True)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(gateway, "_systemd_operational", lambda system=False: system)
+
+        assert gateway.supports_systemd_services() is True
+
+    def test_supports_systemd_services_in_container_without_systemd(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway, "is_container", lambda: True)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(gateway, "_systemd_operational", lambda system=False: False)
+
+        assert gateway.supports_systemd_services() is False
+
+
+def test_gateway_install_in_container_with_operational_systemd_uses_systemd(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_managed", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(
+        gateway,
+        "systemd_install",
+        lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
+    )
+
+    args = SimpleNamespace(
+        gateway_command="install",
+        force=False,
+        system=False,
+        run_as_user=None,
+    )
+    gateway.gateway_command(args)
+
+    assert calls == [(False, False, None)]
+
+
+def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(system))
+
+    args = SimpleNamespace(gateway_command="start", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == [False]
 
 
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
@@ -173,6 +249,21 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
     assert calls == [(True, True, "alice")]
 
 
+def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["ps", "-A", "eww", "-o"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="ps failed")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway.find_gateway_pids() == [321]
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------
@@ -204,8 +295,7 @@ class TestWaitForGatewayExit:
         assert poll_count == 3
 
     def test_force_kills_after_grace_period(self, monkeypatch):
-        """When the process doesn't exit, SIGKILL the saved PID."""
-        import time as _time
+        """When the process doesn't exit, force-kill the saved PID."""
 
         # Simulate monotonic time advancing past force_after
         call_num = 0
@@ -217,8 +307,8 @@ class TestWaitForGatewayExit:
             return call_num * 2.0  # 2, 4, 6, 8, ...
 
         kills = []
-        def mock_kill(pid, sig):
-            kills.append((pid, sig))
+        def mock_terminate(pid, force=False):
+            kills.append((pid, force))
 
         # get_running_pid returns the PID until kill is sent, then None
         def mock_get_running_pid():
@@ -227,14 +317,13 @@ class TestWaitForGatewayExit:
         monkeypatch.setattr("time.monotonic", fake_monotonic)
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("gateway.status.get_running_pid", mock_get_running_pid)
-        monkeypatch.setattr("os.kill", mock_kill)
+        monkeypatch.setattr(gateway, "terminate_pid", mock_terminate)
 
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=5.0)
-        assert (42, signal.SIGKILL) in kills
+        assert (42, True) in kills
 
     def test_handles_process_already_gone_on_kill(self, monkeypatch):
-        """ProcessLookupError during SIGKILL is not fatal."""
-        import time as _time
+        """ProcessLookupError during force-kill is not fatal."""
 
         call_num = 0
         def fake_monotonic():
@@ -242,13 +331,24 @@ class TestWaitForGatewayExit:
             call_num += 1
             return call_num * 3.0  # Jump past force_after quickly
 
-        def mock_kill(pid, sig):
+        def mock_terminate(pid, force=False):
             raise ProcessLookupError
 
         monkeypatch.setattr("time.monotonic", fake_monotonic)
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 99)
-        monkeypatch.setattr("os.kill", mock_kill)
+        monkeypatch.setattr(gateway, "terminate_pid", mock_terminate)
 
         # Should not raise — ProcessLookupError means it's already gone.
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=2.0)
+
+    def test_kill_gateway_processes_force_uses_helper(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [11, 22])
+        monkeypatch.setattr(gateway, "terminate_pid", lambda pid, force=False: calls.append((pid, force)))
+
+        killed = gateway.kill_gateway_processes(force=True)
+
+        assert killed == 2
+        assert calls == [(11, True), (22, True)]

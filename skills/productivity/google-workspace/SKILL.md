@@ -1,14 +1,9 @@
 ---
 name: google-workspace
-description: Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration via Python. Uses OAuth2 with automatic token refresh. No external binaries needed — runs entirely with Google's Python client libraries in the Hermes venv.
+description: Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses Hermes-managed OAuth2 setup, prefers the Google Workspace CLI (`gws`) when available for broader API coverage, and falls back to the Python client libraries otherwise.
 version: 1.0.0
 author: Nous Research
 license: MIT
-required_credential_files:
-  - path: google_token.json
-    description: Google OAuth2 token (created by setup script)
-  - path: google_client_secret.json
-    description: Google OAuth2 client credentials (downloaded from Google Cloud Console)
 metadata:
   hermes:
     tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]
@@ -18,7 +13,7 @@ metadata:
 
 # Google Workspace
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs — all through Python scripts in this skill. No external binaries to install.
+Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
 
 ## References
 
@@ -27,7 +22,7 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — all through Python script
 ## Scripts
 
 - `scripts/setup.py` — OAuth2 setup (run once to authorize)
-- `scripts/google_api.py` — API wrapper CLI (agent uses this for all operations)
+- `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
 
 ## First-Time Setup
 
@@ -37,13 +32,7 @@ on CLI, Telegram, Discord, or any platform.
 Define a shorthand first:
 
 ```bash
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-GWORKSPACE_SKILL_DIR="$HERMES_HOME/skills/productivity/google-workspace"
-PYTHON_BIN="${HERMES_PYTHON:-python3}"
-if [ -x "$HERMES_HOME/hermes-agent/venv/bin/python" ]; then
-  PYTHON_BIN="$HERMES_HOME/hermes-agent/venv/bin/python"
-fi
-GSETUP="$PYTHON_BIN $GWORKSPACE_SKILL_DIR/scripts/setup.py"
+GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
 ```
 
 ### Step 0: Check if already set up
@@ -66,8 +55,15 @@ Calendar/Drive/Sheets/Docs?"**
   Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
   Load the himalaya skill and follow its setup instructions.
 
-- **Calendar, Drive, Sheets, Docs (or email + these)** → Continue with this
-  skill's OAuth setup below.
+- **Email + Calendar** → Continue with this skill, but use
+  `--services email,calendar` during auth so the consent screen only asks for
+  the scopes they actually need.
+
+- **Calendar/Drive/Sheets/Docs only** → Continue with this skill and use a
+  narrower `--services` set like `calendar,drive,sheets,docs`.
+
+- **Full Workspace access** → Continue with this skill and use the default
+  `all` service set.
 
 **Question 2: "Does your Google account use Advanced Protection (hardware
 security keys required to sign in)? If you're not sure, you probably don't
@@ -83,13 +79,23 @@ Tell the user:
 
 > You need a Google Cloud OAuth client. This is a one-time setup:
 >
-> 1. Go to https://console.cloud.google.com/apis/credentials
-> 2. Create a project (or use an existing one)
-> 3. Click "Enable APIs" and enable: Gmail API, Google Calendar API,
->    Google Drive API, Google Sheets API, Google Docs API, People API
-> 4. Go to Credentials → Create Credentials → OAuth 2.0 Client ID
-> 5. Application type: "Desktop app" → Create
-> 6. Click "Download JSON" and tell me the file path
+> 1. Create or select a project:
+>    https://console.cloud.google.com/projectselector2/home/dashboard
+> 2. Enable the required APIs from the API Library:
+>    https://console.cloud.google.com/apis/library
+>    Enable: Gmail API, Google Calendar API, Google Drive API,
+>    Google Sheets API, Google Docs API, People API
+> 3. Create the OAuth client here:
+>    https://console.cloud.google.com/apis/credentials
+>    Credentials → Create Credentials → OAuth 2.0 Client ID
+> 4. Application type: "Desktop app" → Create
+> 5. If the app is still in Testing, add the user's Google account as a test user here:
+>    https://console.cloud.google.com/auth/audience
+>    Audience → Test users → Add users
+> 6. Download the JSON file and tell me the file path
+>
+> Important Hermes CLI note: if the file path starts with `/`, do NOT send only the bare path as its own message in the CLI, because it can be mistaken for a slash command. Send it in a sentence instead, like:
+> `The JSON file path is: /home/user/Downloads/client_secret_....json`
 
 Once they provide the path:
 
@@ -97,18 +103,29 @@ Once they provide the path:
 $GSETUP --client-secret /path/to/client_secret.json
 ```
 
+If they paste the raw client ID / client secret values instead of a file path,
+write a valid Desktop OAuth JSON file for them yourself, save it somewhere
+explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
+`--client-secret` against that file.
+
 ### Step 3: Get authorization URL
 
+Use the service set chosen in Step 1. Examples:
+
 ```bash
-$GSETUP --auth-url
+$GSETUP --auth-url --services email,calendar --format json
+$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
+$GSETUP --auth-url --services all --format json
 ```
 
-This prints a URL. **Send the URL to the user** and tell them:
+This returns JSON with an `auth_url` field and also saves the exact URL to
+`~/.hermes/google_oauth_last_url.txt`.
 
-> Open this link in your browser, sign in with your Google account, and
-> authorize access. After authorizing, you'll be redirected to a page that
-> may show an error — that's expected. Copy the ENTIRE URL from your
-> browser's address bar and paste it back to me.
+Agent rules for this step:
+- Extract the `auth_url` field and send that exact URL to the user as a single line.
+- Tell the user that the browser will likely fail on `http://localhost:1` after approval, and that this is expected.
+- Tell them to copy the ENTIRE redirected URL from the browser address bar.
+- If the user gets `Error 403: access_denied`, send them directly to `https://console.cloud.google.com/auth/audience` to add themselves as a test user.
 
 ### Step 4: Exchange the code
 
@@ -118,8 +135,13 @@ pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:
 
 ```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
+$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
 ```
+
+If `--auth-code` fails because the code expired, was already used, or came from
+an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
+immediately send the new URL to the user and have them retry with the newest
+browser redirect only.
 
 ### Step 5: Verify
 
@@ -131,9 +153,9 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 
 ### Notes
 
-- Token is stored at `google_token.json` under the active profile's `HERMES_HOME` and auto-refreshes.
-- Pending OAuth session state/verifier are stored temporarily at `google_oauth_pending.json` under the active profile's `HERMES_HOME` until exchange completes.
-- Hermes now refuses to overwrite a full Google Workspace token with a narrower re-auth token missing Gmail scopes, so one profile's partial consent cannot silently break email actions later.
+- Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
+- Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
+- If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
 - To revoke: `$GSETUP --revoke`
 
 ## Usage
@@ -141,13 +163,7 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 All commands go through the API script. Set `GAPI` as a shorthand:
 
 ```bash
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-GWORKSPACE_SKILL_DIR="$HERMES_HOME/skills/productivity/google-workspace"
-PYTHON_BIN="${HERMES_PYTHON:-python3}"
-if [ -x "$HERMES_HOME/hermes-agent/venv/bin/python" ]; then
-  PYTHON_BIN="$HERMES_HOME/hermes-agent/venv/bin/python"
-fi
-GAPI="$PYTHON_BIN $GWORKSPACE_SKILL_DIR/scripts/google_api.py"
+GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
 ```
 
 ### Gmail
@@ -164,9 +180,11 @@ $GAPI gmail get MESSAGE_ID
 # Send
 $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
+$GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
 
 # Reply (automatically threads and sets In-Reply-To)
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
+$GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
 
 # Labels
 $GAPI gmail labels

@@ -8,8 +8,9 @@ Different LLM providers expect model identifiers in different formats:
   hyphens: ``claude-sonnet-4-6``.
 - **Copilot** expects bare names *with* dots preserved:
   ``claude-sonnet-4.6``.
-- **OpenCode Zen** follows the same dot-to-hyphen convention as
-  Anthropic: ``claude-sonnet-4-6``.
+- **OpenCode Zen** preserves dots for GPT/GLM/Gemini/Kimi/MiniMax-style
+  model IDs, but Claude still uses hyphenated native names like
+  ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
 - **DeepSeek** only accepts two model identifiers:
   ``deepseek-chat`` and ``deepseek-reasoner``.
@@ -50,6 +51,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
     "grok": "x-ai",
     "qwen": "qwen",
     "mimo": "xiaomi",
+    "trinity": "arcee-ai",
     "nemotron": "nvidia",
     "llama": "meta-llama",
     "step": "stepfun",
@@ -67,26 +69,34 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
 # Providers that want bare names with dots replaced by hyphens.
 _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
     "anthropic",
-    "opencode-zen",
 })
 
 # Providers that want bare names with dots preserved.
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
+    "openai-codex",
 })
 
-# Providers whose own naming is authoritative -- pass through unchanged.
-_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
+# Providers whose native naming is authoritative -- pass through unchanged.
+_AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
     "gemini",
+    "huggingface",
+})
+
+# Direct providers that accept bare native names but should repair a matching
+# provider/ prefix when users copy the aggregator form into config.yaml.
+_MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
     "kimi-coding",
+    "kimi-coding-cn",
     "minimax",
     "minimax-cn",
     "alibaba",
     "qwen-oauth",
-    "huggingface",
-    "openai-codex",
+    "xiaomi",
+    "arcee",
+    "ollama-cloud",
     "custom",
 })
 
@@ -166,6 +176,40 @@ def _dots_to_hyphens(model_name: str) -> str:
     ``claude-sonnet-4.6`` -> ``claude-sonnet-4-6``.
     """
     return model_name.replace(".", "-")
+
+
+def _normalize_provider_alias(provider_name: str) -> str:
+    """Resolve provider aliases to Hermes' canonical ids."""
+    raw = (provider_name or "").strip().lower()
+    if not raw:
+        return raw
+    try:
+        from hermes_cli.models import normalize_provider
+
+        return normalize_provider(raw)
+    except Exception:
+        return raw
+
+
+def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
+    """Strip ``provider/`` only when the prefix matches the target provider.
+
+    This prevents arbitrary slash-bearing model IDs from being mangled on
+    native providers while still repairing manual config values like
+    ``zai/glm-5.1`` for the ``zai`` provider.
+    """
+    if "/" not in model_name:
+        return model_name
+
+    prefix, remainder = model_name.split("/", 1)
+    if not prefix.strip() or not remainder.strip():
+        return model_name
+
+    normalized_prefix = _normalize_provider_alias(prefix)
+    normalized_target = _normalize_provider_alias(target_provider)
+    if normalized_prefix and normalized_prefix == normalized_target:
+        return remainder.strip()
+    return model_name
 
 
 def detect_vendor(model_name: str) -> Optional[str]:
@@ -289,6 +333,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         >>> normalize_model_for_provider("claude-sonnet-4.6", "opencode-zen")
         'claude-sonnet-4-6'
 
+        >>> normalize_model_for_provider("minimax-m2.5-free", "opencode-zen")
+        'minimax-m2.5-free'
+
         >>> normalize_model_for_provider("deepseek-v3", "deepseek")
         'deepseek-chat'
 
@@ -305,24 +352,69 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if not name:
         return name
 
-    provider = (target_provider or "").strip().lower()
+    provider = _normalize_provider_alias(target_provider)
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- Anthropic / OpenCode: strip vendor, dots -> hyphens ---
+    # --- OpenCode Zen: Claude stays hyphenated; other models keep dots ---
+    if provider == "opencode-zen":
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        if bare.lower().startswith("claude-"):
+            return _dots_to_hyphens(bare)
+        return bare
+
+    # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
-        bare = _strip_vendor_prefix(name)
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
         return _dots_to_hyphens(bare)
 
-    # --- Copilot: strip vendor, keep dots ---
+    # --- Copilot / Copilot ACP: delegate to the Copilot-specific
+    #     normalizer.  It knows about the alias table (vendor-prefix
+    #     stripping for Anthropic/OpenAI, dash-to-dot repair for Claude)
+    #     and live-catalog lookups.  Without this, vendor-prefixed or
+    #     dash-notation Claude IDs survive to the Copilot API and hit
+    #     HTTP 400 "model_not_supported".  See issue #6879.
+    if provider in {"copilot", "copilot-acp"}:
+        try:
+            from hermes_cli.models import normalize_copilot_model_id
+
+            normalized = normalize_copilot_model_id(name)
+            if normalized:
+                return normalized
+        except Exception:
+            # Fall through to the generic strip-vendor behaviour below
+            # if the Copilot-specific path is unavailable for any reason.
+            pass
+
+    # --- Copilot / Copilot ACP / openai-codex fallback:
+    #     strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
-        return _strip_vendor_prefix(name)
+        stripped = _strip_matching_provider_prefix(name, provider)
+        if stripped == name and name.startswith("openai/"):
+            # openai-codex maps openai/gpt-5.4 -> gpt-5.4
+            return name.split("/", 1)[1]
+        return stripped
 
     # --- DeepSeek: map to one of two canonical names ---
     if provider == "deepseek":
-        return _normalize_for_deepseek(name)
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        return _normalize_for_deepseek(bare)
+
+    # --- Direct providers: repair matching provider prefixes only ---
+    if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
+        return _strip_matching_provider_prefix(name, provider)
+
+    # --- Authoritative native providers: preserve user-facing slugs as-is ---
+    if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:
+        return name
 
     # --- Custom & all others: pass through as-is ---
     return name
@@ -332,31 +424,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
 
-def model_display_name(model_id: str) -> str:
-    """Return a short, human-readable display name for a model id.
-
-    Strips the vendor prefix (if any) for a cleaner display in menus
-    and status bars, while preserving dots for readability.
-
-    Examples::
-
-        >>> model_display_name("anthropic/claude-sonnet-4.6")
-        'claude-sonnet-4.6'
-        >>> model_display_name("claude-sonnet-4-6")
-        'claude-sonnet-4-6'
-    """
-    return _strip_vendor_prefix((model_id or "").strip())
-
-
-def is_aggregator_provider(provider: str) -> bool:
-    """Check if a provider is an aggregator that needs vendor/model format."""
-    return (provider or "").strip().lower() in _AGGREGATOR_PROVIDERS
-
-
-def vendor_for_model(model_name: str) -> str:
-    """Return the vendor slug for a model, or ``""`` if unknown.
-
-    Convenience wrapper around :func:`detect_vendor` that never returns
-    ``None``.
-    """
-    return detect_vendor(model_name) or ""

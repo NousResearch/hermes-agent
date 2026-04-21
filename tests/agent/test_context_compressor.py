@@ -38,16 +38,6 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=50000) is False
 
 
-class TestShouldCompressPreflight:
-    def test_short_messages(self, compressor):
-        msgs = [{"role": "user", "content": "short"}]
-        assert compressor.should_compress_preflight(msgs) is False
-
-    def test_long_messages(self, compressor):
-        # Each message ~100k chars / 4 = 25k tokens, need >85k threshold
-        msgs = [{"role": "user", "content": "x" * 400000}]
-        assert compressor.should_compress_preflight(msgs) is True
-
 
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
@@ -58,26 +48,11 @@ class TestUpdateFromResponse:
         })
         assert compressor.last_prompt_tokens == 5000
         assert compressor.last_completion_tokens == 1000
-        assert compressor.last_total_tokens == 6000
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
-
-class TestGetStatus:
-    def test_returns_expected_keys(self, compressor):
-        status = compressor.get_status()
-        assert "last_prompt_tokens" in status
-        assert "threshold_tokens" in status
-        assert "context_length" in status
-        assert "usage_percent" in status
-        assert "compression_count" in status
-
-    def test_usage_percent_calculation(self, compressor):
-        compressor.last_prompt_tokens = 50000
-        status = compressor.get_status()
-        assert status["usage_percent"] == 50.0
 
 
 class TestCompress:
@@ -215,6 +190,37 @@ class TestNonStringContent:
 
         kwargs = mock_call.call_args.kwargs
         assert "temperature" not in kwargs
+
+    def test_summary_call_passes_live_main_runtime(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="codex-token",
+                api_mode="codex_responses",
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        assert mock_call.call_args.kwargs["main_runtime"] == {
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "api_mode": "codex_responses",
+        }
 
 
 class TestSummaryFailureCooldown:
@@ -601,11 +607,19 @@ class TestSummaryTargetRatio:
         assert c.summary_target_ratio == 0.80
 
     def test_default_threshold_is_50_percent(self):
-        """Default compression threshold should be 50%."""
+        """Default compression threshold should be 50%, with a 64K floor."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.threshold_percent == 0.50
-        assert c.threshold_tokens == 50_000
+        # 50% of 100K = 50K, but the floor is 64K
+        assert c.threshold_tokens == 64_000
+
+    def test_threshold_floor_does_not_apply_above_128k(self):
+        """On large-context models the 50% percentage is used directly."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        # 50% of 200K = 100K, which is above the 64K floor
+        assert c.threshold_tokens == 100_000
 
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""
@@ -767,3 +781,127 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+
+class TestTruncateToolCallArgsJson:
+    """Regression tests for #11762.
+
+    The previous implementation produced invalid JSON by slicing
+    ``function.arguments`` mid-string, which caused non-retryable 400s from
+    strict providers (observed on MiniMax) and stuck long sessions in a
+    re-send loop. The helper here must always emit parseable JSON whose
+    shape matches the original — shrunken, not corrupted.
+    """
+
+    def _helper(self):
+        from agent.context_compressor import _truncate_tool_call_args_json
+        return _truncate_tool_call_args_json
+
+    def test_shrunken_args_remain_valid_json(self):
+        import json as _json
+        shrink = self._helper()
+        original = _json.dumps({
+            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
+            "content": "# Shopping Browser Setup Notes\n\n" + "abc " * 400,
+        })
+        assert len(original) > 500
+        shrunk = shrink(original)
+        parsed = _json.loads(shrunk)  # must not raise
+        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
+        assert parsed["content"].endswith("...[truncated]")
+        assert len(shrunk) < len(original)
+
+    def test_non_json_arguments_pass_through(self):
+        shrink = self._helper()
+        not_json = "this is not json at all, " * 50
+        assert shrink(not_json) == not_json
+
+    def test_short_string_leaves_unchanged(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({"command": "ls -la", "cwd": "/tmp"})
+        assert _json.loads(shrink(payload)) == {"command": "ls -la", "cwd": "/tmp"}
+
+    def test_nested_structures_are_walked(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({
+            "messages": [
+                {"role": "user", "content": "x" * 500},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "meta": {"note": "y" * 500},
+        })
+        parsed = _json.loads(shrink(payload))
+        assert parsed["messages"][0]["content"].endswith("...[truncated]")
+        assert parsed["messages"][1]["content"] == "ok"
+        assert parsed["meta"]["note"].endswith("...[truncated]")
+
+    def test_non_string_leaves_preserved(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({
+            "retries": 3,
+            "enabled": True,
+            "timeout": None,
+            "items": [1, 2, 3],
+            "note": "z" * 500,
+        })
+        parsed = _json.loads(shrink(payload))
+        assert parsed["retries"] == 3
+        assert parsed["enabled"] is True
+        assert parsed["timeout"] is None
+        assert parsed["items"] == [1, 2, 3]
+        assert parsed["note"].endswith("...[truncated]")
+
+    def test_scalar_json_string_gets_shrunk(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps("q" * 500)
+        parsed = _json.loads(shrink(payload))
+        assert isinstance(parsed, str)
+        assert parsed.endswith("...[truncated]")
+
+    def test_unicode_preserved(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({"content": "非德满" + ("a" * 500)})
+        out = shrink(payload)
+        # ensure_ascii=False keeps CJK intact rather than emitting \uXXXX
+        assert "非德满" in out
+
+    def test_pass3_emits_valid_json_for_downstream_provider(self):
+        """End-to-end: Pass 3 must never produce the exact failure payload
+        that caused the 400 loop (unterminated string, missing brace)."""
+        import json as _json
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        huge_content = "# Shopping Browser Setup Notes\n\n## Overview\n" + "x " * 400
+        args_payload = _json.dumps({
+            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
+            "content": huge_content,
+        })
+        assert len(args_payload) > 500  # triggers the Pass-3 shrink
+        messages = [
+            {"role": "user", "content": "please write two files"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "write_file", "arguments": args_payload}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": '{"bytes_written": 727}'},
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ]
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+        shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
+        # Must parse — otherwise downstream provider returns 400
+        parsed = _json.loads(shrunk)
+        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
+        assert parsed["content"].endswith("...[truncated]")

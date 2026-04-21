@@ -12,6 +12,15 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 import run_agent
 
 
+@pytest.fixture(autouse=True)
+def _no_codex_backoff(monkeypatch):
+    """Short-circuit retry backoff so Codex retry tests don't block on real
+    wall-clock waits (5s jittered_backoff base delay + tight time.sleep loop)."""
+    import time as _time
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+
+
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
         run_agent,
@@ -222,6 +231,12 @@ def test_api_mode_normalizes_provider_case(monkeypatch):
 
 
 def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypatch):
+    """GPT-5.x models need codex_responses even on OpenRouter.
+
+    OpenRouter rejects GPT-5 models on /v1/chat/completions with
+    ``unsupported_api_for_model``.  The model-level check overrides
+    the provider default.
+    """
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
         model="gpt-5-codex",
@@ -233,8 +248,41 @@ def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypat
         skip_context_files=True,
         skip_memory=True,
     )
-    assert agent.api_mode == "chat_completions"
+    assert agent.api_mode == "codex_responses"
     assert agent.provider == "openrouter"
+
+
+def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4-mini",
+        base_url="acp://copilot",
+        provider="copilot-acp",
+        api_key="copilot-acp",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "copilot-acp"
+    assert agent.api_mode == "chat_completions"
+
+
+def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5-mini",
+        base_url="https://api.githubcopilot.com",
+        provider="copilot",
+        api_key="gh-token",
+        api_mode="chat_completions",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "copilot"
+    assert agent.api_mode == "chat_completions"
 
 
 def test_build_api_kwargs_codex(monkeypatch):
@@ -263,6 +311,69 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
+
+
+def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
+    """'minimal' reasoning effort is clamped to 'low' on the Responses API.
+
+    GPT-5.4 supports none/low/medium/high/xhigh but NOT 'minimal'.
+    Users may configure 'minimal' via OpenRouter conventions, so the Codex
+    Responses path must clamp it to the nearest supported level.
+    """
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "minimal"},
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["reasoning"]["effort"] == "low"
+
+
+def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
+    """Effort levels natively supported by the Responses API pass through unchanged."""
+    _patch_agent_bootstrap(monkeypatch)
+
+    for effort in ("low", "medium", "high", "xhigh"):
+        agent = run_agent.AIAgent(
+            model="gpt-5-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+            quiet_mode=True,
+            max_iterations=4,
+            skip_context_files=True,
+            skip_memory=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        agent._cleanup_task_resources = lambda task_id: None
+        agent._persist_session = lambda messages, history=None: None
+        agent._save_trajectory = lambda messages, user_message, completed: None
+        agent._save_session_log = lambda messages: None
+
+        kwargs = agent._build_api_kwargs(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
 
 
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
@@ -648,6 +759,15 @@ def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch
     assert result["max_output_tokens"] == 4096
 
 
+def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["service_tier"] = "priority"
+
+    result = agent._preflight_codex_api_kwargs(kwargs)
+    assert result["service_tier"] == "priority"
+
+
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
@@ -727,6 +847,44 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
 
     assert finish_reason == "incomplete"
     assert "inspect the repository" in (assistant_message.content or "")
+
+
+def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = {}
+
+    agent._fire_stream_delta("short version: yes")
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    agent._emit_interim_assistant_message({"role": "assistant", "content": "short version: yes"})
+
+    assert observed == {
+        "text": "short version: yes",
+        "already_streamed": False,
+    }
+
+
+def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_fails(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = {}
+
+    def failing_callback(_text):
+        raise RuntimeError("display failed")
+
+    agent.stream_delta_callback = failing_callback
+    agent._fire_stream_delta("short version: yes")
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    agent._emit_interim_assistant_message({"role": "assistant", "content": "short version: yes"})
+
+    assert observed == {
+        "text": "short version: yes",
+        "already_streamed": False,
+    }
 
 
 def test_run_conversation_codex_continues_after_commentary_phase_message(monkeypatch):
@@ -1089,3 +1247,66 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
     ]
     assert "enc_first" in encrypted_contents
     assert "enc_second" in encrypted_contents
+
+
+def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch):
+    """Duplicate reasoning item IDs across multi-turn incomplete responses
+    must be deduplicated so the Responses API doesn't reject with HTTP 400."""
+    agent = _build_agent(monkeypatch)
+    messages = [
+        {"role": "user", "content": "think hard"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_aaa", "encrypted_content": "enc_1"},
+                {"type": "reasoning", "id": "rs_bbb", "encrypted_content": "enc_2"},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "partial answer",
+            "codex_reasoning_items": [
+                # rs_aaa is duplicated from the previous turn
+                {"type": "reasoning", "id": "rs_aaa", "encrypted_content": "enc_1"},
+                {"type": "reasoning", "id": "rs_ccc", "encrypted_content": "enc_3"},
+            ],
+        },
+    ]
+    items = agent._chat_messages_to_responses_input(messages)
+
+    reasoning_items = [it for it in items if it.get("type") == "reasoning"]
+    # Dedup: rs_aaa appears in both turns but should only be emitted once.
+    # 3 unique items total: enc_1 (from rs_aaa), enc_2 (rs_bbb), enc_3 (rs_ccc).
+    assert len(reasoning_items) == 3
+    encrypted = [it["encrypted_content"] for it in reasoning_items]
+    assert encrypted.count("enc_1") == 1
+    assert "enc_2" in encrypted
+    assert "enc_3" in encrypted
+    # IDs must be stripped — with store=False the API 404s on id lookups.
+    for it in reasoning_items:
+        assert "id" not in it
+
+
+def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
+    """_preflight_codex_input_items should also deduplicate reasoning items by ID."""
+    agent = _build_agent(monkeypatch)
+    raw_input = [
+        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+        {"type": "reasoning", "id": "rs_xyz", "encrypted_content": "enc_a"},
+        {"role": "assistant", "content": "ok"},
+        {"type": "reasoning", "id": "rs_xyz", "encrypted_content": "enc_a"},
+        {"type": "reasoning", "id": "rs_zzz", "encrypted_content": "enc_b"},
+        {"role": "assistant", "content": "done"},
+    ]
+    normalized = agent._preflight_codex_input_items(raw_input)
+
+    reasoning_items = [it for it in normalized if it.get("type") == "reasoning"]
+    # rs_xyz duplicate should be collapsed to one item; rs_zzz kept.
+    assert len(reasoning_items) == 2
+    encrypted = [it["encrypted_content"] for it in reasoning_items]
+    assert encrypted.count("enc_a") == 1
+    assert "enc_b" in encrypted
+    # IDs must be stripped — with store=False the API 404s on id lookups.
+    for it in reasoning_items:
+        assert "id" not in it

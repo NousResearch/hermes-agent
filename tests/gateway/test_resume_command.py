@@ -221,5 +221,6 @@ class TestHandleResumeCommand:
 
         runner._async_flush_memories.assert_called_once_with(
             "current_session_001",
+            "agent:main:telegram:dm:67890",
         )
         db.close()

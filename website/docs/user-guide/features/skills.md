@@ -155,10 +155,10 @@ Skills can also declare non-secret config settings (paths, preferences) stored i
 metadata:
   hermes:
     config:
-      - key: wiki.path
-        description: Path to the wiki directory
-        default: "~/wiki"
-        prompt: Wiki directory path
+      - key: myplugin.path
+        description: Path to the plugin data directory
+        default: "~/myplugin-data"
+        prompt: Plugin data directory path
 ```
 
 Settings are stored under `skills.config` in your config.yaml. `hermes config migrate` prompts for unconfigured settings, and `hermes config show` displays them. When a skill loads, its resolved config values are injected into the context so the agent knows the configured values automatically.
@@ -278,6 +278,8 @@ hermes skills check                               # Check installed hub skills f
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
 hermes skills uninstall k8s                       # Remove a hub skill
+hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
+hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
@@ -426,6 +428,47 @@ hermes skills update react   # Update one specific installed hub skill
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
 
+:::tip GitHub rate limits
+Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
+:::
+
+## Bundled skill updates (`hermes skills reset`)
+
+Hermes ships with a set of bundled skills in `skills/` inside the repo. On install and on every `hermes update`, a sync pass copies those into `~/.hermes/skills/` and records a manifest at `~/.hermes/skills/.bundled_manifest` mapping each skill name to the content hash at the time it was synced (the **origin hash**).
+
+On each sync, Hermes recomputes the hash of your local copy and compares it to the origin hash:
+
+- **Unchanged** → safe to pull upstream changes, copy the new bundled version in, record the new origin hash.
+- **Changed** → treated as **user-modified** and skipped forever, so your edits never get stomped.
+
+The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.hermes/hermes-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
+
+`hermes skills reset` is the escape hatch:
+
+```bash
+# Safe: clears the manifest entry for this skill. Your current copy is preserved,
+# but the next sync re-baselines against it so future updates work normally.
+hermes skills reset google-workspace
+
+# Full restore: also deletes your local copy and re-copies the current bundled
+# version. Use this when you want the pristine upstream skill back.
+hermes skills reset google-workspace --restore
+
+# Non-interactive (e.g. in scripts or TUI mode) — skip the --restore confirmation.
+hermes skills reset google-workspace --restore --yes
+```
+
+The same command works in chat as a slash command:
+
+```text
+/skills reset google-workspace
+/skills reset google-workspace --restore
+```
+
+:::note Profiles
+Each profile has its own `.bundled_manifest` under its own `HERMES_HOME`, so `hermes -p coder skills reset <name>` only affects that profile.
+:::
+
 ### Slash commands (inside chat)
 
 All the same commands work with `/skills`:
@@ -438,6 +481,7 @@ All the same commands work with `/skills`:
 /skills install openai/skills/skill-creator --force
 /skills check
 /skills update
+/skills reset google-workspace
 /skills list
 ```
 

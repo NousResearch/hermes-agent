@@ -5,6 +5,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import tempfile
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -128,6 +129,12 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
+    # Per-profile HOME isolation for background processes (same as _make_run_env).
+    from hermes_constants import get_subprocess_home
+    _profile_home = get_subprocess_home()
+    if _profile_home:
+        sanitized["HOME"] = _profile_home
+
     return sanitized
 
 
@@ -194,7 +201,87 @@ def _make_run_env(env: dict) -> dict:
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+
+    # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
+    # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
+    # subprocess sees the override — the Python process keeps the real HOME.
+    from hermes_constants import get_subprocess_home
+    _profile_home = get_subprocess_home()
+    if _profile_home:
+        run_env["HOME"] = _profile_home
+
     return run_env
+
+
+def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
+    """Return (shell_init_files, auto_source_bashrc) from config.yaml.
+
+    Best-effort — returns sensible defaults on any failure so terminal
+    execution never breaks because the config file is unreadable.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        files = terminal_cfg.get("shell_init_files") or []
+        if not isinstance(files, list):
+            files = []
+        auto_bashrc = bool(terminal_cfg.get("auto_source_bashrc", True))
+        return [str(f) for f in files if f], auto_bashrc
+    except Exception:
+        return [], True
+
+
+def _resolve_shell_init_files() -> list[str]:
+    """Resolve the list of files to source before the login-shell snapshot.
+
+    Expands ``~`` and ``${VAR}`` references and drops anything that doesn't
+    exist on disk, so a missing ``~/.bashrc`` never breaks the snapshot.
+    The ``auto_source_bashrc`` path runs only when the user hasn't supplied
+    an explicit list — once they have, Hermes trusts them.
+    """
+    explicit, auto_bashrc = _read_terminal_shell_init_config()
+
+    candidates: list[str] = []
+    if explicit:
+        candidates.extend(explicit)
+    elif auto_bashrc and not _IS_WINDOWS:
+        # Bash's login-shell invocation does NOT source ~/.bashrc by default,
+        # so tools like nvm / asdf / pyenv that self-install there stay
+        # invisible to the snapshot without this nudge.
+        candidates.append("~/.bashrc")
+
+    resolved: list[str] = []
+    for raw in candidates:
+        try:
+            path = os.path.expandvars(os.path.expanduser(raw))
+        except Exception:
+            continue
+        if path and os.path.isfile(path):
+            resolved.append(path)
+    return resolved
+
+
+def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
+    """Prepend ``source <file>`` lines (guarded + silent) to a bash script.
+
+    Each file is wrapped so a failing rc file doesn't abort the whole
+    bootstrap: ``set +e`` keeps going on errors, ``2>/dev/null`` hides
+    noisy prompts, and ``|| true`` neutralises the exit status.
+    """
+    if not files:
+        return cmd_string
+
+    prelude_parts = ["set +e"]
+    for path in files:
+        # shlex.quote isn't available here without an import; the files list
+        # comes from os.path.expanduser output so it's a concrete absolute
+        # path.  Escape single quotes defensively anyway.
+        safe = path.replace("'", "'\\''")
+        prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+    prelude = "\n".join(prelude_parts) + "\n"
+    return prelude + cmd_string
 
 
 class LocalEnvironment(BaseEnvironment):
@@ -209,10 +296,46 @@ class LocalEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
 
+    def get_temp_dir(self) -> str:
+        """Return a shell-safe writable temp dir for local execution.
+
+        Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
+        Prefer POSIX-style env vars when available, keep using /tmp on regular
+        Unix systems, and only fall back to tempfile.gettempdir() when it also
+        resolves to a POSIX path.
+
+        Check the environment configured for this backend first so callers can
+        override the temp root explicitly (for example via terminal.env or a
+        custom TMPDIR), then fall back to the host process environment.
+        """
+        for env_var in ("TMPDIR", "TMP", "TEMP"):
+            candidate = self.env.get(env_var) or os.environ.get(env_var)
+            if candidate and candidate.startswith("/"):
+                return candidate.rstrip("/") or "/"
+
+        if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
+            return "/tmp"
+
+        candidate = tempfile.gettempdir()
+        if candidate.startswith("/"):
+            return candidate.rstrip("/") or "/"
+
+        return "/tmp"
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        # For login-shell invocations (used by init_session to build the
+        # environment snapshot), prepend sources for the user's bashrc /
+        # custom init files so tools registered outside bash_profile
+        # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
+        # Non-login invocations are already sourcing the snapshot and
+        # don't need this.
+        if login:
+            init_files = _resolve_shell_init_files()
+            if init_files:
+                cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 

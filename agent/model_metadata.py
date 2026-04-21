@@ -5,7 +5,6 @@ and run_agent.py for pre-flight context checks.
 """
 
 import logging
-import os
 import re
 import time
 from pathlib import Path
@@ -14,6 +13,8 @@ from urllib.parse import urlparse
 
 import requests
 import yaml
+
+from utils import base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
@@ -24,15 +25,22 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
+    "xiaomi",
+    "arcee",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "claude", "deep-seek",
+    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
+    "ollama",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "mimo", "xiaomi-mimo",
+    "arcee-ai", "arceeai",
+    "xai", "x-ai", "x.ai", "grok",
+    "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal",
 })
 
@@ -83,6 +91,11 @@ CONTEXT_PROBE_TIERS = [
 # Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 
+# Minimum context length required to run Hermes Agent.  Models with fewer
+# tokens cannot maintain enough working memory for tool-calling workflows.
+# Sessions, model switches, and cron jobs should reject models below this.
+MINIMUM_CONTEXT_LENGTH = 64_000
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -92,54 +105,78 @@ DEFAULT_CONTEXT_LENGTHS = {
     # fuzzy-match collisions (e.g. "anthropic/claude-sonnet-4" is a
     # substring of "anthropic/claude-sonnet-4.6").
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
+    "claude-opus-4-7": 1000000,
+    "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000,
     "claude-sonnet-4-6": 1000000,
     "claude-opus-4.6": 1000000,
     "claude-sonnet-4.6": 1000000,
     # Catch-all for older Claude models (must sort after specific entries)
     "claude": 200000,
-    # OpenAI
+    # OpenAI — GPT-5 family (most have 400k; specific overrides first)
+    # Source: https://developers.openai.com/api/docs/models
+    "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
+    "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
+    "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
+    "gpt-5.1-chat": 128000,           # Chat variant has 128k context
+    "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
-    "gpt-5": 128000,
     "gpt-4": 128000,
     # Google
     "gemini": 1048576,
     # Gemma (open models served via AI Studio)
     "gemma-4-31b": 256000,
-    "gemma-4-26b": 256000,
     "gemma-3": 131072,
     "gemma": 8192,  # fallback for older gemma models
     # DeepSeek
     "deepseek": 128000,
     # Meta
     "llama": 131072,
-    # Qwen
+    # Qwen — specific model families before the catch-all.
+    # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3-coder-plus": 1000000,  # 1M context
+    "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
-    # MiniMax (lowercase — lookup lowercases model names at line 973)
-    "minimax-m1-256k": 1000000,
-    "minimax-m1-128k": 1000000,
-    "minimax-m1-80k": 1000000,
-    "minimax-m1-40k": 1000000,
-    "minimax-m1": 1000000,
-    "minimax-m2.5": 1048576,
-    "minimax-m2.7": 1048576,
-    "minimax": 1048576,
+    # MiniMax — official docs: 204,800 context for all models
+    # https://platform.minimax.io/docs/api-reference/text-anthropic-api
+    "minimax": 204800,
     # GLM
     "glm": 202752,
+    # xAI Grok — xAI /v1/models does not return context_length metadata,
+    # so these hardcoded fallbacks prevent Hermes from probing-down to
+    # the default 128k when the user points at https://api.x.ai/v1
+    # via a custom provider. Values sourced from models.dev (2026-04).
+    # Keys use substring matching (longest-first), so e.g. "grok-4.20"
+    # matches "grok-4.20-0309-reasoning" / "-non-reasoning" / "-multi-agent-0309".
+    "grok-code-fast": 256000,   # grok-code-fast-1
+    "grok-4-1-fast": 2000000,   # grok-4-1-fast-(non-)reasoning
+    "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
+    "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning
+    "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
+    "grok-4": 256000,           # grok-4, grok-4-0709
+    "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
+    "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
+    "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
+    # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
+    "nemotron": 131072,
     # Arcee
     "trinity": 262144,
+    # OpenRouter
+    "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072,
     "Qwen/Qwen3.5-35B-A3B": 131072,
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
+    "moonshotai/Kimi-K2.6": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
-    "MiniMaxAI/MiniMax-M2.5": 1048576,
-    "XiaomiMiMo/MiMo-V2-Flash": 32768,
-    "mimo-v2-pro": 1048576,
-    "mimo-v2-omni": 1048576,
+    "MiniMaxAI/MiniMax-M2.5": 204800,
+    "XiaomiMiMo/MiMo-V2-Flash": 256000,
+    "mimo-v2-pro": 1000000,
+    "mimo-v2-omni": 256000,
+    "mimo-v2-flash": 256000,
     "zai-org/GLM-5": 202752,
 }
 
@@ -164,14 +201,27 @@ _MAX_COMPLETION_KEYS = (
 
 # Local server hostnames / address patterns
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+# Docker / Podman / Lima DNS names that resolve to the host machine
+_CONTAINER_LOCAL_SUFFIXES = (
+    ".docker.internal",
+    ".containers.internal",
+    ".lima.internal",
+)
 
 
 def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
 
 
+def _auth_headers(api_key: str = "") -> Dict[str, str]:
+    token = str(api_key or "").strip()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _is_openrouter_base_url(base_url: str) -> bool:
-    return "openrouter.ai" in _normalize_base_url(base_url).lower()
+    return base_url_host_matches(base_url, "openrouter.ai")
 
 
 def _is_custom_endpoint(base_url: str) -> bool:
@@ -185,7 +235,9 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.anthropic.com": "anthropic",
     "api.z.ai": "zai",
     "api.moonshot.ai": "kimi-coding",
+    "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",
+    "api.arcee.ai": "arcee",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
@@ -197,6 +249,12 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",
+    "opencode.ai": "opencode-go",
+    "api.x.ai": "xai",
+    "integrate.api.nvidia.com": "nvidia",
+    "api.xiaomimimo.com": "xiaomi",
+    "xiaomimimo.com": "xiaomi",
+    "ollama.com": "ollama-cloud",
 }
 
 
@@ -235,6 +293,9 @@ def is_local_endpoint(base_url: str) -> bool:
         return False
     if host in _LOCAL_HOSTS:
         return True
+    # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
+    if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
+        return True
     # RFC-1918 private ranges and link-local
     import ipaddress
     try:
@@ -258,7 +319,7 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
-def detect_local_server_type(base_url: str) -> Optional[str]:
+def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
@@ -270,8 +331,10 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
+    headers = _auth_headers(api_key)
+
     try:
-        with httpx.Client(timeout=2.0) as client:
+        with httpx.Client(timeout=2.0, headers=headers) as client:
             # LM Studio exposes /api/v1/models — check first (most specific)
             try:
                 r = client.get(f"{server_url}/api/v1/models")
@@ -458,6 +521,59 @@ def fetch_endpoint_model_metadata(
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     last_error: Optional[Exception] = None
 
+    if is_local_endpoint(normalized):
+        try:
+            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
+                server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
+                response = requests.get(
+                    server_url.rstrip("/") + "/api/v1/models",
+                    headers=headers,
+                    timeout=10,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                cache: Dict[str, Dict[str, Any]] = {}
+                for model in payload.get("models", []):
+                    if not isinstance(model, dict):
+                        continue
+                    model_id = model.get("key") or model.get("id")
+                    if not model_id:
+                        continue
+                    entry: Dict[str, Any] = {"name": model.get("name", model_id)}
+
+                    context_length = None
+                    for inst in model.get("loaded_instances", []) or []:
+                        if not isinstance(inst, dict):
+                            continue
+                        cfg = inst.get("config", {})
+                        ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
+                        if isinstance(ctx, int) and ctx > 0:
+                            context_length = ctx
+                            break
+                    if context_length is None:
+                        context_length = _extract_context_length(model)
+                    if context_length is not None:
+                        entry["context_length"] = context_length
+
+                    max_completion_tokens = _extract_max_completion_tokens(model)
+                    if max_completion_tokens is not None:
+                        entry["max_completion_tokens"] = max_completion_tokens
+
+                    pricing = _extract_pricing(model)
+                    if pricing:
+                        entry["pricing"] = pricing
+
+                    _add_model_aliases(cache, model_id, entry)
+                    alt_id = model.get("id")
+                    if isinstance(alt_id, str) and alt_id and alt_id != model_id:
+                        _add_model_aliases(cache, alt_id, entry)
+
+                _endpoint_model_metadata_cache[normalized] = cache
+                _endpoint_model_metadata_cache_time[normalized] = time.time()
+                return cache
+        except Exception as exc:
+            last_error = exc
+
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
         try:
@@ -602,6 +718,49 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     return None
 
 
+def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
+    """Detect an "output cap too large" error and return how many output tokens are available.
+
+    Background — two distinct context errors exist:
+      1. "Prompt too long"  — the INPUT itself exceeds the context window.
+           Fix: compress history and/or halve context_length.
+      2. "max_tokens too large" — input is fine, but input + requested_output > window.
+           Fix: reduce max_tokens (the output cap) for this call.
+           Do NOT touch context_length — the window hasn't shrunk.
+
+    Anthropic's API returns errors like:
+      "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000"
+
+    Returns the number of output tokens that would fit (e.g. 10000 above), or None if
+    the error does not look like a max_tokens-too-large error.
+    """
+    error_lower = error_msg.lower()
+
+    # Must look like an output-cap error, not a prompt-length error.
+    is_output_cap_error = (
+        "max_tokens" in error_lower
+        and ("available_tokens" in error_lower or "available tokens" in error_lower)
+    )
+    if not is_output_cap_error:
+        return None
+
+    # Extract the available_tokens figure.
+    # Anthropic format: "… = available_tokens: 10000"
+    patterns = [
+        r'available_tokens[:\s]+(\d+)',
+        r'available\s+tokens[:\s]+(\d+)',
+        # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
+        r'=\s*(\d+)\s*$',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, error_lower)
+        if match:
+            tokens = int(match.group(1))
+            if tokens >= 1:
+                return tokens
+    return None
+
+
 def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     """Return True if *candidate_id* (from server) matches *lookup_model* (configured).
 
@@ -621,7 +780,7 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return False
 
 
-def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
+def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query an Ollama server for the model's context length.
 
     Returns the model's maximum context from GGUF metadata via ``/api/show``,
@@ -639,14 +798,16 @@ def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
         server_url = server_url[:-3]
 
     try:
-        server_type = detect_local_server_type(base_url)
+        server_type = detect_local_server_type(base_url, api_key=api_key)
     except Exception:
         return None
     if server_type != "ollama":
         return None
 
+    headers = _auth_headers(api_key)
+
     try:
-        with httpx.Client(timeout=3.0) as client:
+        with httpx.Client(timeout=3.0, headers=headers) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             if resp.status_code != 200:
                 return None
@@ -674,7 +835,7 @@ def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
     return None
 
 
-def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
+def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
 
@@ -687,24 +848,26 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
+    headers = _auth_headers(api_key)
+
     try:
-        server_type = detect_local_server_type(base_url)
+        server_type = detect_local_server_type(base_url, api_key=api_key)
     except Exception:
         server_type = None
 
     try:
-        with httpx.Client(timeout=3.0) as client:
+        with httpx.Client(timeout=3.0, headers=headers) as client:
             # Ollama: /api/show returns model details with context info
             if server_type == "ollama":
                 resp = client.post(f"{server_url}/api/show", json={"name": model})
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Check model_info for context length
-                    model_info = data.get("model_info", {})
-                    for key, value in model_info.items():
-                        if "context_length" in key and isinstance(value, (int, float)):
-                            return int(value)
-                    # Check parameters string for num_ctx
+                    # Prefer explicit num_ctx from Modelfile parameters: this is
+                    # the *runtime* context Ollama will actually allocate KV cache
+                    # for. The GGUF model_info.context_length is the training max,
+                    # which can be larger than num_ctx — using it here would let
+                    # Hermes grow conversations past the runtime limit and Ollama
+                    # would silently truncate. Matches query_ollama_num_ctx().
                     params = data.get("parameters", "")
                     if "num_ctx" in params:
                         for line in params.split("\n"):
@@ -715,6 +878,11 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                                         return int(parts[-1])
                                     except ValueError:
                                         pass
+                    # Fall back to GGUF model_info context_length (training max)
+                    model_info = data.get("model_info", {})
+                    for key, value in model_info.items():
+                        if "context_length" in key and isinstance(value, (int, float)):
+                            return int(value)
 
             # LM Studio native API: /api/v1/models returns max_context_length.
             # This is more reliable than the OpenAI-compat /v1/models which
@@ -899,7 +1067,7 @@ def get_model_context_length(
         if not _is_known_provider_base_url(base_url):
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
-                local_ctx = _query_local_context_length(model, base_url)
+                local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
                     save_context_length(model, base_url, local_ctx)
                     return local_ctx
@@ -913,11 +1081,25 @@ def get_model_context_length(
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (
-        base_url and "api.anthropic.com" in base_url
+        base_url and base_url_hostname(base_url) == "api.anthropic.com"
     ):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
         if ctx:
             return ctx
+
+    # 4b. AWS Bedrock — use static context length table.
+    # Bedrock's ListFoundationModels doesn't expose context window sizes,
+    # so we maintain a curated table in bedrock_adapter.py.
+    if provider == "bedrock" or (
+        base_url
+        and base_url_hostname(base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url, "amazonaws.com")
+    ):
+        try:
+            from agent.bedrock_adapter import get_bedrock_context_length
+            return get_bedrock_context_length(model)
+        except ImportError:
+            pass  # boto3 not installed — fall through to generic resolution
 
     # 5. Provider-aware lookups (before generic OpenRouter cache)
     # These are provider-specific and take priority over the generic OR cache,
@@ -959,7 +1141,7 @@ def get_model_context_length(
 
     # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):
-        local_ctx = _query_local_context_length(model, base_url)
+        local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
         if local_ctx and local_ctx > 0:
             save_context_length(model, base_url, local_ctx)
             return local_ctx
@@ -969,16 +1151,21 @@ def get_model_context_length(
 
 
 def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate (~4 chars/token) for pre-flight checks."""
+    """Rough token estimate (~4 chars/token) for pre-flight checks.
+
+    Uses ceiling division so short texts (1-3 chars) never estimate as
+    0 tokens, which would cause the compressor and pre-flight checks to
+    systematically undercount when many short tool results are present.
+    """
     if not text:
         return 0
-    return len(text) // 4
+    return (len(text) + 3) // 4
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
-    return total_chars // 4
+    return (total_chars + 3) // 4
 
 
 def estimate_request_tokens_rough(
@@ -1001,4 +1188,4 @@ def estimate_request_tokens_rough(
         total_chars += sum(len(str(msg)) for msg in messages)
     if tools:
         total_chars += len(str(tools))
-    return total_chars // 4
+    return (total_chars + 3) // 4

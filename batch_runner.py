@@ -444,6 +444,7 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             if not reasoning.get("has_any_reasoning", True):
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
+                completed_in_batch.append(prompt_index)
                 continue
             
             # Get and normalize tool stats for consistent schema across all entries
@@ -561,7 +562,10 @@ class BatchRunner:
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning config override (e.g. {"effort": "none"} to disable thinking)
-            prefill_messages (List[Dict]): Messages to prepend as prefilled conversation context (few-shot priming)
+            prefill_messages (List[Dict]): Messages to prepend as prefilled conversation context (few-shot priming).
+                NOTE: Anthropic Sonnet 4.6+ and Opus 4.6+ reject a trailing assistant-role prefill
+                (400 error).  For those models use output_config.format or structured-output
+                schemas instead.  Safe here for user-role priming and for older Claude / non-Claude models.
             max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
         """
         self.dataset_file = Path(dataset_file)
@@ -1158,7 +1162,7 @@ def main(
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
-        reasoning_effort (str): OpenRouter reasoning effort level: "xhigh", "high", "medium", "low", "minimal", "none" (default: "medium")
+        reasoning_effort (str): OpenRouter reasoning effort level: "none", "minimal", "low", "medium", "high", "xhigh" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
@@ -1186,12 +1190,12 @@ def main(
     """
     # Handle list distributions
     if list_distributions:
-        from toolset_distributions import list_distributions as get_all_dists, print_distribution_info
-        
+        from toolset_distributions import print_distribution_info
+
         print("📊 Available Toolset Distributions")
         print("=" * 70)
-        
-        all_dists = get_all_dists()
+
+        all_dists = list_distributions()
         for dist_name in sorted(all_dists.keys()):
             print_distribution_info(dist_name)
         
@@ -1227,7 +1231,7 @@ def main(
         print("🧠 Reasoning: DISABLED (effort=none)")
     elif reasoning_effort:
         # Use specified effort level
-        valid_efforts = ["xhigh", "high", "medium", "low", "minimal", "none"]
+        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
         if reasoning_effort not in valid_efforts:
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             return

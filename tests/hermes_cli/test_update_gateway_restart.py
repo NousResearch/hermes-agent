@@ -13,7 +13,27 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 import hermes_cli.gateway as gateway_cli
+import hermes_cli.main as cli_main
 from hermes_cli.main import cmd_update
+
+
+# ---------------------------------------------------------------------------
+# Skip the real-time sleeps inside cmd_update's restart-verification path
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_restart_verify_sleep(monkeypatch):
+    """hermes_cli/main.py uses time.sleep(3) after systemctl restart to
+    verify the service survived. Tests mock subprocess.run — nothing
+    actually restarts — so the 3s wait is dead time.
+
+    main.py does ``import time as _time`` at both module level (line 167)
+    and inside functions (lines 3281, 4384, 4401). Patching the global
+    ``time.sleep`` affects only the duration of this test.
+    """
+    import time as _real_time
+    monkeypatch.setattr(_real_time, "sleep", lambda *_a, **_k: None)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +209,19 @@ class TestLaunchdPlistPath:
                 break
         else:
             raise AssertionError("PATH key not found in plist")
+
+
+class TestLaunchdPlistCurrentness:
+    def test_launchd_plist_is_current_ignores_path_drift(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        monkeypatch.setenv("PATH", "/custom/bin:/usr/bin:/bin")
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+
+        assert gateway_cli.launchd_plist_is_current() is True
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +401,8 @@ class TestCmdUpdateLaunchdRestart:
         monkeypatch.setattr(
             gateway_cli, "is_macos", lambda: False,
         )
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -426,7 +461,8 @@ class TestCmdUpdateSystemService:
     ):
         """When user systemd is inactive but a system service exists, restart via system scope."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -455,7 +491,8 @@ class TestCmdUpdateSystemService:
     ):
         """When system service restart fails, show the failure message."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -477,7 +514,8 @@ class TestCmdUpdateSystemService:
     ):
         """When both user and system services are active, both are restarted."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -531,7 +569,7 @@ class TestServicePidExclusion:
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids",
-            side_effect=lambda exclude_pids=None: (
+            side_effect=lambda exclude_pids=None, all_profiles=False: (
                 [SERVICE_PID] if not exclude_pids else
                 [p for p in [SERVICE_PID] if p not in exclude_pids]
             ),
@@ -560,7 +598,8 @@ class TestServicePidExclusion:
     ):
         """After systemd restart, the sweep must exclude the service PID."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         SERVICE_PID = 55000
 
@@ -573,7 +612,7 @@ class TestServicePidExclusion:
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids",
-            side_effect=lambda exclude_pids=None: (
+            side_effect=lambda exclude_pids=None, all_profiles=False: (
                 [SERVICE_PID] if not exclude_pids else
                 [p for p in [SERVICE_PID] if p not in exclude_pids]
             ),
@@ -612,7 +651,7 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
-        def fake_find(exclude_pids=None):
+        def fake_find(exclude_pids=None, all_profiles=False):
             _exclude = exclude_pids or set()
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
 
@@ -639,7 +678,8 @@ class TestGetServicePids:
     """Unit tests for _get_service_pids()."""
 
     def test_returns_systemd_main_pid(self, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
 
         def fake_run(cmd, **kwargs):
@@ -688,7 +728,8 @@ class TestGetServicePids:
 
     def test_excludes_zero_pid(self, monkeypatch):
         """systemd returns MainPID=0 for stopped services; skip those."""
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
 
         def fake_run(cmd, **kwargs):
@@ -752,3 +793,325 @@ class TestFindGatewayPidsExclude:
         pids = gateway_cli.find_gateway_pids()
         assert 100 in pids
         assert 200 in pids
+
+    def test_filters_to_current_profile(self, monkeypatch, tmp_path):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout=(
+                    "100 /Users/dgrieco/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile orcha gateway run --replace\n"
+                    "200 /Users/dgrieco/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile other gateway run --replace\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("os.getpid", lambda: 999)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "--profile orcha")
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert pids == [100]
+
+
+# ---------------------------------------------------------------------------
+# Gateway mode writes exit code before restart (#8300)
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayModeWritesExitCodeEarly:
+    """When running as ``hermes update --gateway``, the exit code marker must be
+    written *before* the gateway restart attempt.  Without this, systemd's
+    ``KillMode=mixed`` kills the update process (and its wrapping shell) during
+    the cgroup teardown, so the shell epilogue that normally writes the exit
+    code never executes.  The new gateway's update watcher then polls for 30
+    minutes and sends a spurious timeout message.
+    """
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_exit_code_written_in_gateway_mode(
+        self, mock_run, _mock_which, capsys, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        # Point HERMES_HOME at a temp dir so the marker file lands there
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        import hermes_cli.config as _cfg
+        monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
+        # Also patch the module-level ref used by cmd_update
+        import hermes_cli.main as _main_mod
+        monkeypatch.setattr(_main_mod, "get_hermes_home", lambda: hermes_home)
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="1")
+
+        args = SimpleNamespace(gateway=True)
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(args)
+
+        exit_code_path = hermes_home / ".update_exit_code"
+        assert exit_code_path.exists(), ".update_exit_code not written in gateway mode"
+        assert exit_code_path.read_text() == "0"
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_exit_code_not_written_in_normal_mode(
+        self, mock_run, _mock_which, capsys, tmp_path, monkeypatch,
+    ):
+        """Non-gateway mode should NOT write the exit code (the shell does it)."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        import hermes_cli.config as _cfg
+        monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
+        import hermes_cli.main as _main_mod
+        monkeypatch.setattr(_main_mod, "get_hermes_home", lambda: hermes_home)
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="1")
+
+        args = SimpleNamespace(gateway=False)
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(args)
+
+        exit_code_path = hermes_home / ".update_exit_code"
+        assert not exit_code_path.exists(), ".update_exit_code should not be written outside gateway mode"
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_exit_code_written_before_restart_call(
+        self, mock_run, _mock_which, capsys, tmp_path, monkeypatch,
+    ):
+        """Exit code must exist BEFORE systemctl restart is called."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        import hermes_cli.config as _cfg
+        monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
+        import hermes_cli.main as _main_mod
+        monkeypatch.setattr(_main_mod, "get_hermes_home", lambda: hermes_home)
+
+        exit_code_path = hermes_home / ".update_exit_code"
+
+        # Track whether exit code exists when systemctl restart is called
+        exit_code_existed_at_restart = []
+
+        original_side_effect = _make_run_side_effect(
+            commit_count="1", systemd_active=True,
+        )
+
+        def tracking_side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "systemctl" in joined and "restart" in joined:
+                exit_code_existed_at_restart.append(exit_code_path.exists())
+            return original_side_effect(cmd, **kwargs)
+
+        mock_run.side_effect = tracking_side_effect
+
+        args = SimpleNamespace(gateway=True)
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(args)
+
+        assert exit_code_existed_at_restart, "systemctl restart was never called"
+        assert exit_code_existed_at_restart[0] is True, \
+            ".update_exit_code must exist BEFORE systemctl restart (cgroup kill race)"
+
+
+class TestCmdUpdateLegacyGatewayWarning:
+    """Tests for the legacy hermes.service warning printed by `hermes update`.
+
+    Users who installed Hermes before the service rename often have a
+    dormant ``hermes.service`` that starts flap-fighting the current
+    ``hermes-gateway.service`` after PR #5646. Every ``hermes update``
+    should remind them to run ``hermes gateway migrate-legacy`` until
+    they do.
+    """
+
+    _OUR_UNIT_TEXT = (
+        "[Unit]\nDescription=Hermes Gateway\n[Service]\n"
+        "ExecStart=/usr/bin/python -m hermes_cli.main gateway run --replace\n"
+    )
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_prints_legacy_warning_when_detected(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """Legacy units present → warning in update output with migrate command."""
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        legacy_path = user_dir / "hermes.service"
+        legacy_path.write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="3")
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "Legacy Hermes gateway unit(s) detected" in captured
+        assert "hermes.service" in captured
+        assert "hermes gateway migrate-legacy" in captured
+        assert "(user scope)" in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_silent_when_no_legacy_units(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """No legacy units → no warning printed."""
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="3")
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "Legacy Hermes gateway" not in captured
+        assert "migrate-legacy" not in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_does_not_flag_profile_units(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """Profile units (hermes-gateway-coder.service) must not trigger the warning.
+
+        This is the core safety invariant: the legacy allowlist is
+        ``hermes.service`` only, no globs.
+        """
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        # Drop a profile unit that an over-eager glob would match
+        (user_dir / "hermes-gateway-coder.service").write_text(
+            self._OUR_UNIT_TEXT, encoding="utf-8"
+        )
+        (user_dir / "hermes-gateway.service").write_text(
+            self._OUR_UNIT_TEXT, encoding="utf-8"
+        )
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="3")
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "Legacy Hermes gateway" not in captured
+        assert "hermes-gateway-coder.service" not in captured  # not flagged
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_skips_legacy_check_on_non_systemd_platforms(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """macOS / Windows / Termux — skip check entirely since the rename
+        is systemd-specific."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        # Put a file that WOULD match if the check ran
+        (user_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, tmp_path / "system")],
+        )
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3", launchctl_loaded=False,
+        )
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        # Must not print the warning on non-systemd platforms
+        assert "Legacy Hermes gateway" not in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_lists_system_scope_unit_with_sudo_hint(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """System-scope legacy units need sudo — the warning must point that out."""
+        user_dir = tmp_path / "user"
+        system_dir = tmp_path / "system"
+        user_dir.mkdir()
+        system_dir.mkdir()
+        (system_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_legacy_unit_search_paths",
+            lambda: [(False, user_dir), (True, system_dir)],
+        )
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="3")
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "Legacy Hermes gateway" in captured
+        assert "(system scope)" in captured
+        assert "sudo" in captured

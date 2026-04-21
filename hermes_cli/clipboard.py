@@ -7,8 +7,8 @@ CLI tools that ship with the platform (or are commonly installed).
 
 Platform support:
   macOS   — osascript (always available), pngpaste (if installed)
-  Windows — PowerShell via .NET System.Windows.Forms.Clipboard
-  WSL2    — powershell.exe via .NET System.Windows.Forms.Clipboard
+  Windows — PowerShell via WinForms, Get-Clipboard, file-drop fallback
+  WSL2    — powershell.exe via WinForms, Get-Clipboard, file-drop fallback
   Linux   — wl-paste (Wayland), xclip (X11)
 """
 
@@ -19,10 +19,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from hermes_constants import is_wsl as _is_wsl
 
-# Cache WSL detection (checked once per process)
-_wsl_detected: bool | None = None
+logger = logging.getLogger(__name__)
 
 
 def save_clipboard_image(dest: Path) -> bool:
@@ -47,10 +46,11 @@ def has_clipboard_image() -> bool:
         return _macos_has_image()
     if sys.platform == "win32":
         return _windows_has_image()
-    if _is_wsl():
-        return _wsl_has_image()
-    if os.environ.get("WAYLAND_DISPLAY"):
-        return _wayland_has_image()
+    # Match _linux_save fallthrough order: WSL → Wayland → X11
+    if _is_wsl() and _wsl_has_image():
+        return True
+    if os.environ.get("WAYLAND_DISPLAY") and _wayland_has_image():
+        return True
     return _xclip_has_image()
 
 
@@ -136,6 +136,114 @@ _PS_EXTRACT_IMAGE = (
     "[System.Convert]::ToBase64String($ms.ToArray())"
 )
 
+_PS_CHECK_IMAGE_GET_CLIPBOARD = (
+    "try { "
+    "$img = Get-Clipboard -Format Image -ErrorAction Stop;"
+    "if ($null -ne $img) { 'True' } else { 'False' }"
+    "} catch { 'False' }"
+)
+
+_PS_EXTRACT_IMAGE_GET_CLIPBOARD = (
+    "try { "
+    "Add-Type -AssemblyName System.Drawing;"
+    "Add-Type -AssemblyName PresentationCore;"
+    "Add-Type -AssemblyName WindowsBase;"
+    "$img = Get-Clipboard -Format Image -ErrorAction Stop;"
+    "if ($null -eq $img) { exit 1 }"
+    "$ms = New-Object System.IO.MemoryStream;"
+    "if ($img -is [System.Drawing.Image]) {"
+    "$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)"
+    "} elseif ($img -is [System.Windows.Media.Imaging.BitmapSource]) {"
+    "$enc = New-Object System.Windows.Media.Imaging.PngBitmapEncoder;"
+    "$enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($img));"
+    "$enc.Save($ms)"
+    "} else { exit 2 }"
+    "[System.Convert]::ToBase64String($ms.ToArray())"
+    "} catch { exit 1 }"
+)
+
+_FILEDROP_IMAGE_EXTS = "'.png','.jpg','.jpeg','.gif','.webp','.bmp','.tiff','.tif'"
+
+_PS_CHECK_FILEDROP_IMAGE = (
+    "try { "
+    "$files = Get-Clipboard -Format FileDropList -ErrorAction Stop;"
+    f"$exts = @({_FILEDROP_IMAGE_EXTS});"
+    "$hit = $files | Where-Object { $exts -contains ([System.IO.Path]::GetExtension($_).ToLowerInvariant()) } | Select-Object -First 1;"
+    "if ($null -ne $hit) { 'True' } else { 'False' }"
+    "} catch { 'False' }"
+)
+
+_PS_EXTRACT_FILEDROP_IMAGE = (
+    "try { "
+    "$files = Get-Clipboard -Format FileDropList -ErrorAction Stop;"
+    f"$exts = @({_FILEDROP_IMAGE_EXTS});"
+    "$hit = $files | Where-Object { $exts -contains ([System.IO.Path]::GetExtension($_).ToLowerInvariant()) } | Select-Object -First 1;"
+    "if ($null -eq $hit) { exit 1 }"
+    "[System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($hit))"
+    "} catch { exit 1 }"
+)
+
+_POWERSHELL_HAS_IMAGE_SCRIPTS = (
+    _PS_CHECK_IMAGE,
+    _PS_CHECK_IMAGE_GET_CLIPBOARD,
+    _PS_CHECK_FILEDROP_IMAGE,
+)
+
+_POWERSHELL_EXTRACT_IMAGE_SCRIPTS = (
+    _PS_EXTRACT_IMAGE,
+    _PS_EXTRACT_IMAGE_GET_CLIPBOARD,
+    _PS_EXTRACT_FILEDROP_IMAGE,
+)
+
+
+def _run_powershell(exe: str, script: str, timeout: int) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def _write_base64_image(dest: Path, b64_data: str) -> bool:
+    image_bytes = base64.b64decode(b64_data, validate=True)
+    dest.write_bytes(image_bytes)
+    return dest.exists() and dest.stat().st_size > 0
+
+
+def _powershell_has_image(exe: str, *, timeout: int, label: str) -> bool:
+    for script in _POWERSHELL_HAS_IMAGE_SCRIPTS:
+        try:
+            r = _run_powershell(exe, script, timeout=timeout)
+            if r.returncode == 0 and "True" in r.stdout:
+                return True
+        except FileNotFoundError:
+            logger.debug("%s not found — clipboard unavailable", exe)
+            return False
+        except Exception as e:
+            logger.debug("%s clipboard image check failed: %s", label, e)
+    return False
+
+
+def _powershell_save_image(exe: str, dest: Path, *, timeout: int, label: str) -> bool:
+    for script in _POWERSHELL_EXTRACT_IMAGE_SCRIPTS:
+        try:
+            r = _run_powershell(exe, script, timeout=timeout)
+            if r.returncode != 0:
+                continue
+
+            b64_data = r.stdout.strip()
+            if not b64_data:
+                continue
+
+            if _write_base64_image(dest, b64_data):
+                return True
+        except FileNotFoundError:
+            logger.debug("%s not found — clipboard unavailable", exe)
+            return False
+        except Exception as e:
+            logger.debug("%s clipboard image extraction failed: %s", label, e)
+            dest.unlink(missing_ok=True)
+    return False
+
 
 # ── Native Windows ────────────────────────────────────────────────────────
 
@@ -176,15 +284,7 @@ def _windows_has_image() -> bool:
     ps = _get_ps_exe()
     if ps is None:
         return False
-    try:
-        r = subprocess.run(
-            [ps, "-NoProfile", "-NonInteractive", "-Command", _PS_CHECK_IMAGE],
-            capture_output=True, text=True, timeout=5,
-        )
-        return r.returncode == 0 and "True" in r.stdout
-    except Exception as e:
-        logger.debug("Windows clipboard image check failed: %s", e)
-    return False
+    return _powershell_has_image(ps, timeout=5, label="Windows")
 
 
 def _windows_save(dest: Path) -> bool:
@@ -193,42 +293,10 @@ def _windows_save(dest: Path) -> bool:
     if ps is None:
         logger.debug("No PowerShell found — Windows clipboard image paste unavailable")
         return False
-    try:
-        r = subprocess.run(
-            [ps, "-NoProfile", "-NonInteractive", "-Command", _PS_EXTRACT_IMAGE],
-            capture_output=True, text=True, timeout=15,
-        )
-        if r.returncode != 0:
-            return False
-
-        b64_data = r.stdout.strip()
-        if not b64_data:
-            return False
-
-        png_bytes = base64.b64decode(b64_data)
-        dest.write_bytes(png_bytes)
-        return dest.exists() and dest.stat().st_size > 0
-
-    except Exception as e:
-        logger.debug("Windows clipboard image extraction failed: %s", e)
-        dest.unlink(missing_ok=True)
-    return False
+    return _powershell_save_image(ps, dest, timeout=15, label="Windows")
 
 
 # ── Linux ────────────────────────────────────────────────────────────────
-
-def _is_wsl() -> bool:
-    """Detect if running inside WSL (1 or 2)."""
-    global _wsl_detected
-    if _wsl_detected is not None:
-        return _wsl_detected
-    try:
-        with open("/proc/version", "r") as f:
-            _wsl_detected = "microsoft" in f.read().lower()
-    except Exception:
-        _wsl_detected = False
-    return _wsl_detected
-
 
 def _linux_save(dest: Path) -> bool:
     """Try clipboard backends in priority order: WSL → Wayland → X11."""
@@ -249,45 +317,12 @@ def _linux_save(dest: Path) -> bool:
 
 def _wsl_has_image() -> bool:
     """Check if Windows clipboard has an image (via powershell.exe)."""
-    try:
-        r = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-             _PS_CHECK_IMAGE],
-            capture_output=True, text=True, timeout=8,
-        )
-        return r.returncode == 0 and "True" in r.stdout
-    except FileNotFoundError:
-        logger.debug("powershell.exe not found — WSL clipboard unavailable")
-    except Exception as e:
-        logger.debug("WSL clipboard check failed: %s", e)
-    return False
+    return _powershell_has_image("powershell.exe", timeout=8, label="WSL")
 
 
 def _wsl_save(dest: Path) -> bool:
     """Extract clipboard image via powershell.exe → base64 → decode to PNG."""
-    try:
-        r = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-             _PS_EXTRACT_IMAGE],
-            capture_output=True, text=True, timeout=15,
-        )
-        if r.returncode != 0:
-            return False
-
-        b64_data = r.stdout.strip()
-        if not b64_data:
-            return False
-
-        png_bytes = base64.b64decode(b64_data)
-        dest.write_bytes(png_bytes)
-        return dest.exists() and dest.stat().st_size > 0
-
-    except FileNotFoundError:
-        logger.debug("powershell.exe not found — WSL clipboard unavailable")
-    except Exception as e:
-        logger.debug("WSL clipboard extraction failed: %s", e)
-        dest.unlink(missing_ok=True)
-    return False
+    return _powershell_save_image("powershell.exe", dest, timeout=15, label="WSL")
 
 
 # ── Wayland (wl-paste) ──────────────────────────────────────────────────

@@ -306,34 +306,48 @@ with open(_DATA_FILE) as f:
     _DATA = yaml.safe_load(f)
 ```
 
-### Bundle a skill
+### Bundle skills
 
-Include a `skill.md` file and install it during registration:
+Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:
+
+```
+~/.hermes/plugins/my-plugin/
+├── __init__.py
+├── plugin.yaml
+└── skills/
+    ├── my-workflow/
+    │   └── SKILL.md
+    └── my-checklist/
+        └── SKILL.md
+```
 
 ```python
-import shutil
 from pathlib import Path
 
-def _install_skill():
-    """Copy our skill to ~/.hermes/skills/ on first load."""
-    try:
-        from hermes_cli.config import get_hermes_home
-        dest = get_hermes_home() / "skills" / "my-plugin" / "SKILL.md"
-    except Exception:
-        dest = Path.home() / ".hermes" / "skills" / "my-plugin" / "SKILL.md"
-
-    if dest.exists():
-        return  # don't overwrite user edits
-
-    source = Path(__file__).parent / "skill.md"
-    if source.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-
 def register(ctx):
-    ctx.register_tool(...)
-    _install_skill()
+    skills_dir = Path(__file__).parent / "skills"
+    for child in sorted(skills_dir.iterdir()):
+        skill_md = child / "SKILL.md"
+        if child.is_dir() and skill_md.exists():
+            ctx.register_skill(child.name, skill_md)
 ```
+
+The agent can now load your skills with their namespaced name:
+
+```python
+skill_view("my-plugin:my-workflow")   # → plugin's version
+skill_view("my-workflow")              # → built-in version (unchanged)
+```
+
+**Key properties:**
+- Plugin skills are **read-only** — they don't enter `~/.hermes/skills/` and can't be edited via `skill_manage`.
+- Plugin skills are **not** listed in the system prompt's `<available_skills>` index — they're opt-in explicit loads.
+- Bare skill names are unaffected — the namespace prevents collisions with built-in skills.
+- When the agent loads a plugin skill, a bundle context banner is prepended listing sibling skills from the same plugin.
+
+:::tip Legacy pattern
+The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
+:::
 
 ### Gate on environment variables
 
@@ -405,8 +419,8 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
-| [`pre_api_request`](/docs/user-guide/features/hooks#pre_api_request) | Before each HTTP request to the LLM provider | `method: str, url: str, headers: dict, body: dict` | ignored |
-| [`post_api_request`](/docs/user-guide/features/hooks#post_api_request) | After each HTTP response from the LLM provider | `method: str, url: str, status_code: int, response: dict` | ignored |
+| [`on_session_finalize`](/docs/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
+| [`on_session_reset`](/docs/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
 
@@ -546,6 +560,63 @@ After registration, users can run `hermes my-plugin status`, `hermes my-plugin c
 **Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](/docs/developer-guide/memory-provider-plugin#adding-cli-commands) for details.
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
+
+### Register slash commands
+
+Plugins can register in-session slash commands — commands users type during a conversation (like `/lcm status` or `/ping`). These work in both CLI and gateway (Telegram, Discord, etc.).
+
+```python
+def _handle_status(raw_args: str) -> str:
+    """Handler for /mystatus — called with everything after the command name."""
+    if raw_args.strip() == "help":
+        return "Usage: /mystatus [help|check]"
+    return "Plugin status: all systems nominal"
+
+def register(ctx):
+    ctx.register_command(
+        "mystatus",
+        handler=_handle_status,
+        description="Show plugin status",
+    )
+```
+
+After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
+
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "")`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
+| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+
+**Key differences from `register_cli_command()`:**
+
+| | `register_command()` | `register_cli_command()` |
+|---|---|---|
+| Invoked as | `/name` in a session | `hermes name` in a terminal |
+| Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
+| Handler receives | Raw args string | argparse `Namespace` |
+| Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
+
+**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
+
+**Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
+
+```python
+async def _handle_check(raw_args: str) -> str:
+    result = await some_async_operation()
+    return f"Check result: {result}"
+
+def register(ctx):
+    ctx.register_command("check", handler=_handle_check, description="Run async check")
+```
+
+:::tip
+This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). For specialized plugin types, see:
+- [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — cross-session knowledge backends
+- [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) — alternative context management strategies
+:::
 
 ### Distribute via pip
 

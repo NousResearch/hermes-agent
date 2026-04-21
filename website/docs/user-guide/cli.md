@@ -8,6 +8,10 @@ description: "Master the Hermes Agent terminal interface — commands, keybindin
 
 Hermes Agent's CLI is a full terminal user interface (TUI) — not a web UI. It features multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output. Built for people who live in the terminal.
 
+:::tip
+Hermes also ships a modern TUI with modal overlays, mouse selection, and non-blocking input. Launch it with `hermes --tui` — see the [TUI](tui.md) guide.
+:::
+
 ## Running the CLI
 
 ```bash
@@ -322,7 +326,11 @@ Long conversations are automatically summarized when approaching context limits:
 compression:
   enabled: true
   threshold: 0.50    # Compress at 50% of context limit by default
-  summary_model: "google/gemini-3-flash-preview"  # Model used for summarization
+
+# Summarization model configured under auxiliary:
+auxiliary:
+  compression:
+    model: "google/gemini-3-flash-preview"  # Model used for summarization
 ```
 
 When compression triggers, middle turns are summarized while the first 3 and last 4 turns are always preserved.

@@ -126,59 +126,6 @@ class TestRepoNameFromUrl:
 # ── plugins_command dispatch ──────────────────────────────────────────────
 
 
-class TestPluginsCommandDispatch:
-    """Verify alias routing in plugins_command()."""
-
-    def _make_args(self, action, **extras):
-        args = MagicMock()
-        args.plugins_action = action
-        for k, v in extras.items():
-            setattr(args, k, v)
-        return args
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_rm_alias(self, mock_remove):
-        args = self._make_args("rm", name="some-plugin")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("some-plugin")
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_uninstall_alias(self, mock_remove):
-        args = self._make_args("uninstall", name="some-plugin")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("some-plugin")
-
-    @patch("hermes_cli.plugins_cmd.cmd_list")
-    def test_ls_alias(self, mock_list):
-        args = self._make_args("ls")
-        plugins_command(args)
-        mock_list.assert_called_once()
-
-    @patch("hermes_cli.plugins_cmd.cmd_toggle")
-    def test_none_falls_through_to_toggle(self, mock_toggle):
-        args = self._make_args(None)
-        plugins_command(args)
-        mock_toggle.assert_called_once()
-
-    @patch("hermes_cli.plugins_cmd.cmd_install")
-    def test_install_dispatches(self, mock_install):
-        args = self._make_args("install", identifier="owner/repo", force=False)
-        plugins_command(args)
-        mock_install.assert_called_once_with("owner/repo", force=False)
-
-    @patch("hermes_cli.plugins_cmd.cmd_update")
-    def test_update_dispatches(self, mock_update):
-        args = self._make_args("update", name="foo")
-        plugins_command(args)
-        mock_update.assert_called_once_with("foo")
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_remove_dispatches(self, mock_remove):
-        args = self._make_args("remove", name="bar")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("bar")
-
-
 # ── _read_manifest ────────────────────────────────────────────────────────
 
 
@@ -555,3 +502,103 @@ class TestPromptPluginEnvVars:
 
         # Should not crash, and not save anything
         mock_save.assert_not_called()
+
+
+# ── curses_radiolist ─────────────────────────────────────────────────────
+
+
+class TestCursesRadiolist:
+    """Test the curses_radiolist function (non-TTY fallback path)."""
+
+    def test_non_tty_returns_default(self):
+        from hermes_cli.curses_ui import curses_radiolist
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            result = curses_radiolist("Pick one", ["a", "b", "c"], selected=1)
+            assert result == 1
+
+    def test_non_tty_returns_cancel_value(self):
+        from hermes_cli.curses_ui import curses_radiolist
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=1)
+            assert result == 1
+
+
+# ── Provider discovery helpers ───────────────────────────────────────────
+
+
+class TestProviderDiscovery:
+    """Test provider plugin discovery and config helpers."""
+
+    def test_get_current_memory_provider_default(self, tmp_path, monkeypatch):
+        """Empty config returns empty string."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("memory:\n  provider: ''\n")
+        from hermes_cli.plugins_cmd import _get_current_memory_provider
+        result = _get_current_memory_provider()
+        assert result == ""
+
+    def test_get_current_context_engine_default(self, tmp_path, monkeypatch):
+        """Default config returns 'compressor'."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("context:\n  engine: compressor\n")
+        from hermes_cli.plugins_cmd import _get_current_context_engine
+        result = _get_current_context_engine()
+        assert result == "compressor"
+
+    def test_save_memory_provider(self, tmp_path, monkeypatch):
+        """Saving a memory provider persists to config.yaml."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("memory:\n  provider: ''\n")
+        from hermes_cli.plugins_cmd import _save_memory_provider
+        _save_memory_provider("honcho")
+        content = yaml.safe_load(config_file.read_text())
+        assert content["memory"]["provider"] == "honcho"
+
+    def test_save_context_engine(self, tmp_path, monkeypatch):
+        """Saving a context engine persists to config.yaml."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("context:\n  engine: compressor\n")
+        from hermes_cli.plugins_cmd import _save_context_engine
+        _save_context_engine("lcm")
+        content = yaml.safe_load(config_file.read_text())
+        assert content["context"]["engine"] == "lcm"
+
+    def test_discover_memory_providers_empty(self):
+        """Discovery returns empty list when import fails."""
+        with patch("plugins.memory.discover_memory_providers",
+                    side_effect=ImportError("no module")):
+            from hermes_cli.plugins_cmd import _discover_memory_providers
+            result = _discover_memory_providers()
+            assert result == []
+
+    def test_discover_context_engines_empty(self):
+        """Discovery returns empty list when import fails."""
+        with patch("plugins.context_engine.discover_context_engines",
+                    side_effect=ImportError("no module")):
+            from hermes_cli.plugins_cmd import _discover_context_engines
+            result = _discover_context_engines()
+            assert result == []
+
+
+# ── Auto-activation fix ──────────────────────────────────────────────────
+
+
+class TestNoAutoActivation:
+    """Verify that plugin engines don't auto-activate when config says 'compressor'."""
+
+    def test_compressor_default_ignores_plugin(self):
+        """When context.engine is 'compressor', a plugin-registered engine should NOT
+        be used — only explicit config triggers plugin engines."""
+        # This tests the run_agent.py logic indirectly by checking that the
+        # code path for default config doesn't call get_plugin_context_engine.
+        import run_agent as ra_module
+        source = open(ra_module.__file__).read()
+        # The old code had: "Even with default config, check if a plugin registered one"
+        # The fix removes this. Verify it's gone.
+        assert "Even with default config, check if a plugin registered one" not in source

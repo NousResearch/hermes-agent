@@ -51,10 +51,10 @@ class TestSaveConfigValueAtomic:
     def test_creates_nested_keys(self, config_env):
         """Dot-separated paths create intermediate dicts as needed."""
         from cli import save_config_value
-        save_config_value("compression.summary_model", "google/gemini-3-flash-preview")
+        save_config_value("auxiliary.compression.model", "google/gemini-3-flash-preview")
 
         result = yaml.safe_load(config_env.read_text())
-        assert result["compression"]["summary_model"] == "google/gemini-3-flash-preview"
+        assert result["auxiliary"]["compression"]["model"] == "google/gemini-3-flash-preview"
 
     def test_overwrites_existing_value(self, config_env):
         """Updating an existing key replaces the value."""
@@ -63,6 +63,24 @@ class TestSaveConfigValueAtomic:
 
         result = yaml.safe_load(config_env.read_text())
         assert result["display"]["skin"] == "ares"
+
+    def test_preserves_env_ref_templates_in_unrelated_fields(self, config_env):
+        """The /model --global persistence path must not inline env-backed secrets."""
+        config_env.write_text(yaml.dump({
+            "custom_providers": [{
+                "name": "tuzi",
+                "api_key": "${TU_ZI_API_KEY}",
+                "model": "claude-opus-4-6",
+            }],
+            "model": {"default": "test-model", "provider": "openrouter"},
+        }))
+
+        from cli import save_config_value
+        save_config_value("model.default", "doubao-pro")
+
+        result = yaml.safe_load(config_env.read_text())
+        assert result["model"]["default"] == "doubao-pro"
+        assert result["custom_providers"][0]["api_key"] == "${TU_ZI_API_KEY}"
 
     def test_file_not_truncated_on_error(self, config_env, monkeypatch):
         """If atomic_yaml_write raises, the original file is untouched."""

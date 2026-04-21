@@ -386,6 +386,8 @@ class CopilotACPClient:
         stderr_tail: deque[str] = deque(maxlen=40)
 
         def _stdout_reader() -> None:
+            if proc.stdout is None:
+                return
             for line in proc.stdout:
                 try:
                     inbox.put(json.loads(line))

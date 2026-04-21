@@ -1713,7 +1713,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         
         try:
-            import os
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             
@@ -1762,7 +1761,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            import os
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
 
@@ -2823,13 +2821,11 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
 
             from tools.vision_tools import vision_analyze_tool
-            import json as _json
-
             result_json = await vision_analyze_tool(
                 image_url=cached_path,
                 user_prompt=STICKER_VISION_PROMPT,
             )
-            result = _json.loads(result_json)
+            result = json.loads(result_json)
 
             if result.get("success"):
                 description = result.get("analysis", "a sticker")

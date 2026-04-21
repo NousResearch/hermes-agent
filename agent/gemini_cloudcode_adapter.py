@@ -799,7 +799,8 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
         err_obj = {}
     err_status = str(err_obj.get("status") or "").strip()
     err_message = str(err_obj.get("message") or "").strip()
-    err_details_list = err_obj.get("details") if isinstance(err_obj.get("details"), list) else []
+    _raw_details = err_obj.get("details")
+    err_details_list = _raw_details if isinstance(_raw_details, list) else []
 
     # Extract google.rpc.ErrorInfo reason + metadata.  There may be more
     # than one ErrorInfo (rare), so we pick the first one with a reason.

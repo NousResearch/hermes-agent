@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Deque, Optional
@@ -554,15 +555,32 @@ class HermesACPAgent(acp.Agent):
         agent.step_callback = step_cb
         agent.message_callback = message_cb
 
-        if approval_cb:
-            try:
-                from tools import terminal_tool as _terminal_tool
-                previous_approval_cb = getattr(_terminal_tool, "_approval_callback", None)
-                _terminal_tool.set_approval_callback(approval_cb)
-            except Exception:
-                logger.debug("Could not set ACP approval callback", exc_info=True)
+        # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
+        # Set it INSIDE _run_agent so the TLS write happens in the executor
+        # thread — setting it here would write to the event-loop thread's TLS,
+        # not the executor's. Also set HERMES_INTERACTIVE so approval.py
+        # takes the CLI-interactive path (which calls the registered
+        # callback via prompt_dangerous_approval) instead of the
+        # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
+        # ACP's conn.request_permission maps cleanly to the interactive
+        # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
+        # which requires a notify_cb registered in _gateway_notify_cbs.
+        previous_approval_cb = None
+        previous_interactive = None
 
         def _run_agent() -> dict:
+            nonlocal previous_approval_cb, previous_interactive
+            if approval_cb:
+                try:
+                    from tools import terminal_tool as _terminal_tool
+                    previous_approval_cb = _terminal_tool._get_approval_callback()
+                    _terminal_tool.set_approval_callback(approval_cb)
+                except Exception:
+                    logger.debug("Could not set ACP approval callback", exc_info=True)
+            # Signal to tools.approval that we have an interactive callback
+            # and the non-interactive auto-approve path must not fire.
+            previous_interactive = os.environ.get("HERMES_INTERACTIVE")
+            os.environ["HERMES_INTERACTIVE"] = "1"
             try:
                 result = agent.run_conversation(
                     user_message=user_text,
@@ -574,6 +592,11 @@ class HermesACPAgent(acp.Agent):
                 logger.exception("Agent error in session %s", session_id)
                 return {"final_response": f"Error: {e}", "messages": state.history}
             finally:
+                # Restore HERMES_INTERACTIVE.
+                if previous_interactive is None:
+                    os.environ.pop("HERMES_INTERACTIVE", None)
+                else:
+                    os.environ["HERMES_INTERACTIVE"] = previous_interactive
                 if approval_cb:
                     try:
                         from tools import terminal_tool as _terminal_tool

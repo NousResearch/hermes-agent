@@ -71,6 +71,11 @@ except Exception:
 # Thread pool for running AIAgent (synchronous) in parallel.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 
+# Server-side page size for list_sessions. The ACP ListSessionsRequest schema
+# does not expose a client-side limit, so this is a fixed cap that clients
+# paginate against using `cursor` / `next_cursor`.
+_LIST_SESSIONS_PAGE_SIZE = 50
+
 
 def _extract_text(
     prompt: list[
@@ -446,22 +451,27 @@ class HermesACPAgent(acp.Agent):
         cwd: str | None = None,
         **kwargs: Any,
     ) -> ListSessionsResponse:
+        """List ACP sessions with optional ``cwd`` filtering and cursor pagination.
+
+        ``cwd`` is passed through to ``SessionManager.list_sessions`` which already
+        normalizes and filters by working directory. ``cursor`` is a ``session_id``
+        previously returned as ``next_cursor``; results resume after that entry.
+        Server-side page size is capped at ``_LIST_SESSIONS_PAGE_SIZE``; when more
+        results remain, ``next_cursor`` is set to the last returned ``session_id``.
+        """
         infos = self.session_manager.list_sessions(cwd=cwd)
 
         if cursor:
-            # Find the cursor index
             for idx, s in enumerate(infos):
                 if s["session_id"] == cursor:
                     infos = infos[idx + 1:]
                     break
             else:
-                # Cursor not found, return empty
+                # Unknown cursor -> empty page (do not fall back to full list).
                 infos = []
 
-        # Cap limit
-        limit = kwargs.get("limit", 50)
-        has_more = len(infos) > limit
-        infos = infos[:limit]
+        has_more = len(infos) > _LIST_SESSIONS_PAGE_SIZE
+        infos = infos[:_LIST_SESSIONS_PAGE_SIZE]
 
         sessions = []
         for s in infos:
@@ -476,9 +486,9 @@ class HermesACPAgent(acp.Agent):
                     updated_at=updated_at,
                 )
             )
-            
+
         next_cursor = sessions[-1].session_id if has_more and sessions else None
-        return ListSessionsResponse(sessions=sessions, nextCursor=next_cursor)
+        return ListSessionsResponse(sessions=sessions, next_cursor=next_cursor)
 
     # ---- Prompt (core) ------------------------------------------------------
 

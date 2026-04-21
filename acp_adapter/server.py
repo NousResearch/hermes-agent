@@ -447,6 +447,22 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> ListSessionsResponse:
         infos = self.session_manager.list_sessions(cwd=cwd)
+
+        if cursor:
+            # Find the cursor index
+            for idx, s in enumerate(infos):
+                if s["session_id"] == cursor:
+                    infos = infos[idx + 1:]
+                    break
+            else:
+                # Cursor not found, return empty
+                infos = []
+
+        # Cap limit
+        limit = kwargs.get("limit", 50)
+        has_more = len(infos) > limit
+        infos = infos[:limit]
+
         sessions = []
         for s in infos:
             updated_at = s.get("updated_at")
@@ -460,7 +476,9 @@ class HermesACPAgent(acp.Agent):
                     updated_at=updated_at,
                 )
             )
-        return ListSessionsResponse(sessions=sessions)
+            
+        next_cursor = sessions[-1].session_id if has_more and sessions else None
+        return ListSessionsResponse(sessions=sessions, nextCursor=next_cursor)
 
     # ---- Prompt (core) ------------------------------------------------------
 

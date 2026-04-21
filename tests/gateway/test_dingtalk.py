@@ -1,14 +1,12 @@
 """Tests for DingTalk platform adapter."""
+
 import asyncio
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from gateway.config import Platform, PlatformConfig
-
 
 # ---------------------------------------------------------------------------
 # Requirements check
@@ -16,13 +14,13 @@ from gateway.config import Platform, PlatformConfig
 
 
 class TestDingTalkRequirements:
-
     def test_returns_false_when_sdk_missing(self, monkeypatch):
         with patch.dict("sys.modules", {"dingtalk_stream": None}):
             monkeypatch.setattr(
                 "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", False
             )
             from gateway.platforms.dingtalk import check_dingtalk_requirements
+
             assert check_dingtalk_requirements() is False
 
     def test_returns_false_when_env_vars_missing(self, monkeypatch):
@@ -33,6 +31,7 @@ class TestDingTalkRequirements:
         monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
         monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
         from gateway.platforms.dingtalk import check_dingtalk_requirements
+
         assert check_dingtalk_requirements() is False
 
     def test_returns_true_when_all_available(self, monkeypatch):
@@ -43,6 +42,7 @@ class TestDingTalkRequirements:
         monkeypatch.setenv("DINGTALK_CLIENT_ID", "test-id")
         monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "test-secret")
         from gateway.platforms.dingtalk import check_dingtalk_requirements
+
         assert check_dingtalk_requirements() is True
 
 
@@ -52,9 +52,9 @@ class TestDingTalkRequirements:
 
 
 class TestDingTalkAdapterInit:
-
     def test_reads_config_from_extra(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         config = PlatformConfig(
             enabled=True,
             extra={"client_id": "cfg-id", "client_secret": "cfg-secret"},
@@ -68,6 +68,7 @@ class TestDingTalkAdapterInit:
         monkeypatch.setenv("DINGTALK_CLIENT_ID", "env-id")
         monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "env-secret")
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         config = PlatformConfig(enabled=True)
         adapter = DingTalkAdapter(config)
         assert adapter._client_id == "env-id"
@@ -80,9 +81,9 @@ class TestDingTalkAdapterInit:
 
 
 class TestExtractText:
-
     def test_extracts_dict_text(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         msg = MagicMock()
         msg.text = {"content": "  hello world  "}
         msg.rich_text = None
@@ -90,6 +91,7 @@ class TestExtractText:
 
     def test_extracts_string_text(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         msg = MagicMock()
         msg.text = "plain text"
         msg.rich_text = None
@@ -97,6 +99,7 @@ class TestExtractText:
 
     def test_falls_back_to_rich_text(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         msg = MagicMock()
         msg.text = ""
         msg.rich_text = [{"text": "part1"}, {"text": "part2"}, {"image": "url"}]
@@ -104,6 +107,7 @@ class TestExtractText:
 
     def test_returns_empty_for_no_content(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         msg = MagicMock()
         msg.text = ""
         msg.rich_text = None
@@ -116,26 +120,29 @@ class TestExtractText:
 
 
 class TestDeduplication:
-
     def test_first_message_not_duplicate(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         assert adapter._dedup.is_duplicate("msg-1") is False
 
     def test_second_same_message_is_duplicate(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._dedup.is_duplicate("msg-1")
         assert adapter._dedup.is_duplicate("msg-1") is True
 
     def test_different_messages_not_duplicate(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._dedup.is_duplicate("msg-1")
         assert adapter._dedup.is_duplicate("msg-2") is False
 
     def test_cache_cleanup_on_overflow(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         max_size = adapter._dedup._max_size
         # Fill beyond max
@@ -151,10 +158,10 @@ class TestDeduplication:
 
 
 class TestSend:
-
     @pytest.mark.asyncio
     async def test_send_posts_to_webhook(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         mock_response = MagicMock()
@@ -166,8 +173,9 @@ class TestSend:
         adapter._http_client = mock_client
 
         result = await adapter.send(
-            "chat-123", "Hello!",
-            metadata={"session_webhook": "https://dingtalk.example/webhook"}
+            "chat-123",
+            "Hello!",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
         )
         assert result.success is True
         mock_client.post.assert_called_once()
@@ -181,6 +189,7 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_send_fails_without_webhook(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._http_client = AsyncMock()
 
@@ -191,6 +200,7 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_send_uses_cached_webhook(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         mock_response = MagicMock()
@@ -198,7 +208,10 @@ class TestSend:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_response)
         adapter._http_client = mock_client
-        adapter._session_webhooks["chat-123"] = ("https://cached.example/webhook", 9999999999999)
+        adapter._session_webhooks["chat-123"] = (
+            "https://cached.example/webhook",
+            9999999999999,
+        )
 
         result = await adapter.send("chat-123", "Hello!")
         assert result.success is True
@@ -207,6 +220,7 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_send_handles_http_error(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         mock_response = MagicMock()
@@ -217,8 +231,9 @@ class TestSend:
         adapter._http_client = mock_client
 
         result = await adapter.send(
-            "chat-123", "Hello!",
-            metadata={"session_webhook": "https://example/webhook"}
+            "chat-123",
+            "Hello!",
+            metadata={"session_webhook": "https://example/webhook"},
         )
         assert result.success is False
         assert "400" in result.error
@@ -230,7 +245,6 @@ class TestSend:
 
 
 class TestConnect:
-
     @pytest.mark.asyncio
     async def test_disconnect_closes_session_websocket(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
@@ -260,6 +274,7 @@ class TestConnect:
             "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", False
         )
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         result = await adapter.connect()
         assert result is False
@@ -267,6 +282,7 @@ class TestConnect:
     @pytest.mark.asyncio
     async def test_connect_fails_without_credentials(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._client_id = ""
         adapter._client_secret = ""
@@ -276,6 +292,7 @@ class TestConnect:
     @pytest.mark.asyncio
     async def test_disconnect_cleans_up(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._session_webhooks["a"] = "http://x"
         adapter._dedup._seen["b"] = 1.0
@@ -308,28 +325,31 @@ class TestWebhookDomainAllowlist:
 
     def test_api_domain_accepted(self):
         from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+
         assert _DINGTALK_WEBHOOK_RE.match(
             "https://api.dingtalk.com/robot/send?access_token=x"
         )
 
     def test_oapi_domain_accepted(self):
         from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+
         assert _DINGTALK_WEBHOOK_RE.match(
             "https://oapi.dingtalk.com/robot/send?access_token=x"
         )
 
     def test_http_rejected(self):
         from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+
         assert not _DINGTALK_WEBHOOK_RE.match("http://api.dingtalk.com/robot/send")
 
     def test_suffix_attack_rejected(self):
         from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
-        assert not _DINGTALK_WEBHOOK_RE.match(
-            "https://api.dingtalk.com.evil.example/"
-        )
+
+        assert not _DINGTALK_WEBHOOK_RE.match("https://api.dingtalk.com.evil.example/")
 
     def test_unsanctioned_subdomain_rejected(self):
         from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+
         # Only api.* and oapi.* are allowed — e.g. eapi.dingtalk.com must not slip through
         assert not _DINGTALK_WEBHOOK_RE.match("https://eapi.dingtalk.com/robot/send")
 
@@ -339,6 +359,7 @@ class TestHandlerProcessIsAsync:
 
     def test_process_is_coroutine_function(self):
         from gateway.platforms.dingtalk import _IncomingHandler
+
         assert asyncio.iscoroutinefunction(_IncomingHandler.process)
 
 
@@ -353,6 +374,7 @@ class TestExtractText:
 
     def test_text_as_dict_legacy(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         msg = MagicMock()
         msg.text = {"content": "hello world"}
         msg.rich_text_content = None
@@ -406,6 +428,7 @@ class TestExtractText:
     def test_rich_text_legacy_shape(self):
         """Legacy ``message.rich_text`` list remains supported."""
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         msg = MagicMock()
         msg.text = None
         msg.rich_text_content = None
@@ -415,6 +438,7 @@ class TestExtractText:
 
     def test_empty_message(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         msg = MagicMock()
         msg.text = None
         msg.rich_text_content = None
@@ -443,11 +467,11 @@ def _make_gating_adapter(monkeypatch, *, extra=None, env=None):
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
     from gateway.platforms.dingtalk import DingTalkAdapter
+
     return DingTalkAdapter(PlatformConfig(enabled=True, extra=extra or {}))
 
 
 class TestAllowedUsersGate:
-
     def test_empty_allowlist_allows_everyone(self, monkeypatch):
         adapter = _make_gating_adapter(monkeypatch)
         assert adapter._is_user_allowed("anyone", "any-staff") is True
@@ -483,7 +507,6 @@ class TestAllowedUsersGate:
 
 
 class TestMentionPatterns:
-
     def test_empty_patterns_list(self, monkeypatch):
         adapter = _make_gating_adapter(monkeypatch)
         assert adapter._mention_patterns == []
@@ -528,34 +551,37 @@ class TestMentionPatterns:
 
 
 class TestShouldProcessMessage:
-
     def test_dm_always_accepted(self, monkeypatch):
-        adapter = _make_gating_adapter(
-            monkeypatch, extra={"require_mention": True}
-        )
+        adapter = _make_gating_adapter(monkeypatch, extra={"require_mention": True})
         msg = MagicMock(is_in_at_list=False)
-        assert adapter._should_process_message(msg, "hi", is_group=False, chat_id="dm1") is True
+        assert (
+            adapter._should_process_message(msg, "hi", is_group=False, chat_id="dm1")
+            is True
+        )
 
     def test_group_rejected_when_require_mention_and_no_trigger(self, monkeypatch):
-        adapter = _make_gating_adapter(
-            monkeypatch, extra={"require_mention": True}
-        )
+        adapter = _make_gating_adapter(monkeypatch, extra={"require_mention": True})
         msg = MagicMock(is_in_at_list=False)
-        assert adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1") is False
+        assert (
+            adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1")
+            is False
+        )
 
     def test_group_accepted_when_require_mention_disabled(self, monkeypatch):
-        adapter = _make_gating_adapter(
-            monkeypatch, extra={"require_mention": False}
-        )
+        adapter = _make_gating_adapter(monkeypatch, extra={"require_mention": False})
         msg = MagicMock(is_in_at_list=False)
-        assert adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1") is True
+        assert (
+            adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1")
+            is True
+        )
 
     def test_group_accepted_when_bot_is_mentioned(self, monkeypatch):
-        adapter = _make_gating_adapter(
-            monkeypatch, extra={"require_mention": True}
-        )
+        adapter = _make_gating_adapter(monkeypatch, extra={"require_mention": True})
         msg = MagicMock(is_in_at_list=True)
-        assert adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1") is True
+        assert (
+            adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1")
+            is True
+        )
 
     def test_group_accepted_when_text_matches_wake_word(self, monkeypatch):
         adapter = _make_gating_adapter(
@@ -563,7 +589,12 @@ class TestShouldProcessMessage:
             extra={"require_mention": True, "mention_patterns": ["^hermes"]},
         )
         msg = MagicMock(is_in_at_list=False)
-        assert adapter._should_process_message(msg, "hermes help", is_group=True, chat_id="grp1") is True
+        assert (
+            adapter._should_process_message(
+                msg, "hermes help", is_group=True, chat_id="grp1"
+            )
+            is True
+        )
 
     def test_group_accepted_when_chat_in_free_response_list(self, monkeypatch):
         adapter = _make_gating_adapter(
@@ -571,9 +602,15 @@ class TestShouldProcessMessage:
             extra={"require_mention": True, "free_response_chats": ["grp1"]},
         )
         msg = MagicMock(is_in_at_list=False)
-        assert adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1") is True
+        assert (
+            adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp1")
+            is True
+        )
         # Different group still blocked
-        assert adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp2") is False
+        assert (
+            adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp2")
+            is False
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +626,7 @@ class TestIncomingHandlerProcess:
     @pytest.mark.asyncio
     async def test_process_extracts_session_webhook(self):
         """session_webhook must be populated from callback data."""
-        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+        from gateway.platforms.dingtalk import DingTalkAdapter, _IncomingHandler
 
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._on_message = AsyncMock()
@@ -615,14 +652,17 @@ class TestIncomingHandlerProcess:
         # _on_message should have been called with a ChatbotMessage
         adapter._on_message.assert_called_once()
         chatbot_msg = adapter._on_message.call_args[0][0]
-        assert chatbot_msg.session_webhook == "https://oapi.dingtalk.com/robot/sendBySession?session=abc"
+        assert (
+            chatbot_msg.session_webhook
+            == "https://oapi.dingtalk.com/robot/sendBySession?session=abc"
+        )
 
     @pytest.mark.asyncio
     async def test_process_fallback_session_webhook_when_from_dict_misses_it(self):
         """If ChatbotMessage.from_dict does not map sessionWebhook (e.g. SDK
         version mismatch), the handler should fall back to extracting it
         directly from the raw data dict."""
-        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+        from gateway.platforms.dingtalk import DingTalkAdapter, _IncomingHandler
 
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._on_message = AsyncMock()
@@ -644,13 +684,16 @@ class TestIncomingHandlerProcess:
 
         adapter._on_message.assert_called_once()
         chatbot_msg = adapter._on_message.call_args[0][0]
-        assert chatbot_msg.session_webhook == "https://oapi.dingtalk.com/robot/sendBySession?session=def"
+        assert (
+            chatbot_msg.session_webhook
+            == "https://oapi.dingtalk.com/robot/sendBySession?session=def"
+        )
 
     @pytest.mark.asyncio
     async def test_process_returns_ack_immediately(self):
         """process() must not block on _on_message — it should return
         the ACK tuple before the message is fully processed."""
-        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+        from gateway.platforms.dingtalk import DingTalkAdapter, _IncomingHandler
 
         processing_started = asyncio.Event()
         processing_gate = asyncio.Event()
@@ -686,8 +729,8 @@ class TestIncomingHandlerProcess:
 # Text extraction — mention preservation + platform sanity
 # ---------------------------------------------------------------------------
 
-class TestExtractTextMentions:
 
+class TestExtractTextMentions:
     def test_preserves_at_mentions_in_text(self):
         """@mentions are routing signals (via isInAtList), not text to strip.
 
@@ -695,6 +738,7 @@ class TestExtractTextMentions:
         literal references the user wrote.
         """
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         cases = [
             ("@bot hello", "@bot hello"),
             ("contact alice@example.com", "contact alice@example.com"),
@@ -724,10 +768,10 @@ class TestExtractTextMentions:
 
 
 class TestMessageContextIsolation:
-
     def test_contexts_keyed_by_chat_id(self):
         """Two concurrent chats must not clobber each other's context."""
         from gateway.platforms.dingtalk import DingTalkAdapter
+
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         msg_a = MagicMock(conversation_id="chat-A", sender_staff_id="user-A")
@@ -739,24 +783,44 @@ class TestMessageContextIsolation:
         assert adapter._message_contexts["chat-B"] is msg_b
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # Card lifecycle: finalize via metadata["streaming"]
 # ---------------------------------------------------------------------------
 
 
-class TestCardLifecycle:
+class _AttrMockModule:
+    """Mock module whose class-like attributes act as dataclass constructors.
 
+    ``_AttrMockModule().SomeModel(foo=1)`` returns a ``SimpleNamespace(foo=1)``
+    so that tests can assert on keyword arguments stored as attributes.
+    """
+
+    def __getattr__(self, name: str):
+        from types import SimpleNamespace
+
+        def _constructor(**kwargs):
+            return SimpleNamespace(**kwargs)
+
+        return _constructor
+
+
+class TestCardLifecycle:
     @pytest.fixture
-    def adapter_with_card(self):
+    def adapter_with_card(self, monkeypatch):
         from gateway.platforms.dingtalk import DingTalkAdapter
-        a = DingTalkAdapter(PlatformConfig(
-            enabled=True,
-            extra={"card_template_id": "tmpl-1"},
-        ))
+
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.tea_util_models", _AttrMockModule()
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.dingtalk_card_models", _AttrMockModule()
+        )
+        a = DingTalkAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"card_template_id": "tmpl-1"},
+            )
+        )
         a._card_sdk = MagicMock()
         a._card_sdk.create_card_with_options_async = AsyncMock()
         a._card_sdk.deliver_card_with_options_async = AsyncMock()
@@ -772,7 +836,8 @@ class TestCardLifecycle:
         )
         a._message_contexts["chat-1"] = msg
         a._session_webhooks["chat-1"] = (
-            "https://api.dingtalk.com/x", 9999999999999,
+            "https://api.dingtalk.com/x",
+            9999999999999,
         )
         return a
 
@@ -826,12 +891,16 @@ class TestCardLifecycle:
         await a.send("chat-1", "initial")
         # Reopen via edit_message(finalize=False) then close.
         await a.edit_message(
-            chat_id="chat-1", message_id="track-X",
-            content="streaming...", finalize=False,
+            chat_id="chat-1",
+            message_id="track-X",
+            content="streaming...",
+            finalize=False,
         )
         await a.edit_message(
-            chat_id="chat-1", message_id="track-X",
-            content="final", finalize=True,
+            chat_id="chat-1",
+            message_id="track-X",
+            content="final",
+            finalize=True,
         )
         assert "chat-1" in fired
 
@@ -840,15 +909,18 @@ class TestCardLifecycle:
         """After edit_message(finalize=False), card is tracked as open."""
         a = adapter_with_card
         await a.edit_message(
-            chat_id="chat-1", message_id="track-1",
-            content="partial", finalize=False,
+            chat_id="chat-1",
+            message_id="track-1",
+            content="partial",
+            finalize=False,
         )
         assert "chat-1" in a._streaming_cards
         assert a._streaming_cards["chat-1"].get("track-1") == "partial"
 
     @pytest.mark.asyncio
     async def test_next_send_auto_closes_sibling_streaming_cards(
-        self, adapter_with_card,
+        self,
+        adapter_with_card,
     ):
         """Tool-progress card left open (send without reply_to + edits) must
         be auto-closed when the final-reply send arrives."""
@@ -857,8 +929,10 @@ class TestCardLifecycle:
         r1 = await a.send("chat-1", "💻 tool1")
         # Second tool: edit_message(finalize=False) — keeps streaming.
         await a.edit_message(
-            chat_id="chat-1", message_id=r1.message_id,
-            content="💻 tool1\n💻 tool2", finalize=False,
+            chat_id="chat-1",
+            message_id=r1.message_id,
+            content="💻 tool1\n💻 tool2",
+            finalize=False,
         )
         assert r1.message_id in a._streaming_cards.get("chat-1", {})
         a._card_sdk.streaming_update_with_options_async.reset_mock()
@@ -880,7 +954,10 @@ class TestCardLifecycle:
     async def test_edit_message_requires_message_id(self, adapter_with_card):
         a = adapter_with_card
         result = await a.edit_message(
-            chat_id="chat-1", message_id="", content="x", finalize=True,
+            chat_id="chat-1",
+            message_id="",
+            content="x",
+            finalize=True,
         )
         assert result.success is False
         a._card_sdk.streaming_update_with_options_async.assert_not_called()
@@ -888,8 +965,10 @@ class TestCardLifecycle:
     def test_fire_done_reaction_is_idempotent(self, adapter_with_card):
         a = adapter_with_card
         captured = []
+
         def _capture(coro):
             captured.append(coro)
+
         a._spawn_bg = _capture
 
         a._fire_done_reaction("chat-1")
@@ -898,10 +977,10 @@ class TestCardLifecycle:
         captured[0].close()
 
 
-
 # ---------------------------------------------------------------------------
 # AI Card Tests
 # ---------------------------------------------------------------------------
+
 
 class TestDingTalkAdapterAICards:
     @pytest.fixture
@@ -935,21 +1014,37 @@ class TestDingTalkAdapterAICards:
         msg.sender_nick = "Test User"
         msg.sender_staff_id = "staff1"
         msg.text = MagicMock(content="Hello")
-        msg.session_webhook = "https://api.dingtalk.com/robot/sendBySession?session=test"
+        msg.session_webhook = (
+            "https://api.dingtalk.com/robot/sendBySession?session=test"
+        )
         msg.session_webhook_expired_time = 999999999999
-        msg.create_at = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        msg.create_at = int(datetime.now(tz=UTC).timestamp() * 1000)
         msg.at_users = []
         return msg
 
     @pytest.mark.asyncio
-    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message):
+    async def test_send_uses_ai_card_if_configured(
+        self, config, mock_stream_client, mock_http_client, mock_message, monkeypatch
+    ):
         from gateway.platforms.dingtalk import DingTalkAdapter
+
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.tea_util_models", _AttrMockModule()
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.dingtalk_card_models", _AttrMockModule()
+        )
 
         adapter = DingTalkAdapter(config)
         adapter._stream_client = mock_stream_client
         adapter._http_client = mock_http_client
         adapter._message_contexts["test_conv_id"] = mock_message
-        adapter._session_webhooks = {"test_conv_id": ("https://api.dingtalk.com/robot/sendBySession?session=test", 9999999999999)}
+        adapter._session_webhooks = {
+            "test_conv_id": (
+                "https://api.dingtalk.com/robot/sendBySession?session=test",
+                9999999999999,
+            )
+        }
         adapter._card_template_id = "test_card_template"
 
         # Mock the card SDK with proper async methods

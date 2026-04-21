@@ -14,19 +14,15 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 from gateway.platforms.base import (
-    MessageEvent,
     MessageType,
-    SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
 )
-
 
 # ---------------------------------------------------------------------------
 # Mock the slack-bolt package if it's not installed
 # ---------------------------------------------------------------------------
+
 
 def _ensure_slack_mock():
     """Install mock slack modules so SlackAdapter can be imported."""
@@ -45,7 +41,10 @@ def _ensure_slack_mock():
         ("slack_bolt.async_app", slack_bolt.async_app),
         ("slack_bolt.adapter", slack_bolt.adapter),
         ("slack_bolt.adapter.socket_mode", slack_bolt.adapter.socket_mode),
-        ("slack_bolt.adapter.socket_mode.async_handler", slack_bolt.adapter.socket_mode.async_handler),
+        (
+            "slack_bolt.adapter.socket_mode.async_handler",
+            slack_bolt.adapter.socket_mode.async_handler,
+        ),
         ("slack_sdk", slack_sdk),
         ("slack_sdk.web", slack_sdk.web),
         ("slack_sdk.web.async_client", slack_sdk.web.async_client),
@@ -57,22 +56,26 @@ _ensure_slack_mock()
 
 # Patch SLACK_AVAILABLE before importing the adapter
 import gateway.platforms.slack as _slack_mod
+
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
+
+@pytest.fixture
 def adapter():
     config = PlatformConfig(enabled=True, token="xoxb-fake-token")
     a = SlackAdapter(config)
     # Mock the Slack app client
     a._app = MagicMock()
-    a._app.client = AsyncMock()
+    a._app.client = MagicMock()
+    a._app.client.users_info = AsyncMock(
+        return_value={"user": {"profile": {"display_name": "Test User"}}}
+    )
     a._bot_user_id = "U_BOT"
     a._running = True
     # Capture events instead of processing them
@@ -92,6 +95,7 @@ def _redirect_cache(tmp_path, monkeypatch):
 # TestAppMentionHandler
 # ---------------------------------------------------------------------------
 
+
 class TestAppMentionHandler:
     """Verify that the app_mention event handler is registered."""
 
@@ -110,37 +114,47 @@ class TestAppMentionHandler:
             def decorator(fn):
                 registered_events.append(event_type)
                 return fn
+
             return decorator
 
         def mock_command(cmd):
             def decorator(fn):
                 registered_commands.append(cmd)
                 return fn
+
             return decorator
 
         mock_app.event = mock_event
         mock_app.command = mock_command
         mock_app.client = AsyncMock()
-        mock_app.client.auth_test = AsyncMock(return_value={
-            "user_id": "U_BOT",
-            "user": "testbot",
-        })
+        mock_app.client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_BOT",
+                "user": "testbot",
+            }
+        )
 
         # Mock AsyncWebClient so multi-workspace auth_test is awaitable
         mock_web_client = AsyncMock()
-        mock_web_client.auth_test = AsyncMock(return_value={
-            "user_id": "U_BOT",
-            "user": "testbot",
-            "team_id": "T_FAKE",
-            "team": "FakeTeam",
-        })
+        mock_web_client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_BOT",
+                "user": "testbot",
+                "team_id": "T_FAKE",
+                "team": "FakeTeam",
+            }
+        )
 
-        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
-             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
-             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
-             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
-             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("asyncio.create_task"):
+        with (
+            patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+            patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+            patch.object(
+                _slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()
+            ),
+            patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}),
+            patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+            patch("asyncio.create_task"),
+        ):
             asyncio.run(adapter.connect())
 
         assert "message" in registered_events
@@ -162,12 +176,16 @@ class TestSlackConnectCleanup:
         mock_web_client = AsyncMock()
         mock_web_client.auth_test = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
-             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
-             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
-             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
-             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
+        with (
+            patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+            patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+            patch.object(
+                _slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()
+            ),
+            patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}),
+            patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+            patch("gateway.status.release_scoped_lock") as mock_release,
+        ):
             result = await adapter.connect()
 
         assert result is False
@@ -178,6 +196,7 @@ class TestSlackConnectCleanup:
 # ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------
+
 
 class TestSendDocument:
     @pytest.mark.asyncio
@@ -279,6 +298,7 @@ class TestSendDocument:
 # TestSendVideo
 # ---------------------------------------------------------------------------
 
+
 class TestSendVideo:
     @pytest.mark.asyncio
     async def test_send_video_success(self, adapter, tmp_path):
@@ -341,6 +361,7 @@ class TestSendVideo:
 # TestIncomingDocumentHandling
 # ---------------------------------------------------------------------------
 
+
 class TestIncomingDocumentHandling:
     def _make_event(self, files=None, text="hello", channel_type="im"):
         """Build a mock Slack message event with file attachments."""
@@ -358,14 +379,20 @@ class TestIncomingDocumentHandling:
         """A PDF attachment should be downloaded, cached, and set as DOCUMENT type."""
         pdf_bytes = b"%PDF-1.4 fake content"
 
-        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
             dl.return_value = pdf_bytes
-            event = self._make_event(files=[{
-                "mimetype": "application/pdf",
-                "name": "report.pdf",
-                "url_private_download": "https://files.slack.com/report.pdf",
-                "size": len(pdf_bytes),
-            }])
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "application/pdf",
+                        "name": "report.pdf",
+                        "url_private_download": "https://files.slack.com/report.pdf",
+                        "size": len(pdf_bytes),
+                    }
+                ]
+            )
             await adapter._handle_slack_message(event)
 
         msg_event = adapter.handle_message.call_args[0][0]
@@ -379,16 +406,20 @@ class TestIncomingDocumentHandling:
         """A .txt file under 100KB should have its content injected into event text."""
         content = b"Hello from a text file"
 
-        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
             dl.return_value = content
             event = self._make_event(
                 text="summarize this",
-                files=[{
-                    "mimetype": "text/plain",
-                    "name": "notes.txt",
-                    "url_private_download": "https://files.slack.com/notes.txt",
-                    "size": len(content),
-                }],
+                files=[
+                    {
+                        "mimetype": "text/plain",
+                        "name": "notes.txt",
+                        "url_private_download": "https://files.slack.com/notes.txt",
+                        "size": len(content),
+                    }
+                ],
             )
             await adapter._handle_slack_message(event)
 
@@ -402,14 +433,21 @@ class TestIncomingDocumentHandling:
         """A .md file under 100KB should have its content injected."""
         content = b"# Title\nSome markdown content"
 
-        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
             dl.return_value = content
-            event = self._make_event(files=[{
-                "mimetype": "text/markdown",
-                "name": "readme.md",
-                "url_private_download": "https://files.slack.com/readme.md",
-                "size": len(content),
-            }], text="")
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "text/markdown",
+                        "name": "readme.md",
+                        "url_private_download": "https://files.slack.com/readme.md",
+                        "size": len(content),
+                    }
+                ],
+                text="",
+            )
             await adapter._handle_slack_message(event)
 
         msg_event = adapter.handle_message.call_args[0][0]
@@ -420,14 +458,21 @@ class TestIncomingDocumentHandling:
         """A .txt file over 100KB should be cached but NOT injected."""
         content = b"x" * (200 * 1024)
 
-        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
             dl.return_value = content
-            event = self._make_event(files=[{
-                "mimetype": "text/plain",
-                "name": "big.txt",
-                "url_private_download": "https://files.slack.com/big.txt",
-                "size": len(content),
-            }], text="")
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "text/plain",
+                        "name": "big.txt",
+                        "url_private_download": "https://files.slack.com/big.txt",
+                        "size": len(content),
+                    }
+                ],
+                text="",
+            )
             await adapter._handle_slack_message(event)
 
         msg_event = adapter.handle_message.call_args[0][0]
@@ -437,14 +482,20 @@ class TestIncomingDocumentHandling:
     @pytest.mark.asyncio
     async def test_zip_file_cached(self, adapter):
         """A .zip file should be cached as a supported document."""
-        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
             dl.return_value = b"PK\x03\x04zip"
-            event = self._make_event(files=[{
-                "mimetype": "application/zip",
-                "name": "archive.zip",
-                "url_private_download": "https://files.slack.com/archive.zip",
-                "size": 1024,
-            }])
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "application/zip",
+                        "name": "archive.zip",
+                        "url_private_download": "https://files.slack.com/archive.zip",
+                        "size": 1024,
+                    }
+                ]
+            )
             await adapter._handle_slack_message(event)
 
         msg_event = adapter.handle_message.call_args[0][0]
@@ -455,12 +506,16 @@ class TestIncomingDocumentHandling:
     @pytest.mark.asyncio
     async def test_oversized_document_skipped(self, adapter):
         """A document over 20MB should be skipped."""
-        event = self._make_event(files=[{
-            "mimetype": "application/pdf",
-            "name": "huge.pdf",
-            "url_private_download": "https://files.slack.com/huge.pdf",
-            "size": 25 * 1024 * 1024,
-        }])
+        event = self._make_event(
+            files=[
+                {
+                    "mimetype": "application/pdf",
+                    "name": "huge.pdf",
+                    "url_private_download": "https://files.slack.com/huge.pdf",
+                    "size": 25 * 1024 * 1024,
+                }
+            ]
+        )
         await adapter._handle_slack_message(event)
 
         msg_event = adapter.handle_message.call_args[0][0]
@@ -469,14 +524,20 @@ class TestIncomingDocumentHandling:
     @pytest.mark.asyncio
     async def test_document_download_error_handled(self, adapter):
         """If document download fails, handler should not crash."""
-        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
             dl.side_effect = RuntimeError("download failed")
-            event = self._make_event(files=[{
-                "mimetype": "application/pdf",
-                "name": "report.pdf",
-                "url_private_download": "https://files.slack.com/report.pdf",
-                "size": 1024,
-            }])
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "application/pdf",
+                        "name": "report.pdf",
+                        "url_private_download": "https://files.slack.com/report.pdf",
+                        "size": 1024,
+                    }
+                ]
+            )
             await adapter._handle_slack_message(event)
 
         # Handler should still be called (the exception is caught)
@@ -485,14 +546,20 @@ class TestIncomingDocumentHandling:
     @pytest.mark.asyncio
     async def test_image_still_handled(self, adapter):
         """Image attachments should still go through the image path, not document."""
-        with patch.object(adapter, "_download_slack_file", new_callable=AsyncMock) as dl:
+        with patch.object(
+            adapter, "_download_slack_file", new_callable=AsyncMock
+        ) as dl:
             dl.return_value = "/tmp/cached_image.jpg"
-            event = self._make_event(files=[{
-                "mimetype": "image/jpeg",
-                "name": "photo.jpg",
-                "url_private_download": "https://files.slack.com/photo.jpg",
-                "size": 1024,
-            }])
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "image/jpeg",
+                        "name": "photo.jpg",
+                        "url_private_download": "https://files.slack.com/photo.jpg",
+                        "size": 1024,
+                    }
+                ]
+            )
             await adapter._handle_slack_message(event)
 
         msg_event = adapter.handle_message.call_args[0][0]
@@ -502,6 +569,7 @@ class TestIncomingDocumentHandling:
 # ---------------------------------------------------------------------------
 # TestMessageRouting
 # ---------------------------------------------------------------------------
+
 
 class TestMessageRouting:
     @pytest.mark.asyncio
@@ -756,7 +824,9 @@ class TestFormatMessage:
 
     def test_link_with_parentheses_in_url(self, adapter):
         """Wikipedia-style URL with balanced parens is not truncated."""
-        result = adapter.format_message("[Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
+        result = adapter.format_message(
+            "[Foo](https://en.wikipedia.org/wiki/Foo_(bar))"
+        )
         assert result == "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>"
 
     def test_link_with_multiple_paren_pairs(self, adapter):
@@ -771,7 +841,9 @@ class TestFormatMessage:
 
     def test_link_with_angle_brackets_and_parens(self, adapter):
         """Angle-bracket URL with parens (CommonMark syntax)."""
-        result = adapter.format_message("[Foo](<https://en.wikipedia.org/wiki/Foo_(bar)>)")
+        result = adapter.format_message(
+            "[Foo](<https://en.wikipedia.org/wiki/Foo_(bar)>)"
+        )
         assert result == "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>"
 
     def test_escaping_is_idempotent(self, adapter):
@@ -793,7 +865,10 @@ class TestFormatMessage:
 
     def test_subteam_mention_preserved(self, adapter):
         """<!subteam^ID> user group mention passes through unchanged."""
-        assert adapter.format_message("Paging <!subteam^S12345>") == "Paging <!subteam^S12345>"
+        assert (
+            adapter.format_message("Paging <!subteam^S12345>")
+            == "Paging <!subteam^S12345>"
+        )
 
     def test_date_formatting_preserved(self, adapter):
         """<!date^...> formatting token passes through unchanged."""
@@ -987,7 +1062,9 @@ class TestEditMessageStreamingPipeline:
     async def test_edit_message_formats_url_with_parens(self, adapter):
         """Wikipedia-style URL with parens survives edit pipeline."""
         adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
-        await adapter.edit_message("C123", "ts1", "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
+        await adapter.edit_message(
+            "C123", "ts1", "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))"
+        )
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
 
@@ -1019,7 +1096,9 @@ class TestReactions:
 
     @pytest.mark.asyncio
     async def test_add_reaction_handles_error(self, adapter):
-        adapter._app.client.reactions_add = AsyncMock(side_effect=Exception("already_reacted"))
+        adapter._app.client.reactions_add = AsyncMock(
+            side_effect=Exception("already_reacted")
+        )
         result = await adapter._add_reaction("C123", "ts1", "eyes")
         assert result is False
 
@@ -1034,9 +1113,9 @@ class TestReactions:
         """Reactions should be added on receipt and swapped on completion."""
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
-        adapter._app.client.users_info = AsyncMock(return_value={
-            "user": {"profile": {"display_name": "Tyler"}}
-        })
+        adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Tyler"}}}
+        )
 
         event = {
             "text": "hello",
@@ -1065,7 +1144,7 @@ class TestReactions:
 class TestThreadReplyHandling:
     """Test thread reply processing without explicit bot mentions."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def mock_session_store(self):
         """Create a mock session store with entries dict."""
         store = MagicMock()
@@ -1075,7 +1154,7 @@ class TestThreadReplyHandling:
         store.config.group_sessions_per_user = True
         return store
 
-    @pytest.fixture()
+    @pytest.fixture
     def adapter_with_session_store(self, mock_session_store):
         """Create an adapter with a mock session store attached."""
         config = PlatformConfig(enabled=True, token="***")
@@ -1180,9 +1259,7 @@ class TestThreadReplyHandling:
         adapter_with_session_store.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_session_store_ignores_thread_replies(
-        self, adapter
-    ):
+    async def test_no_session_store_ignores_thread_replies(self, adapter):
         """If no session store is attached, thread replies without mention should be ignored."""
         # adapter fixture has no session store attached
         event = {
@@ -1206,7 +1283,7 @@ class TestThreadReplyHandling:
 class TestAssistantThreadLifecycle:
     """Slack Assistant lifecycle events should seed session/user context."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def mock_session_store(self):
         store = MagicMock()
         store._entries = {}
@@ -1216,12 +1293,15 @@ class TestAssistantThreadLifecycle:
         store.get_or_create_session = MagicMock()
         return store
 
-    @pytest.fixture()
+    @pytest.fixture
     def assistant_adapter(self, mock_session_store):
         config = PlatformConfig(enabled=True, token="***")
         a = SlackAdapter(config)
         a._app = MagicMock()
-        a._app.client = AsyncMock()
+        a._app.client = MagicMock()
+        a._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Test User"}}}
+        )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
@@ -1230,7 +1310,9 @@ class TestAssistantThreadLifecycle:
         return a
 
     @pytest.mark.asyncio
-    async def test_lifecycle_event_seeds_session_store(self, assistant_adapter, mock_session_store):
+    async def test_lifecycle_event_seeds_session_store(
+        self, assistant_adapter, mock_session_store
+    ):
         event = {
             "type": "assistant_thread_started",
             "team_id": "T_TEAM",
@@ -1244,7 +1326,10 @@ class TestAssistantThreadLifecycle:
 
         await assistant_adapter._handle_assistant_thread_lifecycle_event(event)
 
-        assert assistant_adapter._assistant_threads[("D123", "171.000")]["user_id"] == "U_USER"
+        assert (
+            assistant_adapter._assistant_threads[("D123", "171.000")]["user_id"]
+            == "U_USER"
+        )
         mock_session_store.get_or_create_session.assert_called_once()
         source = mock_session_store.get_or_create_session.call_args[0][0]
         assert source.chat_id == "D123"
@@ -1254,16 +1339,18 @@ class TestAssistantThreadLifecycle:
         assert source.chat_topic == "C_ORIGIN"
 
     @pytest.mark.asyncio
-    async def test_message_uses_cached_assistant_thread_identity(self, assistant_adapter):
+    async def test_message_uses_cached_assistant_thread_identity(
+        self, assistant_adapter
+    ):
         assistant_adapter._assistant_threads[("D123", "171.000")] = {
             "channel_id": "D123",
             "thread_ts": "171.000",
             "user_id": "U_USER",
             "team_id": "T_TEAM",
         }
-        assistant_adapter._app.client.users_info = AsyncMock(return_value={
-            "user": {"profile": {"display_name": "Tyler"}}
-        })
+        assistant_adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Tyler"}}}
+        )
         assistant_adapter._app.client.reactions_add = AsyncMock()
         assistant_adapter._app.client.reactions_remove = AsyncMock()
 
@@ -1288,19 +1375,23 @@ class TestAssistantThreadLifecycle:
         assistant_adapter._ASSISTANT_THREADS_MAX = 10
         # Fill to the limit
         for i in range(10):
-            assistant_adapter._cache_assistant_thread_metadata({
-                "channel_id": f"D{i}",
-                "thread_ts": f"{i}.000",
-                "user_id": f"U{i}",
-            })
+            assistant_adapter._cache_assistant_thread_metadata(
+                {
+                    "channel_id": f"D{i}",
+                    "thread_ts": f"{i}.000",
+                    "user_id": f"U{i}",
+                }
+            )
         assert len(assistant_adapter._assistant_threads) == 10
 
         # Adding one more should trigger eviction (down to max // 2 = 5)
-        assistant_adapter._cache_assistant_thread_metadata({
-            "channel_id": "D999",
-            "thread_ts": "999.000",
-            "user_id": "U999",
-        })
+        assistant_adapter._cache_assistant_thread_metadata(
+            {
+                "channel_id": "D999",
+                "thread_ts": "999.000",
+                "user_id": "U999",
+            }
+        )
         assert len(assistant_adapter._assistant_threads) <= 10
         # The newest entry must survive eviction
         assert ("D999", "999.000") in assistant_adapter._assistant_threads
@@ -1316,25 +1407,29 @@ class TestUserNameResolution:
 
     @pytest.mark.asyncio
     async def test_resolves_display_name(self, adapter):
-        adapter._app.client.users_info = AsyncMock(return_value={
-            "user": {"profile": {"display_name": "Tyler", "real_name": "Tyler B"}}
-        })
+        adapter._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {"profile": {"display_name": "Tyler", "real_name": "Tyler B"}}
+            }
+        )
         name = await adapter._resolve_user_name("U123")
         assert name == "Tyler"
 
     @pytest.mark.asyncio
     async def test_falls_back_to_real_name(self, adapter):
-        adapter._app.client.users_info = AsyncMock(return_value={
-            "user": {"profile": {"display_name": "", "real_name": "Tyler B"}}
-        })
+        adapter._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {"profile": {"display_name": "", "real_name": "Tyler B"}}
+            }
+        )
         name = await adapter._resolve_user_name("U123")
         assert name == "Tyler B"
 
     @pytest.mark.asyncio
     async def test_caches_result(self, adapter):
-        adapter._app.client.users_info = AsyncMock(return_value={
-            "user": {"profile": {"display_name": "Tyler"}}
-        })
+        adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Tyler"}}}
+        )
         await adapter._resolve_user_name("U123")
         await adapter._resolve_user_name("U123")
         # Only one API call despite two lookups
@@ -1342,16 +1437,18 @@ class TestUserNameResolution:
 
     @pytest.mark.asyncio
     async def test_handles_api_error(self, adapter):
-        adapter._app.client.users_info = AsyncMock(side_effect=Exception("rate limited"))
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=Exception("rate limited")
+        )
         name = await adapter._resolve_user_name("U123")
         assert name == "U123"  # Falls back to user_id
 
     @pytest.mark.asyncio
     async def test_user_name_in_message_source(self, adapter):
         """Message source should include resolved user name."""
-        adapter._app.client.users_info = AsyncMock(return_value={
-            "user": {"profile": {"display_name": "Tyler"}}
-        })
+        adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Tyler"}}}
+        )
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
 
@@ -1425,9 +1522,7 @@ class TestMessageSplitting:
     async def test_long_message_split_into_chunks(self, adapter):
         """Messages over MAX_MESSAGE_LENGTH should be split."""
         long_text = "x" * 45000  # Over Slack's 40k API limit
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "ts1"}
-        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
         await adapter.send("C123", long_text)
         # Should have been called multiple times
         assert adapter._app.client.chat_postMessage.call_count >= 2
@@ -1435,9 +1530,7 @@ class TestMessageSplitting:
     @pytest.mark.asyncio
     async def test_short_message_single_send(self, adapter):
         """Short messages should be sent in one call."""
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "ts1"}
-        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
         await adapter.send("C123", "hello world")
         assert adapter._app.client.chat_postMessage.call_count == 1
 
@@ -1494,9 +1587,7 @@ class TestReplyBroadcast:
 
     @pytest.mark.asyncio
     async def test_broadcast_disabled_by_default(self, adapter):
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "ts1"}
-        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
         await adapter.send("C123", "hi", metadata={"thread_id": "parent_ts"})
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "reply_broadcast" not in kwargs
@@ -1504,9 +1595,7 @@ class TestReplyBroadcast:
     @pytest.mark.asyncio
     async def test_broadcast_enabled_via_config(self, adapter):
         adapter.config.extra["reply_broadcast"] = True
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "ts1"}
-        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
         await adapter.send("C123", "hi", metadata={"thread_id": "parent_ts"})
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert kwargs.get("reply_broadcast") is True
@@ -1515,6 +1604,7 @@ class TestReplyBroadcast:
 # ---------------------------------------------------------------------------
 # TestFallbackPreservesThreadContext
 # ---------------------------------------------------------------------------
+
 
 class TestFallbackPreservesThreadContext:
     """Bug fix: file upload fallbacks lost thread context (metadata) when
@@ -1529,9 +1619,7 @@ class TestFallbackPreservesThreadContext:
         adapter._app.client.files_upload_v2 = AsyncMock(
             side_effect=Exception("upload failed")
         )
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "msg_ts"}
-        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg_ts"})
 
         metadata = {"thread_id": "parent_ts_123"}
         await adapter.send_image_file(
@@ -1552,9 +1640,7 @@ class TestFallbackPreservesThreadContext:
         adapter._app.client.files_upload_v2 = AsyncMock(
             side_effect=Exception("upload failed")
         )
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "msg_ts"}
-        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg_ts"})
 
         metadata = {"thread_id": "parent_ts_456"}
         await adapter.send_video(
@@ -1574,9 +1660,7 @@ class TestFallbackPreservesThreadContext:
         adapter._app.client.files_upload_v2 = AsyncMock(
             side_effect=Exception("upload failed")
         )
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "msg_ts"}
-        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg_ts"})
 
         metadata = {"thread_id": "parent_ts_789"}
         await adapter.send_document(
@@ -1597,9 +1681,7 @@ class TestFallbackPreservesThreadContext:
         adapter._app.client.files_upload_v2 = AsyncMock(
             side_effect=Exception("upload failed")
         )
-        adapter._app.client.chat_postMessage = AsyncMock(
-            return_value={"ts": "msg_ts"}
-        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg_ts"})
 
         await adapter.send_image_file(
             chat_id="C123",
@@ -1614,6 +1696,7 @@ class TestFallbackPreservesThreadContext:
 # ---------------------------------------------------------------------------
 # TestSendImageSSRFGuards
 # ---------------------------------------------------------------------------
+
 
 class TestSendImageSSRFGuards:
     """send_image should reject redirects that land on private/internal hosts."""
@@ -1637,7 +1720,9 @@ class TestSendImageSSRFGuards:
 
         mock_client.get = AsyncMock(side_effect=fake_get)
         adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
-        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "reply_ts"}
+        )
 
         def fake_async_client(*args, **kwargs):
             client_kwargs.update(kwargs)
@@ -1670,6 +1755,7 @@ class TestSendImageSSRFGuards:
 # TestProgressMessageThread
 # ---------------------------------------------------------------------------
 
+
 class TestProgressMessageThread:
     """Verify that progress messages go to the correct thread.
 
@@ -1693,10 +1779,14 @@ class TestProgressMessageThread:
         }
 
         captured_events = []
-        adapter.handle_message = AsyncMock(side_effect=lambda e: captured_events.append(e))
+        adapter.handle_message = AsyncMock(
+            side_effect=lambda e: captured_events.append(e)
+        )
 
         # Patch _resolve_user_name to avoid async Slack API call
-        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")):
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")
+        ):
             await adapter._handle_slack_message(event)
 
         assert len(captured_events) == 1
@@ -1719,7 +1809,9 @@ class TestProgressMessageThread:
 
         # Verify that the Slack send() method correctly threads a message
         # when metadata contains thread_id equal to the original ts
-        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "reply_ts"}
+        )
         result = await adapter.send(
             chat_id="D_DM",
             content="⚙️ working...",
@@ -1746,9 +1838,13 @@ class TestProgressMessageThread:
         }
 
         captured_events = []
-        adapter.handle_message = AsyncMock(side_effect=lambda e: captured_events.append(e))
+        adapter.handle_message = AsyncMock(
+            side_effect=lambda e: captured_events.append(e)
+        )
 
-        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")):
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")
+        ):
             await adapter._handle_slack_message(event)
 
         assert len(captured_events) == 1
@@ -1768,15 +1864,19 @@ class TestProgressMessageThread:
             "channel": "C_CHAN",
             "channel_type": "channel",
             "user": "U_USER",
-            "text": f"<@U_BOT> help me",
+            "text": "<@U_BOT> help me",
             "ts": "2000000000.000001",
             # No thread_ts — top-level channel message
         }
 
         captured_events = []
-        adapter.handle_message = AsyncMock(side_effect=lambda e: captured_events.append(e))
+        adapter.handle_message = AsyncMock(
+            side_effect=lambda e: captured_events.append(e)
+        )
 
-        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")):
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")
+        ):
             await adapter._handle_slack_message(event)
 
         assert len(captured_events) == 1

@@ -21,12 +21,9 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import os
-import re
 import signal
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -61,93 +58,95 @@ _CREDENTIAL_SUFFIXES = (
 )
 
 # Explicit names (for ones that don't fit the suffix pattern)
-_CREDENTIAL_NAMES = frozenset({
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "ANTHROPIC_TOKEN",
-    "FAL_KEY",
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "NOUS_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GROQ_API_KEY",
-    "XAI_API_KEY",
-    "MISTRAL_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "KIMI_API_KEY",
-    "MOONSHOT_API_KEY",
-    "GLM_API_KEY",
-    "ZAI_API_KEY",
-    "MINIMAX_API_KEY",
-    "OLLAMA_API_KEY",
-    "OPENVIKING_API_KEY",
-    "COPILOT_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "BROWSERBASE_API_KEY",
-    "FIRECRAWL_API_KEY",
-    "PARALLEL_API_KEY",
-    "EXA_API_KEY",
-    "TAVILY_API_KEY",
-    "WANDB_API_KEY",
-    "ELEVENLABS_API_KEY",
-    "HONCHO_API_KEY",
-    "MEM0_API_KEY",
-    "SUPERMEMORY_API_KEY",
-    "RETAINDB_API_KEY",
-    "HINDSIGHT_API_KEY",
-    "HINDSIGHT_LLM_API_KEY",
-    "TINKER_API_KEY",
-    "DAYTONA_API_KEY",
-    "TWILIO_AUTH_TOKEN",
-    "TELEGRAM_BOT_TOKEN",
-    "DISCORD_BOT_TOKEN",
-    "SLACK_BOT_TOKEN",
-    "SLACK_APP_TOKEN",
-    "MATTERMOST_TOKEN",
-    "MATRIX_ACCESS_TOKEN",
-    "MATRIX_PASSWORD",
-    "MATRIX_RECOVERY_KEY",
-    "HASS_TOKEN",
-    "EMAIL_PASSWORD",
-    "BLUEBUBBLES_PASSWORD",
-    "FEISHU_APP_SECRET",
-    "FEISHU_ENCRYPT_KEY",
-    "FEISHU_VERIFICATION_TOKEN",
-    "DINGTALK_CLIENT_SECRET",
-    "QQ_CLIENT_SECRET",
-    "QQ_STT_API_KEY",
-    "WECOM_SECRET",
-    "WECOM_CALLBACK_CORP_SECRET",
-    "WECOM_CALLBACK_TOKEN",
-    "WECOM_CALLBACK_ENCODING_AES_KEY",
-    "WEIXIN_TOKEN",
-    "MODAL_TOKEN_ID",
-    "MODAL_TOKEN_SECRET",
-    "TERMINAL_SSH_KEY",
-    "SUDO_PASSWORD",
-    "GATEWAY_PROXY_KEY",
-    "API_SERVER_KEY",
-    "TOOL_GATEWAY_USER_TOKEN",
-    "TELEGRAM_WEBHOOK_SECRET",
-    "WEBHOOK_SECRET",
-    "AI_GATEWAY_API_KEY",
-    "VOICE_TOOLS_OPENAI_KEY",
-    "BROWSER_USE_API_KEY",
-    "CUSTOM_API_KEY",
-    "GATEWAY_PROXY_URL",
-    "GEMINI_BASE_URL",
-    "OPENAI_BASE_URL",
-    "OPENROUTER_BASE_URL",
-    "OLLAMA_BASE_URL",
-    "GROQ_BASE_URL",
-    "XAI_BASE_URL",
-    "AI_GATEWAY_BASE_URL",
-    "ANTHROPIC_BASE_URL",
-})
+_CREDENTIAL_NAMES = frozenset(
+    {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "ANTHROPIC_TOKEN",
+        "FAL_KEY",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "NOUS_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "KIMI_API_KEY",
+        "MOONSHOT_API_KEY",
+        "GLM_API_KEY",
+        "ZAI_API_KEY",
+        "MINIMAX_API_KEY",
+        "OLLAMA_API_KEY",
+        "OPENVIKING_API_KEY",
+        "COPILOT_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "BROWSERBASE_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "PARALLEL_API_KEY",
+        "EXA_API_KEY",
+        "TAVILY_API_KEY",
+        "WANDB_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "HONCHO_API_KEY",
+        "MEM0_API_KEY",
+        "SUPERMEMORY_API_KEY",
+        "RETAINDB_API_KEY",
+        "HINDSIGHT_API_KEY",
+        "HINDSIGHT_LLM_API_KEY",
+        "TINKER_API_KEY",
+        "DAYTONA_API_KEY",
+        "TWILIO_AUTH_TOKEN",
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "MATTERMOST_TOKEN",
+        "MATRIX_ACCESS_TOKEN",
+        "MATRIX_PASSWORD",
+        "MATRIX_RECOVERY_KEY",
+        "HASS_TOKEN",
+        "EMAIL_PASSWORD",
+        "BLUEBUBBLES_PASSWORD",
+        "FEISHU_APP_SECRET",
+        "FEISHU_ENCRYPT_KEY",
+        "FEISHU_VERIFICATION_TOKEN",
+        "DINGTALK_CLIENT_SECRET",
+        "QQ_CLIENT_SECRET",
+        "QQ_STT_API_KEY",
+        "WECOM_SECRET",
+        "WECOM_CALLBACK_CORP_SECRET",
+        "WECOM_CALLBACK_TOKEN",
+        "WECOM_CALLBACK_ENCODING_AES_KEY",
+        "WEIXIN_TOKEN",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "TERMINAL_SSH_KEY",
+        "SUDO_PASSWORD",
+        "GATEWAY_PROXY_KEY",
+        "API_SERVER_KEY",
+        "TOOL_GATEWAY_USER_TOKEN",
+        "TELEGRAM_WEBHOOK_SECRET",
+        "WEBHOOK_SECRET",
+        "AI_GATEWAY_API_KEY",
+        "VOICE_TOOLS_OPENAI_KEY",
+        "BROWSER_USE_API_KEY",
+        "CUSTOM_API_KEY",
+        "GATEWAY_PROXY_URL",
+        "GEMINI_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENROUTER_BASE_URL",
+        "OLLAMA_BASE_URL",
+        "GROQ_BASE_URL",
+        "XAI_BASE_URL",
+        "AI_GATEWAY_BASE_URL",
+        "ANTHROPIC_BASE_URL",
+    }
+)
 
 
 def _looks_like_credential(name: str) -> bool:
@@ -159,34 +158,36 @@ def _looks_like_credential(name: str) -> bool:
 
 # HERMES_* vars that change test behavior by being set. Unset all of these
 # unconditionally — individual tests that need them set do so explicitly.
-_HERMES_BEHAVIORAL_VARS = frozenset({
-    "HERMES_YOLO_MODE",
-    "HERMES_INTERACTIVE",
-    "HERMES_QUIET",
-    "HERMES_TOOL_PROGRESS",
-    "HERMES_TOOL_PROGRESS_MODE",
-    "HERMES_MAX_ITERATIONS",
-    "HERMES_SESSION_PLATFORM",
-    "HERMES_SESSION_CHAT_ID",
-    "HERMES_SESSION_CHAT_NAME",
-    "HERMES_SESSION_THREAD_ID",
-    "HERMES_SESSION_SOURCE",
-    "HERMES_SESSION_KEY",
-    "HERMES_GATEWAY_SESSION",
-    "HERMES_PLATFORM",
-    "HERMES_INFERENCE_PROVIDER",
-    "HERMES_MANAGED",
-    "HERMES_DEV",
-    "HERMES_CONTAINER",
-    "HERMES_EPHEMERAL_SYSTEM_PROMPT",
-    "HERMES_TIMEZONE",
-    "HERMES_REDACT_SECRETS",
-    "HERMES_BACKGROUND_NOTIFICATIONS",
-    "HERMES_EXEC_ASK",
-    "HERMES_HOME_MODE",
-    "BROWSER_CDP_URL",
-    "CAMOFOX_URL",
-})
+_HERMES_BEHAVIORAL_VARS = frozenset(
+    {
+        "HERMES_YOLO_MODE",
+        "HERMES_INTERACTIVE",
+        "HERMES_QUIET",
+        "HERMES_TOOL_PROGRESS",
+        "HERMES_TOOL_PROGRESS_MODE",
+        "HERMES_MAX_ITERATIONS",
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_CHAT_NAME",
+        "HERMES_SESSION_THREAD_ID",
+        "HERMES_SESSION_SOURCE",
+        "HERMES_SESSION_KEY",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_PLATFORM",
+        "HERMES_INFERENCE_PROVIDER",
+        "HERMES_MANAGED",
+        "HERMES_DEV",
+        "HERMES_CONTAINER",
+        "HERMES_EPHEMERAL_SYSTEM_PROMPT",
+        "HERMES_TIMEZONE",
+        "HERMES_REDACT_SECRETS",
+        "HERMES_BACKGROUND_NOTIFICATIONS",
+        "HERMES_EXEC_ASK",
+        "HERMES_HOME_MODE",
+        "BROWSER_CDP_URL",
+        "CAMOFOX_URL",
+    }
+)
 
 
 @pytest.fixture(autouse=True)
@@ -245,6 +246,7 @@ def _hermetic_environment(tmp_path, monkeypatch):
     #    singleton might still be cached from a previous test).
     try:
         import hermes_cli.plugins as _plugins_mod
+
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
     except Exception:
         pass
@@ -255,16 +257,16 @@ def _hermetic_environment(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
-    return None
+    return
 
 
-@pytest.fixture()
+@pytest.fixture
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""
     return tmp_path
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_config():
     """Return a minimal hermes config dict suitable for unit tests."""
     return {
@@ -287,8 +289,10 @@ def mock_config():
 # Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
 # entire test suite.
 
+
 def _timeout_handler(signum, frame):
     raise TimeoutError("Test exceeded 30 second timeout")
+
 
 @pytest.fixture(autouse=True)
 def _ensure_current_event_loop(request):
@@ -303,24 +307,16 @@ def _ensure_current_event_loop(request):
         yield
         return
 
-    try:
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-    except RuntimeError:
-        loop = None
-
-    created = loop is None or loop.is_closed()
-    if created:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     try:
         yield
     finally:
-        if created and loop is not None:
-            try:
-                loop.close()
-            finally:
-                asyncio.set_event_loop(None)
+        try:
+            loop.close()
+        finally:
+            asyncio.set_event_loop(None)
 
 
 @pytest.fixture(autouse=True)

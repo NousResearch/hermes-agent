@@ -480,6 +480,39 @@ class TestPersistence:
         assert restored.history[0].get("tool_calls") is not None
         assert restored.history[1].get("tool_call_id") == "tc_1"
 
+    def test_assistant_reasoning_fields_persisted(self, manager):
+        """ACP session restore should preserve assistant reasoning context."""
+        state = manager.create_session()
+        state.history.append({
+            "role": "assistant",
+            "content": "hello",
+            "reasoning": "step-by-step",
+            "reasoning_details": [
+                {"type": "thinking", "thinking": "first thought"},
+            ],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"},
+            ],
+        })
+        manager.save_session(state.session_id)
+
+        with manager._lock:
+            del manager._sessions[state.session_id]
+
+        restored = manager.get_session(state.session_id)
+        assert restored is not None
+        assert restored.history == [{
+            "role": "assistant",
+            "content": "hello",
+            "reasoning": "step-by-step",
+            "reasoning_details": [
+                {"type": "thinking", "thinking": "first thought"},
+            ],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"},
+            ],
+        }]
+
     def test_restore_preserves_persisted_provider_snapshot(self, tmp_path, monkeypatch):
         """Restored ACP sessions should keep their original runtime provider."""
         runtime_choice = {"provider": "anthropic"}

@@ -501,11 +501,11 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         pass
             except Exception:
                 pass
-            # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
+            # llama.cpp exposes /props at server root (older builds used /v1/props)
             try:
-                r = client.get(f"{server_url}/v1/props")
+                r = client.get(f"{server_url}/props")
                 if r.status_code != 200:
-                    r = client.get(f"{server_url}/props")  # fallback for older builds
+                    r = client.get(f"{server_url}/v1/props")  # fallback for older builds
                 if r.status_code == 200 and "default_generation_settings" in r.text:
                     return "llamacpp"
             except Exception:
@@ -760,12 +760,12 @@ def fetch_endpoint_model_metadata(
             )
             if is_llamacpp:
                 try:
-                    # Try /v1/props first (current llama.cpp); fall back to /props for older builds
+                    # Try /props first (llama.cpp native); fall back to /v1/props for older builds (#13091)
                     base = candidate.rstrip("/").replace("/v1", "")
                     _verify = _resolve_requests_verify()
-                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
+                    props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
                     if not props_resp.ok:
-                        props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
+                        props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
                     if props_resp.ok:
                         props = props_resp.json()
                         gen_settings = props.get("default_generation_settings", {})

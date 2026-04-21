@@ -134,6 +134,39 @@ function wordRight(s: string, p: number) {
   return i
 }
 
+/**
+ * Move cursor one logical line up or down inside `s` while preserving the
+ * column offset from the current line's start. Returns `null` when the cursor
+ * is already on the first line (up) or last line (down) — callers use that
+ * signal to fall through to history cycling instead of eating the arrow key.
+ */
+export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
+  const pos = snapPos(s, p)
+  const curStart = s.lastIndexOf('\n', pos - 1) + 1
+  const col = pos - curStart
+
+  if (dir < 0) {
+    if (curStart === 0) {
+      return null
+    }
+
+    const prevStart = s.lastIndexOf('\n', curStart - 2) + 1
+
+    return snapPos(s, Math.min(prevStart + col, curStart - 1))
+  }
+
+  const nextBreak = s.indexOf('\n', pos)
+
+  if (nextBreak < 0) {
+    return null
+  }
+
+  const nextEnd = s.indexOf('\n', nextBreak + 1)
+  const lineEnd = nextEnd < 0 ? s.length : nextEnd
+
+  return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
+}
+
 function cursorLayout(value: string, cursor: number, cols: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
   const w = Math.max(1, cols - 1)
@@ -367,22 +400,20 @@ export function TextInput({
       return
     }
 
-    if (selected) {
-      setInputSelection({
-        clear: () => {
+    setInputSelection({
+      clear: () => {
+        if (selRef.current) {
           selRef.current = null
           setSel(null)
-        },
-        end: selected.end,
-        start: selected.start,
-        value: vRef.current
-      })
-    } else {
-      setInputSelection(null)
-    }
+        }
+      },
+      end: selected?.end ?? curRef.current,
+      start: selected?.start ?? curRef.current,
+      value: vRef.current
+    })
 
     return () => setInputSelection(null)
-  }, [focus, selected])
+  }, [cur, focus, selected])
 
   useEffect(
     () => () => {
@@ -570,9 +601,21 @@ export function TextInput({
         return
       }
 
+      if (k.upArrow || k.downArrow) {
+        const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
+
+        if (next !== null) {
+          clearSel()
+          setCur(next)
+          curRef.current = next
+
+          return
+        }
+
+        return
+      }
+
       if (
-        k.upArrow ||
-        k.downArrow ||
         (k.ctrl && inp === 'c') ||
         k.tab ||
         (k.shift && k.tab) ||

@@ -288,15 +288,28 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.upArrow && !cState.inputBuf.length) {
-      cycleQueue(1) || cycleHistory(-1)
+      const inputSel = getInputSelection()
+      const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+      const noLineAbove =
+        !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
 
-      return
+      if (noLineAbove) {
+        cycleQueue(1) || cycleHistory(-1)
+
+        return
+      }
     }
 
     if (key.downArrow && !cState.inputBuf.length) {
-      cycleQueue(-1) || cycleHistory(1)
+      const inputSel = getInputSelection()
+      const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+      const noLineBelow = !cState.input || (cursor !== null && cState.input.indexOf('\n', cursor) < 0)
 
-      return
+      if (noLineBelow || cState.historyIdx !== null) {
+        cycleQueue(-1) || cycleHistory(1)
+
+        return
+      }
     }
 
     if (isAction(key, ch, 'c')) {

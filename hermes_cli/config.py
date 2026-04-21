@@ -1918,7 +1918,7 @@ def _normalize_custom_provider_entry(
     if not isinstance(entry, dict):
         return None
 
-    # Accept camelCase aliases commonly used in hand-written configs.
+     # Accept camelCase aliases commonly used in hand-written configs.
     _CAMEL_ALIASES: Dict[str, str] = {
         "apiKey": "api_key",
         "baseUrl": "base_url",

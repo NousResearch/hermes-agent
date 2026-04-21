@@ -88,7 +88,7 @@ from tools.tool_backend_helpers import normalize_browser_cloud_provider
 # camofox REST API instead of the agent-browser CLI.
 try:
     from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     _is_camofox_mode = lambda: False  # noqa: E731
 
 logger = logging.getLogger(__name__)

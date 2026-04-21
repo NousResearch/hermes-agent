@@ -34,8 +34,9 @@ Current grounded receipts in this branch:
 - Window-scoped `get_app_state(...)` with screenshot + frontmost metadata + approval-gated accessibility capture
 - A proven local unlock path from `loginwindow` into the desktop, with the password kept inside local process env / file reads instead of tool arguments or transcript text
 - A grounded real click receipt on TextEdit, verified both locally and through the live MCP/chat path after clearing stale duplicate server processes
+- Grounded local scroll and drag receipts on TextEdit: a scrolled viewport with the vertical scrollbar moved off the top position, and a visible multi-line text selection after drag
 
-This is best described today as a Codex-style / official-computer-use-inspired Hermes implementation with real local control already working. The remaining work is detached-cursor polish, broader session UX, and careful boundary-setting around permission dialogs — not proving that click works at all.
+This is best described today as a Codex-style / official-computer-use-inspired Hermes implementation with real local control already working. The remaining work is detached-cursor polish, broader session UX, careful boundary-setting around permission dialogs — and hot-reloading the newest scroll/drag slice through every live runtime path.
 
 📎 See the branch write-up: [docs/computer-use-macos-preview.md](docs/computer-use-macos-preview.md)
 
@@ -44,7 +45,9 @@ This is best described today as a Codex-style / official-computer-use-inspired H
 | Lock UI reached | [lockscreen-password-ui.png](docs/media/computer-use/lockscreen-password-ui.png) |
 | Desktop unlocked | [unlocked-terminal-after-input.png](docs/media/computer-use/unlocked-terminal-after-input.png) |
 | Window-scoped TextEdit state | [textedit-window-state.png](docs/media/computer-use/textedit-window-state.png) |
-| Detached cursor / click overlay | [textedit-click-overlay.png](docs/media/computer-use/textedit-click-overlay.png) |
+| macOS-style click overlay | [textedit-click-overlay.png](docs/media/computer-use/textedit-click-overlay.png) |
+| Scroll state proof | [textedit-scroll-state.png](docs/media/computer-use/textedit-scroll-state.png) |
+| Drag selection proof | [textedit-drag-selection.png](docs/media/computer-use/textedit-drag-selection.png) |
 
 ---
 

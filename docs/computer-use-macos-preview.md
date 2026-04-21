@@ -57,10 +57,25 @@ What was verified:
 - the local click backend returned `success=true`
 - after stale duplicate `computer_use_mcp_server.py` processes were removed, the live MCP `click(...)` path also returned `success=true`
 - after the live click, the target TextEdit window was gone and another TextEdit document became frontmost
+- the overlay preview was refreshed with a macOS-style white pointer instead of the old purple pixel-art cursor
 
 Artifacts:
 - [textedit-window-state.png](media/computer-use/textedit-window-state.png)
 - [textedit-click-overlay.png](media/computer-use/textedit-click-overlay.png)
+
+### 5. Real scroll + drag proof in the branch-local adapter slice
+
+The branch-local adapter/backend path now also has grounded TextEdit scroll and drag receipts.
+
+What was verified:
+- a long TextEdit document started at the top of the viewport
+- after a real local `scroll(...)` action, the visible viewport began at line 13 and the vertical scrollbar value moved off zero
+- after a real local `drag(...)` action, TextEdit showed a visible multi-line selection highlight
+- the new screenshots were captured from the real desktop after those actions completed
+
+Artifacts:
+- [textedit-scroll-state.png](media/computer-use/textedit-scroll-state.png)
+- [textedit-drag-selection.png](media/computer-use/textedit-drag-selection.png)
 
 ## What is still in progress
 
@@ -71,6 +86,7 @@ The honest remaining boundary is higher-level polish:
 - detached / non-disruptive cursor UX still needs a cleaner native session story
 - permission-dialog interaction is still not something to overpromise
 - the approval/session experience can still be tightened for a more Codex-like feel
+- the newest real scroll/drag slice should still be re-verified through every live runtime path after reload, not just in the branch-local adapter/backend smoke
 
 ## How to describe this branch honestly
 
@@ -80,6 +96,7 @@ Strong but accurate description:
 - window-scoped state is already working
 - local unlock is already proven
 - real click is already proven in both local and live MCP paths
+- real scroll + drag are already proven in the branch-local adapter/backend slice
 - the remaining work is UX polish and deeper session semantics, not basic capability
 
 In other words:
@@ -120,6 +137,14 @@ That sequence attracts attention without promising magic we have not shipped yet
 
 ![TextEdit window state](media/computer-use/textedit-window-state.png)
 
-### Detached cursor / click overlay preview
+### macOS-style click overlay preview
 
 ![TextEdit click overlay](media/computer-use/textedit-click-overlay.png)
+
+### Scrolled TextEdit proof state
+
+![TextEdit scroll state](media/computer-use/textedit-scroll-state.png)
+
+### Drag-selected TextEdit proof state
+
+![TextEdit drag selection](media/computer-use/textedit-drag-selection.png)

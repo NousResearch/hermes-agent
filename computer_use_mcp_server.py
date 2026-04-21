@@ -176,51 +176,52 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-_PIXEL_CURSOR_SCALE = 4
-_PIXEL_CURSOR_COLORS = {
-    "1": "#0f172a",
-    "2": "#8b5cf6",
-    "3": "#c4b5fd",
-    "4": "#22d3ee",
-}
-_PIXEL_CURSOR_ROWS = [
-    "1.......",
-    "12......",
-    "123.....",
-    "1232....",
-    "12322...",
-    "123222..",
-    "1232222.",
-    "12333321",
-    "12324...",
-    "121.21..",
-    "1...21..",
-    "....11..",
-]
+_PIXEL_CURSOR_SCALE = 2
+_MACOS_CURSOR_STROKE = "#0f172a"
+_MACOS_CURSOR_FILL = "#ffffff"
+_MACOS_CURSOR_SHADOW = "rgba(15,23,42,0.22)"
+_MACOS_CURSOR_HALO = "rgba(0,113,227,0.08)"
+_MACOS_CURSOR_HALO_INNER = "rgba(125,211,252,0.10)"
+
+
+def _polygon_draw_arg(points: list[tuple[int, int]]) -> str:
+    return "polygon " + " ".join(f"{int(px)},{int(py)}" for px, py in points)
 
 
 def _pixel_cursor_draw_args(x: int, y: int) -> list[str]:
     scale = _PIXEL_CURSOR_SCALE
-    draw_args = [
-        "-fill", "rgba(139,92,246,0.14)",
-        "-draw", f"rectangle {x - scale},{y - scale} {x + scale - 1},{y + scale - 1}",
-        "-fill", "rgba(34,211,238,0.16)",
-        "-draw", f"rectangle {x + (6 * scale)},{y + (7 * scale)} {x + (7 * scale) - 1},{y + (8 * scale) - 1}",
+    halo_radius = scale * 8
+    inner_radius = scale * 4
+    shadow_points = [
+        (x + 1, y + 2),
+        (x + (4 * scale), y + (10 * scale)),
+        (x + (5 * scale), y + (8 * scale)),
+        (x + (9 * scale), y + (16 * scale)),
+        (x + (11 * scale), y + (15 * scale)),
+        (x + (7 * scale), y + (7 * scale)),
+        (x + (11 * scale), y + (7 * scale)),
     ]
-    for row_index, row in enumerate(_PIXEL_CURSOR_ROWS):
-        for col_index, token in enumerate(row):
-            color = _PIXEL_CURSOR_COLORS.get(token)
-            if not color:
-                continue
-            left = x + (col_index * scale)
-            top = y + (row_index * scale)
-            right = left + scale - 1
-            bottom = top + scale - 1
-            draw_args.extend([
-                "-fill", color,
-                "-draw", f"rectangle {left},{top} {right},{bottom}",
-            ])
-    return draw_args
+    body_points = [
+        (x, y),
+        (x + (4 * scale), y + (10 * scale)),
+        (x + (5 * scale), y + (8 * scale)),
+        (x + (9 * scale), y + (16 * scale)),
+        (x + (11 * scale), y + (15 * scale)),
+        (x + (7 * scale), y + (7 * scale)),
+        (x + (11 * scale), y + (7 * scale)),
+    ]
+    return [
+        "-fill", _MACOS_CURSOR_HALO,
+        "-draw", f"circle {x},{y} {x + halo_radius},{y}",
+        "-fill", _MACOS_CURSOR_HALO_INNER,
+        "-draw", f"circle {x},{y} {x + inner_radius},{y}",
+        "-fill", _MACOS_CURSOR_SHADOW,
+        "-draw", _polygon_draw_arg(shadow_points),
+        "-fill", _MACOS_CURSOR_FILL,
+        "-stroke", _MACOS_CURSOR_STROKE,
+        "-strokewidth", str(max(1, scale // 2)),
+        "-draw", _polygon_draw_arg(body_points),
+    ]
 
 
 def _overlay_root() -> Path:
@@ -1360,6 +1361,7 @@ def click_impl(*, index: int | None = None, x: int | None = None, y: int | None 
                 index=index,
             )
             _sync_session_artifacts(session)
+            _consume_temporary_once_approval(session)
             response = {
                 "success": True,
                 "clicked": True,
@@ -1367,7 +1369,6 @@ def click_impl(*, index: int | None = None, x: int | None = None, y: int | None 
                 **_session_payload(session),
                 "session_id": _SESSION_ID,
             }
-            _consume_temporary_once_approval(session)
             return response
 
 
@@ -1377,57 +1378,142 @@ def perform_secondary_action_impl(index: int, action_name: str) -> dict[str, Any
 
 def scroll_impl(index: int | None = None, x: int | None = None, y: int | None = None,
                 delta_y: int = 0, app_session_id: str | None = None) -> dict[str, Any]:
-    session = _resolve_session(app_session_id=app_session_id)
-    if not session:
-        return _session_required_error("scrolling")
-    with _APP_SESSIONS_LOCK:
-        if not session.get("active"):
-            return _session_required_error("scrolling")
-        if _optional_dict(session, "pending_pointer_action"):
-            return _pending_pointer_action_conflict("scroll", session)
-        cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
-        if x is not None:
-            cursor["x"] = x
-        if y is not None:
-            cursor["y"] = y
-        _record_pending_pointer_action(
-            session,
-            "scroll",
-            x=cursor.get("x"),
-            y=cursor.get("y"),
-            index=index,
-            delta_y=delta_y,
-        )
-        _sync_session_artifacts(session)
-        response = _preview_pointer_response("scroll", session)
-        response["delta_y"] = delta_y
-        return response
+    wanted = str(app_session_id or "").strip()
+    with _APPROVALS_LOCK:
+        with _APP_SESSIONS_LOCK:
+            if wanted:
+                session = _find_session(app_session_id=wanted)
+                if not session or not session.get("active"):
+                    return _session_required_error("scrolling")
+            else:
+                active_records = [record for record in _APP_SESSIONS.values() if record.get("active")]
+                if not active_records:
+                    return _session_required_error("scrolling")
+                if len(active_records) > 1:
+                    return _multiple_active_sessions_error("scrolling")
+                session = active_records[0]
+            authorization_entry = _session_authorization_entry(session)
+            if not session.get("approved") or not authorization_entry:
+                session["approved"] = False
+                session["accessibility_tree"] = []
+                return _session_approval_required_error("scrolling", session)
+            if _optional_dict(session, "pending_pointer_action"):
+                return _pending_pointer_action_conflict("scroll", session)
+            cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+            if x is not None:
+                cursor["x"] = x
+            if y is not None:
+                cursor["y"] = y
+            result = _decode(computer_control(
+                action="scroll",
+                x=int(cursor["x"]) if cursor.get("x") is not None else None,
+                y=int(cursor["y"]) if cursor.get("y") is not None else None,
+                delta_y=int(delta_y),
+            ))
+            if result.get("error"):
+                _record_local_pointer_result(
+                    session,
+                    action_type="scroll",
+                    status="failed",
+                    x=int(cursor["x"]) if cursor.get("x") is not None else None,
+                    y=int(cursor["y"]) if cursor.get("y") is not None else None,
+                    index=index,
+                    delta_y=int(delta_y),
+                    error=str(result.get("error") or "scroll failed"),
+                )
+                _sync_session_artifacts(session)
+                return {"success": False, **result, **_session_payload(session), "session_id": _SESSION_ID}
+            _record_local_pointer_result(
+                session,
+                action_type="scroll",
+                status="completed",
+                x=int(cursor["x"]) if cursor.get("x") is not None else None,
+                y=int(cursor["y"]) if cursor.get("y") is not None else None,
+                index=index,
+                delta_y=int(delta_y),
+            )
+            _sync_session_artifacts(session)
+            _consume_temporary_once_approval(session)
+            response = {
+                "success": True,
+                "scrolled": True,
+                "delta_y": int(delta_y),
+                **result,
+                **_session_payload(session),
+                "session_id": _SESSION_ID,
+            }
+            return response
 
 
 def drag_impl(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id: str | None = None) -> dict[str, Any]:
-    session = _resolve_session(app_session_id=app_session_id)
-    if not session:
-        return _session_required_error("dragging")
-    with _APP_SESSIONS_LOCK:
-        if not session.get("active"):
-            return _session_required_error("dragging")
-        if _optional_dict(session, "pending_pointer_action"):
-            return _pending_pointer_action_conflict("drag", session)
-        cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
-        cursor["x"] = end_x
-        cursor["y"] = end_y
-        _record_pending_pointer_action(
-            session,
-            "drag",
-            start_x=start_x,
-            start_y=start_y,
-            end_x=end_x,
-            end_y=end_y,
-        )
-        _sync_session_artifacts(session)
-        response = _preview_pointer_response("drag", session)
-        response["drag_path"] = {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}
-        return response
+    wanted = str(app_session_id or "").strip()
+    with _APPROVALS_LOCK:
+        with _APP_SESSIONS_LOCK:
+            if wanted:
+                session = _find_session(app_session_id=wanted)
+                if not session or not session.get("active"):
+                    return _session_required_error("dragging")
+            else:
+                active_records = [record for record in _APP_SESSIONS.values() if record.get("active")]
+                if not active_records:
+                    return _session_required_error("dragging")
+                if len(active_records) > 1:
+                    return _multiple_active_sessions_error("dragging")
+                session = active_records[0]
+            authorization_entry = _session_authorization_entry(session)
+            if not session.get("approved") or not authorization_entry:
+                session["approved"] = False
+                session["accessibility_tree"] = []
+                return _session_approval_required_error("dragging", session)
+            if _optional_dict(session, "pending_pointer_action"):
+                return _pending_pointer_action_conflict("drag", session)
+            cursor = session.setdefault("virtual_cursor", _fresh_virtual_cursor())
+            cursor["x"] = end_x
+            cursor["y"] = end_y
+            result = _decode(computer_control(
+                action="drag",
+                start_x=int(start_x),
+                start_y=int(start_y),
+                end_x=int(end_x),
+                end_y=int(end_y),
+            ))
+            if result.get("error"):
+                _record_local_pointer_result(
+                    session,
+                    action_type="drag",
+                    status="failed",
+                    x=int(end_x),
+                    y=int(end_y),
+                    start_x=int(start_x),
+                    start_y=int(start_y),
+                    end_x=int(end_x),
+                    end_y=int(end_y),
+                    error=str(result.get("error") or "drag failed"),
+                )
+                _sync_session_artifacts(session)
+                return {"success": False, **result, **_session_payload(session), "session_id": _SESSION_ID}
+            _record_local_pointer_result(
+                session,
+                action_type="drag",
+                status="completed",
+                x=int(end_x),
+                y=int(end_y),
+                start_x=int(start_x),
+                start_y=int(start_y),
+                end_x=int(end_x),
+                end_y=int(end_y),
+            )
+            _sync_session_artifacts(session)
+            _consume_temporary_once_approval(session)
+            response = {
+                "success": True,
+                "dragged": True,
+                "drag_path": {"start_x": int(start_x), "start_y": int(start_y), "end_x": int(end_x), "end_y": int(end_y)},
+                **result,
+                **_session_payload(session),
+                "session_id": _SESSION_ID,
+            }
+            return response
 
 
 def claim_pending_pointer_action_impl(*, app_session_id: str, action_id: str, worker_id: str | None = None) -> dict[str, Any]:
@@ -1713,7 +1799,7 @@ if mcp:
     @mcp.tool()
     def click(index: int | None = None, x: int | None = None, y: int | None = None,
               button: str = "left", click_count: int = 1, app_session_id: str | None = None) -> dict[str, Any]:
-        """Reserved for future pointer support. Returns an explicit unsupported result for now."""
+        """Click inside an approved app session using the local pointer backend."""
         return click_impl(index=index, x=x, y=y, button=button, click_count=click_count, app_session_id=app_session_id)
 
     @mcp.tool()
@@ -1724,12 +1810,12 @@ if mcp:
     @mcp.tool()
     def scroll(index: int | None = None, x: int | None = None, y: int | None = None,
                delta_y: int = 0, app_session_id: str | None = None) -> dict[str, Any]:
-        """Reserved for future scroll support."""
+        """Scroll inside an approved app session using the local pointer backend."""
         return scroll_impl(index=index, x=x, y=y, delta_y=delta_y, app_session_id=app_session_id)
 
     @mcp.tool()
     def drag(start_x: int, start_y: int, end_x: int, end_y: int, app_session_id: str | None = None) -> dict[str, Any]:
-        """Reserved for future drag support."""
+        """Drag inside an approved app session using the local pointer backend."""
         return drag_impl(start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y, app_session_id=app_session_id)
 
     @mcp.tool()

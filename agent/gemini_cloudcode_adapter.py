@@ -880,7 +880,9 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
         message = (
             f"Code Assist 404: {target} is not available at "
             f"cloudcode-pa.googleapis.com. It may have been renamed or "
-            f"retired. Check hermes_cli/models.py for the current list."
+            f"retired. Currently supported models for google-gemini-cli: "
+            f"gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite, "
+            f"gemini-2.0-flash. Switch with: hermes model gemini-2.5-flash"
         )
     elif err_message:
         # Generic fallback with the parsed message.

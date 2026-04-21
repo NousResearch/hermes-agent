@@ -1,5 +1,6 @@
 """Tests for gateway configuration management."""
 
+import logging
 import os
 from unittest.mock import patch
 
@@ -513,3 +514,197 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for #13582 — warn when non-secret gateway settings
+# are set in BOTH config.yaml and the environment.
+#
+# Environment variables win by design, but stale .env entries silently
+# override config.yaml edits (reporter's case: DISCORD_REPLY_TO_MODE=off
+# in .env overriding discord.reply_to_mode: first in config.yaml).  These
+# tests pin that ``_warn_yaml_env_conflicts`` surfaces the conflict as a
+# WARNING-level log record so users can clean up the duplicated value.
+# ---------------------------------------------------------------------------
+
+
+class TestYamlEnvConflictWarnings:
+
+    def _load(self, tmp_path, monkeypatch, yaml_text: str) -> None:
+        """Write config.yaml under HERMES_HOME and call load_gateway_config.
+        ``exist_ok=True`` so tests that invoke ``_load`` multiple times
+        in a single scenario don't trip on directory reuse."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        load_gateway_config()
+
+    def _conflict_records(self, caplog) -> list:
+        """Return only the conflict-warning records ``_warn_yaml_env_conflicts``
+        emitted (filter out other gateway.config warnings)."""
+        return [
+            r for r in caplog.records
+            if r.name == "gateway.config"
+            and r.levelno == logging.WARNING
+            and "Gateway config conflict" in r.getMessage()
+        ]
+
+    def test_reporter_repro_discord_reply_to_mode_warns(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Reporter's exact scenario: discord.reply_to_mode=first in
+        config.yaml, DISCORD_REPLY_TO_MODE=off in env. Both set, values
+        differ → warning fires (#13582)."""
+        monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "off")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  reply_to_mode: first\n")
+        recs = self._conflict_records(caplog)
+        assert len(recs) == 1, (
+            f"Expected exactly 1 conflict warning for discord.reply_to_mode; "
+            f"got {len(recs)}: {[r.getMessage() for r in recs]}"
+        )
+        msg = recs[0].getMessage()
+        assert "discord.reply_to_mode" in msg
+        assert "DISCORD_REPLY_TO_MODE" in msg
+        # Both values surface so the user knows which to change.
+        assert "first" in msg
+        assert "off" in msg
+        # Actionable guidance mentions the env file.
+        assert ".env" in msg
+
+    def test_no_warning_when_yaml_only(self, tmp_path, monkeypatch, caplog):
+        """YAML set, env unset → no conflict to warn about (YAML will
+        bridge to env normally)."""
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  reply_to_mode: first\n")
+        assert self._conflict_records(caplog) == []
+
+    def test_no_warning_when_env_only(self, tmp_path, monkeypatch, caplog):
+        """Env set, YAML unset → no conflict (no surprise)."""
+        monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "off")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch, "{}\n")
+        assert self._conflict_records(caplog) == []
+
+    def test_no_warning_when_values_match(self, tmp_path, monkeypatch, caplog):
+        """Both set to the same effective value → silent (no-op for user)."""
+        monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "first")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  reply_to_mode: first\n")
+        assert self._conflict_records(caplog) == []
+
+    def test_value_match_is_case_insensitive(self, tmp_path, monkeypatch, caplog):
+        """YAML "First" + env "FIRST" = same effective value, no warning."""
+        monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "FIRST")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  reply_to_mode: First\n")
+        assert self._conflict_records(caplog) == []
+
+    def test_boolean_yaml_compared_as_lowercased_string(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """YAML ``require_mention: true`` vs env ``DISCORD_REQUIRE_MENTION=false``
+        → conflict (bool must normalise to the same ``true``/``false`` string
+        that the YAML→env bridges later emit)."""
+        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  require_mention: true\n")
+        recs = self._conflict_records(caplog)
+        assert len(recs) == 1
+        assert "discord.require_mention" in recs[0].getMessage()
+
+    def test_list_yaml_compared_as_comma_joined(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """YAML list → env var bridges serialise as comma-joined strings
+        (``DISCORD_ALLOWED_CHANNELS=chan1,chan2``).  Conflict detection
+        must use the same serialisation so list-vs-string env comparison
+        works correctly."""
+        # Matching list + env value: no warning.
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "c1,c2")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  allowed_channels:\n    - c1\n    - c2\n")
+        assert self._conflict_records(caplog) == []
+
+        caplog.clear()
+        # Mismatched → warning fires.
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "different")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  allowed_channels:\n    - c1\n    - c2\n")
+        recs = self._conflict_records(caplog)
+        assert len(recs) == 1
+        assert "discord.allowed_channels" in recs[0].getMessage()
+
+    def test_multiple_conflicts_each_warn_once(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Multiple conflicting settings → one warning each (no suppression,
+        no duplication)."""
+        monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "off")
+        monkeypatch.setenv("TELEGRAM_REQUIRE_MENTION", "false")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(
+                tmp_path, monkeypatch,
+                "discord:\n  reply_to_mode: first\n"
+                "telegram:\n  require_mention: true\n",
+            )
+        recs = self._conflict_records(caplog)
+        assert len(recs) == 2
+        msgs = [r.getMessage() for r in recs]
+        assert any("discord.reply_to_mode" in m for m in msgs)
+        assert any("telegram.require_mention" in m for m in msgs)
+
+    def test_slack_mappings_covered(self, tmp_path, monkeypatch, caplog):
+        """Slack keys are in _YAML_ENV_NON_SECRET_MAPPINGS too — pin that
+        the warning coverage isn't Discord-only."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "true")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "slack:\n  require_mention: false\n")
+        recs = self._conflict_records(caplog)
+        assert len(recs) == 1
+        assert "slack.require_mention" in recs[0].getMessage()
+
+    def test_tokens_not_covered(self, tmp_path, monkeypatch, caplog):
+        """Narrow-scope canary: tokens/credentials are DELIBERATELY absent
+        from ``_YAML_ENV_NON_SECRET_MAPPINGS`` because env is the correct
+        authoritative location for secrets.  Setting a token in both places
+        must NOT produce a warning."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "env-token")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(
+                tmp_path, monkeypatch,
+                "platforms:\n  discord:\n    token: yaml-token\n",
+            )
+        assert self._conflict_records(caplog) == []
+
+    def test_nested_missing_path_no_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """If the YAML doesn't have the parent key (``discord:``), the
+        conflict walker must not raise even when env var is set."""
+        monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "off")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch, "slack:\n  token: xyz\n")
+        assert self._conflict_records(caplog) == []
+
+    def test_empty_env_value_treated_as_unset(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """``DISCORD_REPLY_TO_MODE=""`` (empty string) is treated as unset
+        — consistent with how ``os.getenv`` + downstream code uses it.
+        No warning even though the env var is technically present."""
+        monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  reply_to_mode: first\n")
+        assert self._conflict_records(caplog) == []

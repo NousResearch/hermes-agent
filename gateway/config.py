@@ -472,6 +472,93 @@ class GatewayConfig:
         return self.unauthorized_dm_behavior
 
 
+# Non-secret gateway behavior settings that exist in both config.yaml and
+# env-var form.  Environment variables win by design (load_gateway_config
+# docstring below), but users reasonably expect config.yaml to be
+# authoritative for behavior config — so when a key is set in BOTH sources
+# with different values we emit a warning so the user can clean up the
+# stale .env entry.  Tokens / API keys / home-channel IDs are intentionally
+# absent from this list: those are secrets / deployment-specific and env
+# is the correct authoritative location.  See #13582.
+_YAML_ENV_NON_SECRET_MAPPINGS: tuple[tuple[str, str], ...] = (
+    # Discord
+    ("discord.reply_to_mode",           "DISCORD_REPLY_TO_MODE"),
+    ("discord.require_mention",         "DISCORD_REQUIRE_MENTION"),
+    ("discord.auto_thread",             "DISCORD_AUTO_THREAD"),
+    ("discord.reactions",               "DISCORD_REACTIONS"),
+    ("discord.free_response_channels",  "DISCORD_FREE_RESPONSE_CHANNELS"),
+    ("discord.ignored_channels",        "DISCORD_IGNORED_CHANNELS"),
+    ("discord.allowed_channels",        "DISCORD_ALLOWED_CHANNELS"),
+    ("discord.no_thread_channels",      "DISCORD_NO_THREAD_CHANNELS"),
+    # Telegram
+    ("telegram.reply_to_mode",          "TELEGRAM_REPLY_TO_MODE"),
+    ("telegram.require_mention",        "TELEGRAM_REQUIRE_MENTION"),
+    ("telegram.reactions",              "TELEGRAM_REACTIONS"),
+    ("telegram.free_response_chats",    "TELEGRAM_FREE_RESPONSE_CHATS"),
+    ("telegram.ignored_threads",        "TELEGRAM_IGNORED_THREADS"),
+    ("telegram.proxy_url",              "TELEGRAM_PROXY"),
+    # Slack
+    ("slack.require_mention",           "SLACK_REQUIRE_MENTION"),
+    ("slack.allow_bots",                "SLACK_ALLOW_BOTS"),
+    ("slack.free_response_channels",    "SLACK_FREE_RESPONSE_CHANNELS"),
+)
+
+
+def _coerce_yaml_val_for_compare(node: Any) -> str:
+    """Normalise a YAML scalar/list to the same string shape that the
+    YAML-to-env bridges elsewhere in this module use, so ``_warn_yaml_env_conflicts``
+    only warns on genuine value mismatches."""
+    if isinstance(node, bool):
+        # The bridges write ``str(bool).lower()`` (e.g. "true"/"false").
+        return str(node).lower()
+    if isinstance(node, list):
+        # The bridges write comma-joined values.
+        return ",".join(str(v) for v in node)
+    return str(node)
+
+
+def _warn_yaml_env_conflicts(yaml_cfg: dict, config_yaml_path: Path) -> None:
+    """Warn when non-secret gateway settings are set in BOTH ``config.yaml``
+    and the environment with different values.
+
+    Environment variables take priority by design (see ``load_gateway_config``
+    docstring), so this is non-breaking — behavior is unchanged.  The
+    warning exists purely to surface the conflict so users don't silently
+    waste time editing ``config.yaml`` while a stale ``.env`` entry overrides
+    them.  See #13582.
+
+    Only compares values that this module's YAML→env bridges actually
+    touch (per ``_YAML_ENV_NON_SECRET_MAPPINGS``); tokens and credentials
+    are deliberately excluded.
+    """
+    for dotted_key, env_var in _YAML_ENV_NON_SECRET_MAPPINGS:
+        # Walk the dotted path (e.g. "discord.reply_to_mode") through the
+        # parsed YAML.  Missing intermediate keys → no conflict to warn on.
+        node: Any = yaml_cfg
+        for part in dotted_key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                node = None
+                break
+            node = node[part]
+        if node is None:
+            continue
+        env_val = os.getenv(env_var)
+        if env_val is None or env_val == "":
+            continue  # YAML-only — bridges below will honour it
+        yaml_val = _coerce_yaml_val_for_compare(node)
+        if env_val.strip().lower() == yaml_val.strip().lower():
+            continue  # Same effective value — no surprise, no warning
+        logger.warning(
+            "Gateway config conflict: %s in %s is %r but %s=%r is set in "
+            "your environment (typically ~/.hermes/.env).  The env var "
+            "takes priority by design, so the config.yaml value will have "
+            "no effect.  Remove %s from .env to make config.yaml "
+            "authoritative, or update the .env value to match.  (#13582)",
+            dotted_key, config_yaml_path.name, yaml_val,
+            env_var, env_val, env_var,
+        )
+
+
 def load_gateway_config() -> GatewayConfig:
     """
     Load gateway configuration from multiple sources.
@@ -506,6 +593,13 @@ def load_gateway_config() -> GatewayConfig:
         if config_yaml_path.exists():
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
+
+            # Warn when non-secret behavior settings are configured in BOTH
+            # config.yaml AND the environment with different values — the
+            # env var wins silently, which surprises users who reasonably
+            # expect config.yaml edits to take effect after restart.  See
+            # #13582.
+            _warn_yaml_env_conflicts(yaml_cfg, config_yaml_path)
 
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.

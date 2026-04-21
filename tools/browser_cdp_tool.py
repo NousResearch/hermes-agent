@@ -370,6 +370,21 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _browser_toolset_check() -> bool:
+    """Toolset-level availability check for the ``browser`` toolset.
+
+    The browser toolset should be considered available when any supported
+    browser backend is usable. ``browser_cdp`` itself remains a stricter,
+    optional escape hatch that is only exposed when a CDP endpoint exists.
+    """
+    try:
+        from tools.browser_tool import check_browser_requirements  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover — defensive
+        logger.debug("browser toolset check: browser_tool import failed: %s", exc)
+        return False
+    return bool(check_browser_requirements())
+
+
 def _browser_cdp_check() -> bool:
     """Availability check for browser_cdp.
 
@@ -412,5 +427,6 @@ registry.register(
         task_id=kw.get("task_id"),
     ),
     check_fn=_browser_cdp_check,
+    toolset_check_fn=_browser_toolset_check,
     emoji="🧪",
 )

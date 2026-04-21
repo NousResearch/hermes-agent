@@ -185,6 +185,7 @@ class ToolRegistry:
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
+        toolset_check_fn: Callable | None = None,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         with self._lock:
@@ -223,7 +224,9 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
             )
-            if check_fn and toolset not in self._toolset_checks:
+            if toolset_check_fn is not None:
+                self._toolset_checks[toolset] = toolset_check_fn
+            elif check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
 
     def deregister(self, name: str) -> None:

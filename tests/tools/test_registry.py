@@ -160,6 +160,34 @@ class TestToolsetAvailability:
         assert reqs["ok"] is True
         assert reqs["nope"] is False
 
+    def test_toolset_check_fn_overrides_first_tool_check(self):
+        reg = ToolRegistry()
+
+        reg.register(
+            name="browser_cdp",
+            toolset="browser",
+            schema=_make_schema("browser_cdp"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+            toolset_check_fn=lambda: True,
+        )
+        reg.register(
+            name="browser_navigate",
+            toolset="browser",
+            schema=_make_schema("browser_navigate"),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+
+        assert reg.is_toolset_available("browser") is True
+
+        defs = reg.get_definitions({"browser_cdp", "browser_navigate"})
+        assert {d["function"]["name"] for d in defs} == {"browser_navigate"}
+
+        available, unavailable = reg.check_tool_availability()
+        assert "browser" in available
+        assert not any(item["name"] == "browser" for item in unavailable)
+
     def test_get_all_tool_names(self):
         reg = ToolRegistry()
         reg.register(

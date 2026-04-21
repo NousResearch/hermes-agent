@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
+from utils import base_url_host_matches
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
@@ -393,7 +394,7 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
-    if provider_name == "openrouter" or "openrouter.ai" in base:
+    if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")

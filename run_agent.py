@@ -124,7 +124,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_hostname, env_var_enabled
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled
 
 
 
@@ -845,7 +845,10 @@ class AIAgent:
             self.api_mode = "codex_responses"
         elif self.provider == "xai":
             self.api_mode = "codex_responses"
-        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
+        elif (provider_name is None) and (
+            self._base_url_hostname == "chatgpt.com"
+            and "/backend-api/codex" in self._base_url_lower
+        ):
             self.api_mode = "codex_responses"
             self.provider = "openai-codex"
         elif (provider_name is None) and self._base_url_hostname == "api.x.ai":
@@ -859,8 +862,12 @@ class AIAgent:
             # use a URL convention ending in /anthropic. Auto-detect these so the
             # Anthropic Messages API adapter is used instead of chat completions.
             self.api_mode = "anthropic_messages"
-        elif self.provider == "bedrock" or "bedrock-runtime" in self._base_url_lower:
-            # AWS Bedrock — auto-detect from provider name or base URL.
+        elif self.provider == "bedrock" or (
+            self._base_url_hostname.startswith("bedrock-runtime.")
+            and base_url_host_matches(self._base_url_lower, "amazonaws.com")
+        ):
+            # AWS Bedrock — auto-detect from provider name or base URL
+            # (bedrock-runtime.<region>.amazonaws.com).
             self.api_mode = "bedrock_converse"
         else:
             self.api_mode = "chat_completions"
@@ -1158,23 +1165,23 @@ class AIAgent:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
-                if "openrouter" in effective_base.lower():
+                if base_url_host_matches(effective_base, "openrouter.ai"):
                     client_kwargs["default_headers"] = {
                         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
-                elif "api.githubcopilot.com" in effective_base.lower():
+                elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
                     from hermes_cli.models import copilot_default_headers
 
                     client_kwargs["default_headers"] = copilot_default_headers()
-                elif "api.kimi.com" in effective_base.lower():
+                elif base_url_host_matches(effective_base, "api.kimi.com"):
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.30.0",
                     }
-                elif "portal.qwen.ai" in effective_base.lower():
+                elif base_url_host_matches(effective_base, "portal.qwen.ai"):
                     client_kwargs["default_headers"] = _qwen_portal_headers()
-                elif "chatgpt.com" in effective_base.lower():
+                elif base_url_host_matches(effective_base, "chatgpt.com"):
                     from agent.auxiliary_client import _codex_cloudflare_headers
                     client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             else:
@@ -1230,7 +1237,7 @@ class AIAgent:
             # stream tool call arguments token-by-token, keeping the
             # connection alive.
             _effective_base = str(client_kwargs.get("base_url", "")).lower()
-            if "openrouter" in _effective_base and "claude" in (self.model or "").lower():
+            if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (self.model or "").lower():
                 headers = client_kwargs.get("default_headers") or {}
                 existing_beta = headers.get("x-anthropic-beta", "")
                 _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
@@ -2328,7 +2335,7 @@ class AIAgent:
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
-        return "openrouter" in self._base_url_lower
+        return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
     def _anthropic_prompt_cache_policy(
         self,
@@ -2363,7 +2370,7 @@ class AIAgent:
 
         base_lower = eff_base_url.lower()
         is_claude = "claude" in eff_model.lower()
-        is_openrouter = "openrouter" in base_lower
+        is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
         is_anthropic_wire = eff_api_mode == "anthropic_messages"
         is_native_anthropic = (
             is_anthropic_wire
@@ -5002,20 +5009,19 @@ class AIAgent:
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
         from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _OR_HEADERS
 
-        normalized = (base_url or "").lower()
-        if "openrouter" in normalized:
+        if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
-        elif "ai-gateway.vercel.sh" in normalized:
+        elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
-        elif "api.githubcopilot.com" in normalized:
+        elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
-        elif "api.kimi.com" in normalized:
+        elif base_url_host_matches(base_url, "api.kimi.com"):
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
-        elif "portal.qwen.ai" in normalized:
+        elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
-        elif "chatgpt.com" in normalized:
+        elif base_url_host_matches(base_url, "chatgpt.com"):
             from agent.auxiliary_client import _codex_cloudflare_headers
             self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
                 self._client_kwargs.get("api_key", "")
@@ -6163,7 +6169,10 @@ class AIAgent:
                 # provider-specific exceptions like Copilot gpt-5-mini on
                 # chat completions.
                 fb_api_mode = "codex_responses"
-            elif fb_provider == "bedrock" or "bedrock-runtime" in fb_base_url.lower():
+            elif fb_provider == "bedrock" or (
+                base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
+                and base_url_host_matches(fb_base_url, "amazonaws.com")
+            ):
                 fb_api_mode = "bedrock_converse"
 
             old_model = self.model
@@ -6596,7 +6605,7 @@ class AIAgent:
 
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
-        return "portal.qwen.ai" in self._base_url_lower
+        return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
 
     def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
         prepared = copy.deepcopy(api_messages)
@@ -6717,12 +6726,15 @@ class AIAgent:
                 instructions = DEFAULT_AGENT_IDENTITY
 
             is_github_responses = (
-                "models.github.ai" in self.base_url.lower()
-                or "api.githubcopilot.com" in self.base_url.lower()
+                base_url_host_matches(self.base_url, "models.github.ai")
+                or base_url_host_matches(self.base_url, "api.githubcopilot.com")
             )
             is_codex_backend = (
                 self.provider == "openai-codex"
-                or "chatgpt.com/backend-api/codex" in self.base_url.lower()
+                or (
+                    self._base_url_hostname == "chatgpt.com"
+                    and "/backend-api/codex" in self._base_url_lower
+                )
             )
 
             # Resolve reasoning effort: config > default (medium)
@@ -6923,8 +6935,8 @@ class AIAgent:
 
         _is_openrouter = self._is_openrouter_url()
         _is_github_models = (
-            "models.github.ai" in self._base_url_lower
-            or "api.githubcopilot.com" in self._base_url_lower
+            base_url_host_matches(self._base_url_lower, "models.github.ai")
+            or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
         )
 
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
@@ -7000,11 +7012,14 @@ class AIAgent:
         Some providers/routes reject `reasoning` with 400s, so gate it to
         known reasoning-capable model families and direct Nous Portal.
         """
-        if "nousresearch" in self._base_url_lower:
+        if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
             return True
-        if "ai-gateway.vercel.sh" in self._base_url_lower:
+        if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
             return True
-        if "models.github.ai" in self._base_url_lower or "api.githubcopilot.com" in self._base_url_lower:
+        if (
+            base_url_host_matches(self._base_url_lower, "models.github.ai")
+            or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
+        ):
             try:
                 from hermes_cli.models import github_model_reasoning_efforts
 
@@ -10566,7 +10581,7 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                                 self._vprint(f"{self.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
                                 self._vprint(f"{self.log_prefix}      • Does your account have access to {_model}?", force=True)
-                                if "openrouter" in str(_base).lower():
+                                if base_url_host_matches(str(_base), "openrouter.ai"):
                                     self._vprint(f"{self.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
                         else:
                             self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)

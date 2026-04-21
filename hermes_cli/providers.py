@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils import base_url_hostname
+from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -441,7 +441,7 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
             return "anthropic_messages"
         if hostname == "api.openai.com":
             return "codex_responses"
-        if "bedrock-runtime" in url_lower and "amazonaws.com" in url_lower:
+        if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
             return "bedrock_converse"
 
     return "chat_completions"

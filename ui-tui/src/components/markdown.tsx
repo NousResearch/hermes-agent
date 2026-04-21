@@ -16,8 +16,15 @@ const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
 export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
 export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 
+// Subscript (`~x~`) is restricted to short alphanumeric runs so prose like
+// `thing ~! more ~?` from Kimi / Qwen / GLM (kaomoji-style decorators) doesn't
+// get parsed as a span that swallows everything between two stray tildes. Real
+// Pandoc subscript is H~2~O / CO~2~ / X~n~ — always word-char content. Without
+// this constraint the old pattern `~([^~\s][^~]*?)~` paired up `~!` openers
+// with the next `~` anywhere on the line and rendered the interior as dim
+// text with a `_` prefix.
 export const INLINE_RE = new RegExp(
-  `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|(?<!\\w)__(.+?)__(?!\\w)|\\*(.+?)\\*|(?<!\\w)_(.+?)_(?!\\w)|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
+  `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|(?<!\\w)__(.+?)__(?!\\w)|\\*(.+?)\\*|(?<!\\w)_(.+?)_(?!\\w)|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([A-Za-z0-9]{1,8})~|(https?:\\/\\/[^\\s<]+))`,
   'g'
 )
 
@@ -108,7 +115,7 @@ export const stripInlineMarkup = (value: string) =>
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
-    .replace(/~([^~\s][^~]*?)~/g, '_$1')
+    .replace(/~([A-Za-z0-9]{1,8})~/g, '_$1')
 
 const renderTable = (key: number, rows: string[][], t: Theme) => {
   const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))

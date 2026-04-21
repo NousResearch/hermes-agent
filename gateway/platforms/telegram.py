@@ -251,6 +251,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Commands picker state per chat
+        self._commands_picker_state: Dict[str, dict] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -1635,6 +1637,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         data = query.data
 
+        # --- Commands picker callbacks ---
+        if data.startswith(("mc:", "cp:")):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_commands_picker_callback(query, data, chat_id)
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -1729,6 +1738,132 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def send_commands_picker(
+        self,
+        chat_id: str,
+        commands: List[Dict[str, str]],
+        current_page: int = 0,
+        on_command_selected: Optional[callable] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        edit_message_id: Optional[int] = None,
+    ) -> SendResult:
+        """Send an inline keyboard picker listing available /commands.
+
+        Each command is a button; clicking shows its description as a toast.
+        Pagination buttons (◄ / ►) edit the message in-place.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        PAGE_SIZE = 8
+        total_pages = max(1, (len(commands) + PAGE_SIZE - 1) // PAGE_SIZE)
+        page = max(0, min(current_page, total_pages - 1))
+        start = page * PAGE_SIZE
+        page_cmds = commands[start: start + PAGE_SIZE]
+
+        buttons: List[InlineKeyboardButton] = []
+        for cmd in page_cmds:
+            name = cmd.get("command", "")
+            buttons.append(InlineKeyboardButton(f"/{name}", callback_data=f"mc:{name}:{page}"))
+
+        nav: List[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("◄ Prev", callback_data=f"cp:{page - 1}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Next ►", callback_data=f"cp:{page + 1}"))
+        rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+        if nav:
+            rows.append(nav)
+        keyboard = InlineKeyboardMarkup(rows)
+
+        caption = (
+            f"⚙ Available Commands ({page + 1}/{total_pages})\n\n"
+            f"_Click a command to see its description._"
+        )
+
+        try:
+            if edit_message_id is not None:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=edit_message_id,
+                    text=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                )
+                msg_id = edit_message_id
+            else:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                    message_thread_id=self._message_thread_id_for_send(
+                        self._metadata_thread_id(metadata)
+                    ),
+                )
+                msg_id = msg.message_id
+            self._commands_picker_state[chat_id] = {
+                "page": page,
+                "total_pages": total_pages,
+                "commands": commands,
+                "on_command_selected": on_command_selected,
+                "message_id": msg_id,
+            }
+            return SendResult(success=True, message_id=str(msg_id))
+        except Exception as exc:
+            logger.error("Failed to send commands picker: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def _handle_commands_picker_callback(
+        self, query: "CallbackQuery", data: str, chat_id: str
+    ) -> None:
+        """Handle inline keyboard callbacks from the commands picker."""
+        if data.startswith("mc:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                cmd_name = parts[1]
+                state = self._commands_picker_state.get(chat_id, {})
+                cmd_desc = next(
+                    (c.get("description", "") for c in state.get("commands", []) if c.get("command") == cmd_name),
+                    "",
+                )
+                on_selected = state.get("on_command_selected")
+                if on_selected:
+                    try:
+                        result_text = on_selected(cmd_name, cmd_desc)
+                        await query.answer(text=result_text, show_alert=False)
+                    except Exception:
+                        await query.answer(text=f"/{cmd_name}: {cmd_desc}", show_alert=True)
+                else:
+                    await query.answer(text=f"/{cmd_name}: {cmd_desc}" if cmd_desc else f"/{cmd_name}", show_alert=True)
+            return
+
+        if data.startswith("cp:"):
+            try:
+                new_page = int(data.split(":", 1)[1])
+            except (ValueError, IndexError):
+                await query.answer()
+                return
+            state = self._commands_picker_state.get(chat_id, {})
+            commands = state.get("commands", [])
+            if not commands:
+                await query.answer()
+                return
+            result = await self.send_commands_picker(
+                chat_id=chat_id,
+                commands=commands,
+                current_page=new_page,
+                on_command_selected=state.get("on_command_selected"),
+                edit_message_id=state.get("message_id"),
+            )
+            if result.success:
+                await query.answer()
+            else:
+                await query.answer(text="Failed to update picker.")
+            return
+
+        await query.answer()
 
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.

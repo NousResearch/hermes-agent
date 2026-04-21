@@ -5829,6 +5829,33 @@ class GatewayRunner:
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         """Handle /commands [page] - paginated list of all commands and skills."""
         from hermes_cli.commands import gateway_help_lines
+        from gateway.config import Platform
+
+        # For Telegram: show interactive inline keyboard picker instead of text.
+        if event.source.platform == Platform.TELEGRAM:
+            adapter = self.adapters.get(event.source.platform)
+            if adapter and hasattr(adapter, "send_commands_picker"):
+                import re as _re
+                cmd_dicts = []
+                for line in gateway_help_lines():
+                    m = _re.match(r"`(/\w+)`\s*[-\u2013]\s*(.+)", line)
+                    if m:
+                        cmd_dicts.append({"command": m.group(1).lstrip("/"), "description": m.group(2).strip()})
+                try:
+                    from agent.skill_commands import get_skill_commands
+                    for cmd, info in sorted((get_skill_commands() or {}).items()):
+                        cmd_dicts.append({"command": cmd.lstrip("/"), "description": info.get("description", "Skill command")})
+                except Exception:
+                    pass
+                if cmd_dicts:
+                    meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    await adapter.send_commands_picker(
+                        chat_id=event.source.chat_id or event.source.user_id,
+                        commands=cmd_dicts,
+                        current_page=0,
+                        metadata=meta,
+                    )
+                    return ""
 
         raw_args = event.get_command_args().strip()
         if raw_args:
@@ -11184,6 +11211,13 @@ class GatewayRunner:
                 # new message).
 
                 updated_history = result.get("messages", history)
+                # Strip any dangling user message at the end of updated_history.
+                # When an interrupt fires mid-turn the interrupted user message
+                # may already be appended; passing it through would create two
+                # consecutive user messages and break strict role-alternation
+                # chat templates (e.g. gemma / local models → HTTP 500).
+                while updated_history and updated_history[-1].get("role") == "user":
+                    updated_history = updated_history[:-1]
                 next_source = source
                 next_message = pending
                 next_message_id = None

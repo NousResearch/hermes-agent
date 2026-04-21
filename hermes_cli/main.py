@@ -5212,7 +5212,11 @@ def _install_hangup_protection(gateway_mode: bool = False):
     # (2) Mirror output to update.log and wrap stdio for broken-pipe
     # tolerance.  Any failure here is non-fatal; we just skip the wrap.
     try:
-        logs_dir = get_hermes_home() / "logs"
+        # Late-bound import so tests can monkeypatch
+        # hermes_cli.config.get_hermes_home to simulate setup failure.
+        from hermes_cli.config import get_hermes_home as _get_hermes_home
+
+        logs_dir = _get_hermes_home() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = logs_dir / "update.log"
         log_file = open(log_path, "a", buffering=1, encoding="utf-8")

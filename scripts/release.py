@@ -293,6 +293,7 @@ AUTHOR_MAP = {
     "ywt000818@gmail.com": "OwenYWT",
     "dhandhalyabhavik@gmail.com": "v1k22",
     "rucchizhao@zhaochenfeideMacBook-Pro.local": "RucchiZ",
+    "tannerfokkens@Mac.attlocal.net": "tannerfokkens-maker",
     "lehaolin98@outlook.com": "LehaoLin",
     "yuewang1@microsoft.com": "imink",
     "1736355688@qq.com": "hedgeho9X",

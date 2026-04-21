@@ -35,6 +35,7 @@ def _group_message(
     *,
     chat_id=-100,
     thread_id=None,
+    from_user_id=111,
     reply_to_bot=False,
     entities=None,
     caption=None,
@@ -49,6 +50,7 @@ def _group_message(
         entities=entities or [],
         caption_entities=caption_entities or [],
         message_thread_id=thread_id,
+        from_user=SimpleNamespace(id=from_user_id),
         chat=SimpleNamespace(id=chat_id, type="group"),
         reply_to_message=reply_to_message,
     )
@@ -102,6 +104,19 @@ def test_invalid_regex_patterns_are_ignored():
 
     assert adapter._should_process_message(_group_message("chompy status")) is True
     assert adapter._should_process_message(_group_message("hello everyone")) is False
+
+
+def test_private_messages_from_the_bot_itself_are_ignored():
+    adapter = _make_adapter()
+    message = _group_message(
+        "system notification",
+        chat_id=123,
+        thread_id=17,
+        from_user_id=999,
+    )
+    message.chat.type = "private"
+
+    assert adapter._should_process_message(message) is False
 
 
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):

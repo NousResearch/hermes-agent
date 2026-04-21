@@ -198,22 +198,28 @@ class TestToolsetConsistency:
                 assert inc in TOOLSETS, f"{name} includes unknown toolset '{inc}'"
 
     def test_hermes_platforms_share_core_tools(self):
-        """All hermes-* platform toolsets share the same core tools.
+        """Messaging/platform toolsets keep the shared Hermes core.
 
-        Platform-specific additions (e.g. ``discord_server`` on
-        hermes-discord, gated on DISCORD_BOT_TOKEN) are allowed on top —
-        the invariant is that the core set is identical across platforms.
+        Individual platforms may add a small number of platform-specific
+        tools on top of the common core (for example Discord server helpers).
         """
-        platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
-        tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
-        # All platforms must contain the shared core; platform-specific
-        # extras are OK (subset check, not equality).
-        core = set.intersection(*tool_sets)
-        for name, ts in zip(platforms, tool_sets):
-            assert core.issubset(ts), f"{name} is missing core tools: {core - ts}"
-        # Sanity: the shared core must be non-trivial (i.e. we didn't
-        # silently let a platform diverge so far that nothing is shared).
-        assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
+        platforms = [
+            "hermes-cli",
+            "hermes-telegram",
+            "hermes-discord",
+            "hermes-whatsapp",
+            "hermes-slack",
+            "hermes-signal",
+            "hermes-homeassistant",
+        ]
+        core = set(TOOLSETS["hermes-cli"]["tools"])
+        allowed_extras = {
+            "hermes-discord": {"discord_server"},
+        }
+        for platform in platforms[1:]:
+            tools = set(TOOLSETS[platform]["tools"])
+            assert core.issubset(tools)
+            assert tools - core == allowed_extras.get(platform, set())
 
 
 class TestPluginToolsets:

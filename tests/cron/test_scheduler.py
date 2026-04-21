@@ -1263,6 +1263,15 @@ class TestRunJobWakeGate:
         ):
             yield
 
+    @staticmethod
+    def _runtime_result():
+        return {
+            "provider": "openrouter",
+            "api_key": "test-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+
     def _make_job(self, name="wake-gate-test", script="check.py"):
         """Minimal valid cron job dict for run_job."""
         return {
@@ -1303,6 +1312,8 @@ class TestRunJobWakeGate:
         })
         with patch.object(scheduler, "_run_job_script",
                           return_value=(True, script_output)), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._runtime_result()), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
@@ -1332,6 +1343,8 @@ class TestRunJobWakeGate:
             "final_response": "ok", "messages": []
         })
         with patch.object(scheduler, "_run_job_script", side_effect=_script_stub), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._runtime_result()), \
              patch("run_agent.AIAgent", return_value=agent):
             scheduler.run_job(self._make_job())
 
@@ -1350,6 +1363,8 @@ class TestRunJobWakeGate:
         })
         with patch.object(scheduler, "_run_job_script",
                           return_value=(False, '{"wakeAgent": false}')), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._runtime_result()), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
@@ -1366,6 +1381,8 @@ class TestRunJobWakeGate:
         job = self._make_job(script=None)
         job.pop("script", None)
         with patch.object(scheduler, "_run_job_script") as script_fn, \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._runtime_result()), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
             scheduler.run_job(job)
 

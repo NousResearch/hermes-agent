@@ -128,8 +128,10 @@ class TestGeminiModelCatalog:
     def test_provider_models_exist(self):
         assert "gemini" in _PROVIDER_MODELS
         models = _PROVIDER_MODELS["gemini"]
-        assert "gemini-2.5-pro" in models
-        assert "gemini-2.5-flash" in models
+        assert "gemini-3.1-pro-preview" in models
+        assert "gemini-3-flash-preview" in models
+        assert "gemini-2.5-pro" not in models
+        assert "gemini-2.5-flash" not in models
         assert "gemma-4-31b-it" not in models
 
     def test_provider_models_has_3x(self):

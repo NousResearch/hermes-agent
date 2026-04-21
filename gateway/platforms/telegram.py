@@ -2250,6 +2250,12 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
+    def _is_self_message(self, message: Message) -> bool:
+        if not self._bot:
+            return False
+        message_user = getattr(message, "from_user", None)
+        return bool(message_user and getattr(message_user, "id", None) == getattr(self._bot, "id", None))
+
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
             return False
@@ -2308,6 +2314,8 @@ class TelegramAdapter(BasePlatformAdapter):
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
         """
+        if self._is_self_message(message):
+            return False
         if not self._is_group_chat(message):
             return True
         thread_id = getattr(message, "message_thread_id", None)

@@ -172,6 +172,7 @@ class TestStreamingAccumulator:
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
+            provider="openrouter",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -1132,4 +1133,3 @@ class TestPartialToolCallWarning:
         assert "Stream stalled" not in content, (
             f"Unexpected warning on text-only partial stream: {content!r}"
         )
-

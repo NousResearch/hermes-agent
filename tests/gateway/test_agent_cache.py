@@ -758,9 +758,16 @@ class TestAgentCacheSpilloverLive:
         N_THREADS = 8
         PER_THREAD = 20  # 8 * 20 = 160 inserts into a 16-slot cache
 
+        class _StubAgent:
+            def __init__(self):
+                self.client = object()
+
+            def close(self):
+                return None
+
         def worker(tid: int):
             for j in range(PER_THREAD):
-                a = self._real_agent()
+                a = _StubAgent()
                 key = f"t{tid}-s{j}"
                 with runner._agent_cache_lock:
                     runner._agent_cache[key] = (a, "sig")

@@ -1,4 +1,4 @@
-import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
+import { Box, type ScrollBoxHandle, Text, stringWidth } from '@hermes/ink'
 import { type ReactNode, type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
 import { FACES } from '../content/faces.js'
@@ -11,6 +11,9 @@ import type { Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
+const STATUS_RULE_DIVIDER_WIDTH = 3
+const STATUS_RULE_MIN_LEFT_WIDTH = 12
+const STATUS_RULE_MAX_RIGHT_SHARE = 0.4
 
 function FaceTicker({ color }: { color: string }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
@@ -55,14 +58,58 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+export function nextSessionDurationDelay(elapsedMs: number) {
+  const remainder = elapsedMs % 1000
+  const nextSecond = remainder === 0 ? 1000 : 1000 - remainder
+
+  if (elapsedMs < 3600_000) {
+    return nextSecond
+  }
+
+  const elapsedThisMinuteMs = elapsedMs % 60_000
+  return elapsedThisMinuteMs === 0 ? 60_000 : 60_000 - elapsedThisMinuteMs
+}
+
+export function getStatusRuleLayout(cols: number, cwdLabel: string) {
+  const totalCols = Math.max(1, cols)
+  const reserved = Math.min(totalCols, STATUS_RULE_DIVIDER_WIDTH + STATUS_RULE_MIN_LEFT_WIDTH)
+  const remaining = Math.max(0, totalCols - reserved)
+  const desiredRight = Math.min(stringWidth(cwdLabel), Math.max(0, Math.floor(totalCols * STATUS_RULE_MAX_RIGHT_SHARE)))
+  const rightWidth = Math.min(remaining, desiredRight)
+  const dividerWidth = rightWidth > 0 ? Math.min(STATUS_RULE_DIVIDER_WIDTH, Math.max(0, totalCols - rightWidth)) : 0
+  const leftWidth = Math.max(1, totalCols - rightWidth - dividerWidth)
+
+  return { dividerWidth, leftWidth, rightWidth }
+}
+
 function SessionDuration({ startedAt }: { startedAt: number }) {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    setNow(Date.now())
-    const id = setInterval(() => setNow(Date.now()), 1000)
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    let cancelled = false
 
-    return () => clearInterval(id)
+    const schedule = () => {
+      const elapsed = Date.now() - startedAt
+      timeout = setTimeout(() => {
+        if (cancelled) {
+          return
+        }
+
+        setNow(Date.now())
+        schedule()
+      }, nextSessionDurationDelay(elapsed))
+    }
+
+    setNow(Date.now())
+    schedule()
+
+    return () => {
+      cancelled = true
+      if (timeout) {
+        clearTimeout(timeout)
+      }
+    }
   }, [startedAt])
 
   return fmtDuration(now - startedAt)
@@ -113,10 +160,10 @@ export function StatusRule({
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
-  const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+  const { dividerWidth, leftWidth, rightWidth } = getStatusRuleLayout(cols, cwdLabel)
 
   return (
-    <Box>
+    <Box width={Math.max(1, cols)}>
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
@@ -143,8 +190,19 @@ export function StatusRule({
         </Text>
       </Box>
 
-      <Text color={t.color.bronze}> ─ </Text>
-      <Text color={t.color.label}>{cwdLabel}</Text>
+      {dividerWidth > 0 ? (
+        <Box flexShrink={0} width={dividerWidth}>
+          <Text color={t.color.bronze}> ─ </Text>
+        </Box>
+      ) : null}
+
+      {rightWidth > 0 ? (
+        <Box flexShrink={1} width={rightWidth}>
+          <Text color={t.color.label} wrap="truncate-start">
+            {cwdLabel}
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   )
 }

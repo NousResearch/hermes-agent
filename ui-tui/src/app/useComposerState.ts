@@ -15,7 +15,7 @@ import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
-import type { InputDetectDropResponse } from '../gatewayTypes.js'
+import type { ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 
 import type { MaybePromise, PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
@@ -102,7 +102,7 @@ export function useComposerState({ gw, onClipboardPaste, onImageAttached, submit
       const sid = getUiState().sid
       if (sid && looksLikeDroppedPath(cleanedText)) {
         try {
-          const attached = await gw.request<InputDetectDropResponse & { remainder?: string }>('image.attach', {
+          const attached = await gw.request<ImageAttachResponse>('image.attach', {
             path: cleanedText,
             session_id: sid
           })

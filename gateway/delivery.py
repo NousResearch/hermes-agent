@@ -229,11 +229,22 @@ class DeliveryRouter:
     ) -> Dict[str, Any]:
         """Deliver content to a messaging platform."""
         adapter = self.adapters.get(target.platform)
-        
+
         if not adapter:
             raise ValueError(f"No adapter configured for {target.platform.value}")
-        
-        if not target.chat_id:
+
+        # Bare platform targets (e.g. "telegram") parse as chat_id=None, which
+        # the docstring and DeliveryTarget.parse() explicitly document as
+        # "send to the platform home channel". Resolve the configured
+        # home_channel here instead of rejecting the target. (#13704)
+        chat_id = target.chat_id
+        thread_id = target.thread_id
+        if not chat_id:
+            platform_cfg = self.config.platforms.get(target.platform)
+            if platform_cfg and platform_cfg.home_channel:
+                chat_id = platform_cfg.home_channel.chat_id
+
+        if not chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
         # Guard: truncate oversized cron output to stay within platform limits
@@ -247,9 +258,9 @@ class DeliveryRouter:
             )
         
         send_metadata = dict(metadata or {})
-        if target.thread_id and "thread_id" not in send_metadata:
-            send_metadata["thread_id"] = target.thread_id
-        return await adapter.send(target.chat_id, content, metadata=send_metadata or None)
+        if thread_id and "thread_id" not in send_metadata:
+            send_metadata["thread_id"] = thread_id
+        return await adapter.send(chat_id, content, metadata=send_metadata or None)
 
 
 

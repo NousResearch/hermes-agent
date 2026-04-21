@@ -3061,3 +3061,107 @@ class TestRegisterMcpServers:
                 )
 
         _servers.pop("srv", None)
+
+
+# ---------------------------------------------------------------------------
+# Session expiry auto-reconnect (issue #13383)
+# ---------------------------------------------------------------------------
+
+class TestSessionExpiredReconnect:
+    """Verify automatic reconnection when MCP session expires during tool call."""
+
+    def _patch_mcp_loop(self):
+        """Patch _run_on_mcp_loop to execute coroutines directly."""
+        from tools.mcp_tool import _run_on_mcp_loop
+        return patch(
+            "tools.mcp_tool._run_on_mcp_loop",
+            side_effect=lambda coro, timeout=None: asyncio.get_event_loop().run_until_complete(coro),
+        )
+
+    def test_session_expired_triggers_reconnect_and_retry(self):
+        """Tool call with 'Invalid or expired session' reconnects and retries."""
+        from tools.mcp_tool import _make_tool_handler, _servers, MCPServerTask
+
+        # First call fails with session expired, second succeeds
+        call_count = 0
+        async def fake_call_tool(name, arguments):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("Invalid params: Invalid or expired session")
+            return _make_call_result("success after reconnect")
+
+        mock_session = MagicMock()
+        mock_session.call_tool = fake_call_tool
+
+        server = _make_mock_server("wpcom", session=mock_session)
+        server._config = {"url": "https://example.com/mcp"}
+        _servers["wpcom"] = server
+
+        # Mock reconnect to just swap the session
+        async def fake_reconnect(name):
+            # Simulate successful reconnect by resetting call count
+            # In real code this would create a new server; here we just
+            # keep the same mock session since call_count tracks retries
+            pass
+
+        try:
+            handler = _make_tool_handler("wpcom", "wpcom-mcp-content-authoring", 120)
+            with self._patch_mcp_loop(), \
+                 patch("tools.mcp_tool._reconnect_server", side_effect=fake_reconnect):
+                result = json.loads(handler({"title": "test"}))
+            assert "result" in result
+            assert "success after reconnect" in result["result"]
+            assert call_count == 2  # first failed, second succeeded
+        finally:
+            _servers.pop("wpcom", None)
+
+    def test_session_expired_reconnect_failure_returns_error(self):
+        """If reconnect fails after session expiry, return error."""
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        async def fake_call_tool(name, arguments):
+            raise Exception("Invalid or expired session")
+
+        mock_session = MagicMock()
+        mock_session.call_tool = fake_call_tool
+
+        server = _make_mock_server("wpcom", session=mock_session)
+        server._config = {"url": "https://example.com/mcp"}
+        _servers["wpcom"] = server
+
+        async def fake_reconnect_fail(name):
+            raise RuntimeError("reconnect failed")
+
+        try:
+            handler = _make_tool_handler("wpcom", "wpcom-mcp-content-authoring", 120)
+            with self._patch_mcp_loop(), \
+                 patch("tools.mcp_tool._reconnect_server", side_effect=fake_reconnect_fail):
+                result = json.loads(handler({"title": "test"}))
+            assert "error" in result
+            assert "reconnection" in result["error"].lower() or "reconnect" in result["error"].lower()
+        finally:
+            _servers.pop("wpcom", None)
+
+    def test_non_session_error_does_not_trigger_reconnect(self):
+        """Regular errors should not trigger reconnection."""
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        async def fake_call_tool(name, arguments):
+            raise Exception("some other error")
+
+        mock_session = MagicMock()
+        mock_session.call_tool = fake_call_tool
+
+        server = _make_mock_server("wpcom", session=mock_session)
+        server._config = {"url": "https://example.com/mcp"}
+        _servers["wpcom"] = server
+
+        try:
+            handler = _make_tool_handler("wpcom", "wpcom-mcp-content-authoring", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"title": "test"}))
+            assert "error" in result
+            assert "some other error" in result["error"]
+        finally:
+            _servers.pop("wpcom", None)

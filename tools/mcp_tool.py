@@ -1148,6 +1148,59 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
     return future.result(timeout=timeout)
 
 
+def _reconnect_server(server_name: str):
+    """Shutdown and re-establish a single MCP server connection.
+
+    Called when a tool call detects an expired transport session.
+    The OAuth token remains valid; only the transport-layer session
+    needs to be re-established.
+    """
+    with _lock:
+        server = _servers.get(server_name)
+        config = server._config if server else None
+
+    if not config:
+        raise RuntimeError(f"No config found for MCP server '{server_name}'")
+
+    # Shutdown existing connection
+    if server:
+        try:
+            _run_on_mcp_loop(server.shutdown(), timeout=15)
+        except Exception as exc:
+            logger.debug(
+                "MCP server '%s' shutdown during reconnect raised: %s",
+                server_name, exc,
+            )
+
+    # Remove old server from registry
+    with _lock:
+        _servers.pop(server_name, None)
+
+    # Re-register tools: remove old prefixed names from registry and toolsets
+    from tools.registry import registry, tool_error
+    from toolsets import TOOLSETS
+
+    old_prefixed = [
+        name for name in registry.list_tools()
+        if name.startswith(f"{server_name}/")
+    ]
+    for prefixed_name in old_prefixed:
+        registry.deregister(prefixed_name)
+        for ts_name, ts in TOOLSETS.items():
+            if ts_name.startswith("hermes-") and prefixed_name in ts["tools"]:
+                ts["tools"].remove(prefixed_name)
+
+    # Reconnect
+    new_server = _run_on_mcp_loop(_connect_server(server_name, config), timeout=60)
+    with _lock:
+        _servers[server_name] = new_server
+
+    # Re-register tools
+    _register_server_tools(server_name, new_server, config)
+
+    logger.info("MCP server '%s' reconnected successfully", server_name)
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -1219,6 +1272,17 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+_SESSION_EXPIRED_PATTERNS = (
+    "Invalid or expired session",
+    "Invalid params: Invalid or expired session",
+)
+
+
+def _is_session_expired_error(text: str) -> bool:
+    """Check if an error text indicates an expired MCP transport session."""
+    return any(pattern in text for pattern in _SESSION_EXPIRED_PATTERNS)
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -1261,9 +1325,34 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return json.dumps({"result": structured})
             return json.dumps({"result": text_result})
 
-        try:
+        def _do_call():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+
+        try:
+            return _do_call()
         except Exception as exc:
+            error_str = str(exc)
+            if _is_session_expired_error(error_str):
+                logger.warning(
+                    "MCP server '%s' session expired during tool call, "
+                    "attempting reconnection and retry",
+                    server_name,
+                )
+                # Reconnect and retry once
+                try:
+                    _reconnect_server(server_name)
+                    return _do_call()
+                except Exception as retry_exc:
+                    logger.error(
+                        "MCP tool %s/%s retry failed after reconnection: %s",
+                        server_name, tool_name, retry_exc,
+                    )
+                    return json.dumps({
+                        "error": _sanitize_error(
+                            f"MCP call failed after reconnection: "
+                            f"{type(retry_exc).__name__}: {retry_exc}"
+                        )
+                    })
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,

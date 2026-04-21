@@ -52,6 +52,14 @@ class TestPlatformConfigRoundtrip:
         assert restored.enabled is False
         assert restored.token is None
 
+    def test_explicit_null_home_channel_treated_as_absent(self):
+        # YAML "home_channel: null" is a common way to clear an optional
+        # nested section. Must not crash with TypeError from passing None
+        # to HomeChannel.from_dict(). Regression for gh-13708.
+        restored = PlatformConfig.from_dict({"enabled": True, "home_channel": None})
+        assert restored.enabled is True
+        assert restored.home_channel is None
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):

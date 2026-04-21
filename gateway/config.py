@@ -174,9 +174,10 @@ class PlatformConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         home_channel = None
-        if "home_channel" in data:
-            home_channel = HomeChannel.from_dict(data["home_channel"])
-        
+        home_channel_data = data.get("home_channel")
+        if home_channel_data is not None:
+            home_channel = HomeChannel.from_dict(home_channel_data)
+
         return cls(
             enabled=data.get("enabled", False),
             token=data.get("token"),

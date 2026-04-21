@@ -154,10 +154,16 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "zai": "glm-5v-turbo",
 }
 
-# OpenRouter app attribution headers
+# OpenRouter app attribution headers. Env-var overridable so downstream
+# packagers can set per-deployment attribution without forking; fallbacks
+# match the historical Nous defaults so behavior is unchanged when unset.
+# `X-Title` is the canonical attribution header OpenRouter's dashboard
+# reads; the previous `X-OpenRouter-Title` label was not recognized there.
 _OR_HEADERS = {
-    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-    "X-OpenRouter-Title": "Hermes Agent",
+    "HTTP-Referer": os.environ.get(
+        "HERMES_OPENROUTER_REFERER", "https://hermes-agent.nousresearch.com"
+    ),
+    "X-Title": os.environ.get("HERMES_OPENROUTER_TITLE", "Hermes Agent"),
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 

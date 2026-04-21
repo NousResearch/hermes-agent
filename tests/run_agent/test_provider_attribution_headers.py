@@ -24,7 +24,46 @@ def test_openrouter_base_url_applies_or_headers(mock_openai):
 
     headers = agent._client_kwargs["default_headers"]
     assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
-    assert headers["X-OpenRouter-Title"] == "Hermes Agent"
+    assert headers["X-Title"] == "Hermes Agent"
+
+
+@patch("run_agent.OpenAI")
+@patch.dict(
+    "os.environ",
+    {
+        "HERMES_OPENROUTER_TITLE": "DownstreamApp",
+        "HERMES_OPENROUTER_REFERER": "https://downstream.example/app",
+    },
+    clear=False,
+)
+def test_openrouter_attribution_headers_respect_env_vars(mock_openai):
+    # _OR_HEADERS is module-scoped and captures env vars at import time,
+    # so we reload the module under the patched environment to prove the
+    # override plumbing works end-to-end.
+    import importlib
+
+    import agent.auxiliary_client as ac
+
+    importlib.reload(ac)
+
+    mock_openai.return_value = MagicMock()
+    agent_inst = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent_inst._apply_client_headers_for_base_url("https://openrouter.ai/api/v1")
+
+    headers = agent_inst._client_kwargs["default_headers"]
+    assert headers["HTTP-Referer"] == "https://downstream.example/app"
+    assert headers["X-Title"] == "DownstreamApp"
+
+    # Restore the module to avoid leaking the patched _OR_HEADERS into
+    # unrelated tests running in the same process.
+    importlib.reload(ac)
 
 
 @patch("run_agent.OpenAI")

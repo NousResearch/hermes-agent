@@ -3733,7 +3733,7 @@ class HermesCLI:
         if subcmd in ("list", "ls"):
             snaps = list_quick_snapshots()
             if not snaps:
-                print("  No state snapshots yet.")
+                print("  暂无状态快照。")
                 print("  Create one: /snapshot create [label]")
                 return
             print(f"  State snapshots ({display_hermes_home()}/state-snapshots/):\n")
@@ -6923,10 +6923,10 @@ class HermesCLI:
             original_history = list(self.conversation_history)
             approx_tokens = estimate_messages_tokens_rough(original_history)
             if focus_topic:
-                print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
+                print(f"🗜️ 正在压缩 {original_count} messages (~{approx_tokens:,} tokens), "
                       f"focus: \"{focus_topic}\"...")
             else:
-                print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
+                print(f"🗜️ 正在压缩 {original_count} messages (~{approx_tokens:,} tokens)...")
 
             compressed, _ = self.agent._compress_context(
                 original_history,
@@ -7021,7 +7021,7 @@ class HermesCLI:
         )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
-        print("  📊 Session Token Usage")
+        print("  📊 会话 Token 使用")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
         print(f"  Input tokens:              {input_tokens:>10,}")
@@ -7182,7 +7182,7 @@ class HermesCLI:
                 old_servers = set(_servers.keys())
 
             if not self._command_running:
-                print("🔄 Reloading MCP servers...")
+                print("🔄 正在重新加载 MCP 服务器...")
 
             # Shutdown existing connections
             shutdown_mcp_servers()
@@ -7626,7 +7626,7 @@ class HermesCLI:
                 except OSError:
                     pass
         except Exception as e:
-            logger.warning("Voice TTS playback failed: %s", e)
+            logger.warning("语音 TTS playback failed: %s", e)
             _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
         finally:
             self._voice_tts_done.set()
@@ -7668,7 +7668,7 @@ class HermesCLI:
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
         if self._voice_mode:
-            _cprint(f"{_DIM}Voice mode is already enabled.{_RST}")
+            _cprint(f"{_DIM}语音模式已启用。{_RST}")
             return
 
         from tools.voice_mode import check_voice_requirements, detect_audio_environment
@@ -7676,14 +7676,14 @@ class HermesCLI:
         # Environment detection -- warn and block in incompatible environments
         env_check = detect_audio_environment()
         if not env_check["available"]:
-            _cprint(f"\n{_ACCENT}Voice mode unavailable in this environment:{_RST}")
+            _cprint(f"\n{_ACCENT}语音模式在此环境中不可用：{_RST}")
             for warning in env_check["warnings"]:
                 _cprint(f"  {_DIM}{warning}{_RST}")
             return
 
         reqs = check_voice_requirements()
         if not reqs["available"]:
-            _cprint(f"\n{_ACCENT}Voice mode requirements not met:{_RST}")
+            _cprint(f"\n{_ACCENT}语音模式要求未满足：{_RST}")
             for line in reqs["details"].split("\n"):
                 _cprint(f"  {_DIM}{line}{_RST}")
             if reqs["missing_packages"]:
@@ -7720,7 +7720,7 @@ class HermesCLI:
         except Exception:
             _ptt_key = "c-b"
         _ptt_display = _ptt_key.replace("c-", "Ctrl+").upper()
-        _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
+        _cprint(f"\n{_ACCENT}语音模式已启用{tts_status}{_RST}")
         _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
@@ -7755,7 +7755,7 @@ class HermesCLI:
             pass
         self._voice_tts_done.set()
 
-        _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
+        _cprint(f"\n{_DIM}语音模式已禁用。{_RST}")
 
     def _toggle_voice_tts(self):
         """Toggle TTS output for voice mode."""
@@ -7772,7 +7772,7 @@ class HermesCLI:
             if not check_tts_requirements():
                 _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
 
-        _cprint(f"{_ACCENT}Voice TTS {status}.{_RST}")
+        _cprint(f"{_ACCENT}语音 TTS {status}.{_RST}")
 
     def _show_voice_status(self):
         """Show current voice mode status."""
@@ -7781,14 +7781,14 @@ class HermesCLI:
 
         reqs = check_voice_requirements()
 
-        _cprint(f"\n{_BOLD}Voice Mode Status{_RST}")
-        _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
+        _cprint(f"\n{_BOLD}语音模式状态{_RST}")
+        _cprint(f"  模式:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
-        _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
+        _cprint(f"  录音: {'YES' if self._voice_recording else 'no'}")
         _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
         _display_key = _raw_key.replace("ctrl+", "Ctrl+").upper() if "ctrl+" in _raw_key.lower() else _raw_key
-        _cprint(f"  Record key: {_display_key}")
-        _cprint(f"\n  {_BOLD}Requirements:{_RST}")
+        _cprint(f"  录音键: {_display_key}")
+        _cprint(f"\n  {_BOLD}要求：{_RST}")
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
@@ -7853,7 +7853,7 @@ class HermesCLI:
         self._clarify_freetext = False
         self._clarify_deadline = 0
         self._invalidate()
-        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
+        _cprint(f"\n{_DIM}(澄清超时（{timeout}s）— 代理将自行决定){_RST}")
         return (
             "The user did not provide a response within the time limit. "
             "Use your best judgement to make the choice and proceed."
@@ -7957,12 +7957,12 @@ class HermesCLI:
             self._approval_state = None
             self._approval_deadline = 0
             self._invalidate()
-            _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+            _cprint(f"\n{_DIM}  ⏱ 超时 — 拒绝命令{_RST}")
             return "deny"
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True) -> list[str]:
         """Return approval choices for a dangerous command prompt."""
-        choices = ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
+        choices = ["仅一次", "本次会话", "始终", "拒绝"] if allow_permanent else ["仅一次", "本次会话", "拒绝"]
         if len(command) > 70:
             choices.append("view")
         return choices
@@ -8041,7 +8041,7 @@ class HermesCLI:
         title = "⚠️  Dangerous Command"
         cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
         choice_labels = {
-            "once": "Allow once",
+            "仅一次": "允许仅一次",
             "session": "Allow for this session",
             "always": "Add to permanent allowlist",
             "deny": "Deny",

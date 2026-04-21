@@ -541,7 +541,6 @@ class DiscordAdapter(BasePlatformAdapter):
             # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
             # so fall back to known Homebrew paths if needed.
             if not opus_path:
-                import sys
                 _homebrew_paths = (
                     "/opt/homebrew/lib/libopus.dylib",  # Apple Silicon
                     "/usr/local/lib/libopus.dylib",     # Intel Mac
@@ -637,29 +636,14 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_message(message: DiscordMessage):
-                # Wait for on_ready to finish resolving username-based
-                # allowlist entries.  Without this block, messages
-                # arriving between Discord's READY event and the end
-                # of _resolve_allowed_usernames compare author IDs
-                # (numeric) against a set that may still contain raw
-                # usernames (strings) from DISCORD_ALLOWED_USERS —
-                # legitimate users get silently rejected for the first
-                # few seconds after every reconnect.  The wait is a
-                # near-instant no-op in steady state (_ready_event is
-                # already set); only the startup / reconnect window
-                # ever blocks.
+                # Block until _resolve_allowed_usernames has swapped
+                # any raw usernames in DISCORD_ALLOWED_USERS for numeric
+                # IDs (otherwise on_message's author.id lookup can miss).
                 if not adapter_self._ready_event.is_set():
                     try:
-                        await asyncio.wait_for(
-                            adapter_self._ready_event.wait(),
-                            timeout=30.0,
-                        )
+                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
                     except asyncio.TimeoutError:
-                        logger.warning(
-                            "[%s] on_message timed out waiting for _ready_event; "
-                            "allowlist check may use pre-resolved entries",
-                            adapter_self.name,
-                        )
+                        pass
 
                 # Dedup: Discord RESUME replays events after reconnects (#4777)
                 if adapter_self._dedup.is_duplicate(str(message.id)):
@@ -1096,6 +1080,8 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Discord message."""
         if not self._client:
@@ -1256,28 +1242,13 @@ class DiscordAdapter(BasePlatformAdapter):
     # Voice channel methods (join / leave / play)
     # ------------------------------------------------------------------
 
-    def _voice_lock_for(self, guild_id: int) -> "asyncio.Lock":
-        """Return the per-guild lock, creating it on first use.
-
-        Voice join/leave/move must be serialized per guild — without
-        this, two concurrent /voice channel invocations both see
-        _voice_clients.get(guild_id) return None, both call
-        channel.connect(), and discord.py raises ClientException
-        ('Already connected') on the loser.
-        """
-        lock = self._voice_locks.get(guild_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._voice_locks[guild_id] = lock
-        return lock
-
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
         if not self._client or not DISCORD_AVAILABLE:
             return False
         guild_id = channel.guild.id
 
-        async with self._voice_lock_for(guild_id):
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             # Already connected in this guild?
             existing = self._voice_clients.get(guild_id)
             if existing and existing.is_connected():
@@ -1307,7 +1278,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
-        async with self._voice_lock_for(guild_id):
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             # Stop voice receiver first
             receiver = self._voice_receivers.pop(guild_id, None)
             if receiver:
@@ -1450,8 +1421,7 @@ class DiscordAdapter(BasePlatformAdapter):
         speaking_user_ids: set = set()
         receiver = self._voice_receivers.get(guild_id)
         if receiver:
-            import time as _time
-            now = _time.monotonic()
+            now = time.monotonic()
             with receiver._lock:
                 for ssrc, last_t in receiver._last_packet_time.items():
                     # Consider "speaking" if audio received within last 2 seconds
@@ -2990,6 +2960,17 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         is_voice_linked_channel = False
+
+        # Save mention-stripped text before auto-threading since create_thread()
+        # can clobber message.content, breaking /command detection in channels.
+        raw_content = message.content.strip()
+        normalized_content = raw_content
+        mention_prefix = False
+        if self._client.user and self._client.user in message.mentions:
+            mention_prefix = True
+            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -3027,13 +3008,8 @@ class DiscordAdapter(BasePlatformAdapter):
             in_bot_thread = is_thread and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
+                if self._client.user not in message.mentions and not mention_prefix:
                     return
-
-            if self._client.user and self._client.user in message.mentions:
-                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
-                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
-
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -3055,7 +3031,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Determine message type
         msg_type = MessageType.TEXT
-        if message.content.startswith("/"):
+        if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif message.attachments:
             # Check attachment types
@@ -3195,7 +3171,9 @@ class DiscordAdapter(BasePlatformAdapter):
                                 att.filename, e, exc_info=True,
                             )
 
-        event_text = message.content
+        # Use normalized_content (saved before auto-threading) instead of message.content,
+        # to detect /slash commands in channel messages.
+        event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 

@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import shlex
+import ssl
 import stat
 import base64
 import hashlib
@@ -151,7 +152,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="gemini",
         name="Google AI Studio",
         auth_type="api_key",
-        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta",
         api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         base_url_env_var="GEMINI_BASE_URL",
     ),
@@ -353,6 +354,9 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     """
     if env_override:
         return env_override
+    # No key → nothing to infer from.  Return default without inspecting.
+    if not api_key:
+        return default_url
     if api_key.startswith("sk-kimi-"):
         return KIMI_CODE_BASE_URL
     return default_url
@@ -479,6 +483,14 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     """
     if env_override:
         return env_override
+
+    # No API key set → don't probe (would fire N×M HTTPS requests with an
+    # empty Bearer token, all returning 401).  This path is hit during
+    # auxiliary-client auto-detection when the user has no Z.AI credentials
+    # at all — the caller discards the result immediately, so the probe is
+    # pure latency for every AIAgent construction.
+    if not api_key:
+        return default_url
 
     # Check provider-state cache for a previously-detected endpoint.
     auth_store = _load_auth_store()
@@ -1652,7 +1664,7 @@ def _resolve_verify(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None,
-) -> bool | str:
+) -> bool | ssl.SSLContext:
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
@@ -1672,13 +1684,12 @@ def _resolve_verify(
     if effective_ca:
         ca_path = str(effective_ca)
         if not os.path.isfile(ca_path):
-            import logging
-            logging.getLogger("hermes.auth").warning(
+            logger.warning(
                 "CA bundle path does not exist: %s — falling back to default certificates",
                 ca_path,
             )
             return True
-        return ca_path
+        return ssl.create_default_context(cafile=ca_path)
     return True
 
 
@@ -2720,6 +2731,17 @@ def _update_config_for_provider(
     else:
         # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
+
+    # Clear stale api_key/api_mode left over from a previous custom provider.
+    # When the user switches from e.g. a MiniMax custom endpoint
+    # (api_mode=anthropic_messages, api_key=mxp-...) to a built-in provider
+    # (e.g. OpenRouter), the stale api_key/api_mode would override the new
+    # provider's credentials and transport choice.  Built-in providers that
+    # need a specific api_mode (copilot, xai) set it at request-resolution
+    # time via `_copilot_runtime_api_mode` / `_detect_api_mode_for_url`, so
+    # removing the persisted value here is safe.
+    model_cfg.pop("api_key", None)
+    model_cfg.pop("api_mode", None)
 
     # When switching to a non-OpenRouter provider, ensure model.default is
     # valid for the new provider.  An OpenRouter-formatted name like

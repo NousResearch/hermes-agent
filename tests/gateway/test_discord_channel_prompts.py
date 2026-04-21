@@ -75,7 +75,6 @@ def _make_runner():
     runner._service_tier = None
     runner._provider_routing = {}
     runner._fallback_model = None
-    runner._smart_model_routing = {}
     runner._running_agents = {}
     runner._pending_model_notes = {}
     runner._session_db = None

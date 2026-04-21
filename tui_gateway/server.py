@@ -1608,7 +1608,6 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from datetime import datetime
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
@@ -2499,27 +2498,24 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.model_switch import list_authenticated_providers
-        from hermes_cli.models import provider_model_ids
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
         cfg = _load_cfg()
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
+        # list_authenticated_providers already populates each provider's
+        # "models" with the curated list (same source as `hermes model` and
+        # classic CLI's /model picker). Do NOT overwrite with live
+        # provider_model_ids() — that bypasses curation and pulls in
+        # non-agentic models (e.g. Nous /models returns ~400 IDs including
+        # TTS, embeddings, rerankers, image/video generators).
         providers = list_authenticated_providers(
             current_provider=current_provider,
             user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
             custom_providers=cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), list) else [],
             max_models=50,
         )
-        for provider in providers:
-            try:
-                models = provider_model_ids(provider.get("slug"))
-                if models:
-                    provider["models"] = models
-                    provider["total_models"] = len(models)
-            except Exception as e:
-                provider["warning"] = f"model catalog unavailable: {e}"
         return _ok(rid, {"providers": providers, "model": current_model, "provider": current_provider})
     except Exception as e:
         return _err(rid, 5033, str(e))
@@ -2690,7 +2686,6 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     days = params.get("days", 30)
     try:
-        import time
         cutoff = time.time() - days * 86400
         rows = [s for s in _get_db().list_sessions_rich(limit=500) if (s.get("started_at") or 0) >= cutoff]
         return _ok(rid, {"days": days, "sessions": len(rows), "messages": sum(s.get("message_count", 0) for s in rows)})

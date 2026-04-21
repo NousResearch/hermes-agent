@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from utils import base_url_hostname
 
 
 # Tools that children must never have access to
@@ -593,6 +594,10 @@ def _run_single_child(
                 "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
             },
             "tool_trace": tool_trace,
+            # Captured before the finally block calls child.close() so the
+            # parent thread can fire subagent_stop with the correct role.
+            # Stripped before the dict is serialised back to the model.
+            "_child_role": getattr(child, "_delegate_role", None),
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -632,6 +637,7 @@ def _run_single_child(
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
+            "_child_role": getattr(child, "_delegate_role", None),
         }
 
     finally:
@@ -768,6 +774,7 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_acp_args = t.get("acp_args") if "acp_args" in t else None
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
@@ -775,8 +782,10 @@ def delegate_task(
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command") or acp_command,
-                override_acp_args=t.get("acp_args") or acp_args,
+                override_acp_command=t.get("acp_command") or acp_command or creds.get("command"),
+                override_acp_args=task_acp_args if task_acp_args is not None else (
+                    acp_args if acp_args is not None else creds.get("args")
+                ),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -812,6 +821,10 @@ def delegate_task(
             # the parent blocks forever even after interrupt propagation.
             # Instead, use wait() with a short timeout so we can bail
             # when the parent is interrupted.
+            # Map task_index -> child agent, so fabricated entries for
+            # still-pending futures can carry the correct _delegate_role.
+            _child_by_index = {i: child for (i, _, child) in children}
+
             pending = set(futures.keys())
             while pending:
                 if getattr(parent_agent, "_interrupt_requested", False) is True:
@@ -831,6 +844,9 @@ def delegate_task(
                                     "error": str(exc),
                                     "api_calls": 0,
                                     "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        _child_by_index.get(idx), "_delegate_role", None
+                                    ),
                                 }
                         else:
                             entry = {
@@ -840,6 +856,9 @@ def delegate_task(
                                 "error": "Parent agent interrupted — child did not finish in time",
                                 "api_calls": 0,
                                 "duration_seconds": 0,
+                                "_child_role": getattr(
+                                    _child_by_index.get(idx), "_delegate_role", None
+                                ),
                             }
                         results.append(entry)
                         completed_count += 1
@@ -859,6 +878,9 @@ def delegate_task(
                             "error": str(exc),
                             "api_calls": 0,
                             "duration_seconds": 0,
+                            "_child_role": getattr(
+                                _child_by_index.get(idx), "_delegate_role", None
+                            ),
                         }
                     results.append(entry)
                     completed_count += 1
@@ -901,6 +923,33 @@ def delegate_task(
                 )
             except Exception:
                 pass
+
+    # Fire subagent_stop hooks once per child, serialised on the parent thread.
+    # This keeps Python-plugin and shell-hook callbacks off of the worker threads
+    # that ran the children, so hook authors don't need to reason about
+    # concurrent invocation.  Role was captured into the entry dict in
+    # _run_single_child (or the fabricated-entry branches above) before the
+    # child was closed.
+    _parent_session_id = getattr(parent_agent, "session_id", None)
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+    except Exception:
+        _invoke_hook = None
+    for entry in results:
+        child_role = entry.pop("_child_role", None)
+        if _invoke_hook is None:
+            continue
+        try:
+            _invoke_hook(
+                "subagent_stop",
+                parent_session_id=_parent_session_id,
+                child_role=child_role,
+                child_summary=entry.get("summary"),
+                child_status=entry.get("status"),
+                duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+            )
+        except Exception:
+            logger.debug("subagent_stop hook invocation failed", exc_info=True)
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
@@ -976,10 +1025,13 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         base_lower = configured_base_url.lower()
         provider = "custom"
         api_mode = "chat_completions"
-        if "chatgpt.com/backend-api/codex" in base_lower:
+        if (
+            base_url_hostname(configured_base_url) == "chatgpt.com"
+            and "/backend-api/codex" in base_lower
+        ):
             provider = "openai-codex"
             api_mode = "codex_responses"
-        elif "api.anthropic.com" in base_lower:
+        elif base_url_hostname(configured_base_url) == "api.anthropic.com":
             provider = "anthropic"
             api_mode = "anthropic_messages"
 

@@ -114,22 +114,44 @@ _cached_sudo_password: str = ""
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
 # so prompts route through prompt_toolkit's event loop.
-#   _sudo_password_callback() -> str  (return password or "" to skip)
-#   _approval_callback(command, description) -> str  ("once"/"session"/"always"/"deny")
-_sudo_password_callback = None
-_approval_callback = None
+# Callback slots used by the approval prompt and sudo password prompt
+# routines. Stored in thread-local state so overlapping ACP sessions —
+# each running in its own ThreadPoolExecutor thread — don't stomp on
+# each other's callbacks. See GHSA-qg5c-hvr5-hjgr.
+#
+# CLI mode is single-threaded, so each thread (the only one) holds its
+# own callback exactly like before. Gateway mode resolves approvals via
+# the per-session queue in tools.approval, not through these callbacks,
+# so it's unaffected.
+import threading
+_callback_tls = threading.local()
+
+
+def _get_sudo_password_callback():
+    return getattr(_callback_tls, "sudo_password", None)
+
+
+def _get_approval_callback():
+    return getattr(_callback_tls, "approval", None)
 
 
 def set_sudo_password_callback(cb):
-    """Register a callback for sudo password prompts (used by CLI)."""
-    global _sudo_password_callback
-    _sudo_password_callback = cb
+    """Register a callback for sudo password prompts (used by CLI).
+
+    Per-thread scope — ACP sessions that run concurrently in a
+    ThreadPoolExecutor each have their own callback slot.
+    """
+    _callback_tls.sudo_password = cb
 
 
 def set_approval_callback(cb):
-    """Register a callback for dangerous command approval prompts (used by CLI)."""
-    global _approval_callback
-    _approval_callback = cb
+    """Register a callback for dangerous command approval prompts.
+
+    Per-thread scope — ACP sessions that run concurrently in a
+    ThreadPoolExecutor each have their own callback slot. See
+    GHSA-qg5c-hvr5-hjgr.
+    """
+    _callback_tls.approval = cb
 
 # =============================================================================
 # Dangerous Command Approval System
@@ -144,7 +166,7 @@ from tools.approval import (
 def _check_all_guards(command: str, env_type: str) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_approval_callback)
+                                  approval_callback=_get_approval_callback())
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -217,12 +239,12 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     directly from /dev/tty with echo disabled.
     """
     import sys
-    import time as time_module
     
     # Use the registered callback when available (prompt_toolkit-compatible)
-    if _sudo_password_callback is not None:
+    _sudo_cb = _get_sudo_password_callback()
+    if _sudo_cb is not None:
         try:
-            return _sudo_password_callback() or ""
+            return _sudo_cb() or ""
         except Exception:
             return ""
 
@@ -278,7 +300,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     
     try:
         os.environ["HERMES_SPINNER_PAUSE"] = "1"
-        time_module.sleep(0.2)
+        time.sleep(0.2)
         
         print()
         print("┌" + "─" * 58 + "┐")
@@ -442,6 +464,171 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
     return "".join(out), found
 
 
+def _rewrite_compound_background(command: str) -> str:
+    """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0.
+
+    Bash parses ``A && B &`` with `&&` tighter than `&`, so it forks a
+    subshell for the whole `A && B` compound and backgrounds it. Inside
+    the subshell, `B` runs foreground, so the subshell waits for `B` to
+    finish. When `B` is a long-running process (`python3 -m http.server`,
+    `yes > /dev/null`, anything that doesn't naturally exit), the subshell
+    never exits. It leaks as a process stuck in ``wait4`` forever — and
+    on the way, its open stdout pipe can prevent the terminal tool from
+    returning promptly.
+
+    Rewriting the tail to `A && { B & }` preserves `&&`'s error semantics
+    (skip B if A fails) while replacing the subshell with a brace group.
+    The brace group runs in the current shell (no fork), backgrounds B as
+    a simple command (bash doesn't wait for it in non-interactive mode),
+    and exits immediately. B runs as a normal backgrounded child, orphaned
+    when the parent shell exits.
+
+    Handles redirects (``&>``, ``2>&1``) and skips content inside quoted
+    strings and parenthesised subshells. Leaves simple ``cmd &`` alone —
+    that construct doesn't have the subshell-wait bug.
+    """
+    n = len(command)
+    i = 0
+    paren_depth = 0
+    brace_depth = 0
+    # Position in *command* just after the most recent `&&` / `||` at depth 0
+    # in the current statement; -1 when no chain operator is active.
+    last_chain_op_end = -1
+    rewrites: list[tuple[int, int]] = []  # (chain_op_end, amp_pos)
+
+    while i < n:
+        ch = command[i]
+
+        # Newline terminates a statement at depth 0 — reset chain state.
+        # Checked before the whitespace skip so we don't miss it.
+        if ch == "\n" and paren_depth == 0 and brace_depth == 0:
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        if ch.isspace():
+            i += 1
+            continue
+
+        # Comments (only at statement start — conservative: any `#` not inside
+        # a token ends the line). `_read_shell_token` handles quoted strings
+        # below so `#` inside quotes is safe.
+        if ch == "#":
+            nl = command.find("\n", i)
+            if nl == -1:
+                break
+            i = nl
+            continue
+
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+
+        # Quoted tokens — consume whole string via the shared tokenizer.
+        if ch in ("'", '"'):
+            _, next_i = _read_shell_token(command, i)
+            i = max(next_i, i + 1)
+            continue
+
+        if ch == "(":
+            paren_depth += 1
+            i += 1
+            continue
+
+        if ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+            i += 1
+            continue
+
+        # Brace groups: `{ ... }` is a group (no subshell fork), and bash
+        # requires whitespace after `{`. We track depth so already-rewritten
+        # output (`A && { B & }`) is idempotent — the inner `&` is part of
+        # the group, not a new compound to rewrite. Also skip content inside
+        # the group since `A && B &` there is separately well-formed.
+        if ch == "{" and i + 1 < n and (command[i + 1].isspace() or command[i + 1] == "\n"):
+            brace_depth += 1
+            i += 1
+            continue
+        if ch == "}" and brace_depth > 0:
+            brace_depth -= 1
+            # Closing a group completes a compound statement; reset chain.
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        # Inside parens or brace groups, skip operators — they parse in their
+        # own scope. `(...)` subshells have the same bug class but are not the
+        # common agent pattern; leave for a follow-up.
+        if paren_depth > 0 or brace_depth > 0:
+            i += 1
+            continue
+
+        # Chain operators at depth 0
+        if command.startswith("&&", i) or command.startswith("||", i):
+            last_chain_op_end = i + 2
+            i += 2
+            continue
+
+        # Statement terminators reset the chain state
+        if ch == ";":
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        # Single `|` (pipe) starts a new pipeline stage; don't rewrite
+        # across it. `||` handled above.
+        if ch == "|":
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        # `&` handling: distinguish `&&`, `&>`, fd redirect (`>&`, `<&`),
+        # and a true backgrounding `&`.
+        if ch == "&":
+            # `&&` handled above; won't reach here
+            if i + 1 < n and command[i + 1] == ">":
+                # `&>` redirect — consume
+                i += 2
+                continue
+            # `>&` / `<&` fd target — look back past whitespace
+            j = i - 1
+            while j >= 0 and command[j].isspace():
+                j -= 1
+            if j >= 0 and command[j] in "<>":
+                i += 1
+                continue
+            # Real background operator
+            if last_chain_op_end >= 0:
+                rewrites.append((last_chain_op_end, i))
+            last_chain_op_end = -1
+            i += 1
+            continue
+
+        # Regular unquoted token — advance past it via the shared tokenizer
+        _, next_i = _read_shell_token(command, i)
+        i = max(next_i, i + 1)
+
+    if not rewrites:
+        return command
+
+    # Apply rewrites back-to-front so earlier indices remain valid.
+    result = command
+    for chain_end, amp_pos in reversed(rewrites):
+        # Skip whitespace right after the `&&`/`||` so the brace group
+        # opens flush against the inner command.
+        insert_pos = chain_end
+        while insert_pos < amp_pos and result[insert_pos].isspace():
+            insert_pos += 1
+        prefix = result[:insert_pos]
+        middle = result[insert_pos:amp_pos]  # inner command + trailing space
+        suffix = result[amp_pos + 1 :]
+        # `{` needs a trailing space in bash; the closing `}` needs to be
+        # preceded by `;` or `&` — we're providing `&` from the backgrounding.
+        result = prefix + "{ " + middle + "& }" + suffix
+
+    return result
+
+
 def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
@@ -523,6 +710,8 @@ Foreground (default): Commands return INSTANTLY when done, even if the timeout i
 Background: Set background=true to get a session_id. Two patterns:
   (1) Long-lived processes that never exit (servers, watchers).
   (2) Long-running tasks with notify_on_complete=true — you can keep working on other things and the system auto-notifies you when the task finishes. Great for test suites, builds, deployments, or anything that takes more than a minute.
+For servers/watchers, do NOT use shell-level background wrappers (nohup/disown/setsid/trailing '&') in foreground mode. Use background=true so Hermes can track lifecycle and output.
+After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
 Use process(action="poll") for progress checks, process(action="wait") to block until done.
 Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
@@ -1103,6 +1292,65 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     )
 
 
+_SHELL_LEVEL_BACKGROUND_RE = re.compile(r"\b(?:nohup|disown|setsid)\b", re.IGNORECASE)
+_INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
+_TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
+_LONG_LIVED_FOREGROUND_PATTERNS = (
+    re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b", re.IGNORECASE),
+    re.compile(r"\bdocker\s+compose\s+up\b", re.IGNORECASE),
+    re.compile(r"\bnext\s+dev\b", re.IGNORECASE),
+    re.compile(r"\bvite(?:\s|$)", re.IGNORECASE),
+    re.compile(r"\bnodemon\b", re.IGNORECASE),
+    re.compile(r"\buvicorn\b", re.IGNORECASE),
+    re.compile(r"\bgunicorn\b", re.IGNORECASE),
+    re.compile(r"\bpython(?:3)?\s+-m\s+http\.server\b", re.IGNORECASE),
+)
+
+
+def _looks_like_help_or_version_command(command: str) -> bool:
+    """Return True for informational invocations that should never be blocked."""
+    normalized = " ".join(command.lower().split())
+    return (
+        " --help" in normalized
+        or normalized.endswith(" -h")
+        or " --version" in normalized
+        or normalized.endswith(" -v")
+    )
+
+
+def _foreground_background_guidance(command: str) -> str | None:
+    """Suggest background mode when a foreground command looks long-lived.
+
+    Prevents workflows that start a server/watch process and then stall before
+    follow-up checks or test commands run.
+    """
+    if _looks_like_help_or_version_command(command):
+        return None
+
+    if _SHELL_LEVEL_BACKGROUND_RE.search(command):
+        return (
+            "Foreground command uses shell-level background wrappers (nohup/disown/setsid). "
+            "Use terminal(background=true) so Hermes can track the process, then run "
+            "readiness checks and tests in separate commands."
+        )
+
+    if _INLINE_BACKGROUND_AMP_RE.search(command) or _TRAILING_BACKGROUND_AMP_RE.search(command):
+        return (
+            "Foreground command uses '&' backgrounding. Use terminal(background=true) for long-lived "
+            "processes, then run health checks and tests in follow-up terminal calls."
+        )
+
+    for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
+        if pattern.search(command):
+            return (
+                "This foreground command appears to start a long-lived server/watch process. "
+                "Run it with background=true, verify readiness (health endpoint/log signal), "
+                "then execute tests in a separate command."
+            )
+
+    return None
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1194,6 +1442,18 @@ def terminal_tool(
                     f"notify_on_complete=true for long-running commands."
                 ),
             }, ensure_ascii=False)
+
+        # Guardrail: long-lived server/watch commands should run as managed
+        # background sessions, not foreground shell hacks.
+        if not background:
+            guidance = _foreground_background_guidance(command)
+            if guidance:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": guidance,
+                    "status": "error",
+                }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -1483,6 +1743,27 @@ def terminal_tool(
             
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
+
+            # Foreground terminal output canonicalization seam: plugins receive
+            # the full output string before default truncation and may only
+            # replace it by returning a string from transform_terminal_output.
+            # The hook is fail-open, and the first valid string return wins.
+            try:
+                from hermes_cli.plugins import invoke_hook
+                hook_results = invoke_hook(
+                    "transform_terminal_output",
+                    command=command,
+                    output=output,
+                    returncode=returncode,
+                    task_id=effective_task_id or "",
+                    env_type=env_type,
+                )
+                for hook_result in hook_results:
+                    if isinstance(hook_result, str):
+                        output = hook_result
+                        break
+            except Exception:
+                pass
             
             # Truncate output if too long, keeping both head and tail
             MAX_OUTPUT_CHARS = 50000

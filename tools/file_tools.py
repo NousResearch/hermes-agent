@@ -7,6 +7,9 @@ import logging
 import os
 import threading
 from pathlib import Path
+from typing import Optional
+
+from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
@@ -71,6 +74,17 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
+def _resolve_path(filepath: str) -> Path:
+    """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
+    instead of the main repository root.
+    """
+    p = Path(filepath).expanduser()
+    if not p.is_absolute():
+        base = os.environ.get("TERMINAL_CWD", os.getcwd())
+        p = Path(base) / p
+    return p.resolve()
+
+
 def _is_blocked_device(filepath: str) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
@@ -102,7 +116,7 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = os.path.realpath(os.path.expanduser(filepath))
+        resolved = str(_resolve_path(filepath))
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(os.path.expanduser(filepath))
@@ -278,6 +292,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
                     "docker_volumes": config.get("docker_volumes", []),
+                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                    "docker_forward_env": config.get("docker_forward_env", []),
                 }
 
             ssh_config = None
@@ -345,7 +361,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        _resolved = Path(path).expanduser().resolve()
+        _resolved = _resolve_path(path)
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -360,24 +376,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Hermes internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files.
-        from hermes_constants import get_hermes_home as _get_hh
-        _hermes_home = _get_hh().resolve()
-        _blocked_dirs = [
-            _hermes_home / "skills" / ".hub" / "index-cache",
-            _hermes_home / "skills" / ".hub",
-        ]
-        for _blocked in _blocked_dirs:
-            try:
-                _resolved.relative_to(_blocked)
-                return json.dumps({
-                    "error": (
-                        f"Access denied: {path} is an internal Hermes cache file "
-                        "and cannot be read directly to prevent prompt injection. "
-                        "Use the skills_list or skill_view tools instead."
-                    )
-                })
-            except ValueError:
-                pass
+        block_error = get_read_block_error(path)
+        if block_error:
+            return json.dumps({"error": block_error})
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
@@ -553,7 +554,7 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     refreshes the stored timestamp to match the file's new state.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(_resolve_path(filepath))
         current_mtime = os.path.getmtime(resolved)
     except (OSError, ValueError):
         return
@@ -572,7 +573,7 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     or was never read.  Does not block — the write still proceeds.
     """
     try:
-        resolved = str(Path(filepath).expanduser().resolve())
+        resolved = str(_resolve_path(filepath))
     except (OSError, ValueError):
         return None
     with _read_tracker_lock:
@@ -669,8 +670,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
+        # Suppressed when patch_replace already attached a rich "Did you mean?"
+        # snippet (which is strictly more useful than the generic hint).
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
+            if "Did you mean one of these sections?" not in str(result_dict["error"]):
+                result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
         return result_json
     except Exception as e:
         return tool_error(str(e))

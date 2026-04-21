@@ -2,7 +2,7 @@
 name: maps
 description: >
   Location intelligence — geocode a place, reverse-geocode coordinates,
-  find nearby places (44 POI categories), driving/walking/cycling
+  find nearby places (46 POI categories), driving/walking/cycling
   distance + time, turn-by-turn directions, timezone lookup, bounding
   box + area for a named place, and POI search within a rectangle.
   Uses OpenStreetMap + Overpass + OSRM. Free, no API key.
@@ -83,12 +83,13 @@ python3 $MAPS nearby --near "90210" --category pharmacy
 python3 $MAPS nearby --near "downtown austin" --category restaurant --category bar --limit 10
 ```
 
-44 categories: restaurant, cafe, bar, hospital, pharmacy, hotel, supermarket,
-atm, gas_station, parking, museum, park, school, university, bank, police,
-fire_station, library, airport, train_station, bus_stop, church, mosque,
-synagogue, dentist, doctor, cinema, theatre, gym, swimming_pool, post_office,
-convenience_store, bakery, bookshop, laundry, car_wash, car_rental,
-bicycle_rental, taxi, veterinary, zoo, playground, stadium, nightclub.
+46 categories: restaurant, cafe, bar, hospital, pharmacy, hotel, guest_house,
+camp_site, supermarket, atm, gas_station, parking, museum, park, school,
+university, bank, police, fire_station, library, airport, train_station,
+bus_stop, church, mosque, synagogue, dentist, doctor, cinema, theatre, gym,
+swimming_pool, post_office, convenience_store, bakery, bookshop, laundry,
+car_wash, car_rental, bicycle_rental, taxi, veterinary, zoo, playground,
+stadium, nightclub.
 
 Each result includes: `name`, `address`, `lat`/`lon`, `distance_m`,
 `maps_url` (clickable Google Maps link), `directions_url` (Google Maps

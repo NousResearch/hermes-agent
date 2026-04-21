@@ -303,6 +303,7 @@ export interface AppLayoutStatusProps {
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string
+  turnStartedAt: null | number
   voiceLabel: string
 }
 

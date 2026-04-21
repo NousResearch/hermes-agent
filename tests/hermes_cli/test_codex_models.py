@@ -54,7 +54,7 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
 
     assert models[: len(DEFAULT_CODEX_MODELS)] == DEFAULT_CODEX_MODELS
     assert "gpt-5.4" in models
-    assert "gpt-5.3-codex-spark" in models
+    assert "gpt-5.3-codex-spark" not in models
 
 
 def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
@@ -65,7 +65,7 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
-    assert models == ["gpt-5.2-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex", "gpt-5.3-codex-spark"]
+    assert models == ["gpt-5.2-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
 
 
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):

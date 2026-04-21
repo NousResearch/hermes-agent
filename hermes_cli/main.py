@@ -1291,16 +1291,27 @@ def cmd_whatsapp(args):
         return
 
     if not (bridge_dir / "node_modules").exists():
-        print("\n→ Installing WhatsApp bridge dependencies...")
-        result = subprocess.run(
-            ["npm", "install"],
-            cwd=str(bridge_dir),
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
+        npm = shutil.which("npm")
+        if not npm:
+            print("  ✗ npm not found on PATH — install Node.js first")
+            return
+        try:
+            result = subprocess.run(
+                [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
+                cwd=str(bridge_dir),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except KeyboardInterrupt:
+            print("\n  ✗ Install cancelled")
+            return
         if result.returncode != 0:
-            print(f"  ✗ npm install failed: {result.stderr}")
+            err = (result.stderr or "").strip()
+            preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
+            print("  ✗ npm install failed:")
+            print(preview)
             return
         print("  ✓ Dependencies installed")
     else:

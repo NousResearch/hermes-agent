@@ -16131,6 +16131,7 @@ class GatewayRunner:
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
                         or _previewed
+                        or (_sc and getattr(_sc, "final_content_delivered", False))
                     )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
@@ -16292,12 +16293,16 @@ class GatewayRunner:
             # response_previewed means the interim_assistant_callback already
             # sent the final text via the adapter (non-streaming path).
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _content_delivered = bool(
+                _sc and getattr(_sc, "final_content_delivered", False)
+            )
+            if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s).",
+                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",
                     _streamed,
                     _previewed,
+                    _content_delivered,
                 )
                 response["already_sent"] = True
 

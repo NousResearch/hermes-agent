@@ -16,6 +16,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import enum
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -41,6 +42,12 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
 # Build a description fragment listing toolsets available for subagents.
 # Excludes toolsets where ALL tools are blocked, composite/platform toolsets
 # (hermes-* prefixed), and scenario toolsets.
+#
+# NOTE: "delegation" is in this exclusion set so the subagent-facing
+# capability hint string (_TOOLSET_LIST_STR) doesn't advertise it as a
+# toolset to request explicitly — the correct mechanism for nested
+# delegation is role='orchestrator', which re-adds "delegation" in
+# _build_child_agent regardless of this exclusion.
 _EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
 _SUBAGENT_TOOLSETS = sorted(
     name for name, defn in TOOLSETS.items()
@@ -51,12 +58,35 @@ _SUBAGENT_TOOLSETS = sorted(
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
-MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
+MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
+# Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
+# stays as the default fallback and is still the symbol tests import.
+_MIN_SPAWN_DEPTH = 1
+_MAX_SPAWN_DEPTH_CAP = 3
+
+
+def _normalize_role(r: Optional[str]) -> str:
+    """Normalise a caller-provided role to 'leaf' or 'orchestrator'.
+
+    None/empty -> 'leaf'.  Unknown strings coerce to 'leaf' with a
+    warning log (matches the silent-degrade pattern of
+    _get_orchestrator_enabled).  _build_child_agent adds a second
+    degrade layer for depth/kill-switch bounds.
+    """
+    if r is None or not r:
+        return "leaf"
+    r_norm = str(r).strip().lower()
+    if r_norm in ("leaf", "orchestrator"):
+        return r_norm
+    logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
+    return "leaf"
 
 
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
+
+    Users can raise this as high as they want; only the floor (1) is enforced.
 
     Uses the same ``_load_config()`` path that the rest of ``delegate_task``
     uses, keeping config priority consistent (config.yaml > env > default).
@@ -71,16 +101,106 @@ def _get_max_concurrent_children() -> int:
                 "delegation.max_concurrent_children=%r is not a valid integer; "
                 "using default %d", val, _DEFAULT_MAX_CONCURRENT_CHILDREN,
             )
+            return _DEFAULT_MAX_CONCURRENT_CHILDREN
     env_val = os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN")
     if env_val:
         try:
             return max(1, int(env_val))
         except (TypeError, ValueError):
-            pass
+            return _DEFAULT_MAX_CONCURRENT_CHILDREN
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
+
+
+def _get_max_spawn_depth() -> int:
+    """Read delegation.max_spawn_depth from config, clamped to [1, 3].
+
+    depth 0 = parent agent.  max_spawn_depth = N means agents at depths
+    0..N-1 can spawn; depth N is the leaf floor.  Default 1 is flat:
+    parent spawns children (depth 1), depth-1 children cannot spawn
+    (blocked by this guard AND, for leaf children, by the delegation
+    toolset strip in _strip_blocked_tools).
+
+    Raise to 2 or 3 to unlock nested orchestration. role="orchestrator"
+    removes the toolset strip for depth-1 children when
+    max_spawn_depth >= 2, enabling them to spawn their own workers.
+    """
+    cfg = _load_config()
+    val = cfg.get("max_spawn_depth")
+    if val is None:
+        return MAX_DEPTH
+    try:
+        ival = int(val)
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.max_spawn_depth=%r is not a valid integer; "
+            "using default %d", val, MAX_DEPTH,
+        )
+        return MAX_DEPTH
+    clamped = max(_MIN_SPAWN_DEPTH, min(_MAX_SPAWN_DEPTH_CAP, ival))
+    if clamped != ival:
+        logger.warning(
+            "delegation.max_spawn_depth=%d out of range [%d, %d]; "
+            "clamping to %d", ival, _MIN_SPAWN_DEPTH,
+            _MAX_SPAWN_DEPTH_CAP, clamped,
+        )
+    return clamped
+
+
+def _get_orchestrator_enabled() -> bool:
+    """Global kill switch for the orchestrator role.
+
+    When False, role="orchestrator" is silently forced to "leaf" in
+    _build_child_agent and the delegation toolset is stripped as before.
+    Lets an operator disable the feature without a code revert.
+    """
+    cfg = _load_config()
+    val = cfg.get("orchestrator_enabled", True)
+    if isinstance(val, bool):
+        return val
+    # Accept "true"/"false" strings from YAML that doesn't auto-coerce.
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "on")
+    return True
+
+
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+# ---------------------------------------------------------------------------
+# Delegation progress event types
+# ---------------------------------------------------------------------------
+
+class DelegateEvent(str, enum.Enum):
+    """Formal event types emitted during delegation progress.
+
+    _build_child_progress_callback normalises incoming legacy strings
+    (``tool.started``, ``_thinking``, …) to these enum values via
+    ``_LEGACY_EVENT_MAP``.  External consumers (gateway SSE, ACP adapter,
+    CLI) still receive the legacy strings during the deprecation window.
+
+    TASK_SPAWNED / TASK_COMPLETED / TASK_FAILED are reserved for
+    future orchestrator lifecycle events and are not currently emitted.
+    """
+    TASK_SPAWNED = "delegate.task_spawned"
+    TASK_PROGRESS = "delegate.task_progress"
+    TASK_COMPLETED = "delegate.task_completed"
+    TASK_FAILED = "delegate.task_failed"
+    TASK_THINKING = "delegate.task_thinking"
+    TASK_TOOL_STARTED = "delegate.tool_started"
+    TASK_TOOL_COMPLETED = "delegate.tool_completed"
+
+
+# Legacy event strings → DelegateEvent mapping.
+# Incoming child-agent events use the old names; the callback normalises them.
+_LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
+    "_thinking": DelegateEvent.TASK_THINKING,
+    "reasoning.available": DelegateEvent.TASK_THINKING,
+    "tool.started": DelegateEvent.TASK_TOOL_STARTED,
+    "tool.completed": DelegateEvent.TASK_TOOL_COMPLETED,
+    "subagent_progress": DelegateEvent.TASK_PROGRESS,
+}
 
 
 def check_delegate_requirements() -> bool:
@@ -93,8 +213,18 @@ def _build_child_system_prompt(
     context: Optional[str] = None,
     *,
     workspace_path: Optional[str] = None,
+    role: str = "leaf",
+    max_spawn_depth: int = 2,
+    child_depth: int = 1,
 ) -> str:
-    """Build a focused system prompt for a child agent."""
+    """Build a focused system prompt for a child agent.
+
+    When role='orchestrator', appends a delegation-capability block
+    modeled on OpenClaw's buildSubagentSystemPrompt (canSpawn branch at
+    inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
+    The depth note is literal truth (grounded in the passed config) so
+    the LLM doesn't confabulate nesting capabilities that don't exist.
+    """
     parts = [
         "You are a focused subagent working on a specific delegated task.",
         "",
@@ -120,6 +250,37 @@ def _build_child_system_prompt(
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
+    if role == "orchestrator":
+        child_note = (
+            "Your own children MUST be leaves (cannot delegate further) "
+            "because they would be at the depth floor — you cannot pass "
+            "role='orchestrator' to your own delegate_task calls."
+            if child_depth + 1 >= max_spawn_depth else
+            "Your own children can themselves be orchestrators or leaves, "
+            "depending on the `role` you pass to delegate_task. Default is "
+            "'leaf'; pass role='orchestrator' explicitly when a child "
+            "needs to further decompose its work."
+        )
+        parts.append(
+            "\n## Subagent Spawning (Orchestrator Role)\n"
+            "You have access to the `delegate_task` tool and CAN spawn "
+            "your own subagents to parallelize independent work.\n\n"
+            "WHEN to delegate:\n"
+            "- The goal decomposes into 2+ independent subtasks that can "
+            "run in parallel (e.g. research A and B simultaneously).\n"
+            "- A subtask is reasoning-heavy and would flood your context "
+            "with intermediate data.\n\n"
+            "WHEN NOT to delegate:\n"
+            "- Single-step mechanical work — do it directly.\n"
+            "- Trivial tasks you can execute in one or two tool calls.\n"
+            "- Re-delegating your entire assigned goal to one worker "
+            "(that's just pass-through with no value added).\n\n"
+            "Coordinate your workers' results and synthesize them before "
+            "reporting back to your parent. You are responsible for the "
+            "final summary, not your workers.\n\n"
+            f"NOTE: You are at depth {child_depth}. The delegation tree "
+            f"is capped at max_spawn_depth={max_spawn_depth}. {child_note}"
+        )
     return "\n".join(parts)
 
 
@@ -197,10 +358,9 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
         except Exception as e:
             logger.debug("Parent callback failed: %s", e)
 
-    def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-        # event_type is one of: "tool.started", "tool.completed",
-        # "reasoning.available", "_thinking", "subagent.*"
-
+    def _callback(event_type, tool_name: str = None, preview: str = None, args=None, **kwargs):
+        # Lifecycle events emitted by the orchestrator itself — handled
+        # before enum normalisation since they are not part of DelegateEvent.
         if event_type == "subagent.start":
             if spinner and goal_label:
                 short = (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
@@ -215,8 +375,21 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
             _relay("subagent.complete", preview=preview, **kwargs)
             return
 
-        # "_thinking" / reasoning events
-        if event_type in ("_thinking", "reasoning.available"):
+        # Normalise legacy strings, new-style "delegate.*" strings, and
+        # DelegateEvent enum values all to a single DelegateEvent.  The
+        # original implementation only accepted the five legacy strings;
+        # enum-typed callers were silently dropped.
+        if isinstance(event_type, DelegateEvent):
+            event = event_type
+        else:
+            event = _LEGACY_EVENT_MAP.get(event_type)
+            if event is None:
+                try:
+                    event = DelegateEvent(event_type)
+                except (ValueError, TypeError):
+                    return  # Unknown event — ignore
+
+        if event == DelegateEvent.TASK_THINKING:
             text = preview or tool_name or ""
             if spinner:
                 short = (text[:55] + "...") if len(text) > 55 else text
@@ -227,11 +400,31 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
             _relay("subagent.thinking", preview=text)
             return
 
-        # tool.completed — no display needed here (spinner shows on started)
-        if event_type == "tool.completed":
+        if event == DelegateEvent.TASK_TOOL_COMPLETED:
             return
 
-        # tool.started — display and batch for parent relay
+        if event == DelegateEvent.TASK_PROGRESS:
+            # Pre-batched progress summary relayed from a nested
+            # orchestrator's grandchild (upstream emits as
+            # parent_cb("subagent_progress", summary_string) where the
+            # summary lands in the tool_name positional slot).  Treat as
+            # a pass-through: render distinctly (not via the tool-start
+            # emoji lookup, which would mistake the summary string for a
+            # tool name) and relay upward without re-batching.
+            summary_text = tool_name or preview or ""
+            if spinner and summary_text:
+                try:
+                    spinner.print_above(f" {prefix}├─ 🔀 {summary_text}")
+                except Exception as e:
+                    logger.debug("Spinner print_above failed: %s", e)
+            if parent_cb:
+                try:
+                    parent_cb("subagent_progress", f"{prefix}{summary_text}")
+                except Exception as e:
+                    logger.debug("Parent callback relay failed: %s", e)
+            return
+
+        # TASK_TOOL_STARTED — display and batch for parent relay
         if spinner:
             short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
             from agent.display import get_tool_emoji
@@ -280,6 +473,10 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-call role controlling whether the child can further delegate.
+    # 'leaf' (default) cannot; 'orchestrator' retains the delegation
+    # toolset subject to depth/kill-switch bounds applied below.
+    role: str = "leaf",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -291,6 +488,17 @@ def _build_child_agent(
     model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
+
+    # ── Role resolution ─────────────────────────────────────────────────
+    # Honor the caller's role only when BOTH the kill switch and the
+    # child's depth allow it.  This is the single point where role
+    # degrades to 'leaf' — keeps the rule predictable.  Callers pass
+    # the normalised role (_normalize_role ran in delegate_task) so
+    # we only deal with 'leaf' or 'orchestrator' here.
+    child_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+    max_spawn = _get_max_spawn_depth()
+    orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
+    effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -319,8 +527,21 @@ def _build_child_agent(
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
+    # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
+    # removed.  The re-add is unconditional on parent-toolset membership because
+    # orchestrator capability is granted by role, not inherited — see the
+    # test_intersection_preserves_delegation_bound test for the design rationale.
+    if effective_role == "orchestrator" and "delegation" not in child_toolsets:
+        child_toolsets.append("delegation")
+
     workspace_hint = _resolve_workspace_hint(parent_agent)
-    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
+    child_prompt = _build_child_system_prompt(
+        goal, context,
+        workspace_path=workspace_hint,
+        role=effective_role,
+        max_spawn_depth=max_spawn,
+        child_depth=child_depth,
+    )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -406,7 +627,10 @@ def _build_child_agent(
     )
     child._print_fn = getattr(parent_agent, '_print_fn', None)
     # Set delegation depth so children can't spawn grandchildren
-    child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+    child._delegate_depth = child_depth
+    # Stash the post-degrade role for introspection (leaf if the
+    # kill switch or depth bounded the caller's requested role).
+    child._delegate_role = effective_role
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -691,27 +915,40 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    role: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets)
-      - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+      - Single: provide goal (+ optional context, toolsets, role)
+      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+
+    The 'role' parameter controls whether a child can further delegate:
+    'leaf' (default) cannot; 'orchestrator' retains the delegation
+    toolset and can spawn its own workers, bounded by
+    delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
-    # Depth limit
+    # Normalise the top-level role once; per-task overrides re-normalise.
+    top_role = _normalize_role(role)
+
+    # Depth limit — configurable via delegation.max_spawn_depth,
+    # default 2 for parity with the original MAX_DEPTH constant.
     depth = getattr(parent_agent, '_delegate_depth', 0)
-    if depth >= MAX_DEPTH:
+    max_spawn = _get_max_spawn_depth()
+    if depth >= max_spawn:
         return json.dumps({
             "error": (
-                f"Delegation depth limit reached ({MAX_DEPTH}). "
-                "Subagents cannot spawn further subagents."
+                f"Delegation depth limit reached (depth={depth}, "
+                f"max_spawn_depth={max_spawn}). Raise "
+                f"delegation.max_spawn_depth in config.yaml if deeper "
+                f"nesting is required (cap: {_MAX_SPAWN_DEPTH_CAP})."
             )
         })
 
@@ -743,7 +980,8 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context,
+                      "toolsets": toolsets, "role": top_role}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -775,6 +1013,9 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
+            # Per-task role beats top-level; normalise again so unknown
+            # per-task values warn and degrade to leaf uniformly.
+            effective_role = _normalize_role(t.get("role") or top_role)
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
@@ -786,6 +1027,7 @@ def delegate_task(
                 override_acp_args=task_acp_args if task_acp_args is not None else (
                     acp_args if acp_args is not None else creds.get("args")
                 ),
+                role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -1119,7 +1361,7 @@ DELEGATE_TASK_SCHEMA = {
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
+        "2. Batch (parallel): provide 'tasks' array with up to delegation.max_concurrent_children items (default 3). "
         "All run concurrently and results are returned together.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
@@ -1132,8 +1374,14 @@ DELEGATE_TASK_SCHEMA = {
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
-        "execute_code.\n"
+        "- Leaf subagents (role='leaf', the default) CANNOT call: "
+        "delegate_task, clarify, memory, send_message, execute_code.\n"
+        "- Orchestrator subagents (role='orchestrator') retain "
+        "delegate_task so they can spawn their own workers, but still "
+        "cannot use clarify, memory, send_message, or execute_code. "
+        "Orchestrators are bounded by delegation.max_spawn_depth "
+        "(default 2) and can be disabled globally via "
+        "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     ),
@@ -1189,6 +1437,11 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Per-task ACP args override.",
                         },
+                        "role": {
+                            "type": "string",
+                            "enum": ["leaf", "orchestrator"],
+                            "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -1206,6 +1459,19 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
+                ),
+            },
+            "role": {
+                "type": "string",
+                "enum": ["leaf", "orchestrator"],
+                "description": (
+                    "Role of the child agent. 'leaf' (default) = focused "
+                    "worker, cannot delegate further. 'orchestrator' = can "
+                    "use delegate_task to spawn its own workers. Requires "
+                    "delegation.max_spawn_depth >= 2 in config; ignored "
+                    "(treated as 'leaf') when the child would exceed "
+                    "max_spawn_depth or when "
+                    "delegation.orchestrator_enabled=false."
                 ),
             },
             "acp_command": {
@@ -1246,6 +1512,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        role=args.get("role"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

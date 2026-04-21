@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from tools import file_state
 from utils import base_url_hostname
 
 
@@ -728,7 +729,22 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback start failed: %s", e)
 
-        result = child.run_conversation(user_message=goal)
+        # File-state coordination: generate a stable child task_id so the
+        # file_state registry can attribute writes back to this subagent,
+        # and snapshot the parent's read set at launch time.  After the
+        # child returns we compare to detect "sibling modified files the
+        # parent previously read" and surface it as a reminder on the
+        # returned summary.
+        import uuid as _uuid
+        child_task_id = f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
+        parent_task_id = getattr(parent_agent, "_current_task_id", None)
+        wall_start = time.time()
+        parent_reads_snapshot = (
+            list(file_state.known_reads(parent_task_id))
+            if parent_task_id else []
+        )
+
+        result = child.run_conversation(user_message=goal, task_id=child_task_id)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
@@ -825,6 +841,36 @@ def _run_single_child(
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+
+        # Cross-agent file-state reminder.  If this subagent wrote any
+        # files the parent had already read, surface it so the parent
+        # knows to re-read before editing — the scenario that motivated
+        # the registry.  We check writes by ANY non-parent task_id (not
+        # just this child's), which also covers transitive writes from
+        # nested orchestrator→worker chains.
+        try:
+            if parent_task_id and parent_reads_snapshot:
+                sibling_writes = file_state.writes_since(
+                    parent_task_id, wall_start, parent_reads_snapshot
+                )
+                if sibling_writes:
+                    mod_paths = sorted(
+                        {p for paths in sibling_writes.values() for p in paths}
+                    )
+                    if mod_paths:
+                        reminder = (
+                            "\n\n[NOTE: subagent modified files the parent "
+                            "previously read — re-read before editing: "
+                            + ", ".join(mod_paths[:8])
+                            + (f" (+{len(mod_paths) - 8} more)" if len(mod_paths) > 8 else "")
+                            + "]"
+                        )
+                        if entry.get("summary"):
+                            entry["summary"] = entry["summary"] + reminder
+                        else:
+                            entry["stale_paths"] = mod_paths
+        except Exception:
+            logger.debug("file_state sibling-write check failed", exc_info=True)
 
         if child_progress_cb:
             try:

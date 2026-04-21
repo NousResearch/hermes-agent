@@ -253,10 +253,11 @@ class LocalEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  extra_env: dict[str, str] | None = None) -> subprocess.Popen:
         bash = _find_bash()
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
+        run_env = _make_run_env({**self.env, **(extra_env or {})})
 
         proc = subprocess.Popen(
             args,

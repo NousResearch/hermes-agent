@@ -783,6 +783,9 @@ def _execute_remote(
         rpc_thread.start()
 
         # Build environment variable prefix for the script
+        remote_env = {
+            "HERMES_RPC_DIR": f"{sandbox_dir}/rpc",
+        }
         env_prefix = (
             f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
             f"PYTHONDONTWRITEBYTECODE=1"
@@ -797,6 +800,7 @@ def _execute_remote(
         script_result = env.execute(
             f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
             timeout=timeout,
+            extra_env=remote_env,
         )
 
         stdout_text = script_result.get("output", "")

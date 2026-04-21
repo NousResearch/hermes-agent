@@ -285,6 +285,30 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     assert "value_from_dotenv" not in args_str
 
 
+def test_run_bash_passes_extra_env_to_docker_exec(monkeypatch):
+    """Per-call env overrides should be passed through docker exec -e."""
+    env = _make_execute_only_env()
+    popen_calls = []
+
+    def _fake_popen(cmd, stdin_data=None):
+        popen_calls.append((cmd, stdin_data))
+        return _FakePopen(cmd)
+
+    monkeypatch.setattr(docker_env, "_popen_bash", _fake_popen)
+
+    env._run_bash(
+        "python3 script.py",
+        extra_env={"HERMES_RPC_DIR": "/tmp/hermes_exec_abcd/rpc"},
+    )
+
+    assert popen_calls
+    cmd, stdin_data = popen_calls[0]
+    assert stdin_data is None
+    assert cmd[:2] == ["/usr/bin/docker", "exec"]
+    assert "HERMES_RPC_DIR=/tmp/hermes_exec_abcd/rpc" in cmd
+    assert cmd.index("-e") < cmd.index("test-container")
+
+
 # ── docker_env tests ──────────────────────────────────────────────
 
 

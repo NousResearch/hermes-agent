@@ -17,6 +17,7 @@ import pytest
 
 import json
 import os
+import re
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -132,8 +133,8 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def get_temp_dir(self):
                 return "/data/data/com.termux/files/usr/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
-                self.commands.append((command, cwd, timeout))
+            def execute(self, command, cwd=None, timeout=None, extra_env=None):
+                self.commands.append((command, cwd, timeout, extra_env))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
                 if "python3 script.py" in command:
@@ -151,12 +152,47 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
 
         self.assertEqual(result["status"], "success")
         mkdir_cmd = env.commands[1][0]
-        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
+        run_cmd = next(cmd for cmd, _, _, _ in env.commands if "python3 script.py" in cmd)
         cleanup_cmd = env.commands[-1][0]
         self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
         self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
         self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
+
+    def test_execute_remote_passes_rpc_dir_through_docker_env(self):
+        class FakeDockerEnv:
+            def __init__(self):
+                self.calls = []
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None, extra_env=None):
+                self.calls.append((command, cwd, timeout, extra_env))
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "python3 script.py" in command:
+                    return {"output": "hello\n", "returncode": 0}
+                return {"output": ""}
+
+        env = FakeDockerEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "docker")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("print('hello')", "task-2", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        run_cmd, _, _, extra_env = next(call for call in env.calls if "python3 script.py" in call[0])
+        match = re.search(r"HERMES_RPC_DIR=([^ ]+)", run_cmd)
+        self.assertIsNotNone(match)
+        rpc_dir = match.group(1)
+        self.assertTrue(rpc_dir.startswith("/tmp/hermes_exec_"))
+        self.assertTrue(rpc_dir.endswith("/rpc"))
+        self.assertIsInstance(extra_env, dict)
+        self.assertEqual(extra_env, {"HERMES_RPC_DIR": rpc_dir})
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")

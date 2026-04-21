@@ -11,7 +11,8 @@ import asyncio
 import json
 import logging
 from collections import deque
-from typing import Any, Callable, Deque, Dict
+from collections.abc import Callable
+from typing import Any
 
 import acp
 
@@ -44,12 +45,13 @@ def _send_update(
 # Tool progress callback
 # ------------------------------------------------------------------
 
+
 def make_tool_progress_cb(
     conn: acp.Client,
     session_id: str,
     loop: asyncio.AbstractEventLoop,
-    tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]],
+    tool_call_ids: dict[str, deque[str]],
+    tool_call_meta: dict[str, dict[str, Any]],
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
@@ -63,7 +65,13 @@ def make_tool_progress_cb(
     ``reasoning.available``) are silently ignored.
     """
 
-    def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+    def _tool_progress(
+        event_type: str,
+        name: str | None = None,
+        preview: str | None = None,
+        args: Any = None,
+        **kwargs,
+    ) -> None:
         # Only emit ACP ToolCallStart for tool.started; ignore other event types
         if event_type != "tool.started":
             return
@@ -75,27 +83,30 @@ def make_tool_progress_cb(
         if not isinstance(args, dict):
             args = {}
 
+        tool_name = name or "unknown_tool"
+
         tc_id = make_tool_call_id()
-        queue = tool_call_ids.get(name)
+        queue = tool_call_ids.get(tool_name)
         if queue is None:
             queue = deque()
-            tool_call_ids[name] = queue
-        elif isinstance(queue, str):
-            queue = deque([queue])
-            tool_call_ids[name] = queue
+            tool_call_ids[tool_name] = queue
         queue.append(tc_id)
 
         snapshot = None
-        if name in {"write_file", "patch", "skill_manage"}:
+        if tool_name in {"write_file", "patch", "skill_manage"}:
             try:
                 from agent.display import capture_local_edit_snapshot
 
-                snapshot = capture_local_edit_snapshot(name, args)
+                snapshot = capture_local_edit_snapshot(tool_name, args)
             except Exception:
-                logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
+                logger.debug(
+                    "Failed to capture ACP edit snapshot for %s",
+                    tool_name,
+                    exc_info=True,
+                )
         tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
 
-        update = build_tool_start(tc_id, name, args)
+        update = build_tool_start(tc_id, tool_name, args)
         _send_update(conn, session_id, loop, update)
 
     return _tool_progress
@@ -104,6 +115,7 @@ def make_tool_progress_cb(
 # ------------------------------------------------------------------
 # Thinking callback
 # ------------------------------------------------------------------
+
 
 def make_thinking_cb(
     conn: acp.Client,
@@ -125,12 +137,13 @@ def make_thinking_cb(
 # Step callback
 # ------------------------------------------------------------------
 
+
 def make_step_cb(
     conn: acp.Client,
     session_id: str,
     loop: asyncio.AbstractEventLoop,
-    tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]],
+    tool_call_ids: dict[str, deque[str]],
+    tool_call_meta: dict[str, dict[str, Any]],
 ) -> Callable:
     """Create a ``step_callback`` for AIAgent.
 
@@ -154,11 +167,13 @@ def make_step_cb(
                     tool_name = tool_info
 
                 queue = tool_call_ids.get(tool_name or "")
-                if isinstance(queue, str):
-                    queue = deque([queue])
-                    tool_call_ids[tool_name] = queue
                 if tool_name and queue:
-                    tc_id = queue.popleft()
+                    # Accept both the current deque-based tracker and legacy
+                    # single-ID entries used by older call sites/tests.
+                    if isinstance(queue, deque):
+                        tc_id = queue.popleft()
+                    else:
+                        tc_id = str(queue)
                     meta = tool_call_meta.pop(tc_id, {})
                     update = build_tool_complete(
                         tc_id,
@@ -168,7 +183,7 @@ def make_step_cb(
                         snapshot=meta.get("snapshot"),
                     )
                     _send_update(conn, session_id, loop, update)
-                    if not queue:
+                    if not isinstance(queue, deque) or not queue:
                         tool_call_ids.pop(tool_name, None)
 
     return _step
@@ -177,6 +192,7 @@ def make_step_cb(
 # ------------------------------------------------------------------
 # Agent message callback
 # ------------------------------------------------------------------
+
 
 def make_message_cb(
     conn: acp.Client,

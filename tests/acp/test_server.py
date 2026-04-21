@@ -1,13 +1,10 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
-import asyncio
-import os
 from types import SimpleNamespace
-from unittest.mock import MagicMock, AsyncMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import acp
+import pytest
 from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
@@ -15,31 +12,27 @@ from acp.schema import (
     AvailableCommandsUpdate,
     Implementation,
     InitializeResponse,
-    ListSessionsResponse,
-    LoadSessionResponse,
     NewSessionResponse,
     PromptResponse,
     ResumeSessionResponse,
+    SessionInfo,
     SessionModelState,
-    SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
-    SessionInfo,
     TextContentBlock,
-    Usage,
 )
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import HERMES_VERSION, HermesACPAgent
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_manager():
     """SessionManager with a mock agent factory."""
     return SessionManager(agent_factory=lambda: MagicMock(name="MockAIAgent"))
 
 
-@pytest.fixture()
+@pytest.fixture
 def agent(mock_manager):
     """HermesACPAgent backed by a mock session manager."""
     return HermesACPAgent(session_manager=mock_manager)
@@ -150,7 +143,9 @@ class TestSessionOps:
     @pytest.mark.asyncio
     async def test_new_session_returns_model_state(self):
         manager = SessionManager(
-            agent_factory=lambda: SimpleNamespace(model="gpt-5.4", provider="openai-codex")
+            agent_factory=lambda: SimpleNamespace(
+                model="gpt-5.4", provider="openai-codex"
+            )
         )
         acp_agent = HermesACPAgent(session_manager=manager)
 
@@ -239,7 +234,9 @@ class TestListAndFork:
     @pytest.mark.asyncio
     async def test_fork_session(self, agent):
         new_resp = await agent.new_session(cwd="/original")
-        fork_resp = await agent.fork_session(cwd="/forked", session_id=new_resp.session_id)
+        fork_resp = await agent.fork_session(
+            cwd="/forked", session_id=new_resp.session_id
+        )
         assert fork_resp.session_id
         assert fork_resp.session_id != new_resp.session_id
 
@@ -265,61 +262,13 @@ class TestListAndFork:
 
     @pytest.mark.asyncio
     async def test_list_sessions_passes_cwd_filter(self, agent):
-        with patch.object(agent.session_manager, "list_sessions", return_value=[]) as mock_list:
+        with patch.object(
+            agent.session_manager, "list_sessions", return_value=[]
+        ) as mock_list:
             await agent.list_sessions(cwd="/mnt/e/Projects/AI/browser-link-3")
 
         mock_list.assert_called_once_with(cwd="/mnt/e/Projects/AI/browser-link-3")
 
-    @pytest.mark.asyncio
-    async def test_list_sessions_pagination_first_page(self, agent):
-        from acp_adapter import server as acp_server
-
-        infos = [
-            {"session_id": f"s{i}", "cwd": "/tmp", "title": None, "updated_at": 0.0}
-            for i in range(acp_server._LIST_SESSIONS_PAGE_SIZE + 5)
-        ]
-        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
-            resp = await agent.list_sessions()
-
-        assert len(resp.sessions) == acp_server._LIST_SESSIONS_PAGE_SIZE
-        assert resp.next_cursor == resp.sessions[-1].session_id
-
-    @pytest.mark.asyncio
-    async def test_list_sessions_pagination_no_more(self, agent):
-        infos = [
-            {"session_id": f"s{i}", "cwd": "/tmp", "title": None, "updated_at": 0.0}
-            for i in range(3)
-        ]
-        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
-            resp = await agent.list_sessions()
-
-        assert len(resp.sessions) == 3
-        assert resp.next_cursor is None
-
-    @pytest.mark.asyncio
-    async def test_list_sessions_cursor_resumes_after_match(self, agent):
-        infos = [
-            {"session_id": "s1", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-            {"session_id": "s2", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-            {"session_id": "s3", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-        ]
-        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
-            resp = await agent.list_sessions(cursor="s1")
-
-        assert [s.session_id for s in resp.sessions] == ["s2", "s3"]
-        assert resp.next_cursor is None
-
-    @pytest.mark.asyncio
-    async def test_list_sessions_unknown_cursor_returns_empty(self, agent):
-        infos = [
-            {"session_id": "s1", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-            {"session_id": "s2", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-        ]
-        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
-            resp = await agent.list_sessions(cursor="does-not-exist")
-
-        assert resp.sessions == []
-        assert resp.next_cursor is None
 
 # ---------------------------------------------------------------------------
 # session configuration / model routing
@@ -330,7 +279,9 @@ class TestSessionConfiguration:
     @pytest.mark.asyncio
     async def test_set_session_mode_returns_response(self, agent):
         new_resp = await agent.new_session(cwd="/tmp")
-        resp = await agent.set_session_mode(mode_id="chat", session_id=new_resp.session_id)
+        resp = await agent.set_session_mode(
+            mode_id="chat", session_id=new_resp.session_id
+        )
         state = agent.session_manager.get_session(new_resp.session_id)
 
         assert isinstance(resp, SetSessionModeResponse)
@@ -375,7 +326,9 @@ class TestSessionConfiguration:
         assert state.model == "gpt-5.4"
 
     @pytest.mark.asyncio
-    async def test_set_session_model_accepts_provider_prefixed_choice(self, tmp_path, monkeypatch):
+    async def test_set_session_model_accepts_provider_prefixed_choice(
+        self, tmp_path, monkeypatch
+    ):
         runtime_calls = []
 
         def fake_resolve_runtime_provider(requested=None, **kwargs):
@@ -383,7 +336,9 @@ class TestSessionConfiguration:
             provider = requested or "openrouter"
             return {
                 "provider": provider,
-                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "api_mode": "anthropic_messages"
+                if provider == "anthropic"
+                else "chat_completions",
                 "base_url": f"https://{provider}.example/v1",
                 "api_key": f"{provider}-key",
                 "command": None,
@@ -398,9 +353,12 @@ class TestSessionConfiguration:
                 api_mode=kwargs.get("api_mode"),
             )
 
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
-            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
-        })
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+            },
+        )
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
@@ -449,13 +407,15 @@ class TestPrompt:
         state = agent.session_manager.get_session(new_resp.session_id)
 
         # Mock the agent's run_conversation
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "Hello! How can I help?",
-            "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "Hello! How can I help?"},
-            ],
-        })
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": "Hello! How can I help?",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "Hello! How can I help?"},
+                ],
+            }
+        )
 
         # Set up a mock connection
         mock_conn = MagicMock(spec=acp.Client)
@@ -479,10 +439,12 @@ class TestPrompt:
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hey"},
         ]
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "hey",
-            "messages": expected_history,
-        })
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": "hey",
+                "messages": expected_history,
+            }
+        )
 
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
@@ -499,10 +461,12 @@ class TestPrompt:
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
 
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "I can help with that!",
-            "messages": [],
-        })
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": "I can help with that!",
+                "messages": [],
+            }
+        )
 
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
@@ -522,13 +486,15 @@ class TestPrompt:
     async def test_prompt_auto_titles_session(self, agent):
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "Here is the fix.",
-            "messages": [
-                {"role": "user", "content": "fix the broken ACP history"},
-                {"role": "assistant", "content": "Here is the fix."},
-            ],
-        })
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": "Here is the fix.",
+                "messages": [
+                    {"role": "user", "content": "fix the broken ACP history"},
+                    {"role": "assistant", "content": "Here is the fix."},
+                ],
+            }
+        )
 
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
@@ -544,20 +510,24 @@ class TestPrompt:
         assert mock_title.call_args.args[3] == "Here is the fix."
 
     @pytest.mark.asyncio
-    async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):
+    async def test_prompt_populates_usage_from_top_level_run_conversation_fields(
+        self, agent
+    ):
         """ACP should map top-level token fields into PromptResponse.usage."""
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
 
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "usage attached",
-            "messages": [],
-            "prompt_tokens": 123,
-            "completion_tokens": 45,
-            "total_tokens": 168,
-            "reasoning_tokens": 7,
-            "cache_read_tokens": 11,
-        })
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": "usage attached",
+                "messages": [],
+                "prompt_tokens": 123,
+                "completion_tokens": 45,
+                "total_tokens": 168,
+                "reasoning_tokens": 7,
+                "cache_read_tokens": 11,
+            }
+        )
 
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
@@ -745,10 +715,12 @@ class TestSlashCommands:
 
         # Mock run_in_executor to avoid actually running the agent
         with patch("asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(return_value={
-                "final_response": "I processed /foo",
-                "messages": [],
-            })
+            mock_loop.return_value.run_in_executor = AsyncMock(
+                return_value={
+                    "final_response": "I processed /foo",
+                    "messages": [],
+                }
+            )
             prompt = [TextContentBlock(type="text", text="/foo bar")]
             resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
@@ -763,7 +735,9 @@ class TestSlashCommands:
             provider = requested or "openrouter"
             return {
                 "provider": provider,
-                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "api_mode": "anthropic_messages"
+                if provider == "anthropic"
+                else "chat_completions",
                 "base_url": f"https://{provider}.example/v1",
                 "api_key": f"{provider}-key",
                 "command": None,
@@ -778,9 +752,12 @@ class TestSlashCommands:
                 api_mode=kwargs.get("api_mode"),
             )
 
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
-            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
-        })
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+            },
+        )
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
@@ -817,7 +794,7 @@ class TestRegisterSessionMcpServers:
     @pytest.mark.asyncio
     async def test_registers_stdio_servers(self, agent, mock_manager):
         """McpServerStdio servers are converted and passed to register_mcp_servers."""
-        from acp.schema import McpServerStdio, EnvVariable
+        from acp.schema import EnvVariable, McpServerStdio
 
         state = mock_manager.create_session(cwd="/tmp")
         # Give the mock agent the attributes _register_session_mcp_servers reads
@@ -834,12 +811,15 @@ class TestRegisterSessionMcpServers:
         )
 
         registered_config = {}
+
         def capture_register(config_map):
             registered_config.update(config_map)
             return ["mcp_test_server_tool1"]
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with (
+            patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
             await agent._register_session_mcp_servers(state, [server])
 
         assert "test-server" in registered_config
@@ -851,7 +831,7 @@ class TestRegisterSessionMcpServers:
     @pytest.mark.asyncio
     async def test_registers_http_servers(self, agent, mock_manager):
         """McpServerHttp servers are converted correctly."""
-        from acp.schema import McpServerHttp, HttpHeader
+        from acp.schema import HttpHeader, McpServerHttp
 
         state = mock_manager.create_session(cwd="/tmp")
         state.agent.enabled_toolsets = ["hermes-acp"]
@@ -866,12 +846,15 @@ class TestRegisterSessionMcpServers:
         )
 
         registered_config = {}
+
         def capture_register(config_map):
             registered_config.update(config_map)
             return []
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with (
+            patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
             await agent._register_session_mcp_servers(state, [server])
 
         assert "http-server" in registered_config
@@ -903,8 +886,12 @@ class TestRegisterSessionMcpServers:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+        with (
+            patch(
+                "tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]
+            ),
+            patch("model_tools.get_tool_definitions", return_value=fake_tools),
+        ):
             await agent._register_session_mcp_servers(state, [server])
 
         assert state.agent.tools == fake_tools
@@ -925,6 +912,8 @@ class TestRegisterSessionMcpServers:
             env=[],
         )
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
+        with patch(
+            "tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")
+        ):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])

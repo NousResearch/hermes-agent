@@ -7,14 +7,10 @@ Exercises the full flow through the ACP server layer:
     session_update events arrive at the mock client
 """
 
-import asyncio
-from collections import deque
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 import acp
+import pytest
 from acp.schema import (
     EnvVariable,
     HttpHeader,
@@ -26,23 +22,21 @@ from acp.schema import (
     ToolCallProgress,
     ToolCallStart,
 )
-
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
 from acp_adapter.tools import build_tool_start
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_manager():
     return SessionManager(agent_factory=lambda: MagicMock(name="MockAIAgent"))
 
 
-@pytest.fixture()
+@pytest.fixture
 def acp_agent(mock_manager):
     return HermesACPAgent(session_manager=mock_manager)
 
@@ -56,7 +50,9 @@ class TestMcpRegistrationE2E:
     """Full flow: session with MCP servers → prompt with tool calls → ACP events."""
 
     @pytest.mark.asyncio
-    async def test_session_with_mcp_servers_registers_tools(self, acp_agent, mock_manager):
+    async def test_session_with_mcp_servers_registers_tools(
+        self, acp_agent, mock_manager
+    ):
         """new_session with mcpServers converts them to Hermes config and registers."""
         servers = [
             McpServerStdio(
@@ -85,8 +81,10 @@ class TestMcpRegistrationE2E:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+        with (
+            patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register),
+            patch("model_tools.get_tool_definitions", return_value=fake_tools),
+        ):
             resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
 
         assert isinstance(resp, NewSessionResponse)
@@ -108,11 +106,16 @@ class TestMcpRegistrationE2E:
         # Verify agent tool surface was refreshed
         assert state.agent.tools == fake_tools
         assert state.agent.valid_tool_names == {
-            "mcp_test_fs_read", "mcp_test_fs_write", "mcp_test_api_search", "terminal"
+            "mcp_test_fs_read",
+            "mcp_test_fs_write",
+            "mcp_test_api_search",
+            "terminal",
         }
 
     @pytest.mark.asyncio
-    async def test_prompt_with_tool_calls_emits_acp_events(self, acp_agent, mock_manager):
+    async def test_prompt_with_tool_calls_emits_acp_events(
+        self, acp_agent, mock_manager
+    ):
         """Prompt → agent fires callbacks → ACP ToolCallStart + ToolCallUpdate events."""
         resp = await acp_agent.new_session(cwd="/tmp")
         session_id = resp.session_id
@@ -124,21 +127,32 @@ class TestMcpRegistrationE2E:
         mock_conn.request_permission = AsyncMock()
         acp_agent._conn = mock_conn
 
-        def mock_run_conversation(user_message, conversation_history=None, task_id=None):
+        def mock_run_conversation(
+            user_message, conversation_history=None, task_id=None
+        ):
             """Simulate an agent turn that calls terminal, gets a result, then responds."""
             agent = state.agent
 
             # 1) Agent fires tool_progress_callback (ToolCallStart)
             if agent.tool_progress_callback:
                 agent.tool_progress_callback(
-                    "tool.started", "terminal", "$ echo hello", {"command": "echo hello"}
+                    "tool.started",
+                    "terminal",
+                    "$ echo hello",
+                    {"command": "echo hello"},
                 )
 
             # 2) Agent fires step_callback with tool results (ToolCallUpdate)
             if agent.step_callback:
-                agent.step_callback(1, [
-                    {"name": "terminal", "result": '{"output": "hello\\n", "exit_code": 0}'}
-                ])
+                agent.step_callback(
+                    1,
+                    [
+                        {
+                            "name": "terminal",
+                            "result": '{"output": "hello\\n", "exit_code": 0}',
+                        }
+                    ],
+                )
 
             return {
                 "final_response": "The command output 'hello'.",
@@ -164,17 +178,27 @@ class TestMcpRegistrationE2E:
             updates.append(update_arg)
 
         # Find tool_call (start) and tool_call_update (completion) events
-        starts = [u for u in updates if getattr(u, "session_update", None) == "tool_call"]
-        completions = [u for u in updates if getattr(u, "session_update", None) == "tool_call_update"]
+        starts = [
+            u for u in updates if getattr(u, "session_update", None) == "tool_call"
+        ]
+        completions = [
+            u
+            for u in updates
+            if getattr(u, "session_update", None) == "tool_call_update"
+        ]
 
         # Should have at least one ToolCallStart for "terminal"
-        assert len(starts) >= 1, f"Expected ToolCallStart, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
+        assert len(starts) >= 1, (
+            f"Expected ToolCallStart, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
+        )
         start_event = starts[0]
         assert isinstance(start_event, ToolCallStart)
         assert start_event.title.startswith("terminal:")
 
         # Should have at least one ToolCallUpdate (completion) with rawOutput
-        assert len(completions) >= 1, f"Expected ToolCallUpdate, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
+        assert len(completions) >= 1, (
+            f"Expected ToolCallUpdate, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
+        )
         complete_event = completions[0]
         assert isinstance(complete_event, ToolCallProgress)
         assert complete_event.status == "completed"
@@ -217,14 +241,27 @@ class TestMcpRegistrationE2E:
             agent = state.agent
             # Fire two tool calls
             if agent.tool_progress_callback:
-                agent.tool_progress_callback("tool.started", "read_file", "read: /etc/hosts", {"path": "/etc/hosts"})
-                agent.tool_progress_callback("tool.started", "web_search", "web search: test", {"query": "test"})
+                agent.tool_progress_callback(
+                    "tool.started",
+                    "read_file",
+                    "read: /etc/hosts",
+                    {"path": "/etc/hosts"},
+                )
+                agent.tool_progress_callback(
+                    "tool.started", "web_search", "web search: test", {"query": "test"}
+                )
 
             if agent.step_callback:
-                agent.step_callback(1, [
-                    {"name": "read_file", "result": '{"content": "127.0.0.1 localhost"}'},
-                    {"name": "web_search", "result": '{"data": {"web": []}}'},
-                ])
+                agent.step_callback(
+                    1,
+                    [
+                        {
+                            "name": "read_file",
+                            "result": '{"content": "127.0.0.1 localhost"}',
+                        },
+                        {"name": "web_search", "result": '{"data": {"web": []}}'},
+                    ],
+                )
 
             return {"final_response": "Done.", "messages": []}
 
@@ -238,8 +275,14 @@ class TestMcpRegistrationE2E:
             update_arg = call[1].get("update") or call[0][1]
             updates.append(update_arg)
 
-        starts = [u for u in updates if getattr(u, "session_update", None) == "tool_call"]
-        completions = [u for u in updates if getattr(u, "session_update", None) == "tool_call_update"]
+        starts = [
+            u for u in updates if getattr(u, "session_update", None) == "tool_call"
+        ]
+        completions = [
+            u
+            for u in updates
+            if getattr(u, "session_update", None) == "tool_call_update"
+        ]
 
         assert len(starts) == 2, f"Expected 2 starts, got {len(starts)}"
         assert len(completions) == 2, f"Expected 2 completions, got {len(completions)}"
@@ -267,14 +310,17 @@ class TestMcpSanitizationE2E:
         ]
 
         registered_configs = {}
+
         def mock_register(config_map):
             registered_configs.update(config_map)
             return ["mcp_ai_exa_exa_search"]
 
         fake_tools = [{"function": {"name": "mcp_ai_exa_exa_search"}}]
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+        with (
+            patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register),
+            patch("model_tools.get_tool_definitions", return_value=fake_tools),
+        ):
             resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
 
         state = mock_manager.get_session(resp.session_id)
@@ -300,6 +346,7 @@ class TestSessionLifecycleMcpE2E:
         ]
 
         registered = {}
+
         def mock_register(config_map):
             registered.update(config_map)
             return []
@@ -310,9 +357,13 @@ class TestSessionLifecycleMcpE2E:
         state.agent.tools = []
         state.agent.valid_tool_names = set()
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
-            await acp_agent.load_session(cwd="/tmp", session_id=sid, mcp_servers=servers)
+        with (
+            patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
+            await acp_agent.load_session(
+                cwd="/tmp", session_id=sid, mcp_servers=servers
+            )
 
         assert "srv" in registered
 
@@ -327,6 +378,7 @@ class TestSessionLifecycleMcpE2E:
         ]
 
         registered = {}
+
         def mock_register(config_map):
             registered.update(config_map)
             return []
@@ -337,9 +389,13 @@ class TestSessionLifecycleMcpE2E:
         state.agent.tools = []
         state.agent.valid_tool_names = set()
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
-            await acp_agent.resume_session(cwd="/tmp", session_id=sid, mcp_servers=servers)
+        with (
+            patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
+            await acp_agent.resume_session(
+                cwd="/tmp", session_id=sid, mcp_servers=servers
+            )
 
         assert "srv2" in registered
 
@@ -354,13 +410,16 @@ class TestSessionLifecycleMcpE2E:
         ]
 
         registered = {}
+
         def mock_register(config_map):
             registered.update(config_map)
             return []
 
         # Need to set up the forked session's agent too
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with (
+            patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
             fork_resp = await acp_agent.fork_session(
                 cwd="/tmp", session_id=sid, mcp_servers=servers
             )

@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, cast
 
 import acp
 from acp.schema import (
     ToolCallLocation,
-    ToolCallStart,
     ToolCallProgress,
+    ToolCallStart,
     ToolKind,
 )
+
+logger = logging.getLogger(__name__)
+_start_tool_call = cast(Any, acp.start_tool_call)
 
 # ---------------------------------------------------------------------------
 # Map hermes tool names -> ACP ToolKind
 # ---------------------------------------------------------------------------
 
-TOOL_KIND_MAP: Dict[str, ToolKind] = {
+TOOL_KIND_MAP: dict[str, ToolKind] = {
     # File operations
     "read_file": "read",
     "write_file": "edit",
@@ -61,7 +65,7 @@ def make_tool_call_id() -> str:
     return f"tc-{uuid.uuid4().hex[:12]}"
 
 
-def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
+def build_tool_title(tool_name: str, args: dict[str, Any]) -> str:
     """Build a human-readable title for a tool call."""
     if tool_name == "terminal":
         cmd = args.get("command", "")
@@ -83,7 +87,9 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
+            return f"extract: {urls[0]}" + (
+                f" (+{len(urls) - 1})" if len(urls) > 1 else ""
+            )
         return "web extract"
     if tool_name == "delegate_task":
         goal = args.get("goal", "")
@@ -97,7 +103,7 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     return tool_name
 
 
-def _build_patch_mode_content(patch_text: str) -> List[Any]:
+def _build_patch_mode_content(patch_text: str) -> list[Any]:
     """Parse V4A patch mode input into ACP diff blocks when possible."""
     if not patch_text:
         return [acp.tool_content(acp.text_block(""))]
@@ -109,14 +115,18 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
         if error or not operations:
             return [acp.tool_content(acp.text_block(patch_text))]
 
-        content: List[Any] = []
+        content: list[Any] = []
         for op in operations:
             if op.operation == OperationType.UPDATE:
                 old_chunks: list[str] = []
                 new_chunks: list[str] = []
                 for hunk in op.hunks:
-                    old_lines = [line.content for line in hunk.lines if line.prefix in (" ", "-")]
-                    new_lines = [line.content for line in hunk.lines if line.prefix in (" ", "+")]
+                    old_lines = [
+                        line.content for line in hunk.lines if line.prefix in (" ", "-")
+                    ]
+                    new_lines = [
+                        line.content for line in hunk.lines if line.prefix in (" ", "+")
+                    ]
                     if old_lines or new_lines:
                         old_chunks.append("\n".join(old_lines))
                         new_chunks.append("\n".join(new_lines))
@@ -134,7 +144,12 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
                 continue
 
             if op.operation == OperationType.ADD:
-                added_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == "+"]
+                added_lines = [
+                    line.content
+                    for hunk in op.hunks
+                    for line in hunk.lines
+                    if line.prefix == "+"
+                ]
                 content.append(
                     acp.tool_diff_content(
                         path=op.file_path,
@@ -155,7 +170,9 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
 
             if op.operation == OperationType.MOVE:
                 content.append(
-                    acp.tool_content(acp.text_block(f"Move file: {op.file_path} -> {op.new_path}"))
+                    acp.tool_content(
+                        acp.text_block(f"Move file: {op.file_path} -> {op.new_path}")
+                    )
                 )
 
         return content or [acp.tool_content(acp.text_block(patch_text))]
@@ -170,14 +187,14 @@ def _strip_diff_prefix(path: str) -> str:
     return raw
 
 
-def _parse_unified_diff_content(diff_text: str) -> List[Any]:
+def _parse_unified_diff_content(diff_text: str) -> list[Any]:
     """Convert unified diff text into ACP diff content blocks."""
     if not diff_text:
         return []
 
-    content: List[Any] = []
-    current_old_path: Optional[str] = None
-    current_new_path: Optional[str] = None
+    content: list[Any] = []
+    current_old_path: str | None = None
+    current_new_path: str | None = None
     old_lines: list[str] = []
     new_lines: list[str] = []
 
@@ -185,7 +202,11 @@ def _parse_unified_diff_content(diff_text: str) -> List[Any]:
         nonlocal current_old_path, current_new_path, old_lines, new_lines
         if current_old_path is None and current_new_path is None:
             return
-        path = current_new_path if current_new_path and current_new_path != "/dev/null" else current_old_path
+        path = (
+            current_new_path
+            if current_new_path and current_new_path != "/dev/null"
+            else current_old_path
+        )
         if not path or path == "/dev/null":
             current_old_path = None
             current_new_path = None
@@ -231,15 +252,18 @@ def _parse_unified_diff_content(diff_text: str) -> List[Any]:
 
 def _build_tool_complete_content(
     tool_name: str,
-    result: Optional[str],
+    result: str | None,
     *,
-    function_args: Optional[Dict[str, Any]] = None,
+    function_args: dict[str, Any] | None = None,
     snapshot: Any = None,
-) -> List[Any]:
+) -> list[Any]:
     """Build structured ACP completion content, falling back to plain text."""
     display_result = result or ""
     if len(display_result) > 5000:
-        display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
+        display_result = (
+            display_result[:4900]
+            + f"\n... ({len(display_result)} chars total, truncated)"
+        )
 
     if tool_name in {"write_file", "patch", "skill_manage"}:
         try:
@@ -256,7 +280,11 @@ def _build_tool_complete_content(
                 if diff_content:
                     return diff_content
         except Exception:
-            pass
+            logger.debug(
+                "Failed to extract structured edit diff for %s",
+                tool_name,
+                exc_info=True,
+            )
 
     return [acp.tool_content(acp.text_block(display_result))]
 
@@ -269,12 +297,13 @@ def _build_tool_complete_content(
 def build_tool_start(
     tool_call_id: str,
     tool_name: str,
-    arguments: Dict[str, Any],
+    arguments: dict[str, Any],
 ) -> ToolCallStart:
     """Create a ToolCallStart event for the given hermes tool invocation."""
     kind = get_tool_kind(tool_name)
     title = build_tool_title(tool_name, arguments)
     locations = extract_locations(arguments)
+    payload: Any
 
     if tool_name == "patch":
         mode = arguments.get("mode", "replace")
@@ -282,58 +311,39 @@ def build_tool_start(
             path = arguments.get("path", "")
             old = arguments.get("old_string", "")
             new = arguments.get("new_string", "")
-            content = [acp.tool_diff_content(path=path, new_text=new, old_text=old)]
+            payload = [acp.tool_diff_content(path=path, new_text=new, old_text=old)]
         else:
             patch_text = arguments.get("patch", "")
-            content = _build_patch_mode_content(patch_text)
-        return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
-            raw_input=arguments,
-        )
-
-    if tool_name == "write_file":
+            payload = _build_patch_mode_content(patch_text)
+    elif tool_name == "write_file":
         path = arguments.get("path", "")
-        file_content = arguments.get("content", "")
-        content = [acp.tool_diff_content(path=path, new_text=file_content)]
-        return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
-            raw_input=arguments,
-        )
-
-    if tool_name == "terminal":
+        file_text = arguments.get("content", "")
+        payload = [acp.tool_diff_content(path=path, new_text=file_text)]
+    elif tool_name == "terminal":
         command = arguments.get("command", "")
-        content = [acp.tool_content(acp.text_block(f"$ {command}"))]
-        return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
-            raw_input=arguments,
-        )
-
-    if tool_name == "read_file":
+        payload = [acp.tool_content(acp.text_block(f"$ {command}"))]
+    elif tool_name == "read_file":
         path = arguments.get("path", "")
-        content = [acp.tool_content(acp.text_block(f"Reading {path}"))]
-        return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
-            raw_input=arguments,
-        )
-
-    if tool_name == "search_files":
+        payload = [acp.tool_content(acp.text_block(f"Reading {path}"))]
+    elif tool_name == "search_files":
         pattern = arguments.get("pattern", "")
         target = arguments.get("target", "content")
-        content = [acp.tool_content(acp.text_block(f"Searching for '{pattern}' ({target})"))]
-        return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
-            raw_input=arguments,
-        )
+        payload = [
+            acp.tool_content(acp.text_block(f"Searching for '{pattern}' ({target})"))
+        ]
+    else:
+        try:
+            args_text = json.dumps(arguments, indent=2, default=str)
+        except (TypeError, ValueError):
+            args_text = str(arguments)
+        payload = [acp.tool_content(acp.text_block(args_text))]
 
-    # Generic fallback
-    import json
-    try:
-        args_text = json.dumps(arguments, indent=2, default=str)
-    except (TypeError, ValueError):
-        args_text = str(arguments)
-    content = [acp.tool_content(acp.text_block(args_text))]
-    return acp.start_tool_call(
-        tool_call_id, title, kind=kind, content=content, locations=locations,
+    return _start_tool_call(
+        tool_call_id,
+        title,
+        kind=kind,
+        content=cast(Any, payload),
+        locations=locations,
         raw_input=arguments,
     )
 
@@ -341,13 +351,13 @@ def build_tool_start(
 def build_tool_complete(
     tool_call_id: str,
     tool_name: str,
-    result: Optional[str] = None,
-    function_args: Optional[Dict[str, Any]] = None,
+    result: str | None = None,
+    function_args: dict[str, Any] | None = None,
     snapshot: Any = None,
 ) -> ToolCallProgress:
     """Create a ToolCallUpdate (progress) event for a completed tool call."""
     kind = get_tool_kind(tool_name)
-    content = _build_tool_complete_content(
+    tool_blocks = _build_tool_complete_content(
         tool_name,
         result,
         function_args=function_args,
@@ -357,7 +367,7 @@ def build_tool_complete(
         tool_call_id,
         kind=kind,
         status="completed",
-        content=content,
+        content=tool_blocks,
         raw_output=result,
     )
 
@@ -368,10 +378,10 @@ def build_tool_complete(
 
 
 def extract_locations(
-    arguments: Dict[str, Any],
-) -> List[ToolCallLocation]:
+    arguments: dict[str, Any],
+) -> list[ToolCallLocation]:
     """Extract file-system locations from tool arguments."""
-    locations: List[ToolCallLocation] = []
+    locations: list[ToolCallLocation] = []
     path = arguments.get("path")
     if path:
         line = arguments.get("offset") or arguments.get("line")

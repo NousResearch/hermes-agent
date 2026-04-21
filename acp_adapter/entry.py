@@ -13,12 +13,13 @@ Usage::
     hermes-acp
 """
 
+import argparse
 import asyncio
 import logging
 import sys
 from pathlib import Path
-from hermes_constants import get_hermes_home
 
+from hermes_constants import get_hermes_home
 
 # Methods clients send as periodic liveness probes. They are not part of the
 # ACP schema, so the acp router correctly returns JSON-RPC -32601 to the
@@ -98,6 +99,21 @@ def _load_env() -> None:
 
 def main() -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
+    parser = argparse.ArgumentParser(
+        prog="hermes-acp",
+        description=(
+            "Hermes Agent ACP adapter.\n\n"
+            "Starts an ACP JSON-RPC server that exposes the Hermes agent\n"
+            "over the Agent Communication Protocol (stdio transport).\n\n"
+            "Usage:\n"
+            "  python -m acp_adapter.entry\n"
+            "  hermes acp\n"
+            "  hermes-acp"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.parse_args()
+
     _setup_logging()
     _load_env()
 
@@ -110,6 +126,7 @@ def main() -> None:
         sys.path.insert(0, project_root)
 
     import acp
+
     from .server import HermesACPAgent
 
     agent = HermesACPAgent()

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
-
-def detect_provider() -> Optional[str]:
+def detect_provider() -> str | None:
     """Resolve the active Hermes runtime provider, or None if unavailable."""
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider

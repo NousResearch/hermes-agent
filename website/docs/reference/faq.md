@@ -481,6 +481,24 @@ You can verify the plist has the correct PATH:
   ~/Library/LaunchAgents/ai.hermes.gateway.plist
 ```
 
+#### macOS: `hermes gateway start` fails or the gateway never stays up on a headless/service account
+
+**Cause:** Hermes installs a per-user LaunchAgent in `~/Library/LaunchAgents`. LaunchAgents are tied to the logged-in macOS desktop account, so they are a poor fit when Hermes runs under a separate SSH-only or background service user.
+
+**Solution:** Check who owns the active desktop session:
+
+```bash
+stat -f '%Su' /dev/console
+whoami
+```
+
+If those users differ, do one of these instead:
+
+- Keep Hermes in the foreground under `tmux` or `screen`: `tmux new -s hermes 'hermes gateway run'`
+- Install a system LaunchDaemon that runs as your Hermes service account
+
+`hermes doctor` will warn about this mismatch when a launchd plist is installed.
+
 ---
 
 ### Performance Issues

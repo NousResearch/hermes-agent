@@ -284,6 +284,7 @@ class TestLaunchdPlistRefresh:
         """launchd_start refreshes the plist before starting."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old</plist>")
+        monkeypatch.setattr(gateway_cli, "_launchd_managername", lambda: "Aqua")
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
         calls = []
@@ -305,6 +306,7 @@ class TestLaunchdPlistRefresh:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         assert not plist_path.exists()
 
+        monkeypatch.setattr(gateway_cli, "_launchd_managername", lambda: "Aqua")
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
         calls = []

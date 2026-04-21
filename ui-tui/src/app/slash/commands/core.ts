@@ -240,22 +240,28 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys('usage: /terminal-setup [auto|vscode|cursor|windsurf]')
       }
 
-      const runner = !target || target === 'auto' ? configureDetectedTerminalKeybindings() : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
+      const runner =
+        !target || target === 'auto'
+          ? configureDetectedTerminalKeybindings()
+          : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
 
-      void runner.then(result => {
-        if (ctx.stale()) {
-          return
-        }
+      void runner
+        .then(result => {
+          if (ctx.stale()) {
+            return
+          }
 
-        ctx.transcript.sys(result.message)
-        if (result.success && result.requiresRestart) {
-          ctx.transcript.sys('restart the IDE terminal for the new keybindings to take effect')
-        }
-      }).catch(error => {
-        if (!ctx.stale()) {
-          ctx.transcript.sys(`terminal setup failed: ${String(error)}`)
-        }
-      })
+          ctx.transcript.sys(result.message)
+
+          if (result.success && result.requiresRestart) {
+            ctx.transcript.sys('restart the IDE terminal for the new keybindings to take effect')
+          }
+        })
+        .catch(error => {
+          if (!ctx.stale()) {
+            ctx.transcript.sys(`terminal setup failed: ${String(error)}`)
+          }
+        })
     }
   },
 

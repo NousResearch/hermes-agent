@@ -219,7 +219,12 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
           const idx = off + i
 
           return (
-            <Text color={catIdx === idx ? t.color.cornsilk : t.color.dim} key={row}>
+            <Text
+              bold={catIdx === idx}
+              color={catIdx === idx ? t.color.amber : t.color.dim}
+              inverse={catIdx === idx}
+              key={row}
+            >
               {catIdx === idx ? '▸ ' : '  '}
               {i + 1}. {row}
             </Text>
@@ -249,7 +254,12 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
           const idx = off + i
 
           return (
-            <Text color={skillIdx === idx ? t.color.cornsilk : t.color.dim} key={row}>
+            <Text
+              bold={skillIdx === idx}
+              color={skillIdx === idx ? t.color.amber : t.color.dim}
+              inverse={skillIdx === idx}
+              key={row}
+            >
               {skillIdx === idx ? '▸ ' : '  '}
               {i + 1}. {row}
             </Text>

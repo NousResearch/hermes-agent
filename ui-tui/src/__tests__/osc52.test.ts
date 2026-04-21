@@ -49,6 +49,7 @@ describe('readOsc52Clipboard', () => {
       data: `c;${Buffer.from('queried text', 'utf8').toString('base64')}`,
       type: 'osc'
     })
+
     const flush = vi.fn().mockResolvedValue(undefined)
 
     await expect(readOsc52Clipboard({ flush, send })).resolves.toBe('queried text')

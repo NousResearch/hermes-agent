@@ -108,24 +108,29 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
 
       {items.slice(off, off + VISIBLE).map((s, vi) => {
         const i = off + vi
+        const selected = sel === i
 
         return (
           <Box key={s.id}>
-            <Text color={sel === i ? t.color.label : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
+            <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
+              {selected ? '▸ ' : '  '}
+            </Text>
 
             <Box width={30}>
-              <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+              <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
                 {String(i + 1).padStart(2)}. [{s.id}]
               </Text>
             </Box>
 
             <Box width={30}>
-              <Text color={t.color.dim}>
+              <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
                 ({s.message_count} msgs, {age(s.started_at)}, {s.source || 'tui'})
               </Text>
             </Box>
 
-            <Text color={sel === i ? t.color.cornsilk : t.color.dim}>{s.title || s.preview || '(untitled)'}</Text>
+            <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
+              {s.title || s.preview || '(untitled)'}
+            </Text>
           </Box>
         )
       })}

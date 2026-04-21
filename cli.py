@@ -1157,9 +1157,11 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
     plain = re.sub(r"___([^_]+)___", r"\1", plain)
     plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", plain)
-    plain = re.sub(r"__([^_]+)__", r"\1", plain)
+    # Only strip underscore emphasis at non-word boundaries.
+    # This preserves opaque IDs/tokens such as 20260421_004545_dd18f4.
+    plain = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", r"\1", plain)
     plain = re.sub(r"\*([^*]+)\*", r"\1", plain)
-    plain = re.sub(r"_([^_]+)_", r"\1", plain)
+    plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
     return plain.strip("\n")

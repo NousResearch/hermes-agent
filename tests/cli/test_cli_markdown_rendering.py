@@ -110,6 +110,48 @@ def test_strip_mode_preserves_table_structure_while_cleaning_cell_markdown():
     assert "`" not in output
 
 
+def test_strip_mode_preserves_intraword_underscores_in_plain_text():
+    renderable = _render_final_assistant_content(
+        "Resume session 20260421_004545_dd18f4",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "20260421_004545_dd18f4" in output
+
+
+def test_strip_mode_preserves_intraword_underscores_in_inline_code_examples():
+    renderable = _render_final_assistant_content(
+        "Use `20260421_041928_0b82f3`",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "20260421_041928_0b82f3" in output
+
+
+def test_strip_mode_preserves_intraword_double_underscores_in_plain_text():
+    renderable = _render_final_assistant_content(
+        "Keep foo__bar__baz unchanged",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "foo__bar__baz" in output
+
+
+def test_strip_mode_still_strips_underscore_markdown_emphasis():
+    renderable = _render_final_assistant_content(
+        "_italic_ and __bold__",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "italic and bold" in output
+    assert "_italic_" not in output
+    assert "__bold__" not in output
+
+
 def test_final_assistant_content_can_leave_markdown_raw():
     renderable = _render_final_assistant_content("***Bold italic***", mode="raw")
 

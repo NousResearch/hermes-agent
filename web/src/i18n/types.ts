@@ -68,27 +68,36 @@ export interface Translations {
 
   // ── Status page ──
   status: {
+    actionFailed: string;
+    actionFinished: string;
+    actions: string;
     agent: string;
-    gateway: string;
-    activeSessions: string;
-    recentSessions: string;
-    connectedPlatforms: string;
-    running: string;
-    starting: string;
-    failed: string;
-    stopped: string;
     connected: string;
+    connectedPlatforms: string;
     disconnected: string;
     error: string;
-    notRunning: string;
-    startFailed: string;
-    pid: string;
-    runningRemote: string;
-    noneRunning: string;
+    failed: string;
+    gateway: string;
     gatewayFailedToStart: string;
     lastUpdate: string;
-    platformError: string;
+    noneRunning: string;
+    notRunning: string;
+    pid: string;
     platformDisconnected: string;
+    platformError: string;
+    activeSessions: string;
+    recentSessions: string;
+    restartGateway: string;
+    restartingGateway: string;
+    running: string;
+    runningRemote: string;
+    startFailed: string;
+    starting: string;
+    startedInBackground: string;
+    stopped: string;
+    updateHermes: string;
+    updatingHermes: string;
+    waitingForOutput: string;
   };
 
   // ── Sessions page ──

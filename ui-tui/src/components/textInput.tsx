@@ -277,8 +277,9 @@ function useFwdDelete(active: boolean) {
 
 type PasteResult = { cursor: number; value: string } | null
 
-const isPasteResultPromise = (value: PasteResult | Promise<PasteResult> | null | undefined): value is Promise<PasteResult> =>
-  !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
+const isPasteResultPromise = (
+  value: PasteResult | Promise<PasteResult> | null | undefined
+): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
 
 export function TextInput({
   columns = 80,
@@ -522,9 +523,11 @@ export function TextInput({
     }
 
     const range = selRange()
+
     const nextValue = range
       ? vRef.current.slice(0, range.start) + cleaned + vRef.current.slice(range.end)
       : vRef.current.slice(0, curRef.current) + cleaned + vRef.current.slice(curRef.current)
+
     const nextCursor = range ? range.start + cleaned.length : curRef.current + cleaned.length
 
     commit(nextValue, nextCursor)
@@ -778,7 +781,9 @@ interface TextInputProps {
   focus?: boolean
   mask?: string
   onChange: (v: string) => void
-  onPaste?: (e: PasteEvent) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
+  onPaste?: (
+    e: PasteEvent
+  ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
   onSubmit?: (v: string) => void
   placeholder?: string
   value: string

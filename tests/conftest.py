@@ -186,6 +186,31 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_HOME_MODE",
     "BROWSER_CDP_URL",
     "CAMOFOX_URL",
+    # Platform allowlists — not credentials, but if set from any source
+    # (user shell, earlier leaky test, CI env), they change gateway auth
+    # behavior and flake button-authorization tests.
+    "TELEGRAM_ALLOWED_USERS",
+    "DISCORD_ALLOWED_USERS",
+    "WHATSAPP_ALLOWED_USERS",
+    "SLACK_ALLOWED_USERS",
+    "SIGNAL_ALLOWED_USERS",
+    "SIGNAL_GROUP_ALLOWED_USERS",
+    "EMAIL_ALLOWED_USERS",
+    "SMS_ALLOWED_USERS",
+    "MATTERMOST_ALLOWED_USERS",
+    "MATRIX_ALLOWED_USERS",
+    "DINGTALK_ALLOWED_USERS",
+    "FEISHU_ALLOWED_USERS",
+    "WECOM_ALLOWED_USERS",
+    "GATEWAY_ALLOWED_USERS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    "TELEGRAM_ALLOW_ALL_USERS",
+    "DISCORD_ALLOW_ALL_USERS",
+    "WHATSAPP_ALLOW_ALL_USERS",
+    "SLACK_ALLOW_ALL_USERS",
+    "SIGNAL_ALLOW_ALL_USERS",
+    "EMAIL_ALLOW_ALL_USERS",
+    "SMS_ALLOW_ALL_USERS",
 })
 
 
@@ -256,6 +281,107 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+# ── Module-level state reset ───────────────────────────────────────────────
+#
+# Python modules are singletons per process, and pytest-xdist workers are
+# long-lived. Module-level dicts/sets (tool registries, approval state,
+# interrupt flags) and ContextVars persist across tests in the same worker,
+# causing tests that pass alone to fail when run with siblings.
+#
+# Each entry in this fixture clears state that belongs to a specific module.
+# New state buckets go here too — this is the single gate that prevents
+# "works alone, flakes in CI" bugs from state leakage.
+#
+# The skill `test-suite-cascade-diagnosis` documents the concrete patterns
+# this closes; the running example was `test_command_guards` failing 12/15
+# CI runs because ``tools.approval._session_approved`` carried approvals
+# from one test's session into another's.
+
+@pytest.fixture(autouse=True)
+def _reset_module_state():
+    """Clear module-level mutable state and ContextVars between tests.
+
+    Keeps state from leaking across tests on the same xdist worker. Modules
+    that don't exist yet (test collection before production import) are
+    skipped silently — production import later creates fresh empty state.
+    """
+    # --- tools.approval — the single biggest source of cross-test pollution ---
+    try:
+        from tools import approval as _approval_mod
+        _approval_mod._session_approved.clear()
+        _approval_mod._session_yolo.clear()
+        _approval_mod._permanent_approved.clear()
+        _approval_mod._pending.clear()
+        _approval_mod._gateway_queues.clear()
+        _approval_mod._gateway_notify_cbs.clear()
+        # ContextVar: reset to empty string so get_current_session_key()
+        # falls through to the env var / default path, matching a fresh
+        # process.
+        _approval_mod._approval_session_key.set("")
+    except Exception:
+        pass
+
+    # --- tools.interrupt — per-thread interrupt flag set ---
+    try:
+        from tools import interrupt as _interrupt_mod
+        with _interrupt_mod._lock:
+            _interrupt_mod._interrupted_threads.clear()
+    except Exception:
+        pass
+
+    # --- gateway.session_context — 9 ContextVars that represent
+    #     the active gateway session. If set in one test and not reset,
+    #     the next test's get_session_env() reads stale values.
+    try:
+        from gateway import session_context as _sc_mod
+        for _cv in (
+            _sc_mod._SESSION_PLATFORM,
+            _sc_mod._SESSION_CHAT_ID,
+            _sc_mod._SESSION_CHAT_NAME,
+            _sc_mod._SESSION_THREAD_ID,
+            _sc_mod._SESSION_USER_ID,
+            _sc_mod._SESSION_USER_NAME,
+            _sc_mod._SESSION_KEY,
+            _sc_mod._CRON_AUTO_DELIVER_PLATFORM,
+            _sc_mod._CRON_AUTO_DELIVER_CHAT_ID,
+            _sc_mod._CRON_AUTO_DELIVER_THREAD_ID,
+        ):
+            _cv.set(_sc_mod._UNSET)
+    except Exception:
+        pass
+
+    # --- tools.env_passthrough — ContextVar<set[str]> with no default ---
+    # LookupError is normal if the test never set it. Setting it to an
+    # empty set unconditionally normalizes the starting state.
+    try:
+        from tools import env_passthrough as _envp_mod
+        _envp_mod._allowed_env_vars_var.set(set())
+    except Exception:
+        pass
+
+    # --- tools.credential_files — ContextVar<dict> ---
+    try:
+        from tools import credential_files as _credf_mod
+        _credf_mod._registered_files_var.set({})
+    except Exception:
+        pass
+
+    # --- tools.file_tools — per-task read history + file-ops cache ---
+    # _read_tracker accumulates per-task_id read history for loop detection,
+    # capped by _READ_HISTORY_CAP. If entries from a prior test persist, the
+    # cap is hit faster than expected and capacity-related tests flake.
+    try:
+        from tools import file_tools as _ft_mod
+        with _ft_mod._read_tracker_lock:
+            _ft_mod._read_tracker.clear()
+        with _ft_mod._file_ops_lock:
+            _ft_mod._file_ops_cache.clear()
+    except Exception:
+        pass
+
+    yield
 
 
 @pytest.fixture()

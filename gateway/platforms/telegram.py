@@ -2277,6 +2277,16 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
+    def _is_bot_message(self, message: Message) -> bool:
+        author = getattr(message, "from_user", None)
+        return bool(author and getattr(author, "is_bot", False))
+
+    def _is_own_bot_message(self, message: Message) -> bool:
+        if not self._bot:
+            return False
+        author = getattr(message, "from_user", None)
+        return bool(author and getattr(author, "id", None) == getattr(self._bot, "id", None))
+
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
             return False
@@ -2322,6 +2332,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     return True
         return False
 
+    def _telegram_allow_bots(self) -> str:
+        configured = self.config.extra.get("allow_bots")
+        if not configured:
+            configured = os.getenv("TELEGRAM_ALLOW_BOTS", "none")
+        return str(configured).lower().strip()
+
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         if not text or not self._bot or not getattr(self._bot, "username", None):
             return text
@@ -2340,6 +2356,17 @@ class TelegramAdapter(BasePlatformAdapter):
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
         """
+        if self._is_own_bot_message(message):
+            return False
+
+        if self._is_bot_message(message):
+            allow_bots = self._telegram_allow_bots()
+            if allow_bots == "none":
+                return False
+            if allow_bots == "mentions":
+                if not (self._is_reply_to_bot(message) or self._message_mentions_bot(message)):
+                    return False
+
         if not self._is_group_chat(message):
             return True
         thread_id = getattr(message, "message_thread_id", None)

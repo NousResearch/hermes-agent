@@ -584,6 +584,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
+                if plat == Platform.TELEGRAM and "allow_bots" in platform_cfg:
+                    bridged["allow_bots"] = platform_cfg["allow_bots"]
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
@@ -669,6 +671,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(telegram_cfg, dict):
                 if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
                     os.environ["TELEGRAM_REQUIRE_MENTION"] = str(telegram_cfg["require_mention"]).lower()
+                if "allow_bots" in telegram_cfg and not os.getenv("TELEGRAM_ALLOW_BOTS"):
+                    os.environ["TELEGRAM_ALLOW_BOTS"] = str(telegram_cfg["allow_bots"]).lower()
                 if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
                     import json as _json
                     os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
@@ -861,6 +865,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
         config.platforms[Platform.TELEGRAM].reply_to_mode = telegram_reply_mode
+
+    telegram_allow_bots = os.getenv("TELEGRAM_ALLOW_BOTS", "").lower().strip()
+    if telegram_allow_bots in ("none", "mentions", "all"):
+        if Platform.TELEGRAM not in config.platforms:
+            config.platforms[Platform.TELEGRAM] = PlatformConfig()
+        config.platforms[Platform.TELEGRAM].extra["allow_bots"] = telegram_allow_bots
     
     telegram_fallback_ips = os.getenv("TELEGRAM_FALLBACK_IPS", "")
     if telegram_fallback_ips:

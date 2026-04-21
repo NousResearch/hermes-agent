@@ -30,6 +30,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -7262,6 +7264,38 @@ class GatewayRunner:
                     if cached:
                         agent = cached[0]
 
+        # Resolve provider/base_url/api_key for the account-usage fetch.
+        # Prefer the live agent; fall back to persisted billing data on the
+        # SessionDB row so `/usage` still returns account info between turns
+        # when no agent is resident.
+        provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        if not provider and getattr(self, "_session_db", None) is not None:
+            try:
+                _entry_for_billing = self.session_store.get_or_create_session(source)
+                persisted = self._session_db.get_session(_entry_for_billing.session_id) or {}
+            except Exception:
+                persisted = {}
+            provider = provider or persisted.get("billing_provider")
+            base_url = base_url or persisted.get("billing_base_url")
+
+        # Fetch account usage off the event loop so slow provider APIs don't
+        # block the gateway. Failures are non-fatal -- account_lines stays [].
+        account_lines: list[str] = []
+        if provider:
+            try:
+                account_snapshot = await asyncio.to_thread(
+                    fetch_account_usage,
+                    provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+            except Exception:
+                account_snapshot = None
+            if account_snapshot:
+                account_lines = render_account_usage_lines(account_snapshot, markdown=True)
+
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = []
 
@@ -7319,6 +7353,10 @@ class GatewayRunner:
             if ctx.compression_count:
                 lines.append(f"Compressions: {ctx.compression_count}")
 
+            if account_lines:
+                lines.append("")
+                lines.extend(account_lines)
+
             return "\n".join(lines)
 
         # No agent at all -- check session history for a rough count
@@ -7328,12 +7366,18 @@ class GatewayRunner:
             from agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
             approx = estimate_messages_tokens_rough(msgs)
-            return (
-                f"📊 **Session Info**\n"
-                f"Messages: {len(msgs)}\n"
-                f"Estimated context: ~{approx:,} tokens\n"
-                f"_(Detailed usage available after the first agent response)_"
-            )
+            lines = [
+                "📊 **Session Info**",
+                f"Messages: {len(msgs)}",
+                f"Estimated context: ~{approx:,} tokens",
+                "_(Detailed usage available after the first agent response)_",
+            ]
+            if account_lines:
+                lines.append("")
+                lines.extend(account_lines)
+            return "\n".join(lines)
+        if account_lines:
+            return "\n".join(account_lines)
         return "No usage data available for this session."
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

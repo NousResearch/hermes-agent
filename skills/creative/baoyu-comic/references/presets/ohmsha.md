@@ -10,11 +10,11 @@ Ohmsha预设 - Educational manga with visual metaphors
 | Tone | neutral |
 | Layout | webtoon (default) |
 
-Equivalent to: `--art manga --tone neutral`
+Equivalent to: art=manga, tone=neutral
 
 ## Unique Rules
 
-This preset includes special rules beyond the art+tone combination. When `--style ohmsha` is used, ALL rules below must be applied.
+This preset includes special rules beyond the art+tone combination. When the `ohmsha` preset is selected, ALL rules below must be applied.
 
 ### Visual Metaphor Requirements (CRITICAL)
 
@@ -41,7 +41,7 @@ Every technical concept MUST be visualized as a metaphor:
 
 ### Character Roles (Required)
 
-**DEFAULT: Use Doraemon characters** unless user explicitly specifies `--characters` or has character presets in EXTEND.md.
+**DEFAULT: Use Doraemon characters** unless user explicitly specifies custom characters.
 
 | Role | Default Character | Visual | Traits |
 |------|-------------------|--------|--------|
@@ -52,7 +52,7 @@ Every technical concept MUST be visualized as a metaphor:
 
 **IMPORTANT**: These Doraemon characters ARE the default for ohmsha preset. Generate character definitions using these exact characters unless user requests otherwise.
 
-To use custom characters: `--characters "Student:小明,Mentor:教授"` or define in EXTEND.md.
+To use custom characters: ask the user to provide role → character mappings (e.g., `Student:小明, Mentor:教授`).
 
 ### Page Title Convention
 

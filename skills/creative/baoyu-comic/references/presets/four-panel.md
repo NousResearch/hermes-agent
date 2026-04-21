@@ -11,11 +11,11 @@
 | Layout | four-panel (default) |
 | Aspect | 4:3 (landscape) |
 
-Equivalent to: `--art minimalist --tone neutral --layout four-panel --aspect 4:3`
+Equivalent to: art=minimalist, tone=neutral, layout=four-panel, aspect=4:3
 
 ## Unique Rules
 
-This preset includes special rules beyond the art+tone combination. When `--style four-panel` is used, ALL rules below must be applied.
+This preset includes special rules beyond the art+tone combination. When the `four-panel` preset is selected, ALL rules below must be applied.
 
 ### 起承转合 Narrative Structure (CRITICAL)
 

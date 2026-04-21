@@ -9,10 +9,9 @@ Copy and track progress:
 ```
 Comic Progress:
 - [ ] Step 1: Setup & Analyze
-  - [ ] 1.1 Load preferences
-  - [ ] 1.2 Analyze content
-  - [ ] 1.3 Check existing ⚠️ REQUIRED
-- [ ] Step 2: Confirmation 1 - Style & options ⚠️ REQUIRED
+  - [ ] 1.1 Analyze content
+  - [ ] 1.2 Check existing ⚠️ REQUIRED
+- [ ] Step 2: Confirmation - Style & options ⚠️ REQUIRED
 - [ ] Step 3: Generate storyboard + characters
 - [ ] Step 4: Review outline (conditional)
 - [ ] Step 5: Generate prompts
@@ -27,72 +26,21 @@ Comic Progress:
 ## Flow Diagram
 
 ```
-Input → Preferences → Analyze → [Check Existing?] → [Confirm 1: Style + Reviews] → Storyboard → [Review Outline?] → Prompts → [Review Prompts?] → Images → PDF → Complete
+Input → Analyze → [Check Existing?] → [Confirm: Style + Reviews] → Storyboard → [Review Outline?] → Prompts → [Review Prompts?] → Images → PDF → Complete
 ```
 
 ---
 
 ## Step 1: Setup & Analyze
 
-### 1.1 Load Preferences (EXTEND.md)
-
-Check EXTEND.md existence (priority order):
-
-```bash
-# macOS, Linux, WSL, Git Bash
-test -f .baoyu-skills/baoyu-comic/EXTEND.md && echo "project"
-test -f "${XDG_CONFIG_HOME:-$HOME/.config}/baoyu-skills/baoyu-comic/EXTEND.md" && echo "xdg"
-test -f "$HOME/.baoyu-skills/baoyu-comic/EXTEND.md" && echo "user"
-```
-
-```powershell
-# PowerShell (Windows)
-if (Test-Path .baoyu-skills/baoyu-comic/EXTEND.md) { "project" }
-$xdg = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { "$HOME/.config" }
-if (Test-Path "$xdg/baoyu-skills/baoyu-comic/EXTEND.md") { "xdg" }
-if (Test-Path "$HOME/.baoyu-skills/baoyu-comic/EXTEND.md") { "user" }
-```
-
-| Path | Location |
-|------|----------|
-| `.baoyu-skills/baoyu-comic/EXTEND.md` | Project directory |
-| `$HOME/.baoyu-skills/baoyu-comic/EXTEND.md` | User home |
-
-**When EXTEND.md Found** → Read, parse, **output summary to user**:
-
-```
-📋 Loaded preferences from [full path]
-├─ Watermark: [enabled/disabled] [content if enabled]
-├─ Art Style: [style name or "auto-select"]
-├─ Tone: [tone name or "auto-select"]
-├─ Layout: [layout or "auto-select"]
-├─ Language: [language or "auto-detect"]
-└─ Character presets: [count] defined
-```
-
-**MUST output this summary** so user knows their current configuration. Do not skip or silently load.
-
-**When EXTEND.md Not Found** → First-time setup:
-
-1. Inform user: "No preferences found. Let's set up your defaults."
-2. Use AskUserQuestion to collect preferences (see `config/first-time-setup.md`)
-3. Create EXTEND.md at user-chosen location
-4. Confirm: "✓ Preferences saved to [path]"
-
-**EXTEND.md Supports**: Watermark | Preferred art/tone/layout | Custom style definitions | Character presets | Language preference
-
-Schema: `config/preferences-schema.md`
-
-**Important**: Once EXTEND.md exists, watermark, language, and style defaults are NOT asked again in Confirmation 1 or 2. These are session-persistent settings.
-
-### 1.2 Analyze Content → `analysis.md`
+### 1.1 Analyze Content → `analysis.md`
 
 Read source content, save it if needed, and perform deep analysis.
 
 **Actions**:
 1. **Save source content** (if not already a file):
    - If user provides a file path: use as-is
-   - If user pastes content: save to `source.md` in target directory
+   - If user pastes content: save to `source.md` in target directory using `write_file`
    - **Backup rule**: If `source.md` exists, rename to `source-backup-YYYYMMDD-HHMMSS.md`
 2. Read source content
 3. **Deep analysis** following `analysis-framework.md`:
@@ -102,42 +50,32 @@ Read source content, save it if needed, and perform deep analysis.
    - Key figures and their story arcs
 4. Detect source language
 5. **Determine language**:
-   - If EXTEND.md has `language` → use it
-   - Else if `--lang` option provided → use it
-   - Else → use detected source language
+   - If user specified a language → use it
+   - Else → use detected source language or user's conversation language
 6. Determine recommended page count:
    - Short story: 5-8 pages
    - Medium complexity: 9-15 pages
    - Full biography: 16-25 pages
 7. Analyze content signals for art/tone/layout recommendations
-8. **Save to `analysis.md`**
+8. **Save to `analysis.md`** using `write_file`
 
 **analysis.md Format**: YAML front matter (title, topic, time_span, source_language, user_language, aspect_ratio, recommended_page_count, recommended_art, recommended_tone) + sections for Target Audience, Value Proposition, Core Themes, Key Figures & Story Arcs, Content Signals, Recommended Approaches. See `analysis-framework.md` for full template.
 
-### 1.3 Check Existing Content ⚠️ REQUIRED
+### 1.2 Check Existing Content ⚠️ REQUIRED
 
 **MUST execute before proceeding to Step 2.**
 
-Use Bash to check if output directory exists:
+Check if the output directory exists (e.g., via `test -d "comic/{topic-slug}"`).
 
-```bash
-test -d "comic/{topic-slug}" && echo "exists"
-```
-
-**If directory exists**, use AskUserQuestion:
+**If directory exists**, use `clarify`:
 
 ```
-header: "Existing"
-question: "Existing content found. How to proceed?"
+question: "Existing content found at comic/{topic-slug}. How to proceed?"
 options:
-  - label: "Regenerate storyboard"
-    description: "Keep images, regenerate storyboard and characters only"
-  - label: "Regenerate images"
-    description: "Keep storyboard, regenerate images only"
-  - label: "Backup and regenerate"
-    description: "Backup to {slug}-backup-{timestamp}, then regenerate all"
-  - label: "Exit"
-    description: "Cancel, keep existing content unchanged"
+  - "Regenerate storyboard — Keep images, regenerate storyboard and characters only"
+  - "Regenerate images — Keep storyboard, regenerate images only"
+  - "Backup and regenerate — Backup to {slug}-backup-{timestamp}, then regenerate all"
+  - "Exit — Cancel, keep existing content unchanged"
 ```
 
 Save result and handle accordingly:
@@ -148,101 +86,77 @@ Save result and handle accordingly:
 
 ---
 
-## Step 2: Confirmation 1 - Style & Options ⚠️
+## Step 2: Confirmation - Style & Options ⚠️
 
 **Purpose**: Select visual style + decide whether to review outline before generation. **Do NOT skip.**
 
-**Note**: Watermark and language already configured in EXTEND.md (Step 1).
-
-**Display summary**:
+**Display summary first**:
 - Content type + topic identified
 - Key figures extracted
 - Time span detected
 - Recommended page count
-- Language: [from EXTEND.md or detected]
+- Language (detected or user-specified)
 - **Recommended style**: [art] + [tone] (based on content signals)
 
-**Use AskUserQuestion** for:
+**Use `clarify` one question at a time**, in priority order:
 
 ### Question 1: Visual Style
 
 If a preset is recommended (see `auto-selection.md`), show it first:
 
 ```
-header: "Style"
 question: "Which visual style for this comic?"
 options:
-  - label: "[preset name] preset (Recommended)"       # If preset recommended
-    description: "[preset description] - includes special rules"
-  - label: "[recommended art] + [recommended tone] (Recommended)"  # If no preset
-    description: "Best match for your content based on analysis"
-  - label: "ligne-claire + neutral"
-    description: "Classic educational, Logicomix style"
-  - label: "ohmsha preset"
-    description: "Educational manga with visual metaphors, gadgets, NO talking heads"
-  - label: "Custom"
-    description: "Specify your own art + tone or preset"
+  - "[preset name] preset (Recommended) — [preset description] with special rules"
+  - "[recommended art] + [recommended tone] (Recommended) — Best match for your content"
+  - "ligne-claire + neutral — Classic educational, Logicomix style"
+  - "ohmsha preset — Educational manga with visual metaphors, gadgets, NO talking heads"
+  - "Custom — Specify your own art + tone or preset"
 ```
 
 **Preset vs Art+Tone**: Presets include special rules beyond art+tone. `ohmsha` = manga + neutral + visual metaphor rules + character roles + NO talking heads. Plain `manga + neutral` does NOT include these rules.
 
-### Question 2: Narrative Focus (multiSelect: true)
+### Question 2: Narrative Focus
 
 ```
-header: "Focus"
-question: "What should the comic emphasize? (Select all that apply)"
+question: "What should the comic emphasize? (Pick the primary focus; mention others in a follow-up if needed)"
 options:
-  - label: "Biography/life story"
-    description: "Follow a person's journey through key life events"
-  - label: "Concept explanation"
-    description: "Break down complex ideas visually"
-  - label: "Historical event"
-    description: "Dramatize important historical moments"
-  - label: "Tutorial/how-to"
-    description: "Step-by-step educational guide"
+  - "Biography/life story — Follow a person's journey through key life events"
+  - "Concept explanation — Break down complex ideas visually"
+  - "Historical event — Dramatize important historical moments"
+  - "Tutorial/how-to — Step-by-step educational guide"
 ```
 
 ### Question 3: Target Audience
 
 ```
-header: "Audience"
 question: "Who is the primary reader?"
 options:
-  - label: "General readers"
-    description: "Broad appeal, accessible content"
-  - label: "Students/learners"
-    description: "Educational focus, clear explanations"
-  - label: "Industry professionals"
-    description: "Technical depth, domain knowledge"
-  - label: "Children/young readers"
-    description: "Simplified language, engaging visuals"
+  - "General readers — Broad appeal, accessible content"
+  - "Students/learners — Educational focus, clear explanations"
+  - "Industry professionals — Technical depth, domain knowledge"
+  - "Children/young readers — Simplified language, engaging visuals"
 ```
 
 ### Question 4: Outline Review
 
 ```
-header: "Review"
 question: "Do you want to review the outline before image generation?"
 options:
-  - label: "Yes, let me review (Recommended)"
-    description: "Review storyboard and characters before generating images"
-  - label: "No, generate directly"
-    description: "Skip outline review, start generating immediately"
+  - "Yes, let me review (Recommended) — Review storyboard and characters before generating images"
+  - "No, generate directly — Skip outline review, start generating immediately"
 ```
 
 ### Question 5: Prompt Review
 
 ```
-header: "Prompts"
 question: "Review prompts before generating images?"
 options:
-  - label: "Yes, review prompts (Recommended)"
-    description: "Review image generation prompts before generating"
-  - label: "No, skip prompt review"
-    description: "Proceed directly to image generation"
+  - "Yes, review prompts (Recommended) — Review image generation prompts before generating"
+  - "No, skip prompt review — Proceed directly to image generation"
 ```
 
-**After response**:
+**After responses**:
 1. Update `analysis.md` with user preferences
 2. **Store `skip_outline_review`** flag based on Question 4 response
 3. **Store `skip_prompt_review`** flag based on Question 5 response
@@ -257,7 +171,7 @@ Create storyboard and character definitions using the confirmed style from Step 
 **Loading Style References**:
 - Art style: `art-styles/{art}.md`
 - Tone: `tones/{tone}.md`
-- If preset (ohmsha/wuxia/shoujo): also load `presets/{preset}.md`
+- If preset (ohmsha/wuxia/shoujo/concept-story/four-panel): also load `presets/{preset}.md`
 
 **Generate**:
 
@@ -275,7 +189,7 @@ Create storyboard and character definitions using the confirmed style from Step 
    - Reference: `character-template.md`
    - **If using ohmsha preset**: Use default Doraemon characters (see below)
 
-**Ohmsha Default Characters** (use these unless user specifies `--characters`):
+**Ohmsha Default Characters** (use these unless user specifies custom characters):
 
 | Role | Character | Visual Description |
 |------|-----------|-------------------|
@@ -304,20 +218,15 @@ These are the canonical ohmsha-style characters. Do NOT create custom characters
 - Page-by-page summary (Cover → P1 → P2...)
 - Character list with brief descriptions
 
-**Use AskUserQuestion**:
+**Use `clarify`**:
 
 ```
-header: "Confirm"
 question: "Ready to generate images with this outline?"
 options:
-  - label: "Yes, proceed (Recommended)"
-    description: "Generate character sheet and comic pages"
-  - label: "Edit storyboard first"
-    description: "I'll modify storyboard.md before continuing"
-  - label: "Edit characters first"
-    description: "I'll modify characters/characters.md before continuing"
-  - label: "Edit both"
-    description: "I'll modify both files before continuing"
+  - "Yes, proceed (Recommended) — Generate character sheet and comic pages"
+  - "Edit storyboard first — I'll modify storyboard.md before continuing"
+  - "Edit characters first — I'll modify characters/characters.md before continuing"
+  - "Edit both — I'll modify both files before continuing"
 ```
 
 **After response**:
@@ -338,7 +247,7 @@ Create image generation prompts for all pages.
 **For each page (cover + pages)**:
 1. Create prompt following art style + tone guidelines
 2. Include character visual descriptions for consistency
-3. Save to `prompts/NN-{cover|page}-[slug].md`
+3. Save to `prompts/NN-{cover|page}-[slug].md` using `write_file`
    - **Backup rule**: If prompt file exists, rename to `prompts/NN-{cover|page}-[slug]-backup-YYYYMMDD-HHMMSS.md`
 
 **Prompt File Format**:
@@ -355,17 +264,8 @@ Art: [art style] | Tone: [tone] | Layout: [layout type]
 [From storyboard.md - panel descriptions, actions, dialogue]
 
 ## Generation Prompt
-[Combined prompt for image generation skill]
+[Combined prompt passed to image_generate]
 ```
-
-**Watermark Application** (if enabled in preferences):
-Add to each prompt:
-```
-Include a subtle watermark "[content]" positioned at [position]. The watermark should
-be legible but not distracting from the comic panels and storytelling.
-Ensure watermark does not overlap speech bubbles or key action.
-```
-Reference: `config/watermark-guide.md`
 
 **After generation**:
 - If `skip_prompt_review` is true → Skip Step 6, go directly to Step 7
@@ -387,18 +287,14 @@ Reference: `config/watermark-guide.md`
 | P1 | [title] | [key elements] |
 | ... | ... | ... |
 
-**Use AskUserQuestion**:
+**Use `clarify`**:
 
 ```
-header: "Confirm"
 question: "Ready to generate images with these prompts?"
 options:
-  - label: "Yes, proceed (Recommended)"
-    description: "Generate all comic page images"
-  - label: "Edit prompts first"
-    description: "I'll modify prompts/*.md before continuing"
-  - label: "Regenerate prompts"
-    description: "Regenerate all prompts with different approach"
+  - "Yes, proceed (Recommended) — Generate all comic page images"
+  - "Edit prompts first — I'll modify prompts/*.md before continuing"
+  - "Regenerate prompts — Regenerate all prompts with different approach"
 ```
 
 **After response**:
@@ -410,7 +306,15 @@ options:
 
 ## Step 7: Generate Images
 
-With confirmed prompts from Step 5/6:
+With confirmed prompts from Step 5/6, use the `image_generate` tool for all image rendering.
+
+**Aspect ratio mapping** — `image_generate` supports `landscape`, `portrait`, and `square`:
+
+| Storyboard ratio | `image_generate` format |
+|------------------|-------------------------|
+| `3:4`, `9:16`, `2:3` | `portrait` |
+| `4:3`, `16:9`, `3:2` | `landscape` |
+| `1:1` | `square` |
 
 ### 7.1 Generate Character Reference Sheet (conditional)
 
@@ -427,47 +331,45 @@ Character sheet is recommended for multi-page comics with recurring characters, 
 **When generating**:
 1. Use Reference Sheet Prompt from `characters/characters.md`
 2. **Backup rule**: If `characters/characters.png` exists, rename to `characters/characters-backup-YYYYMMDD-HHMMSS.png`
-3. Generate → `characters/characters.png`
-4. **Compress** to reduce API payload size when used as `--ref`:
-   - `sips -s format jpeg -s formatOptions 80 characters.png --out characters-compressed.jpg` (macOS)
-   - Or: `pngquant --quality=65-80 characters.png -o characters-compressed.png`
+3. Call `image_generate` with `landscape` format → save to `characters/characters.png`
+4. **Compress** to reduce payload size when used as a reference:
+   - macOS: `sips -s format jpeg -s formatOptions 80 characters.png --out characters-compressed.jpg`
+   - Linux: `pngquant --quality=65-80 characters.png -o characters-compressed.png`
 
 ### 7.2 Generate Comic Pages
 
 **Before generating any page**:
-1. Read the image generation skill's SKILL.md
-2. Check if it supports reference image input (`--ref`, `--reference`, etc.)
+1. Confirm each prompt file exists at `prompts/NN-{cover|page}-[slug].md`
+2. Check whether `image_generate` accepts a reference image in the current runtime
 3. Determine if character sheet exists
 4. Choose the appropriate strategy below
 
 **Page Generation Strategy**:
 
-| Character Sheet | Skill Capability | Strategy |
-|-----------------|------------------|----------|
-| Exists | Supports `--ref` | **A**: Pass character sheet as `--ref` with every page |
-| Exists | No `--ref` support | **B**: Embed character descriptions in every prompt |
+| Character Sheet | `image_generate` reference support | Strategy |
+|-----------------|------------------------------------|----------|
+| Exists | Supported | **A**: Pass character sheet as reference with every page |
+| Exists | Not supported | **B**: Embed character descriptions in every prompt |
 | Skipped | — | **C**: Prompt file contains all descriptions inline |
 
-**Strategy A: Using `--ref` parameter** (e.g., baoyu-imagine)
+**Strategy A: Pass reference image**
 
-- Read the chosen image generation skill's `SKILL.md`
-- Invoke that installed skill via its documented interface, not by calling its scripts directly
-- For every page, use `prompts/01-page-xxx.md` as the prompt-file input
-- Save output to `01-page-xxx.png`
-- Use aspect ratio from storyboard (default `3:4`, preset may override)
-- Pass `characters/characters.png` (or compressed version) as `--ref`
+- For every page, read `prompts/NN-{type}-[slug].md` as the prompt input
+- Save output to `NN-{type}-[slug].png`
+- Use aspect ratio from storyboard (mapped to `landscape`/`portrait`/`square`)
+- Pass `characters/characters.png` (or compressed version) as the reference image
 
-**`--ref` failure recovery**:
-If generation fails when using `--ref`:
+**Reference failure recovery**:
+If generation fails when passing the reference:
 1. **Compress/convert** reference image:
    - `sips -s format jpeg -s formatOptions 70 characters.png --out characters-compressed.jpg`
    - Or reduce resolution: `sips -Z 1024 characters.png --out characters-small.png`
-2. **Retry** with compressed/converted image as `--ref`
-3. **If still fails**: Fall back to **Strategy C** — generate WITHOUT `--ref`, with character descriptions embedded in prompt text
+2. **Retry** with compressed/converted image
+3. **If still fails**: Fall back to **Strategy C** — generate WITHOUT reference, with character descriptions embedded in prompt text
 
 **Strategy B: Embedding character descriptions in prompt**
 
-When skill does NOT support reference images, create combined prompt files:
+When reference images are not supported, create combined prompt files:
 
 ```markdown
 # prompts/01-page-xxx.md (with embedded character reference)
@@ -483,23 +385,17 @@ When skill does NOT support reference images, create combined prompt files:
 
 **Strategy C: Prompt-only (no character sheet)**
 
-When character sheet was skipped or `--ref` failed:
+When character sheet was skipped or the reference failed:
 - Prompt file already contains all character descriptions inline
-- No `--ref` parameter needed
+- No reference image needed
 - Rely on detailed text descriptions for character consistency
 
 **For each page (cover + pages)**:
 1. Read prompt from `prompts/NN-{cover|page}-[slug].md`
 2. **Backup rule**: If image file exists, rename to `NN-{cover|page}-[slug]-backup-YYYYMMDD-HHMMSS.png`
-3. Generate image using Strategy A, B, or C
+3. Generate image via `image_generate` using Strategy A, B, or C
 4. Save to `NN-{cover|page}-[slug].png`
 5. Report progress after each generation: "Generated X/N: [page title]"
-
-**Session Management**:
-If image generation skill supports `--sessionId`:
-1. Generate unique session ID: `comic-{topic-slug}-{timestamp}`
-2. Use same session ID for all pages
-3. Ensures visual consistency across generated images
 
 ---
 
@@ -508,10 +404,10 @@ If image generation skill supports `--sessionId`:
 After all images generated:
 
 ```bash
-${BUN_X} {baseDir}/scripts/merge-to-pdf.ts <comic-dir>
+bun {baseDir}/scripts/merge-to-pdf.ts <comic-dir>
 ```
 
-Creates `{topic-slug}.pdf` with all pages as full-page images.
+Where `{baseDir}` is this skill's directory. Creates `{topic-slug}.pdf` with all pages as full-page images.
 
 ---
 
@@ -520,7 +416,6 @@ Creates `{topic-slug}.pdf` with all pages as full-page images.
 ```
 Comic Complete!
 Title: [title] | Art: [art] | Tone: [tone] | Pages: [count] | Aspect: [ratio] | Language: [lang]
-Watermark: [enabled/disabled]
 Location: [path]
 ✓ analysis.md
 ✓ characters.png (if generated)

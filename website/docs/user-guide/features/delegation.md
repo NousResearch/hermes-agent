@@ -33,10 +33,10 @@ delegate_task(tasks=[
 ## How Subagent Context Works
 
 :::warning Critical: Subagents Know Nothing
-Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields you provide.
+Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task`.
 :::
 
-This means you must pass **everything** the subagent needs:
+This means the parent agent must pass **everything** the subagent needs in the call:
 
 ```python
 # BAD - subagent has no idea what "the error" is

@@ -52,6 +52,32 @@ class TestFormatSessionInfo:
         assert "32K" in info
         assert "config" in info
 
+    def test_custom_provider_model_context_length(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            """
+model:
+  default: big-model
+  provider: custom:local
+custom_providers:
+  - name: Local
+    base_url: http://localhost:4141/v1
+    models:
+      - name: big-model
+        context_length: 262144
+""",
+            "big-model",
+            {
+                "provider": "custom:local",
+                "base_url": "http://localhost:4141/v1",
+                "api_key": "",
+            },
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "262K" in info
+        assert "config" in info
+
     def test_default_fallback_hint(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: unknown-model-xyz\n",
                                   "unknown-model-xyz",

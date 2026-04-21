@@ -100,6 +100,93 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve(
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 
+
+def _positive_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _custom_provider_matches(entry: Dict[str, Any], provider: Optional[str], base_url: Optional[str]) -> bool:
+    entry_url = str(entry.get("base_url") or entry.get("url") or entry.get("api") or "").strip().rstrip("/")
+    runtime_url = str(base_url or "").strip().rstrip("/")
+    if entry_url and runtime_url and entry_url == runtime_url:
+        return True
+
+    provider_id = str(provider or "").strip().lower()
+    if not provider_id:
+        return False
+
+    name = str(entry.get("name") or "").strip()
+    if name and name.lower() == provider_id:
+        return True
+
+    try:
+        from hermes_cli.providers import custom_provider_slug
+        return bool(name) and custom_provider_slug(name).lower() == provider_id
+    except Exception:
+        return False
+
+
+def _custom_provider_model_context_length(
+    config: Dict[str, Any],
+    model: str,
+    provider: Optional[str],
+    base_url: Optional[str],
+) -> Optional[int]:
+    """Return a configured custom-provider model context length, if present."""
+    if not isinstance(config, dict) or not model:
+        return None
+
+    custom_providers = []
+    raw_custom_providers = config.get("custom_providers")
+    if isinstance(raw_custom_providers, list):
+        custom_providers.extend(raw_custom_providers)
+
+    try:
+        from hermes_cli.config import providers_dict_to_custom_providers
+        custom_providers.extend(providers_dict_to_custom_providers(config.get("providers")))
+    except Exception:
+        pass
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        if not _custom_provider_matches(entry, provider, base_url):
+            continue
+
+        models = entry.get("models", {})
+        if isinstance(models, dict):
+            model_cfg = models.get(model)
+            if isinstance(model_cfg, dict):
+                ctx = _positive_int(model_cfg.get("context_length"))
+                if ctx:
+                    return ctx
+            elif model_cfg is not None:
+                ctx = _positive_int(model_cfg)
+                if ctx:
+                    return ctx
+
+        elif isinstance(models, list):
+            for item in models:
+                if not isinstance(item, dict):
+                    continue
+                item_name = item.get("name") or item.get("id") or item.get("model")
+                if item_name == model:
+                    ctx = _positive_int(item.get("context_length"))
+                    if ctx:
+                        return ctx
+
+        if entry.get("model") == model:
+            ctx = _positive_int(entry.get("context_length"))
+            if ctx:
+                return ctx
+
+    return None
+
+
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
@@ -4139,30 +4226,13 @@ class GatewayRunner:
                 # Check custom_providers per-model context_length
                 # (same fallback as run_agent.py lines 1171-1189).
                 # Must run after runtime resolution so _hyg_base_url is set.
-                if _hyg_config_context_length is None and _hyg_base_url:
-                    try:
-                        try:
-                            from hermes_cli.config import get_compatible_custom_providers as _gw_gcp
-                            _hyg_custom_providers = _gw_gcp(_hyg_data)
-                        except Exception:
-                            _hyg_custom_providers = _hyg_data.get("custom_providers")
-                            if not isinstance(_hyg_custom_providers, list):
-                                _hyg_custom_providers = []
-                        for _cp in _hyg_custom_providers:
-                            if not isinstance(_cp, dict):
-                                continue
-                            _cp_url = (_cp.get("base_url") or "").rstrip("/")
-                            if _cp_url and _cp_url == _hyg_base_url.rstrip("/"):
-                                _cp_models = _cp.get("models", {})
-                                if isinstance(_cp_models, dict):
-                                    _cp_model_cfg = _cp_models.get(_hyg_model, {})
-                                    if isinstance(_cp_model_cfg, dict):
-                                        _cp_ctx = _cp_model_cfg.get("context_length")
-                                        if _cp_ctx is not None:
-                                            _hyg_config_context_length = int(_cp_ctx)
-                                break
-                    except (TypeError, ValueError):
-                        pass
+                if _hyg_config_context_length is None:
+                    _hyg_config_context_length = _custom_provider_model_context_length(
+                        _hyg_data,
+                        _hyg_model,
+                        _hyg_provider,
+                        _hyg_base_url,
+                    )
             except Exception:
                 pass
 
@@ -4759,6 +4829,7 @@ class GatewayRunner:
         provider = None
         base_url = None
         api_key = None
+        data = {}
 
         try:
             cfg_path = _hermes_home / "config.yaml"
@@ -4787,6 +4858,14 @@ class GatewayRunner:
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        if config_context_length is None:
+            config_context_length = _custom_provider_model_context_length(
+                data,
+                model,
+                provider,
+                base_url,
+            )
 
         context_length = get_model_context_length(
             model,

@@ -183,7 +183,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
           return row ? (
             <Text
-              color={providerIdx === idx ? t.color.cornsilk : t.color.dim}
+              bold={providerIdx === idx}
+              color={providerIdx === idx ? t.color.amber : t.color.dim}
+              inverse={providerIdx === idx}
               key={providers[idx]?.slug ?? `row-${idx}`}
             >
               {providerIdx === idx ? '▸ ' : '  '}
@@ -232,7 +234,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
         return (
           <Text
-            color={modelIdx === idx ? t.color.cornsilk : t.color.dim}
+            bold={modelIdx === idx}
+            color={modelIdx === idx ? t.color.amber : t.color.dim}
+            inverse={modelIdx === idx}
             key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
           >
             {modelIdx === idx ? '▸ ' : '  '}

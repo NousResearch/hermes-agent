@@ -64,8 +64,8 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
 
       {OPTS.map((o, i) => (
         <Text key={o}>
-          <Text color={sel === i ? t.color.warn : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
-          <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+          <Text bold={sel === i} color={sel === i ? t.color.warn : t.color.dim} inverse={sel === i}>
+            {sel === i ? '▸ ' : '  '}
             {i + 1}. {LABELS[o]}
           </Text>
         </Text>
@@ -142,8 +142,8 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
       {[...choices, 'Other (type your answer)'].map((c, i) => (
         <Text key={i}>
-          <Text color={sel === i ? t.color.label : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
-          <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+          <Text bold={sel === i} color={sel === i ? t.color.label : t.color.dim} inverse={sel === i}>
+            {sel === i ? '▸ ' : '  '}
             {i + 1}. {c}
           </Text>
         </Text>

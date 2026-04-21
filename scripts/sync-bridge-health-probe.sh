@@ -60,28 +60,39 @@ check_h1() {
     add_result "H1" true "launchd loaded, last exit=0"
 }
 
-# ---------------- H2 — latest export mtime ----------------
+# ---------------- H2 — sync actually running (via stdout log) ----------------
 check_h2() {
-    local latest
-    latest=$(ls -1t "$WIKI_DIR"/memory/*_openclaw_memory_export.md 2>/dev/null | head -n 1)
-    if [ -z "$latest" ]; then
-        add_result "H2" false "no *_openclaw_memory_export.md found in $WIKI_DIR/memory/"
+    # 改用 stdout log 判讀最近一次 "=== 同步開始 ===" 時間，而非 export mtime。
+    # 因為 export 檔名以日期命名（YYYY-MM-DD_openclaw_memory_export.md），
+    # 同一天的 sync 不會覆寫檔案，mtime 會看起來 stale 但其實 sync 正常。
+    local log="$LOG_DIR/wiki-memory-sync.stdout.log"
+    if [ ! -f "$log" ]; then
+        add_result "H2" false "stdout log missing: $log (sync never ran?)"
         return
     fi
-    local mtime
-    mtime=$(stat -f%m "$latest" 2>/dev/null || stat -c%Y "$latest" 2>/dev/null)
-    if [ -z "$mtime" ]; then
-        add_result "H2" false "could not stat $latest"
+    # 抓最後一次 "同步開始" 的時間戳（log line 格式：[YYYY-MM-DD HH:MM] === 同步開始 ===）
+    local last_start
+    last_start=$(grep "=== 同步開始 ===" "$log" | tail -n 1 | grep -oE '\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\]' | tr -d '[]')
+    if [ -z "$last_start" ]; then
+        add_result "H2" false "no sync-start entry found in stdout log"
         return
     fi
-    local age=$(( TS_SEC - mtime ))
-    if [ "$age" -gt "$MAX_EXPORT_AGE_SEC" ]; then
+    local last_epoch
+    last_epoch=$(date -j -f "%Y-%m-%d %H:%M" "$last_start" +%s 2>/dev/null || date -d "$last_start" +%s 2>/dev/null)
+    if [ -z "$last_epoch" ]; then
+        add_result "H2" false "could not parse timestamp: $last_start"
+        return
+    fi
+    local age=$(( TS_SEC - last_epoch ))
+    # Sync interval 是 1800s（30min），容忍 3 倍間隔 = 90min 前最近一次跑
+    local max_since_last=${MAX_SINCE_LAST_SYNC_SEC:-5400}
+    if [ "$age" -gt "$max_since_last" ]; then
         local hrs=$(( age / 3600 ))
         local mins=$(( (age % 3600) / 60 ))
-        add_result "H2" false "export file ${hrs}h ${mins}m stale ($(basename "$latest"))"
+        add_result "H2" false "last sync was ${hrs}h ${mins}m ago (expected every 30min)"
         return
     fi
-    add_result "H2" true "latest export $(basename "$latest") is $((age/60))m old"
+    add_result "H2" true "last sync $((age/60))m ago (at $last_start)"
 }
 
 # ---------------- H3 — stderr log tail ----------------

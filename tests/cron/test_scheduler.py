@@ -6,8 +6,16 @@ import os
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
+import cron.scheduler as scheduler_module
 
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER, _build_job_prompt
+
+
+@pytest.fixture(autouse=True)
+def isolate_tick_lock(tmp_path, monkeypatch):
+    lock_dir = tmp_path / "cron-lock"
+    monkeypatch.setattr(scheduler_module, "_LOCK_DIR", lock_dir)
+    monkeypatch.setattr(scheduler_module, "_LOCK_FILE", lock_dir / ".tick.lock")
 
 
 class TestResolveOrigin:
@@ -328,12 +336,8 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
 
-    def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
-        """Empty final_response should stay empty for delivery logic (issue #2234).
-        
-        The placeholder '(No response generated)' should only appear in the
-        output log, not in the returned final_response that's used for delivery.
-        """
+    def test_run_job_empty_response_fails(self, tmp_path):
+        """Empty final_response should fail so missed deliveries are visible."""
         job = {
             "id": "silent-job",
             "name": "silent test",
@@ -356,18 +360,15 @@ class TestRunJobSessionPersistence:
              ), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
-            # Agent did work via tools but returned no text
             mock_agent.run_conversation.return_value = {"final_response": ""}
             mock_agent_cls.return_value = mock_agent
 
             success, output, final_response, error = run_job(job)
 
-        assert success is True
-        assert error is None
-        # final_response should be empty for delivery logic to skip
+        assert success is False
+        assert error == "RuntimeError: Cron job completed without a final response"
         assert final_response == ""
-        # But the output log should show the placeholder
-        assert "(No response generated)" in output
+        assert "Cron job completed without a final response" in output
 
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
         job = {
@@ -701,6 +702,47 @@ class TestSilentDelivery:
         deliver_mock.assert_not_called()
 
 
+class TestResearchDigestGhostPublishing:
+    def _make_job(self):
+        return {
+            "id": "bb8ceb98ac2d",
+            "name": "weekly-intel",
+            "deliver": "local",
+            "skills": ["weekly-brief-orchestrator", "weekly-intel"],
+        }
+
+    def test_tick_publishes_research_digest_and_skips_platform_delivery(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "# Weekly Intel\n\nBody", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._publish_research_digest", return_value={"ok": True, "ghost_url": "http://research.home:2368/test"} ) as publish_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        publish_mock.assert_called_once_with(self._make_job(), "# Weekly Intel\n\nBody", "/tmp/out.md")
+        deliver_mock.assert_not_called()
+        mark_mock.assert_called_once_with("bb8ceb98ac2d", True, None)
+
+    def test_tick_marks_job_failed_when_ghost_publish_fails(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "# Weekly Intel\n\nBody", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._publish_research_digest", side_effect=RuntimeError("missing Ghost key")), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_not_called()
+        mark_mock.assert_called_once()
+        args = mark_mock.call_args.args
+        assert args[0] == "bb8ceb98ac2d"
+        assert args[1] is False
+        assert "Ghost publish failed: missing Ghost key" in args[2]
+
+
 class TestBuildJobPromptSilentHint:
     """Verify _build_job_prompt always injects [SILENT] guidance."""
 
@@ -714,6 +756,56 @@ class TestBuildJobPromptSilentHint:
         job = {"prompt": ""}
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
+
+
+class TestBuildJobPromptResearchDigestPolicy:
+    def test_research_jobs_include_runtime_policy(self, tmp_path):
+        config_path = tmp_path / "assistant_config.yaml"
+        interests_path = tmp_path / "INTERESTS.md"
+        config_path.write_text(
+            "relevance_threshold: 4\ninterests_file: "
+            + str(interests_path)
+            + "\n",
+            encoding="utf-8",
+        )
+        interests_path.write_text(
+            "# Interests\n- Local AI tooling\n- Agent orchestration\n",
+            encoding="utf-8",
+        )
+
+        with patch("cron.scheduler._UNIFIED_ASSISTANT_CONFIG_PATH", config_path), \
+             patch(
+                 "tools.skills_tool.skill_view",
+                 return_value=json.dumps({"success": True, "content": "# Weekly\nFollow the skill."}),
+             ):
+            result = _build_job_prompt(
+                {
+                    "name": "weekly-intel",
+                    "skills": ["weekly-brief-orchestrator", "weekly-intel"],
+                    "prompt": "Run the digest.",
+                    "deliver": "discord:1489358367649562856",
+                }
+            )
+
+        assert "Unified assistant research digest policy" in result
+        assert "Discard any item scoring below 4/5" in result
+        assert "Local AI tooling" in result
+        assert "Group surviving items by theme" in result
+
+    def test_non_research_jobs_do_not_include_runtime_policy(self):
+        with patch(
+            "tools.skills_tool.skill_view",
+            return_value=json.dumps({"success": True, "content": "# Blogwatcher\nFollow the skill."}),
+        ):
+            result = _build_job_prompt(
+                {
+                    "name": "blogwatch",
+                    "skills": ["blogwatcher"],
+                    "prompt": "Summarize updates.",
+                }
+            )
+
+        assert "Unified assistant research digest policy" not in result
 
 
 class TestBuildJobPromptMissingSkill:

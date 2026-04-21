@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 import traceback
 
@@ -42,6 +43,25 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+_UNIFIED_ASSISTANT_CONFIG_PATH = Path("/home/craig/data/assistant_config.yaml")
+_RESEARCH_DIGEST_SKILLS = {
+    "weekly-brief-orchestrator",
+    "weekly-intel",
+    "hr-tech-digest",
+    "business-intel-brief",
+}
+_RESEARCH_DIGEST_JOB_NAMES = {
+    "weekly-intel",
+    "hr-tech-digest",
+    "business-intel-brief",
+}
+_RESEARCH_DIGEST_DELIVERY_TARGETS = {
+    "discord:1489358367649562856",
+    "discord:1489358398146482246",
+    "discord:1489358465775439993",
+}
+_RESEARCH_DIGEST_PUBLISHER = Path("/home/craig/services/hermes/wiki-pipeline/scripts/publish_ghost.py")
+_RESEARCH_DIGEST_PUBLISHER_PYTHON = os.getenv("HERMES_GHOST_PYTHON", "/usr/bin/python3")
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
@@ -49,6 +69,72 @@ _hermes_home = get_hermes_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+def _canonical_skill_names(job: dict) -> list[str]:
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+    return [str(name).strip() for name in skills if str(name).strip()]
+
+
+def _is_research_digest_job(job: dict, skill_names: list[str]) -> bool:
+    if set(skill_names) & _RESEARCH_DIGEST_SKILLS:
+        return True
+    if str(job.get("name") or "").strip() in _RESEARCH_DIGEST_JOB_NAMES:
+        return True
+    if str(job.get("deliver") or "").strip() in _RESEARCH_DIGEST_DELIVERY_TARGETS:
+        return True
+    return False
+
+
+def _build_research_digest_runtime_note(job: dict, skill_names: list[str]) -> str:
+    if not _is_research_digest_job(job, skill_names):
+        return ""
+
+    threshold = 3
+    interests_file = Path("~/.hermes/INTERESTS.md").expanduser()
+
+    try:
+        import yaml
+
+        if _UNIFIED_ASSISTANT_CONFIG_PATH.exists():
+            with _UNIFIED_ASSISTANT_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+                config = yaml.safe_load(handle) or {}
+            raw_threshold = config.get("relevance_threshold", threshold)
+            try:
+                threshold = max(1, min(5, int(raw_threshold)))
+            except (TypeError, ValueError):
+                threshold = 3
+            configured_interests = str(config.get("interests_file") or "").strip()
+            if configured_interests:
+                interests_file = Path(configured_interests).expanduser()
+    except Exception as exc:
+        logger.warning("Research digest runtime config unavailable, using defaults: %s", exc)
+
+    interest_profile = ""
+    try:
+        interest_profile = interests_file.read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        logger.warning("Research digest interests file unavailable, continuing without profile text: %s", exc)
+
+    profile_block = (
+        f"\nActive interest profile ({interests_file}):\n{interest_profile}"
+        if interest_profile
+        else f"\nNo interest profile text was available from {interests_file}; still apply the configured threshold."
+    )
+
+    return (
+        "[SYSTEM: Unified assistant research digest policy.\n"
+        f"- Score every candidate item on a 1-5 relevance scale against both the loaded channel skill and the active interest profile.\n"
+        f"- Discard any item scoring below {threshold}/5 before synthesis.\n"
+        "- Group surviving items by theme in the Key Developments section.\n"
+        "- Every final digest entry must include a headline/title, a one-sentence summary, the source, and its relevance score.\n"
+        "- Keep the existing weekly brief sections and preserve current Discord delivery behavior.\n"
+        "- If too few items clear the threshold, say the week was quiet instead of padding the brief."
+        f"{profile_block}\n]"
+    )
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -228,10 +314,55 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
 
 
+def _should_publish_research_digest(job: dict, final_response: str) -> bool:
+    if not final_response.strip():
+        return False
+    if final_response.strip().upper().startswith(SILENT_MARKER):
+        return False
+    return _is_research_digest_job(job, _canonical_skill_names(job))
+
+
+def _publish_research_digest(job: dict, final_response: str, output_file: str | Path) -> dict:
+    if not _RESEARCH_DIGEST_PUBLISHER.exists():
+        raise RuntimeError(f"Ghost publisher script not found: {_RESEARCH_DIGEST_PUBLISHER}")
+
+    published_at = _hermes_now().isoformat()
+    proc = subprocess.run(
+        [
+            _RESEARCH_DIGEST_PUBLISHER_PYTHON,
+            str(_RESEARCH_DIGEST_PUBLISHER),
+            "--job-name",
+            str(job.get("name") or job.get("id") or ""),
+            "--published-at",
+            published_at,
+            "--source-file",
+            str(output_file),
+        ],
+        input=final_response,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        stdout = proc.stdout.strip()
+        detail = stderr or stdout or "unknown publish error"
+        raise RuntimeError(detail)
+
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Ghost publisher returned invalid JSON: {proc.stdout.strip()}") from exc
+
+    if not payload.get("ok"):
+        raise RuntimeError(str(payload.get("error") or "Ghost publisher did not report success"))
+    return payload
+
+
 def _build_job_prompt(job: dict) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
-    skills = job.get("skills")
+    skill_names = _canonical_skill_names(job)
 
     # Always prepend [SILENT] guidance so the cron agent can suppress
     # delivery when it has nothing new or noteworthy to report.
@@ -244,12 +375,10 @@ def _build_job_prompt(job: dict) -> str:
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
     prompt = silent_hint + prompt
-    if skills is None:
-        legacy = job.get("skill")
-        skills = [legacy] if legacy else []
-
-    skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
+        runtime_note = _build_research_digest_runtime_note(job, skill_names)
+        if runtime_note:
+            return f"{runtime_note}\n\n{prompt}"
         return prompt
 
     from tools.skills_tool import skill_view
@@ -283,6 +412,11 @@ def _build_job_prompt(job: dict) -> str:
             f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
         )
         parts.insert(0, notice)
+
+    runtime_note = _build_research_digest_runtime_note(job, skill_names)
+    if runtime_note:
+        parts.append("")
+        parts.append(runtime_note)
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
@@ -445,9 +579,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         result = agent.run_conversation(prompt)
         
         final_response = result.get("final_response", "") or ""
+        if not final_response.strip():
+            raise RuntimeError("Cron job completed without a final response")
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
-        logged_response = final_response if final_response else "(No response generated)"
+        logged_response = final_response
         
         output = f"""# Cron Job: {job_name}
 
@@ -567,10 +703,26 @@ def tick(verbose: bool = True) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
+                publish_payload = None
+                if success and _should_publish_research_digest(job, final_response):
+                    try:
+                        publish_payload = _publish_research_digest(job, final_response, output_file)
+                        logger.info(
+                            "Job '%s': published digest to Ghost at %s",
+                            job["id"],
+                            publish_payload.get("ghost_url", "<unknown>"),
+                        )
+                    except Exception as publish_exc:
+                        success = False
+                        error = f"Ghost publish failed: {publish_exc}"
+                        logger.error("Job '%s': %s", job["id"], error)
+
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                if _is_research_digest_job(job, _canonical_skill_names(job)):
+                    deliver_content = ""
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)

@@ -4,7 +4,6 @@ Verifies that AIAgent can switch to a configured fallback model/provider
 when the primary fails after retries.
 """
 
-import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -188,13 +187,23 @@ class TestTryActivateFallback:
             api_key="custom-secret",
             base_url="http://localhost:8080/v1",
         )
-        with patch(
-            "agent.auxiliary_client.resolve_provider_client",
-            return_value=(mock_client, "my-model"),
+        with (
+            patch.dict("os.environ", {"MY_CUSTOM_KEY": "custom-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(mock_client, "my-model"),
+            ) as mock_resolve,
         ):
             assert agent._try_activate_fallback() is True
             assert agent.client is mock_client
             assert agent.model == "my-model"
+            mock_resolve.assert_called_once_with(
+                "custom",
+                model="my-model",
+                raw_codex=True,
+                explicit_base_url="http://localhost:8080/v1",
+                explicit_api_key="custom-secret",
+            )
 
     def test_prompt_caching_enabled_for_claude_on_openrouter(self):
         agent = _make_agent(

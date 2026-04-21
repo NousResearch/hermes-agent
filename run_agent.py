@@ -4779,6 +4779,11 @@ class AIAgent:
         self._fallback_index += 1
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
+        fb_base_url = (fb.get("base_url") or "").strip()
+        fb_api_key = (fb.get("api_key") or "").strip()
+        fb_api_key_env = (fb.get("api_key_env") or "").strip()
+        if not fb_api_key and fb_api_key_env:
+            fb_api_key = os.getenv(fb_api_key_env, "").strip()
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
 
@@ -4788,7 +4793,12 @@ class AIAgent:
         try:
             from agent.auxiliary_client import resolve_provider_client
             fb_client, _ = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True)
+                fb_provider,
+                model=fb_model,
+                raw_codex=True,
+                explicit_base_url=fb_base_url or None,
+                explicit_api_key=fb_api_key or None,
+            )
             if fb_client is None:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",

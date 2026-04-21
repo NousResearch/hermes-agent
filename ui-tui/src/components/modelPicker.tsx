@@ -174,13 +174,14 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         </Text>
 
         <Text color={t.color.dim}>Current model: {currentModel || '(unknown)'}</Text>
-        {provider?.warning ? <Text color={t.color.label}>warning: {provider.warning}</Text> : null}
-        {off > 0 && <Text color={t.color.dim}> ↑ {off} more</Text>}
+        <Text color={t.color.label}>{provider?.warning ? `warning: ${provider.warning}` : ' '}</Text>
+        <Text color={t.color.dim}>{off > 0 ? ` ↑ ${off} more` : ' '}</Text>
 
-        {items.map((row, i) => {
+        {Array.from({ length: VISIBLE }, (_, i) => {
+          const row = items[i]
           const idx = off + i
 
-          return (
+          return row ? (
             <Text
               color={providerIdx === idx ? t.color.cornsilk : t.color.dim}
               key={providers[idx]?.slug ?? `row-${idx}`}
@@ -188,10 +189,15 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
               {providerIdx === idx ? '▸ ' : '  '}
               {i + 1}. {row}
             </Text>
+          ) : (
+            <Text key={`pad-${i}`}> </Text>
           )
         })}
 
-        {off + VISIBLE < rows.length && <Text color={t.color.dim}> ↓ {rows.length - off - VISIBLE} more</Text>}
+        <Text color={t.color.dim}>
+          {off + VISIBLE < rows.length ? ` ↓ ${rows.length - off - VISIBLE} more` : ' '}
+        </Text>
+
         <Text color={t.color.dim}>persist: {persistGlobal ? 'global' : 'session'} · g toggle</Text>
         <Text color={t.color.dim}>↑/↓ select · Enter choose · 1-9,0 quick · Esc cancel</Text>
       </Box>
@@ -207,12 +213,22 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       </Text>
 
       <Text color={t.color.dim}>{names[providerIdx] || '(unknown provider)'}</Text>
-      {!models.length ? <Text color={t.color.dim}>no models listed for this provider</Text> : null}
-      {provider?.warning ? <Text color={t.color.label}>warning: {provider.warning}</Text> : null}
-      {off > 0 && <Text color={t.color.dim}> ↑ {off} more</Text>}
+      <Text color={t.color.label}>{provider?.warning ? `warning: ${provider.warning}` : ' '}</Text>
+      <Text color={t.color.dim}>{off > 0 ? ` ↑ ${off} more` : ' '}</Text>
 
-      {items.map((row, i) => {
+      {Array.from({ length: VISIBLE }, (_, i) => {
+        const row = items[i]
         const idx = off + i
+
+        if (!row) {
+          return !models.length && i === 0 ? (
+            <Text color={t.color.dim} key="empty">
+              no models listed for this provider
+            </Text>
+          ) : (
+            <Text key={`pad-${i}`}> </Text>
+          )
+        }
 
         return (
           <Text
@@ -225,7 +241,10 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         )
       })}
 
-      {off + VISIBLE < models.length && <Text color={t.color.dim}> ↓ {models.length - off - VISIBLE} more</Text>}
+      <Text color={t.color.dim}>
+        {off + VISIBLE < models.length ? ` ↓ ${models.length - off - VISIBLE} more` : ' '}
+      </Text>
+
       <Text color={t.color.dim}>persist: {persistGlobal ? 'global' : 'session'} · g toggle</Text>
       <Text color={t.color.dim}>
         {models.length ? '↑/↓ select · Enter switch · 1-9,0 quick · Esc back' : 'Enter/Esc back'}

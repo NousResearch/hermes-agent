@@ -182,6 +182,18 @@ class TurnController {
     }, REASONING_PULSE_MS)
   }
 
+  /**
+   * Append an inline artifact (e.g. tool-complete inline diff) to the active
+   * turn's segment stream. Routing through `historyItems` via `sys()` lands
+   * the artifact above the currently-streaming assistant bubble; adding it
+   * here keeps the paint order aligned with the order the gateway emitted.
+   */
+  appendSegmentMessage(msg: Msg) {
+    this.flushStreamingSegment()
+    this.segmentMessages = [...this.segmentMessages, msg]
+    patchTurnState({ streamSegments: this.segmentMessages })
+  }
+
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {
     patchTurnState(state => {
       const base = replaceLabel

@@ -143,6 +143,38 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(fromServer))
   })
 
+  it('routes inline_diff into the active segment stream, not historyItems', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { inline_diff: diff, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+
+    // While streaming, nothing has flowed to historyItems yet — diff must be
+    // held in segmentMessages so the transcript renders it inline with the
+    // current turn rather than above it.
+    expect(appended).toHaveLength(0)
+    expect(turnController.segmentMessages).toContainEqual({ role: 'system', text: diff })
+
+    onEvent({
+      payload: { text: 'patch applied' },
+      type: 'message.complete'
+    } as any)
+
+    // After the turn closes, the diff lands in history in the order the
+    // gateway emitted it — before the assistant's final text, not above it.
+    expect(appended).toHaveLength(2)
+    expect(appended[0]).toMatchObject({ role: 'system', text: diff })
+    expect(appended[1]).toMatchObject({ role: 'assistant', text: 'patch applied' })
+  })
+
   it('shows setup panel for missing provider startup error', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

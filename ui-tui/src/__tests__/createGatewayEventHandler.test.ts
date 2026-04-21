@@ -146,7 +146,8 @@ describe('createGatewayEventHandler', () => {
   it('routes inline_diff into the active segment stream, not historyItems', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
-    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+    const diff = '\u001b[31m--- a/foo.ts\u001b[0m\n\u001b[32m+++ b/foo.ts\u001b[0m\n@@\n-old\n+new'
+    const cleaned = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
 
     onEvent({
       payload: { context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
@@ -161,7 +162,10 @@ describe('createGatewayEventHandler', () => {
     // held in segmentMessages so the transcript renders it inline with the
     // current turn rather than above it.
     expect(appended).toHaveLength(0)
-    expect(turnController.segmentMessages).toContainEqual({ role: 'system', text: diff })
+    expect(turnController.segmentMessages).toContainEqual(
+      expect.objectContaining({ kind: 'trail', role: 'system', text: '' })
+    )
+    expect(turnController.segmentMessages).toContainEqual({ role: 'system', text: cleaned })
 
     onEvent({
       payload: { text: 'patch applied' },
@@ -170,9 +174,10 @@ describe('createGatewayEventHandler', () => {
 
     // After the turn closes, the diff lands in history in the order the
     // gateway emitted it — before the assistant's final text, not above it.
-    expect(appended).toHaveLength(2)
-    expect(appended[0]).toMatchObject({ role: 'system', text: diff })
-    expect(appended[1]).toMatchObject({ role: 'assistant', text: 'patch applied' })
+    expect(appended).toHaveLength(3)
+    expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '' })
+    expect(appended[1]).toMatchObject({ role: 'system', text: cleaned })
+    expect(appended[2]).toMatchObject({ role: 'assistant', text: 'patch applied' })
   })
 
   it('shows setup panel for missing provider startup error', () => {

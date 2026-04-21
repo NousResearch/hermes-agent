@@ -42,9 +42,21 @@ class TestRealSubagentInterrupt(unittest.TestCase):
     def setUp(self):
         set_interrupt(False)
         os.environ.setdefault("OPENAI_API_KEY", "test-key")
+        self._old_terminal_env = os.environ.get("TERMINAL_ENV")
+        self._old_terminal_modal_mode = os.environ.get("TERMINAL_MODAL_MODE")
+        os.environ["TERMINAL_ENV"] = "local"
+        os.environ.pop("TERMINAL_MODAL_MODE", None)
 
     def tearDown(self):
         set_interrupt(False)
+        if self._old_terminal_env is None:
+            os.environ.pop("TERMINAL_ENV", None)
+        else:
+            os.environ["TERMINAL_ENV"] = self._old_terminal_env
+        if self._old_terminal_modal_mode is None:
+            os.environ.pop("TERMINAL_MODAL_MODE", None)
+        else:
+            os.environ["TERMINAL_MODAL_MODE"] = self._old_terminal_modal_mode
 
     def test_interrupt_child_during_api_call(self):
         """Real AIAgent child interrupted while making API call."""
@@ -95,8 +107,12 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                     mock_client.close = MagicMock()
                     MockOpenAI.return_value = mock_client
 
-                    # Patch the instance method so it skips prompt assembly
-                    with patch.object(AIAgent, '_build_system_prompt', return_value="You are a test agent"):
+                    # Patch instance methods unrelated to interrupt behavior so
+                    # the test stays hermetic and focused on delegate interrupt
+                    # propagation rather than prompt assembly / auxiliary model
+                    # preflight checks.
+                    with patch.object(AIAgent, '_build_system_prompt', return_value="You are a test agent"), \
+                         patch.object(AIAgent, '_check_compression_model_feasibility', return_value=None):
                         # Signal when child starts
                         original_run = AIAgent.run_conversation
 
@@ -106,7 +122,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
 
                         with patch.object(AIAgent, 'run_conversation', patched_run):
                             # Build a real child agent (AIAgent is NOT patched here,
-                            # only run_conversation and _build_system_prompt are)
+                            # only run_conversation and unrelated preflight helpers are)
                             child = AIAgent(
                                 base_url="http://localhost:1",
                                 api_key="test-key",

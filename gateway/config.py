@@ -512,9 +512,29 @@ def _coerce_yaml_val_for_compare(node: Any) -> str:
         # The bridges write ``str(bool).lower()`` (e.g. "true"/"false").
         return str(node).lower()
     if isinstance(node, list):
-        # The bridges write comma-joined values.
-        return ",".join(str(v) for v in node)
+        # The bridges write comma-joined values; strip per-item whitespace
+        # and drop empties so it round-trips through the downstream
+        # CSV-normaliser consistently.
+        return ",".join(str(v).strip() for v in node if str(v).strip())
     return str(node)
+
+
+def _normalize_csv_for_compare(raw: str) -> str:
+    """Canonicalise a comma-separated env-var string the way the gateway
+    adapters actually consume it: split on ``,``, strip whitespace from
+    each item, drop empties, and return a deterministically-sorted
+    comma-joined string.
+
+    Without this, ``_warn_yaml_env_conflicts`` produces false-positive
+    warnings when the user has semantically-equivalent values in YAML
+    and env — e.g. ``["c1", "c2"]`` in YAML vs ``"c1, c2"`` or
+    ``"c2,c1"`` in env are all the same set to the runtime but look
+    textually different.  Adapters parse these into sets (order
+    doesn't matter); treating them the same way here keeps the
+    warning signal honest.
+    """
+    items = sorted(s.strip() for s in raw.split(",") if s.strip())
+    return ",".join(items)
 
 
 def _warn_yaml_env_conflicts(yaml_cfg: dict, config_yaml_path: Path) -> None:
@@ -546,7 +566,18 @@ def _warn_yaml_env_conflicts(yaml_cfg: dict, config_yaml_path: Path) -> None:
         if env_val is None or env_val == "":
             continue  # YAML-only — bridges below will honour it
         yaml_val = _coerce_yaml_val_for_compare(node)
-        if env_val.strip().lower() == yaml_val.strip().lower():
+        # Canonicalise both sides so semantically-equivalent list values
+        # (e.g. YAML ``["c1", "c2"]`` ↔ env ``"c1, c2"`` or ``"c2,c1"``)
+        # don't produce false-positive warnings.  Downstream adapters
+        # parse these settings into sets, so order + whitespace should
+        # not be treated as a conflict here either.
+        if isinstance(node, list):
+            yaml_cmp = _normalize_csv_for_compare(yaml_val)
+            env_cmp = _normalize_csv_for_compare(env_val)
+        else:
+            yaml_cmp = yaml_val.strip().lower()
+            env_cmp = env_val.strip().lower()
+        if yaml_cmp == env_cmp:
             continue  # Same effective value — no surprise, no warning
         logger.warning(
             "Gateway config conflict: %s in %s is %r but %s=%r is set in "

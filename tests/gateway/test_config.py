@@ -644,6 +644,65 @@ class TestYamlEnvConflictWarnings:
         assert len(recs) == 1
         assert "discord.allowed_channels" in recs[0].getMessage()
 
+    def test_list_comparison_ignores_whitespace_in_env(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Downstream adapters parse CSV env vars with per-item stripping.
+        YAML ``["c1", "c2"]`` vs env ``"c1, c2"`` (with whitespace) must
+        be treated as the same value — no false-positive warning."""
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "c1, c2")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  allowed_channels:\n    - c1\n    - c2\n")
+        assert self._conflict_records(caplog) == [], (
+            "Whitespace-only difference between YAML list and env CSV must "
+            "not fire a warning — the adapters strip each item before use."
+        )
+
+    def test_list_comparison_ignores_order(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Downstream adapters parse these CSV settings into sets.
+        YAML ``["c1", "c2"]`` vs env ``"c2,c1"`` is the same set to the
+        runtime — must not fire a false-positive warning."""
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "c2,c1")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  allowed_channels:\n    - c1\n    - c2\n")
+        assert self._conflict_records(caplog) == [], (
+            "Reordered CSV env value must not fire a warning — adapters "
+            "treat these as sets, so order is immaterial."
+        )
+
+    def test_list_comparison_ignores_empty_csv_items(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Env ``"c1,,c2,"`` (trailing / double commas) is equivalent to
+        ``"c1,c2"`` after downstream parsing — must not fire a false-
+        positive warning."""
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "c1,,c2,")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  allowed_channels:\n    - c1\n    - c2\n")
+        assert self._conflict_records(caplog) == [], (
+            "Extra-comma / empty-item env CSV must not fire a warning — "
+            "downstream splits and drops empties."
+        )
+
+    def test_list_comparison_still_warns_on_genuine_diff(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Structural pin: the set-comparison relaxation must not hide a
+        genuine value difference.  YAML ``["c1", "c2"]`` vs env
+        ``"c1,c3"`` is a real mismatch and must still warn."""
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "c1,c3")
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            self._load(tmp_path, monkeypatch,
+                       "discord:\n  allowed_channels:\n    - c1\n    - c2\n")
+        recs = self._conflict_records(caplog)
+        assert len(recs) == 1
+        assert "discord.allowed_channels" in recs[0].getMessage()
+
     def test_multiple_conflicts_each_warn_once(
         self, tmp_path, monkeypatch, caplog
     ):

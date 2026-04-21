@@ -1231,12 +1231,34 @@ def _(rid, params: dict) -> dict:
 @method("session.list")
 def _(rid, params: dict) -> dict:
     try:
-        db = _get_db()
-        # Show both TUI and CLI sessions — TUI is the successor to the CLI,
-        # so users expect to resume their old CLI sessions here too.
-        tui = db.list_sessions_rich(source="tui", limit=params.get("limit", 20))
-        cli = db.list_sessions_rich(source="cli", limit=params.get("limit", 20))
-        rows = sorted(tui + cli, key=lambda s: s.get("started_at") or 0, reverse=True)[:params.get("limit", 20)]
+        # Resume picker should include human conversation surfaces beyond
+        # tui/cli (notably telegram from blitz row #7), but avoid internal
+        # sources that clutter the modal (tool/acp/etc).
+        allow = frozenset(
+            {
+                "cli",
+                "tui",
+                "telegram",
+                "discord",
+                "slack",
+                "whatsapp",
+                "wecom",
+                "weixin",
+                "feishu",
+                "signal",
+                "mattermost",
+                "matrix",
+                "qq",
+            }
+        )
+
+        limit = int(params.get("limit", 20) or 20)
+        fetch_limit = max(limit * 5, 100)
+        rows = [
+            s
+            for s in _get_db().list_sessions_rich(source=None, limit=fetch_limit)
+            if (s.get("source") or "").strip().lower() in allow
+        ][:limit]
         return _ok(rid, {"sessions": [
             {"id": s["id"], "title": s.get("title") or "", "preview": s.get("preview") or "",
              "started_at": s.get("started_at") or 0, "message_count": s.get("message_count") or 0,

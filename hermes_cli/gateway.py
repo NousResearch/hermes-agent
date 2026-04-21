@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -1655,9 +1656,32 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+@lru_cache(maxsize=1)
+def _launchd_managername() -> str | None:
+    """Return the current launchd session type when available."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "managername"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    name = result.stdout.strip()
+    return name or None
+
+
 def _launchd_domain() -> str:
-    import os
-    return f"gui/{os.getuid()}"
+    uid = os.getuid()
+    manager = (_launchd_managername() or "").strip().lower()
+    if manager == "background":
+        return f"user/{uid}"
+    return f"gui/{uid}"
 
 
 def generate_launchd_plist() -> str:
@@ -1820,26 +1844,43 @@ def launchd_uninstall():
 def launchd_start():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
+    domain = _launchd_domain()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", f"{domain}/{label}"], check=True, timeout=30)
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
+    loaded = False
     try:
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        loaded = result.returncode == 0
+    except subprocess.TimeoutExpired:
+        loaded = False
+
+    if not loaded:
+        print("↻ launchd job was unloaded; reloading service definition")
+        subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True, timeout=30)
+
+    try:
+        subprocess.run(["launchctl", "kickstart", f"{domain}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
-        if e.returncode not in (3, 113):
+        if e.returncode not in (3, 113, 125):
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", f"{domain}/{label}"], check=True, timeout=30)
     print("✓ Service started")
 
 def launchd_stop():

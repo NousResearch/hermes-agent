@@ -128,6 +128,32 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _current_username() -> str:
+    """Return the current username for diagnostics."""
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        return os.environ.get("USER") or os.environ.get("LOGNAME") or str(os.getuid())
+
+
+def _macos_console_username() -> str | None:
+    """Return the logged-in macOS console user when one exists."""
+    if sys.platform != "darwin":
+        return None
+
+    try:
+        import pwd
+
+        console_uid = os.stat("/dev/console").st_uid
+        if console_uid <= 0:
+            return None
+        return pwd.getpwuid(console_uid).pw_name
+    except Exception:
+        return None
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
     try:
@@ -159,6 +185,52 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         issues.append("Enable linger for the gateway user service: sudo loginctl enable-linger $USER")
     else:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
+
+
+def _check_gateway_service_launchd_session(issues: list[str]) -> None:
+    """Warn when a macOS LaunchAgent is installed under a non-console user."""
+    if _is_termux():
+        return
+
+    try:
+        from hermes_cli.gateway import (
+            get_launchd_plist_path,
+            is_macos,
+        )
+    except Exception as e:
+        check_warn("Gateway service launchd session", f"(could not import gateway helpers: {e})")
+        return
+
+    if not is_macos():
+        return
+
+    plist_path = get_launchd_plist_path()
+    if not plist_path.exists():
+        return
+
+    current_user = _current_username()
+    console_user = _macos_console_username()
+    if console_user == current_user:
+        return
+
+    print()
+    print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
+    if console_user:
+        check_warn(
+            "LaunchAgent user is not the logged-in macOS user",
+            f"({current_user} is running Hermes; console user is {console_user})",
+        )
+    else:
+        check_warn(
+            "No logged-in macOS console user detected",
+            "(launchd user agents start inside a desktop login session)",
+        )
+    check_info("Use a system LaunchDaemon for headless/background deployments")
+    check_info("Or keep 'hermes gateway run' inside tmux/screen")
+    issues.append(
+        "macOS launchd user agents require the logged-in desktop account; "
+        "use a LaunchDaemon or tmux for headless deployments"
+    )
 
 
 def run_doctor(args):
@@ -532,6 +604,7 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
+    _check_gateway_service_launchd_session(issues)
 
     # =========================================================================
     # Check: Command installation (hermes bin symlink)
@@ -634,7 +707,9 @@ def run_doctor(args):
     
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
-    if terminal_env == "docker":
+    if _is_termux():
+        check_info("Docker backend is not available inside Termux (expected on Android)")
+    elif terminal_env == "docker":
         if shutil.which("docker"):
             # Check if docker daemon is running
             try:
@@ -653,10 +728,7 @@ def run_doctor(args):
         if shutil.which("docker"):
             check_ok("docker", "(optional)")
         else:
-            if _is_termux():
-                check_info("Docker backend is not available inside Termux (expected on Android)")
-            else:
-                check_warn("docker not found", "(optional)")
+            check_warn("docker not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":

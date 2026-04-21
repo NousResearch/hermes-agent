@@ -335,6 +335,12 @@ hermes gateway status                # Check status
 tail -f ~/.hermes/logs/gateway.log   # View logs
 ```
 
+:::warning LaunchAgents are per-user login services
+`hermes gateway install` creates a plist under `~/Library/LaunchAgents`, not a system-wide LaunchDaemon. This is the right fit when Hermes runs under the same macOS account that is logged into the desktop session.
+
+If Hermes runs under a separate SSH-only or service account, the LaunchAgent may never attach to the right launchd domain or survive login boundaries. In that topology, keep `hermes gateway run` under `tmux`/`screen`, or install a system LaunchDaemon that runs as that service user.
+:::
+
 The generated plist lives at `~/Library/LaunchAgents/ai.hermes.gateway.plist`. It includes three environment variables:
 
 - **PATH** — your full shell PATH at install time, with the venv `bin/` and `node_modules/.bin` prepended. This ensures user-installed tools (Node.js, ffmpeg, etc.) are available to gateway subprocesses like the WhatsApp bridge.

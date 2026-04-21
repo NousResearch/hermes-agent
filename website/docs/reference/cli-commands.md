@@ -167,16 +167,20 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
-| `start` | Start the installed systemd/launchd background service. |
+| `start` | Start the installed systemd service (Linux) or launchd user agent (macOS). |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
 | `status` | Show service status. |
-| `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
+| `install` | Install as a systemd service (Linux) or launchd user agent (macOS). |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
 
 :::tip WSL users
 Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
+:::
+
+:::tip macOS headless deployments
+`hermes gateway install` creates a per-user LaunchAgent, not a system LaunchDaemon. Use it when Hermes runs under the logged-in desktop account. For SSH-only or service-account deployments, prefer `tmux`/`screen` or a manually managed LaunchDaemon.
 :::
 
 ## `hermes setup`

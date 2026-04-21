@@ -12,6 +12,10 @@ from gateway.restart import (
 )
 
 
+def _pin_launchd_manager(monkeypatch, name="Aqua"):
+    monkeypatch.setattr(gateway_cli, "_launchd_managername", lambda: name)
+
+
 class TestSystemdServiceRefresh:
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
@@ -195,6 +199,7 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
 
+        _pin_launchd_manager(monkeypatch)
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
         calls = []
@@ -220,6 +225,7 @@ class TestLaunchdServiceRecovery:
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
 
+        _pin_launchd_manager(monkeypatch)
         calls = []
         domain = gateway_cli._launchd_domain()
         target = f"{domain}/{label}"
@@ -236,6 +242,7 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
+            ["launchctl", "list", label],
             ["launchctl", "kickstart", target],
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
@@ -247,6 +254,7 @@ class TestLaunchdServiceRecovery:
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
 
+        _pin_launchd_manager(monkeypatch)
         calls = []
         domain = gateway_cli._launchd_domain()
         target = f"{domain}/{label}"
@@ -263,12 +271,41 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
+            ["launchctl", "list", label],
             ["launchctl", "kickstart", target],
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
         ]
 
+    def test_launchd_start_bootstraps_before_kickstart_when_label_is_unloaded(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+
+        _pin_launchd_manager(monkeypatch)
+        calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "list", label]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "list", label],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+        _pin_launchd_manager(monkeypatch)
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
@@ -297,6 +334,7 @@ class TestLaunchdServiceRecovery:
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
         calls = []
 
+        _pin_launchd_manager(monkeypatch)
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -319,6 +357,7 @@ class TestLaunchdServiceRecovery:
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""
+        _pin_launchd_manager(monkeypatch)
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
         target = f"{domain}/{label}"
@@ -338,6 +377,7 @@ class TestLaunchdServiceRecovery:
 
     def test_launchd_stop_tolerates_already_unloaded(self, monkeypatch, capsys):
         """launchd_stop silently handles exit codes 3/113 (job not loaded)."""
+        _pin_launchd_manager(monkeypatch)
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
         target = f"{domain}/{label}"
@@ -358,6 +398,7 @@ class TestLaunchdServiceRecovery:
 
     def test_launchd_stop_waits_for_process_exit(self, monkeypatch):
         """launchd_stop calls _wait_for_gateway_exit after bootout."""
+        _pin_launchd_manager(monkeypatch)
         wait_called = []
 
         def fake_run(cmd, check=False, **kwargs):
@@ -373,6 +414,16 @@ class TestLaunchdServiceRecovery:
 
         assert len(wait_called) == 1
         assert wait_called[0] == {"timeout": 10.0, "force_after": 5.0}
+
+    def test_launchd_domain_uses_user_scope_for_background_sessions(self, monkeypatch):
+        _pin_launchd_manager(monkeypatch, "Background")
+
+        assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+
+    def test_launchd_domain_uses_gui_scope_for_aqua_sessions(self, monkeypatch):
+        _pin_launchd_manager(monkeypatch, "Aqua")
+
+        assert gateway_cli._launchd_domain() == f"gui/{os.getuid()}"
 
     def test_launchd_status_reports_local_stale_plist_when_unloaded(self, tmp_path, monkeypatch, capsys):
         plist_path = tmp_path / "ai.hermes.gateway.plist"

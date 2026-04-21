@@ -159,6 +159,46 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     assert issues == []
 
 
+def test_check_gateway_service_launchd_session_warns_for_non_console_user(monkeypatch, tmp_path, capsys):
+    plist_path = tmp_path / "ai.hermes.gateway.plist"
+    plist_path.write_text("<plist/>\n")
+
+    monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+    monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(doctor, "_current_username", lambda: "oc_runtime")
+    monkeypatch.setattr(doctor, "_macos_console_username", lambda: "svc_oc")
+
+    issues = []
+    doctor._check_gateway_service_launchd_session(issues)
+
+    out = capsys.readouterr().out
+    assert "Gateway Service" in out
+    assert "LaunchAgent user is not the logged-in macOS user" in out
+    assert "oc_runtime" in out
+    assert "svc_oc" in out
+    assert "LaunchDaemon" in out
+    assert issues == [
+        "macOS launchd user agents require the logged-in desktop account; use a LaunchDaemon or tmux for headless deployments"
+    ]
+
+
+def test_check_gateway_service_launchd_session_skips_when_console_user_matches(monkeypatch, tmp_path, capsys):
+    plist_path = tmp_path / "ai.hermes.gateway.plist"
+    plist_path.write_text("<plist/>\n")
+
+    monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+    monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(doctor, "_current_username", lambda: "oc_runtime")
+    monkeypatch.setattr(doctor, "_macos_console_username", lambda: "oc_runtime")
+
+    issues = []
+    doctor._check_gateway_service_launchd_session(issues)
+
+    out = capsys.readouterr().out
+    assert out == ""
+    assert issues == []
+
+
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 

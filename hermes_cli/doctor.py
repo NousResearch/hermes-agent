@@ -951,7 +951,20 @@ def run_doctor(args):
                 if _base and _base.rstrip("/").endswith("/anthropic"):
                     from agent.auxiliary_client import _to_openai_base_url
                     _base = _to_openai_base_url(_base)
-                _url = (_base.rstrip("/") + "/models") if _base else _default_url
+                # Build the health check URL. If base_url is set, try to use it
+                # intelligently:
+                # - If it ends with /v1 or /v1/, append /models
+                # - If it already has a deeper path (e.g. /v1/chat), don't append
+                # - Otherwise fall back to default_url
+                if _base:
+                    _stripped = _base.rstrip("/")
+                    if _stripped.endswith("/v1") or _stripped.endswith("/v1/models"):
+                        _url = _stripped.rstrip("/models") + "/models"
+                    else:
+                        # Custom path — use default URL to avoid breaking checks
+                        _url = _default_url
+                else:
+                    _url = _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "KimiCLI/1.30.0"

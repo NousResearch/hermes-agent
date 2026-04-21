@@ -1,6 +1,7 @@
 import { Box, Link, Text } from '@hermes/ink'
 import { memo, type ReactNode, useMemo } from 'react'
 
+import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
 
@@ -232,7 +233,7 @@ interface MdProps {
 
 function MdImpl({ compact, t, text }: MdProps) {
   const nodes = useMemo(() => {
-    const lines = text.split('\n')
+    const lines = ensureEmojiPresentation(text).split('\n')
     const nodes: ReactNode[] = []
     let i = 0
 

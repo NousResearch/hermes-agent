@@ -79,6 +79,14 @@ _RECALL_MODE_ALIASES = {"auto": "hybrid"}
 _VALID_RECALL_MODES = {"hybrid", "context", "tools"}
 
 
+def _normalize_session_path(path: str) -> str:
+    """Return a stable cwd key for Honcho session override lookup."""
+    try:
+        return str(Path(path).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError):
+        return str(Path(path).expanduser().absolute())
+
+
 def _normalize_recall_mode(val: str) -> str:
     """Normalize legacy recall mode values (e.g. 'auto' → 'hybrid')."""
     val = _RECALL_MODE_ALIASES.get(val, val)
@@ -544,11 +552,19 @@ class HonchoClientConfig:
 
         if not cwd:
             cwd = os.getcwd()
+        cwd = str(cwd)
 
         # Manual override always wins
         manual = self.sessions.get(cwd)
         if manual:
             return manual
+        normalized_cwd = _normalize_session_path(cwd)
+        for configured_cwd, configured_session in self.sessions.items():
+            if (
+                configured_session
+                and _normalize_session_path(configured_cwd) == normalized_cwd
+            ):
+                return configured_session
 
         # /title mid-session remap
         if session_title:

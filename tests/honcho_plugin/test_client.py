@@ -282,6 +282,44 @@ class TestResolveSessionName:
         config = HonchoClientConfig(sessions={"/home/user/proj": "custom-session"})
         assert config.resolve_session_name("/home/user/proj") == "custom-session"
 
+    def test_manual_override_accepts_trailing_slash(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        config = HonchoClientConfig(sessions={str(project): "custom-session"})
+
+        assert config.resolve_session_name(f"{project}{os.sep}") == "custom-session"
+
+    def test_manual_override_accepts_relative_cwd(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(tmp_path)
+        config = HonchoClientConfig(sessions={str(project): "custom-session"})
+
+        assert config.resolve_session_name("project") == "custom-session"
+
+    def test_manual_override_accepts_symlinked_cwd(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        link = tmp_path / "project-link"
+        try:
+            link.symlink_to(project, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"Symlink creation unavailable: {exc}")
+        config = HonchoClientConfig(sessions={str(project): "custom-session"})
+
+        assert config.resolve_session_name(str(link)) == "custom-session"
+
+    def test_manual_override_exact_key_still_wins(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        exact_cwd = f"{project}{os.sep}"
+        config = HonchoClientConfig(sessions={
+            exact_cwd: "exact-session",
+            str(project): "normalized-session",
+        })
+
+        assert config.resolve_session_name(exact_cwd) == "exact-session"
+
     def test_derive_from_dirname(self):
         config = HonchoClientConfig()
         result = config.resolve_session_name("/home/user/my-project")

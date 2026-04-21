@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from '@hermes/ink'
+import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
@@ -7,6 +7,8 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 const VISIBLE = 15
+const MIN_WIDTH = 60
+const MAX_WIDTH = 120
 
 const age = (ts: number) => {
   const d = (Date.now() / 1000 - ts) / 86400
@@ -27,6 +29,9 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
+
+  const { stdout } = useStdout()
+  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
 
   useEffect(() => {
     gw.request<SessionListResponse>('session.list', { limit: 20 })
@@ -99,7 +104,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   const off = Math.max(0, Math.min(sel - Math.floor(VISIBLE / 2), items.length - VISIBLE))
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={width}>
       <Text bold color={t.color.amber}>
         Resume Session
       </Text>
@@ -128,7 +133,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
               </Text>
             </Box>
 
-            <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
+            <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected} wrap="truncate-end">
               {s.title || s.preview || '(untitled)'}
             </Text>
           </Box>

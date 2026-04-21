@@ -51,6 +51,15 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _gateway_busy_input_mode() -> str:
+    """Best-effort read of the active gateway busy-input mode."""
+    try:
+        from gateway.run import GatewayRunner as _GatewayRunner
+        return _GatewayRunner._load_busy_input_mode()
+    except Exception:
+        return "interrupt"
+
+
 # Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 
@@ -1108,6 +1117,12 @@ class ProcessRegistry:
                 return result
 
             if _is_interrupted():
+                _queue_mode = _gateway_busy_input_mode() == "queue"
+
+                if _queue_mode:
+                    time.sleep(1)
+                    continue
+
                 result = {
                     "status": "interrupted",
                     "output": strip_ansi(session.output_buffer[-1000:]),

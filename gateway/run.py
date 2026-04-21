@@ -3474,6 +3474,10 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def busy_input_mode(self) -> str:
+        """Return the current active busy-input mode for gateway sessions."""
+        return self._busy_input_mode
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before

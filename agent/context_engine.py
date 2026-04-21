@@ -26,7 +26,51 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
+import inspect
+from pathlib import Path
 from typing import Any, Dict, List
+
+
+def describe_context_engine_origin(engine: "ContextEngine") -> Dict[str, Any]:
+    """Return best-effort origin metadata for the active context engine."""
+    info: Dict[str, Any] = {
+        "origin": "unknown",
+        "module": "",
+        "path": None,
+        "module_path": None,
+    }
+
+    if engine is None:
+        return info
+
+    module_name = getattr(engine.__class__, "__module__", "") or ""
+    info["module"] = module_name
+
+    stamped_origin = getattr(engine, "_hermes_context_engine_origin", "") or ""
+    stamped_path = getattr(engine, "_hermes_context_engine_path", None)
+    if stamped_origin:
+        info["origin"] = stamped_origin
+    if stamped_path:
+        info["path"] = str(stamped_path)
+
+    try:
+        class_file = Path(inspect.getfile(engine.__class__)).resolve()
+        info["module_path"] = str(class_file)
+        if info["path"] is None:
+            info["path"] = str(class_file)
+        if info["origin"] == "unknown":
+            parts = class_file.parts
+            if "plugins" in parts and "context_engine" in parts:
+                info["origin"] = "repo-shipped"
+            elif module_name.startswith("agent."):
+                info["origin"] = "built-in"
+    except Exception:
+        pass
+
+    if info["origin"] == "unknown" and getattr(engine, "name", "") == "compressor":
+        info["origin"] = "built-in"
+
+    return info
 
 
 class ContextEngine(ABC):

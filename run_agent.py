@@ -2277,6 +2277,7 @@ class AIAgent:
             _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
         except Exception:
             pass
+        self._configured_context_engine_name = _engine_name
 
         if _engine_name != "compressor":
             # Try loading from plugins/context_engine/<name>/
@@ -4471,6 +4472,74 @@ class AIAgent:
         if tool_call_id:
             metadata["tool_call_id"] = tool_call_id
         return {k: v for k, v in metadata.items() if v not in {None, ""}}
+
+    def get_context_engine_runtime_identity(self) -> Dict[str, Any]:
+        """Return host ↔ context-engine runtime identity for diagnostics."""
+        from agent.context_engine import describe_context_engine_origin
+
+        engine = getattr(self, "context_compressor", None)
+        engine_status = {}
+        if engine is not None:
+            try:
+                engine_status = engine.get_status() or {}
+            except Exception:
+                engine_status = {}
+
+        lifecycle = engine_status.get("lifecycle") if isinstance(engine_status, dict) else None
+        lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+
+        plugin_session_id = (
+            lifecycle.get("current_session_id")
+            or engine_status.get("current_session_id")
+            or getattr(engine, "_session_id", None)
+        )
+        plugin_conversation_id = (
+            lifecycle.get("conversation_id")
+            or engine_status.get("conversation_id")
+            or getattr(engine, "_conversation_id", None)
+        )
+        plugin_last_finalized_session_id = (
+            lifecycle.get("last_finalized_session_id")
+            or engine_status.get("last_finalized_session_id")
+        )
+
+        state_db_known = None
+        if getattr(self, "_session_db", None) is not None:
+            try:
+                state_db_known = self._session_db.get_session(self.session_id) is not None
+            except Exception:
+                state_db_known = None
+
+        warnings: list[str] = []
+        if state_db_known is False:
+            warnings.append("state_db_missing_host_session")
+        if plugin_session_id and plugin_session_id != self.session_id:
+            warnings.append("plugin_session_mismatch")
+
+        slash_commands: list[str] = []
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+
+            slash_commands = sorted(get_plugin_commands().keys())
+        except Exception:
+            slash_commands = []
+
+        identity = describe_context_engine_origin(engine)
+        if getattr(engine, "name", "") == "lcm" and identity["origin"].startswith("plugin:") and "lcm" not in slash_commands:
+            warnings.append("missing_expected_slash_command:/lcm")
+
+        identity.update({
+            "configured_engine": getattr(self, "_configured_context_engine_name", getattr(engine, "name", "compressor")),
+            "active_engine": getattr(engine, "name", None),
+            "host_session_id": self.session_id,
+            "host_session_known_to_state_db": state_db_known,
+            "plugin_session_id": plugin_session_id,
+            "plugin_conversation_id": plugin_conversation_id,
+            "plugin_last_finalized_session_id": plugin_last_finalized_session_id,
+            "slash_commands": slash_commands,
+            "warnings": warnings,
+        })
+        return identity
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.

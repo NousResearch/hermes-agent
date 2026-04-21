@@ -509,6 +509,12 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        try:
+            engine._hermes_context_engine_origin = f"plugin:{self.manifest.source or 'unknown'}"
+            if self.manifest.path:
+                engine._hermes_context_engine_path = self.manifest.path
+        except Exception:
+            pass
         self._manager._context_engine = engine
         logger.info(
             "Plugin '%s' registered context engine: %s",

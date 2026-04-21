@@ -593,6 +593,10 @@ def _run_single_child(
                 "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
             },
             "tool_trace": tool_trace,
+            # Captured before the finally block calls child.close() so the
+            # parent thread can fire subagent_stop with the correct role.
+            # Stripped before the dict is serialised back to the model.
+            "_child_role": getattr(child, "_delegate_role", None),
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -632,6 +636,7 @@ def _run_single_child(
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
+            "_child_role": getattr(child, "_delegate_role", None),
         }
 
     finally:
@@ -815,6 +820,10 @@ def delegate_task(
             # the parent blocks forever even after interrupt propagation.
             # Instead, use wait() with a short timeout so we can bail
             # when the parent is interrupted.
+            # Map task_index -> child agent, so fabricated entries for
+            # still-pending futures can carry the correct _delegate_role.
+            _child_by_index = {i: child for (i, _, child) in children}
+
             pending = set(futures.keys())
             while pending:
                 if getattr(parent_agent, "_interrupt_requested", False) is True:
@@ -834,6 +843,9 @@ def delegate_task(
                                     "error": str(exc),
                                     "api_calls": 0,
                                     "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        _child_by_index.get(idx), "_delegate_role", None
+                                    ),
                                 }
                         else:
                             entry = {
@@ -843,6 +855,9 @@ def delegate_task(
                                 "error": "Parent agent interrupted — child did not finish in time",
                                 "api_calls": 0,
                                 "duration_seconds": 0,
+                                "_child_role": getattr(
+                                    _child_by_index.get(idx), "_delegate_role", None
+                                ),
                             }
                         results.append(entry)
                         completed_count += 1
@@ -862,6 +877,9 @@ def delegate_task(
                             "error": str(exc),
                             "api_calls": 0,
                             "duration_seconds": 0,
+                            "_child_role": getattr(
+                                _child_by_index.get(idx), "_delegate_role", None
+                            ),
                         }
                     results.append(entry)
                     completed_count += 1
@@ -904,6 +922,33 @@ def delegate_task(
                 )
             except Exception:
                 pass
+
+    # Fire subagent_stop hooks once per child, serialised on the parent thread.
+    # This keeps Python-plugin and shell-hook callbacks off of the worker threads
+    # that ran the children, so hook authors don't need to reason about
+    # concurrent invocation.  Role was captured into the entry dict in
+    # _run_single_child (or the fabricated-entry branches above) before the
+    # child was closed.
+    _parent_session_id = getattr(parent_agent, "session_id", None)
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+    except Exception:
+        _invoke_hook = None
+    for entry in results:
+        child_role = entry.pop("_child_role", None)
+        if _invoke_hook is None:
+            continue
+        try:
+            _invoke_hook(
+                "subagent_stop",
+                parent_session_id=_parent_session_id,
+                child_role=child_role,
+                child_summary=entry.get("summary"),
+                child_status=entry.get("status"),
+                duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+            )
+        except Exception:
+            logger.debug("subagent_stop hook invocation failed", exc_info=True)
 
     total_duration = round(time.monotonic() - overall_start, 2)
 

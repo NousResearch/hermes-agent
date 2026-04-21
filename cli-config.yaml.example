@@ -917,3 +917,39 @@ display:
 #   # Names and usernames are NOT affected (user-chosen, publicly visible).
 #   # Routing/delivery still uses the original values internally.
 #   redact_pii: false
+
+# =============================================================================
+# Shell-script hooks
+# =============================================================================
+# Register shell scripts as plugin-hook callbacks.  Each entry is executed as
+# a subprocess (shell=False, shlex.split) with a JSON payload on stdin.  On
+# stdout the script may return JSON that either blocks the tool call or
+# injects context into the next LLM call.
+#
+# Valid events (mirror hermes_cli.plugins.VALID_HOOKS):
+#   pre_tool_call, post_tool_call, pre_llm_call, post_llm_call,
+#   pre_api_request, post_api_request, on_session_start, on_session_end,
+#   on_session_finalize, on_session_reset, subagent_stop
+#
+# First-use consent: each (event, command) pair prompts once on a TTY, then
+# is persisted to ~/.hermes/shell-hooks-allowlist.json.  Non-interactive
+# runs (gateway, cron) need --accept-hooks, HERMES_ACCEPT_HOOKS=1, or the
+# hooks_auto_accept key below.
+#
+# See website/docs/user-guide/features/hooks.md for the full JSON wire
+# protocol and worked examples.
+#
+# hooks:
+#   pre_tool_call:
+#     - matcher: "terminal"
+#       command: "~/.hermes/agent-hooks/block-rm-rf.sh"
+#       timeout: 10
+#   post_tool_call:
+#     - matcher: "write_file|patch"
+#       command: "~/.hermes/agent-hooks/auto-format.sh"
+#   pre_llm_call:
+#     - command: "~/.hermes/agent-hooks/inject-cwd-context.sh"
+#   subagent_stop:
+#     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
+#
+# hooks_auto_accept: false

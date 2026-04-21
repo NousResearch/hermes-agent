@@ -1367,20 +1367,12 @@ class AIAgent:
         return False
 
     def _is_ollama_glm_backend(self) -> bool:
-        """Detect the narrow backend family affected by Ollama/GLM stop misreports.
+        """Detect Ollama-hosted GLM models affected by stop misreports.
 
-        Only returns True for backends that are known to be Ollama, which
-        can misreport truncated output as finish_reason='stop'.  Other local
-        servers (sglang, vLLM, LM Studio, etc.) report finish_reason correctly
-        and must NOT be subjected to the stop->length heuristic.
-
+        Ollama can misreport truncated output as finish_reason='stop'.
         Detection relies on explicit Ollama signatures:
         - Port 11434 (Ollama default)
         - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
-
-        The previous is_local_endpoint() fallback was too broad and caused
-        false truncation detection on non-Ollama local servers hosting GLM
-        models (sglang, vLLM, etc.).
         """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()

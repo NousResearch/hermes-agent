@@ -594,7 +594,8 @@ export function TextInput({
       let c = curRef.current
       let v = vRef.current
       const mod = isActionMod(k)
-      const actionHome = k.home || isMacActionFallback(k, inp, 'a')
+      const wordMod = mod || k.meta
+      const actionHome = k.home || (!isMac && mod && inp === 'a') || isMacActionFallback(k, inp, 'a')
       const actionEnd = k.end || (mod && inp === 'e') || isMacActionFallback(k, inp, 'e')
       const actionDeleteToStart = (mod && inp === 'u') || isMacActionFallback(k, inp, 'u')
       const range = selRange()
@@ -608,7 +609,7 @@ export function TextInput({
         return swap(redo, undo)
       }
 
-      if (mod && inp === 'a') {
+      if (isMac && mod && inp === 'a') {
         return selectAll()
       }
 
@@ -619,32 +620,32 @@ export function TextInput({
         clearSel()
         c = v.length
       } else if (k.leftArrow) {
-        if (range && !mod) {
+        if (range && !wordMod) {
           clearSel()
           c = range.start
         } else {
           clearSel()
-          c = mod ? wordLeft(v, c) : prevPos(v, c)
+          c = wordMod ? wordLeft(v, c) : prevPos(v, c)
         }
       } else if (k.rightArrow) {
-        if (range && !mod) {
+        if (range && !wordMod) {
           clearSel()
           c = range.end
         } else {
           clearSel()
-          c = mod ? wordRight(v, c) : nextPos(v, c)
+          c = wordMod ? wordRight(v, c) : nextPos(v, c)
         }
-      } else if (mod && inp === 'b') {
+      } else if (wordMod && inp === 'b') {
         clearSel()
         c = wordLeft(v, c)
-      } else if (mod && inp === 'f') {
+      } else if (wordMod && inp === 'f') {
         clearSel()
         c = wordRight(v, c)
       } else if (range && (k.backspace || delFwd)) {
         v = v.slice(0, range.start) + v.slice(range.end)
         c = range.start
       } else if (k.backspace && c > 0) {
-        if (mod) {
+        if (wordMod) {
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
           c = t
@@ -654,7 +655,7 @@ export function TextInput({
           c = t
         }
       } else if (delFwd && c < v.length) {
-        if (mod) {
+        if (wordMod) {
           const t = wordRight(v, c)
           v = v.slice(0, c) + v.slice(t)
         } else {

@@ -8,8 +8,8 @@ Options to run specific parts of the workflow. Trigger these via natural languag
 |--------|----------------|--------|
 | Storyboard only | 1-3 | `storyboard.md` + `characters/` |
 | Prompts only | 1-5 | + `prompts/*.md` |
-| Images only | 7-9 | + images + PDF |
-| Regenerate N | 7 (partial) | Specific page(s) + PDF |
+| Images only | 7-8 | + images |
+| Regenerate N | 7 (partial) | Specific page(s) |
 
 ---
 
@@ -60,7 +60,7 @@ Generate images from existing prompts (starts at Step 7).
 
 **User cue**: "generate images from existing prompts", "run the images now" (pointing at an existing `comic/topic-slug/` directory).
 
-**Workflow**: Skip to Step 7, then 8-9
+**Workflow**: Skip to Step 7, then 8
 
 **Prerequisites** (must exist in directory):
 - `prompts/` directory with page prompt files
@@ -70,7 +70,6 @@ Generate images from existing prompts (starts at Step 7).
 **Output**:
 - `characters/characters.png` (if not exists)
 - `NN-{cover|page}-[slug].png` images
-- `{topic-slug}.pdf`
 
 **Use case**: Re-generate images after editing prompts. Useful for:
 - Recovering from failed image generation
@@ -88,15 +87,14 @@ Regenerate specific pages only.
 **Workflow**:
 1. Read existing prompts for specified pages
 2. Regenerate images only for those pages via `image_generate`
-3. Regenerate PDF
+3. Download each returned URL and overwrite the existing PNG
 
 **Prerequisites** (must exist):
 - `prompts/NN-{cover|page}-[slug].md` for specified pages
-- `characters/characters.png` (for reference, if it was used originally)
+- `characters/characters.md` (for agent-side consistency checks, if it was used originally)
 
 **Output**:
 - Regenerated `NN-{cover|page}-[slug].png` for specified pages
-- Updated `{topic-slug}.pdf`
 
 **Use case**: Fix specific pages without regenerating entire comic. Useful for:
 - Fixing a single problematic page

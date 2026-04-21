@@ -674,6 +674,35 @@ class TestWellKnownSkillSource:
 
 
 class TestCheckForSkillUpdates:
+    def test_bundle_content_hash_handles_bytes_content(self):
+        """Regression test for #2739: bundle_content_hash must handle bytes files."""
+        # SkillBundle.files can contain Union[str, bytes]
+        bundle = SkillBundle(
+            name="binary-skill",
+            files={
+                "SKILL.md": "---\nname: test\n---\n",
+                "assets/audio.wav": b"RIFF\x00\x01fakewav",  # bytes content
+            },
+            source="github",
+            identifier="owner/repo/binary-skill",
+            trust_level="community",
+        )
+        # Should not crash with AttributeError: 'bytes' object has no attribute 'encode'
+        hash_result = bundle_content_hash(bundle)
+        assert hash_result.startswith("sha256:")
+        # Deterministic: same content = same hash
+        bundle2 = SkillBundle(
+            name="binary-skill",
+            files={
+                "SKILL.md": "---\nname: test\n---\n",
+                "assets/audio.wav": b"RIFF\x00\x01fakewav",
+            },
+            source="github",
+            identifier="owner/repo/binary-skill",
+            trust_level="community",
+        )
+        assert bundle_content_hash(bundle2) == hash_result
+
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
         from tools.skills_guard import content_hash
 

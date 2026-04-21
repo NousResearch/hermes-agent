@@ -454,6 +454,33 @@ class TestHttpSessionLifecycle:
     """Verify persistent aiohttp.ClientSession is created and cleaned up."""
 
     @pytest.mark.asyncio
+    async def test_disconnect_uses_taskkill_tree_on_windows(self):
+        """Windows disconnect should target the bridge process tree, not just the parent PID."""
+        adapter = _make_adapter()
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.side_effect = [0]
+        adapter._bridge_process = mock_proc
+        adapter._poll_task = None
+        adapter._http_session = None
+        adapter._running = True
+        adapter._session_lock_identity = None
+
+        with patch("gateway.platforms.whatsapp._IS_WINDOWS", True), \
+             patch("gateway.platforms.whatsapp.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run, \
+             patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock):
+            await adapter.disconnect()
+
+        mock_run.assert_called_once_with(
+            ["taskkill", "/PID", "12345", "/T"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        mock_proc.terminate.assert_not_called()
+        mock_proc.kill.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_session_closed_on_disconnect(self):
         """disconnect() should close self._http_session."""
         adapter = _make_adapter()

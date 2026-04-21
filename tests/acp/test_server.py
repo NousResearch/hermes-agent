@@ -95,19 +95,37 @@ class TestInitialize:
 
 class TestAuthenticate:
     @pytest.mark.asyncio
-    async def test_authenticate_with_provider_configured(self, agent, monkeypatch):
+    async def test_authenticate_with_matching_method_id(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.has_provider",
-            lambda: True,
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
         )
         resp = await agent.authenticate(method_id="openrouter")
         assert isinstance(resp, AuthenticateResponse)
 
     @pytest.mark.asyncio
+    async def test_authenticate_is_case_insensitive(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id="OpenRouter")
+        assert isinstance(resp, AuthenticateResponse)
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_mismatched_method_id(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id="totally-invalid-method")
+        assert resp is None
+
+    @pytest.mark.asyncio
     async def test_authenticate_without_provider(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.has_provider",
-            lambda: False,
+            "acp_adapter.server.detect_provider",
+            lambda: None,
         )
         resp = await agent.authenticate(method_id="openrouter")
         assert resp is None

@@ -51,7 +51,7 @@ try:
 except ImportError:
     from acp.schema import AuthMethod as AuthMethodAgent  # type: ignore[attr-defined]
 
-from acp_adapter.auth import detect_provider, has_provider
+from acp_adapter.auth import detect_provider
 from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
@@ -351,9 +351,18 @@ class HermesACPAgent(acp.Agent):
         )
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
-        if has_provider():
-            return AuthenticateResponse()
-        return None
+        # Only accept authenticate() calls whose method_id matches the
+        # provider we advertised in initialize(). Without this check,
+        # authenticate() would acknowledge any method_id as long as the
+        # server has provider credentials configured — harmless under
+        # Hermes' threat model (ACP is stdio-only, local-trust), but poor
+        # API hygiene and confusing if ACP ever grows multi-method auth.
+        provider = detect_provider()
+        if not provider:
+            return None
+        if not isinstance(method_id, str) or method_id.strip().lower() != provider:
+            return None
+        return AuthenticateResponse()
 
     # ---- Session management -------------------------------------------------
 

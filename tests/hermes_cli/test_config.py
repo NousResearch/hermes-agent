@@ -501,7 +501,7 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
 
-    def test_compatible_custom_providers_prefers_api_then_url_then_base_url(self, tmp_path):
+    def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(
@@ -526,7 +526,7 @@ class TestCustomProviderCompatibility:
         assert compatible == [
             {
                 "name": "My Provider",
-                "base_url": "https://api.example.com/v1",
+                "base_url": "https://base.example.com/v1",
                 "provider_key": "my-provider",
             }
         ]

@@ -253,6 +253,11 @@ class TestDoctorCommandInstallation:
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
         monkeypatch.setattr(sys, "platform", "win32")
+        # Mock shutil.which since the real implementation calls _winapi
+        # which is None on Linux/WSL — would crash before doctor's own
+        # win32 short-circuit can skip the section.
+        import shutil
+        monkeypatch.setattr(shutil, "which", lambda *_a, **_kw: None)
 
         fake_model_tools = types.SimpleNamespace(
             check_tool_availability=lambda *a, **kw: ([], []),

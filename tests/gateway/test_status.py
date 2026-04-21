@@ -105,6 +105,80 @@ class TestGatewayPidState:
         assert status.get_running_pid(pid_path, cleanup_stale=False) == os.getpid()
         assert pid_path.exists()
 
+    # ── Regression: stale PID file after crash/SIGKILL (issue #13655) ─────────
+
+    def test_get_running_pid_removes_stale_pid_file_after_crash(self, tmp_path, monkeypatch):
+        """get_running_pid() must delete the PID file when the recorded PID is dead.
+
+        Before the fix, _cleanup_invalid_pid_path() delegated to remove_pid_file()
+        which refuses to delete a file whose recorded PID ≠ os.getpid().  After a
+        SIGKILL the stale file was therefore left behind, causing write_pid_file()
+        to raise FileExistsError and the gateway to log a spurious
+        "PID file race lost" error on every restart attempt.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+
+        # Write a PID file that belongs to a *different* (dead) process.
+        dead_pid = os.getpid() + 1_000_000  # guaranteed not to be alive
+        pid_path.write_text(json.dumps({
+            "pid": dead_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 999,
+        }))
+
+        # Simulate the dead-PID check: os.kill raises ProcessLookupError.
+        def fake_kill(pid, sig):
+            if pid == dead_pid:
+                raise ProcessLookupError(f"no such process: {pid}")
+            # Allow signals to the current process (used elsewhere in tests).
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        result = status.get_running_pid()
+
+        assert result is None, "A dead PID should be treated as no gateway running"
+        assert not pid_path.exists(), (
+            "The stale PID file must be deleted so the next startup can claim it; "
+            "if it is left behind write_pid_file() will raise FileExistsError and "
+            "the gateway will enter a restart loop (issue #13655)"
+        )
+
+    def test_write_pid_file_succeeds_after_stale_pid_cleared(self, tmp_path, monkeypatch):
+        """write_pid_file() must not raise FileExistsError after a crash.
+
+        Full sequence: crashed gateway left a stale PID file → new process calls
+        get_running_pid() which deletes the stale file → write_pid_file() claims
+        the slot for the new process.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+
+        dead_pid = os.getpid() + 1_000_000
+        pid_path.write_text(json.dumps({
+            "pid": dead_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 999,
+        }))
+
+        def fake_kill(pid, sig):
+            if pid == dead_pid:
+                raise ProcessLookupError(f"no such process: {pid}")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        # Step 1: startup guard — should see no live gateway.
+        running = status.get_running_pid()
+        assert running is None
+
+        # Step 2: claim the PID file — must not raise FileExistsError.
+        status.write_pid_file()
+
+        payload = json.loads(pid_path.read_text())
+        assert payload["pid"] == os.getpid(), "New process should own the PID file"
+
 
 class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):

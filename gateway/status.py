@@ -216,10 +216,15 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     if not cleanup_stale:
         return
     try:
-        if pid_path == _get_pid_path():
-            remove_pid_file()
-        else:
-            pid_path.unlink(missing_ok=True)
+        # Force-unlink directly — we have already confirmed the recorded PID is
+        # dead or invalid, so remove_pid_file()'s ownership guard (which refuses
+        # to delete a file whose recorded PID ≠ os.getpid()) is wrong here: it
+        # would silently preserve a stale file left behind by a crashed/SIGKILL'd
+        # gateway, causing the next startup's write_pid_file() call to hit
+        # FileExistsError and log a spurious "PID file race lost" error that
+        # locks the gateway out until an operator manually deletes the file.
+        # See issue #13655.
+        pid_path.unlink(missing_ok=True)
     except Exception:
         pass
 

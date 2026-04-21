@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from '@hermes/ink'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
+import { providerDisplayNames } from '../domain/providers.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -59,6 +60,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
   const provider = providers[providerIdx]
   const models = provider?.models ?? []
+  const names = useMemo(() => providerDisplayNames(providers), [providers])
 
   useInput((ch, key) => {
     if (key.escape) {
@@ -160,7 +162,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
   if (stage === 'provider') {
     const rows = providers.map(
-      p => `${p.is_current ? '*' : ' '} ${p.name} · ${p.total_models ?? p.models?.length ?? 0} models`
+      (p, i) => `${p.is_current ? '*' : ' '} ${names[i]} · ${p.total_models ?? p.models?.length ?? 0} models`
     )
 
     const { items, off } = visibleItems(rows, providerIdx)
@@ -179,7 +181,10 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           const idx = off + i
 
           return (
-            <Text color={providerIdx === idx ? t.color.cornsilk : t.color.dim} key={row}>
+            <Text
+              color={providerIdx === idx ? t.color.cornsilk : t.color.dim}
+              key={providers[idx]?.slug ?? `row-${idx}`}
+            >
               {providerIdx === idx ? '▸ ' : '  '}
               {i + 1}. {row}
             </Text>
@@ -201,7 +206,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         Select Model
       </Text>
 
-      <Text color={t.color.dim}>{provider?.name || '(unknown provider)'}</Text>
+      <Text color={t.color.dim}>{names[providerIdx] || '(unknown provider)'}</Text>
       {!models.length ? <Text color={t.color.dim}>no models listed for this provider</Text> : null}
       {provider?.warning ? <Text color={t.color.label}>warning: {provider.warning}</Text> : null}
       {off > 0 && <Text color={t.color.dim}> ↑ {off} more</Text>}
@@ -210,7 +215,10 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         const idx = off + i
 
         return (
-          <Text color={modelIdx === idx ? t.color.cornsilk : t.color.dim} key={row}>
+          <Text
+            color={modelIdx === idx ? t.color.cornsilk : t.color.dim}
+            key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
+          >
             {modelIdx === idx ? '▸ ' : '  '}
             {i + 1}. {row}
           </Text>

@@ -576,6 +576,14 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if "dm_policy" in platform_cfg:
+                    bridged["dm_policy"] = platform_cfg["dm_policy"]
+                if "allow_from" in platform_cfg:
+                    bridged["allow_from"] = platform_cfg["allow_from"]
+                if "group_policy" in platform_cfg:
+                    bridged["group_policy"] = platform_cfg["group_policy"]
+                if "group_allow_from" in platform_cfg:
+                    bridged["group_allow_from"] = platform_cfg["group_allow_from"]
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
@@ -662,8 +670,7 @@ def load_gateway_config() -> GatewayConfig:
                 if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
                     os.environ["TELEGRAM_REQUIRE_MENTION"] = str(telegram_cfg["require_mention"]).lower()
                 if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
-                    import json as _json
-                    os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
+                    os.environ["TELEGRAM_MENTION_PATTERNS"] = json.dumps(telegram_cfg["mention_patterns"])
                 frc = telegram_cfg.get("free_response_chats")
                 if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
                     if isinstance(frc, list):
@@ -700,6 +707,20 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
+                if "dm_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_DM_POLICY"):
+                    os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
+                af = whatsapp_cfg.get("allow_from")
+                if af is not None and not os.getenv("WHATSAPP_ALLOWED_USERS"):
+                    if isinstance(af, list):
+                        af = ",".join(str(v) for v in af)
+                    os.environ["WHATSAPP_ALLOWED_USERS"] = str(af)
+                if "group_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_GROUP_POLICY"):
+                    os.environ["WHATSAPP_GROUP_POLICY"] = str(whatsapp_cfg["group_policy"]).lower()
+                gaf = whatsapp_cfg.get("group_allow_from")
+                if gaf is not None and not os.getenv("WHATSAPP_GROUP_ALLOWED_USERS"):
+                    if isinstance(gaf, list):
+                        gaf = ",".join(str(v) for v in gaf)
+                    os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
 
             # DingTalk settings → env vars (env vars take precedence)
             dingtalk_cfg = yaml_cfg.get("dingtalk", {})
@@ -1237,7 +1258,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             if legacy_home:
                 qq_home = legacy_home
                 qq_home_name_env = "QQ_HOME_CHANNEL_NAME"
-                import logging
                 logging.getLogger(__name__).warning(
                     "QQ_HOME_CHANNEL is deprecated; rename to QQBOT_HOME_CHANNEL "
                     "in your .env for consistency with the platform key."

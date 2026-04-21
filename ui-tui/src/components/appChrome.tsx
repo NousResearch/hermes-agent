@@ -12,18 +12,24 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
-function FaceTicker({ color }: { color: string }) {
+function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
+  const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    const id = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
+    const face = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
+    const clock = setInterval(() => setNow(Date.now()), 1000)
 
-    return () => clearInterval(id)
+    return () => {
+      clearInterval(face)
+      clearInterval(clock)
+    }
   }, [])
 
   return (
     <Text color={color}>
       {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…
+      {startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
     </Text>
   )
 }
@@ -99,6 +105,8 @@ export function StatusRule({
   usage,
   bgCount,
   sessionStartedAt,
+  showCost,
+  turnStartedAt,
   voiceLabel,
   t
 }: StatusRuleProps) {
@@ -119,7 +127,7 @@ export function StatusRule({
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
-          {busy ? <FaceTicker color={statusColor} /> : <Text color={statusColor}>{status}</Text>}
+          {busy ? <FaceTicker color={statusColor} startedAt={turnStartedAt} /> : <Text color={statusColor}>{status}</Text>}
           <Text color={t.color.dim}> │ {model}</Text>
           {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
           {bar ? (
@@ -136,6 +144,9 @@ export function StatusRule({
           ) : null}
           {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
           {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
+          {showCost && typeof usage.cost_usd === 'number' ? (
+            <Text color={t.color.dim}> │ ${usage.cost_usd.toFixed(4)}</Text>
+          ) : null}
         </Text>
       </Box>
 
@@ -284,10 +295,12 @@ interface StatusRuleProps {
   cols: number
   cwdLabel: string
   model: string
-  sessionStartedAt?: number | null
+  sessionStartedAt?: null | number
+  showCost: boolean
   status: string
   statusColor: string
   t: Theme
+  turnStartedAt?: null | number
   usage: Usage
   voiceLabel?: string
 }

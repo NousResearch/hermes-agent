@@ -7,12 +7,13 @@
     let
       hermes-agent = inputs.self.packages.${system}.default;
       hermes-tui = inputs.self.packages.${system}.tui;
-      packages = [ hermes-agent hermes-tui ];
+      hermes-web = inputs.self.packages.${system}.web;
+      packages = [ hermes-agent hermes-tui hermes-web ];
     in {
       devShells.default = pkgs.mkShell {
         inputsFrom = packages;
         packages = with pkgs; [
-          python311 uv nodejs_22 ripgrep git openssh ffmpeg
+          python312 uv nodejs_22 ripgrep git openssh ffmpeg
         ];
 
         shellHook = let

@@ -19,6 +19,30 @@ class TestGatewayPidState:
         assert isinstance(payload["argv"], list)
         assert payload["argv"]
 
+    def test_write_pid_file_is_atomic_against_concurrent_writers(self, tmp_path, monkeypatch):
+        """Regression: two concurrent --replace invocations must not both win.
+
+        Without O_CREAT|O_EXCL, two processes racing through start_gateway()'s
+        termination-wait would both write to gateway.pid, silently overwriting
+        each other and leaving multiple gateway instances alive (#11718).
+        """
+        import pytest
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # First write wins.
+        status.write_pid_file()
+        assert (tmp_path / "gateway.pid").exists()
+
+        # Second write (simulating a racing --replace that missed the earlier
+        # guards) must raise FileExistsError rather than clobber the record.
+        with pytest.raises(FileExistsError):
+            status.write_pid_file()
+
+        # Original record is preserved.
+        payload = json.loads((tmp_path / "gateway.pid").read_text())
+        assert payload["pid"] == os.getpid()
+
     def test_get_running_pid_rejects_live_non_gateway_pid(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

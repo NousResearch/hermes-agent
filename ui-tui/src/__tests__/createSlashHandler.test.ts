@@ -17,6 +17,64 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
+  it('opens the skills hub locally for bare /skills', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/skills')).toBe(true)
+    expect(getOverlayState().skillsHub).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('routes /skills install <name> to skills.manage without opening overlay', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/skills install foo')).toBe(true)
+    expect(getOverlayState().skillsHub).toBe(false)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'install',
+      query: 'foo'
+    })
+  })
+
+  it('routes /skills inspect <name> to skills.manage', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/skills inspect my-skill')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'inspect',
+      query: 'my-skill'
+    })
+  })
+
+  it('routes /skills search <query> to skills.manage', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/skills search vibe')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'search',
+      query: 'vibe'
+    })
+  })
+
+  it('routes /skills browse [page] to skills.manage with a numeric page', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/skills browse 3')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'browse',
+      page: 3
+    })
+  })
+
+  it('shows usage for an unknown /skills subcommand', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/skills zzz')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('usage: /skills'))
+  })
+
   it('cycles details mode and persists it', async () => {
     const ctx = buildCtx()
 
@@ -120,6 +178,67 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/h')).toBe(true)
     expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
+  })
+
+  it('falls through to command.dispatch for skill commands and sends the message', async () => {
+    const skillMessage = 'Use this skill to do X.\n\n## Steps\n1. First step'
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(new Error('skill command: use command.dispatch'))
+            }
+
+            if (method === 'command.dispatch') {
+              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/hermes-agent-dev')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: hermes-agent-dev')
+    })
+    expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
+  })
+
+  it('handles send-type dispatch for /plan command', async () => {
+    const planMessage = 'Plan skill content loaded'
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(new Error('pending-input command'))
+            }
+
+            if (method === 'command.dispatch') {
+              return Promise.resolve({ type: 'send', message: planMessage })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/plan create a REST API')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.send).toHaveBeenCalledWith(planMessage)
+    })
   })
 })
 

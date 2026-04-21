@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import shlex
+import ssl
 import stat
 import base64
 import hashlib
@@ -151,7 +152,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="gemini",
         name="Google AI Studio",
         auth_type="api_key",
-        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta",
         api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         base_url_env_var="GEMINI_BASE_URL",
     ),
@@ -353,6 +354,9 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     """
     if env_override:
         return env_override
+    # No key → nothing to infer from.  Return default without inspecting.
+    if not api_key:
+        return default_url
     if api_key.startswith("sk-kimi-"):
         return KIMI_CODE_BASE_URL
     return default_url
@@ -479,6 +483,14 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     """
     if env_override:
         return env_override
+
+    # No API key set → don't probe (would fire N×M HTTPS requests with an
+    # empty Bearer token, all returning 401).  This path is hit during
+    # auxiliary-client auto-detection when the user has no Z.AI credentials
+    # at all — the caller discards the result immediately, so the probe is
+    # pure latency for every AIAgent construction.
+    if not api_key:
+        return default_url
 
     # Check provider-state cache for a previously-detected endpoint.
     auth_store = _load_auth_store()
@@ -1434,49 +1446,6 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
-def _write_codex_cli_tokens(
-    access_token: str,
-    refresh_token: str,
-    *,
-    last_refresh: Optional[str] = None,
-) -> None:
-    """Write refreshed tokens back to ~/.codex/auth.json.
-
-    OpenAI OAuth refresh tokens are single-use and rotate on every refresh.
-    When Hermes refreshes a token it consumes the old refresh_token; if we
-    don't write the new pair back, the Codex CLI (or VS Code extension) will
-    fail with ``refresh_token_reused`` on its next refresh attempt.
-
-    This mirrors the Anthropic write-back to ~/.claude/.credentials.json
-    via ``_write_claude_code_credentials()``.
-    """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
-    try:
-        existing: Dict[str, Any] = {}
-        if auth_path.is_file():
-            existing = json.loads(auth_path.read_text(encoding="utf-8"))
-        if not isinstance(existing, dict):
-            existing = {}
-
-        tokens_dict = existing.get("tokens")
-        if not isinstance(tokens_dict, dict):
-            tokens_dict = {}
-        tokens_dict["access_token"] = access_token
-        tokens_dict["refresh_token"] = refresh_token
-        existing["tokens"] = tokens_dict
-        if last_refresh is not None:
-            existing["last_refresh"] = last_refresh
-
-        auth_path.parent.mkdir(parents=True, exist_ok=True)
-        auth_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-        auth_path.chmod(0o600)
-    except (OSError, IOError) as exc:
-        logger.debug("Failed to write refreshed tokens to %s: %s", auth_path, exc)
-
-
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -1544,6 +1513,11 @@ def refresh_codex_oauth_pure(
                 "then run `hermes auth` to re-authenticate."
             )
             relogin_required = True
+        # A 401/403 from the token endpoint always means the refresh token
+        # is invalid/expired — force relogin even if the body error code
+        # wasn't one of the known strings above.
+        if response.status_code in (401, 403) and not relogin_required:
+            relogin_required = True
         raise AuthError(
             message,
             provider="openai-codex",
@@ -1599,12 +1573,6 @@ def _refresh_codex_auth_tokens(
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
-    # Write back to ~/.codex/auth.json so Codex CLI / VS Code stay in sync.
-    _write_codex_cli_tokens(
-        refreshed["access_token"],
-        refreshed["refresh_token"],
-        last_refresh=refreshed.get("last_refresh"),
-    )
     return updated_tokens
 
 
@@ -1649,25 +1617,7 @@ def resolve_codex_runtime_credentials(
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store."""
-    try:
-        data = _read_codex_tokens()
-    except AuthError as orig_err:
-        # Only attempt migration when there are NO tokens stored at all
-        # (code == "codex_auth_missing"), not when tokens exist but are invalid.
-        if orig_err.code != "codex_auth_missing":
-            raise
-
-        # Migration: user had Codex as active provider with old storage (~/.codex/).
-        cli_tokens = _import_codex_cli_tokens()
-        if cli_tokens:
-            logger.info("Migrating Codex credentials from ~/.codex/ to Hermes auth store")
-            print("⚠️  Migrating Codex credentials to Hermes's own auth store.")
-            print("   This avoids conflicts with Codex CLI and VS Code.")
-            print("   Run `hermes auth` to create a fully independent session.\n")
-            _save_codex_tokens(cli_tokens)
-            data = _read_codex_tokens()
-        else:
-            raise
+    data = _read_codex_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
@@ -1714,7 +1664,7 @@ def _resolve_verify(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None,
-) -> bool | str:
+) -> bool | ssl.SSLContext:
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
@@ -1734,13 +1684,12 @@ def _resolve_verify(
     if effective_ca:
         ca_path = str(effective_ca)
         if not os.path.isfile(ca_path):
-            import logging
-            logging.getLogger("hermes.auth").warning(
+            logger.warning(
                 "CA bundle path does not exist: %s — falling back to default certificates",
                 ca_path,
             )
             return True
-        return ca_path
+        return ssl.create_default_context(cafile=ca_path)
     return True
 
 
@@ -2782,6 +2731,17 @@ def _update_config_for_provider(
     else:
         # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
+
+    # Clear stale api_key/api_mode left over from a previous custom provider.
+    # When the user switches from e.g. a MiniMax custom endpoint
+    # (api_mode=anthropic_messages, api_key=mxp-...) to a built-in provider
+    # (e.g. OpenRouter), the stale api_key/api_mode would override the new
+    # provider's credentials and transport choice.  Built-in providers that
+    # need a specific api_mode (copilot, xai) set it at request-resolution
+    # time via `_copilot_runtime_api_mode` / `_detect_api_mode_for_url`, so
+    # removing the persisted value here is safe.
+    model_cfg.pop("api_key", None)
+    model_cfg.pop("api_mode", None)
 
     # When switching to a non-OpenRouter provider, ensure model.default is
     # valid for the new provider.  An OpenRouter-formatted name like

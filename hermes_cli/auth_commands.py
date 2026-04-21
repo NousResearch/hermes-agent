@@ -152,6 +152,23 @@ def auth_add_command(args) -> None:
 
     pool = load_pool(provider)
 
+    # Clear ALL suppressions for this provider — re-adding a credential is
+    # a strong signal the user wants auth re-enabled.  This covers env:*
+    # (shell-exported vars), gh_cli (copilot), claude_code, qwen-cli,
+    # device_code (codex), etc.  One consistent re-engagement pattern.
+    # Matches the Codex device_code re-link pattern that predates this.
+    if not provider.startswith(CUSTOM_POOL_PREFIX):
+        try:
+            from hermes_cli.auth import (
+                _load_auth_store,
+                unsuppress_credential_source,
+            )
+            suppressed = _load_auth_store().get("suppressed_sources", {})
+            for src in list(suppressed.get(provider, []) or []):
+                unsuppress_credential_source(provider, src)
+        except Exception:
+            pass
+
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
         if not token:
@@ -338,71 +355,28 @@ def auth_remove_command(args) -> None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
-    # If this was an env-seeded credential, also clear the env var from .env
-    # so it doesn't get re-seeded on the next load_pool() call.
-    if removed.source.startswith("env:"):
-        env_var = removed.source[len("env:"):]
-        if env_var:
-            from hermes_cli.config import remove_env_value
-            cleared = remove_env_value(env_var)
-            if cleared:
-                print(f"Cleared {env_var} from .env")
+    # Unified removal dispatch.  Every credential source Hermes reads from
+    # (env vars, external OAuth files, auth.json blocks, custom config)
+    # has a RemovalStep registered in agent.credential_sources.  The step
+    # handles its source-specific cleanup and we centralise suppression +
+    # user-facing output here so every source behaves identically from
+    # the user's perspective.
+    from agent.credential_sources import find_removal_step
+    from hermes_cli.auth import suppress_credential_source
 
-    # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
-    # clear the underlying auth store / credential file so it doesn't get
-    # re-seeded on the next load_pool() call.
-    elif provider == "openai-codex" and (
-        removed.source == "device_code" or removed.source.endswith(":device_code")
-    ):
-        # Codex tokens live in TWO places: the Hermes auth store and
-        # ~/.codex/auth.json (the Codex CLI shared file).  On every refresh,
-        # refresh_codex_oauth_pure() writes to both.  So clearing only the
-        # Hermes auth store is not enough — _seed_from_singletons() will
-        # auto-import from ~/.codex/auth.json on the next load_pool() and
-        # the removal is instantly undone.  Mark the source as suppressed
-        # so auto-import is skipped; leave ~/.codex/auth.json untouched so
-        # the Codex CLI itself keeps working.
-        from hermes_cli.auth import (
-            _load_auth_store, _save_auth_store, _auth_store_lock,
-            suppress_credential_source,
-        )
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-            providers_dict = auth_store.get("providers")
-            if isinstance(providers_dict, dict) and provider in providers_dict:
-                del providers_dict[provider]
-                _save_auth_store(auth_store)
-                print(f"Cleared {provider} OAuth tokens from auth store")
-        suppress_credential_source(provider, "device_code")
-        print("Suppressed openai-codex device_code source — it will not be re-seeded.")
-        print("Note: Codex CLI credentials still live in ~/.codex/auth.json")
-        print("Run `hermes auth add openai-codex` to re-enable if needed.")
+    step = find_removal_step(provider, removed.source)
+    if step is None:
+        # Unregistered source — e.g. "manual", which has nothing external
+        # to clean up.  The pool entry is already gone; we're done.
+        return
 
-    elif removed.source == "device_code" and provider == "nous":
-        from hermes_cli.auth import (
-            _load_auth_store, _save_auth_store, _auth_store_lock,
-        )
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-            providers_dict = auth_store.get("providers")
-            if isinstance(providers_dict, dict) and provider in providers_dict:
-                del providers_dict[provider]
-                _save_auth_store(auth_store)
-                print(f"Cleared {provider} OAuth tokens from auth store")
-
-    elif removed.source == "hermes_pkce" and provider == "anthropic":
-        from hermes_constants import get_hermes_home
-        oauth_file = get_hermes_home() / ".anthropic_oauth.json"
-        if oauth_file.exists():
-            oauth_file.unlink()
-            print("Cleared Hermes Anthropic OAuth credentials")
-
-    elif removed.source == "claude_code" and provider == "anthropic":
-        from hermes_cli.auth import suppress_credential_source
-        suppress_credential_source(provider, "claude_code")
-        print("Suppressed claude_code credential — it will not be re-seeded.")
-        print("Note: Claude Code credentials still live in ~/.claude/.credentials.json")
-        print("Run `hermes auth add anthropic` to re-enable if needed.")
+    result = step.remove_fn(provider, removed)
+    for line in result.cleaned:
+        print(line)
+    if result.suppress:
+        suppress_credential_source(provider, removed.source)
+    for line in result.hints:
+        print(line)
 
 
 def auth_reset_command(args) -> None:

@@ -1,5 +1,6 @@
 """Tests for tools/session_search_tool.py — helper functions and search dispatcher."""
 
+import asyncio
 import json
 import time
 import pytest
@@ -8,6 +9,7 @@ from tools.session_search_tool import (
     _format_timestamp,
     _format_conversation,
     _truncate_around_matches,
+    _get_session_search_max_concurrency,
     _HIDDEN_SESSION_SOURCES,
     MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
@@ -179,6 +181,63 @@ class TestTruncateAroundMatches:
         text = pre + match1 + gap + match2 + post
         result = _truncate_around_matches(text, "alpha beta")
         assert result.lower().count("alpha beta") == 2
+
+
+class TestSessionSearchConcurrency:
+    def test_defaults_to_three(self):
+        assert _get_session_search_max_concurrency() == 3
+
+    def test_reads_and_clamps_configured_value(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_concurrency": 9}}},
+        )
+        assert _get_session_search_max_concurrency() == 5
+
+    def test_session_search_respects_configured_concurrency_limit(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"max_concurrency": 1}}},
+        )
+
+        max_seen = {"value": 0}
+        active = {"value": 0}
+
+        async def fake_summarize(_text, _query, _meta):
+            active["value"] += 1
+            max_seen["value"] = max(max_seen["value"], active["value"])
+            await asyncio.sleep(0.01)
+            active["value"] -= 1
+            return "summary"
+
+        monkeypatch.setattr("tools.session_search_tool._summarize_session", fake_summarize)
+        monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "s1", "source": "cli", "session_started": 1709500000, "model": "test"},
+            {"session_id": "s2", "source": "cli", "session_started": 1709500001, "model": "test"},
+            {"session_id": "s3", "source": "cli", "session_started": 1709500002, "model": "test"},
+        ]
+        mock_db.get_session.side_effect = lambda sid: {
+            "id": sid,
+            "parent_session_id": None,
+            "source": "cli",
+            "started_at": 1709500000,
+        }
+        mock_db.get_messages_as_conversation.side_effect = lambda sid: [
+            {"role": "user", "content": f"message from {sid}"},
+            {"role": "assistant", "content": "response"},
+        ]
+
+        result = json.loads(session_search(query="message", db=mock_db, limit=3))
+
+        assert result["success"] is True
+        assert result["count"] == 3
+        assert max_seen["value"] == 1
 
 
 # =========================================================================

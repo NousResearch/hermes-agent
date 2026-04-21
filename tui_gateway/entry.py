@@ -2,7 +2,7 @@ import json
 import signal
 import sys
 
-from tui_gateway.server import handle_request, resolve_skin, write_json
+from tui_gateway.server import dispatch, resolve_skin, write_json
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -28,7 +28,7 @@ def main():
                 sys.exit(0)
             continue
 
-        resp = handle_request(req)
+        resp = dispatch(req)
         if resp is not None:
             if not write_json(resp):
                 sys.exit(0)

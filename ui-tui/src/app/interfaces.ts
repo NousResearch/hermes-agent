@@ -3,6 +3,7 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import type { ImageAttachResponse } from '../gatewayTypes.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 import type {
@@ -10,6 +11,7 @@ import type {
   ActivityItem,
   ApprovalReq,
   ClarifyReq,
+  ConfirmReq,
   DetailsMode,
   Msg,
   PanelSection,
@@ -53,10 +55,12 @@ export interface GatewayProviderProps {
 export interface OverlayState {
   approval: ApprovalReq | null
   clarify: ClarifyReq | null
+  confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
   picker: boolean
   secret: null | SecretReq
+  skillsHub: boolean
   sudo: null | SudoReq
 }
 
@@ -78,9 +82,13 @@ export interface UiState {
   compact: boolean
   detailsMode: DetailsMode
   info: null | SessionInfo
+  inlineDiffs: boolean
+  showCost: boolean
+  showReasoning: boolean
   sid: null | string
   status: string
   statusBar: boolean
+  streaming: boolean
   theme: Theme
   usage: Usage
 }
@@ -99,11 +107,13 @@ export interface ComposerPasteResult {
   value: string
 }
 
+export type MaybePromise<T> = Promise<T> | T
+
 export interface ComposerActions {
   clearIn: () => void
   dequeue: () => string | undefined
   enqueue: (text: string) => void
-  handleTextPaste: (event: PasteEvent) => ComposerPasteResult | null
+  handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => void
   pushHistory: (text: string) => void
   replaceQueue: (index: number, text: string) => void
@@ -139,6 +149,7 @@ export interface ComposerState {
 export interface UseComposerStateOptions {
   gw: GatewayClient
   onClipboardPaste: (quiet?: boolean) => Promise<void> | void
+  onImageAttached?: (info: ImageAttachResponse) => void
   submitRef: MutableRefObject<(value: string) => void>
 }
 
@@ -186,11 +197,6 @@ export interface InputHandlerResult {
 }
 
 export interface GatewayEventHandlerContext {
-  composer: {
-    dequeue: () => string | undefined
-    queueEditRef: MutableRefObject<null | number>
-    sendQueued: (text: string) => void
-  }
   gateway: GatewayServices
   session: {
     STARTUP_RESUME_ID: string
@@ -266,7 +272,7 @@ export interface AppLayoutComposerProps {
   compIdx: number
   completions: CompletionItem[]
   empty: boolean
-  handleTextPaste: (event: PasteEvent) => ComposerPasteResult | null
+  handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   input: string
   inputBuf: string[]
   pagerPageSize: number
@@ -301,6 +307,7 @@ export interface AppLayoutStatusProps {
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string
+  turnStartedAt: null | number
   voiceLabel: string
 }
 
@@ -335,5 +342,6 @@ export interface AppOverlaysProps {
 
 export interface PasteSnippet {
   label: string
+  path?: string
   text: string
 }

@@ -33,6 +33,20 @@ class TestCLIQuickCommands:
         printed = self._printed_plain(cli.console.print.call_args[0][0])
         assert printed == "daily-note"
 
+    def test_exec_command_uses_chat_console_when_tui_is_live(self):
+        cli = self._make_cli({"dn": {"type": "exec", "command": "echo daily-note"}})
+        cli._app = object()
+        live_console = MagicMock()
+
+        with patch("cli.ChatConsole", return_value=live_console):
+            result = cli.process_command("/dn")
+
+        assert result is True
+        live_console.print.assert_called_once()
+        printed = self._printed_plain(live_console.print.call_args[0][0])
+        assert printed == "daily-note"
+        cli.console.print.assert_not_called()
+
     def test_exec_command_stderr_shown_on_no_stdout(self):
         cli = self._make_cli({"err": {"type": "exec", "command": "echo error >&2"}})
         result = cli.process_command("/err")

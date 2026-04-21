@@ -1,6 +1,7 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Link, Text } from '@hermes/ink'
 import { memo, type ReactNode, useMemo } from 'react'
 
+import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
 
 const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
@@ -11,8 +12,11 @@ const DEF_RE = /^\s*:\s+(.+)$/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
 
-const INLINE_RE = new RegExp(
-  `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|__(.+?)__|\\*(.+?)\\*|_(.+?)_|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
+export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
+export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
+
+export const INLINE_RE = new RegExp(
+  `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|(?<!\\w)__(.+?)__(?!\\w)|\\*(.+?)\\*|(?<!\\w)_(.+?)_(?!\\w)|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
   'g'
 )
 
@@ -22,10 +26,12 @@ type Fence = {
   len: number
 }
 
-const renderLink = (key: number, t: Theme, label: string) => (
-  <Text color={t.color.amber} key={key} underline>
-    {label}
-  </Text>
+const renderLink = (key: number, t: Theme, label: string, url: string) => (
+  <Link key={key} url={url}>
+    <Text color={t.color.amber} underline>
+      {label}
+    </Text>
+  </Link>
 )
 
 const trimBareUrl = (value: string) => {
@@ -37,11 +43,17 @@ const trimBareUrl = (value: string) => {
   }
 }
 
-const renderAutolink = (key: number, t: Theme, raw: string) => (
-  <Text color={t.color.amber} key={key} underline>
-    {raw.replace(/^mailto:/, '')}
-  </Text>
-)
+const renderAutolink = (key: number, t: Theme, raw: string) => {
+  const url = raw.startsWith('mailto:') ? raw : raw.includes('@') && !raw.startsWith('http') ? `mailto:${raw}` : raw
+
+  return (
+    <Link key={key} url={url}>
+      <Text color={t.color.amber} underline>
+        {raw.replace(/^mailto:/, '')}
+      </Text>
+    </Link>
+  )
+}
 
 const indentDepth = (indent: string) => Math.floor(indent.replace(/\t/g, '  ').length / 2)
 
@@ -81,7 +93,7 @@ const isTableDivider = (row: string) => {
   return cells.length > 1 && cells.every(cell => TABLE_DIVIDER_CELL_RE.test(cell))
 }
 
-const stripInlineMarkup = (value: string) =>
+export const stripInlineMarkup = (value: string) =>
   value
     .replace(/!\[(.*?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '[image: $1] $2')
     .replace(/\[(.+?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '$1')
@@ -89,9 +101,9 @@ const stripInlineMarkup = (value: string) =>
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
+    .replace(/(?<!\w)__(.+?)__(?!\w)/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/_(.+?)_/g, '$1')
+    .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
@@ -141,7 +153,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[4] && m[5]) {
-      parts.push(renderLink(parts.length, t, m[4]))
+      parts.push(renderLink(parts.length, t, m[4], m[5]))
     } else if (m[6]) {
       parts.push(renderAutolink(parts.length, t, m[6]))
     } else if (m[7]) {
@@ -258,6 +270,35 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
+      if (AUDIO_DIRECTIVE_RE.test(line)) {
+        i++
+
+        continue
+      }
+
+      const media = line.match(MEDIA_LINE_RE)
+
+      if (media) {
+        start('paragraph')
+
+        const path = media[1]!
+        const url = /^(?:\/|[a-z]:[\\/])/i.test(path) ? `file://${path}` : path
+
+        nodes.push(
+          <Text color={t.color.dim} key={key}>
+            {'▸ '}
+            <Link url={url}>
+              <Text color={t.color.amber} underline>
+                {path}
+              </Text>
+            </Link>
+          </Text>
+        )
+        i++
+
+        continue
+      }
+
       const fence = parseFence(line)
 
       if (fence) {
@@ -282,11 +323,28 @@ function MdImpl({ compact, t, text }: MdProps) {
         start('code')
 
         const isDiff = lang === 'diff'
+        const highlighted = !isDiff && isHighlightable(lang)
 
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
             {block.map((l, j) => {
+              if (highlighted) {
+                return (
+                  <Text key={j}>
+                    {highlightLine(l, lang, t).map(([color, text], k) =>
+                      color ? (
+                        <Text color={color} key={k}>
+                          {text}
+                        </Text>
+                      ) : (
+                        <Text key={k}>{text}</Text>
+                      )
+                    )}
+                  </Text>
+                )
+              }
+
               const add = isDiff && l.startsWith('+')
               const del = isDiff && l.startsWith('-')
               const hunk = isDiff && l.startsWith('@@')

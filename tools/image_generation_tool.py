@@ -33,7 +33,11 @@ import fal_client
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
+from tools.tool_backend_helpers import (
+    fal_key_is_configured,
+    managed_nous_tools_enabled,
+    prefers_gateway,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +290,7 @@ _managed_fal_client_lock = threading.Lock()
 def _resolve_managed_fal_gateway():
     """Return managed fal-queue gateway config when the user prefers the gateway
     or direct FAL credentials are absent."""
-    if os.getenv("FAL_KEY") and not prefers_gateway("image_gen"):
+    if fal_key_is_configured() and not prefers_gateway("image_gen"):
         return None
     return resolve_managed_tool_gateway("fal-queue")
 
@@ -623,7 +627,7 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
+        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             message = "FAL_KEY environment variable not set"
             if managed_nous_tools_enabled():
                 message += " and managed FAL gateway is unavailable"
@@ -734,7 +738,7 @@ def image_generate_tool(
 
 def check_fal_api_key() -> bool:
     """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
+    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
 
 
 def check_image_generation_requirements() -> bool:
@@ -742,7 +746,7 @@ def check_image_generation_requirements() -> bool:
     try:
         if not check_fal_api_key():
             return False
-        import fal_client  # noqa: F401 — SDK presence check
+        fal_client  # noqa: F401 — SDK presence check
         return True
     except ImportError:
         return False

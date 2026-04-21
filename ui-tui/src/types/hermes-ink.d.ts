@@ -4,6 +4,7 @@ declare module '@hermes/ink' {
   export type Key = {
     readonly ctrl: boolean
     readonly meta: boolean
+    readonly super: boolean
     readonly shift: boolean
     readonly alt: boolean
     readonly upArrow: boolean
@@ -63,6 +64,11 @@ declare module '@hermes/ink' {
   export const Box: React.ComponentType<any>
   export const AlternateScreen: React.ComponentType<any>
   export const Ansi: React.ComponentType<any>
+  export const Link: React.ComponentType<{
+    readonly children?: React.ReactNode
+    readonly fallback?: React.ReactNode
+    readonly url: string
+  }>
   export const NoSelect: React.ComponentType<any>
   export const ScrollBox: React.ComponentType<any>
   export const Text: React.ComponentType<any>
@@ -92,6 +98,7 @@ declare module '@hermes/ink' {
   export function useHasSelection(): boolean
   export function useStdout(): { readonly stdout?: NodeJS.WriteStream }
   export function useTerminalFocus(): boolean
+  export function useTerminalTitle(title: string | null): void
   export function useDeclaredCursor(args: {
     readonly line: number
     readonly column: number

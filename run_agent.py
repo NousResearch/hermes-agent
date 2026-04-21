@@ -3683,7 +3683,7 @@ class AIAgent:
                 existing = getattr(self, "_pending_steer", None)
                 self._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
             return
-        marker = f"\n\n[USER STEER (injected mid-run, not tool output): {steer_text}]"
+        marker = f"\n\nUser guidance: {steer_text}"
         existing_content = messages[target_idx].get("content", "")
         if not isinstance(existing_content, str):
             # Anthropic multimodal content blocks — preserve them and append
@@ -8979,7 +8979,7 @@ class AIAgent:
                 for _si in range(len(messages) - 1, -1, -1):
                     _sm = messages[_si]
                     if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                        marker = f"\n\n[USER STEER (injected mid-run, not tool output): {_pre_api_steer}]"
+                        marker = f"\n\nUser guidance: {_pre_api_steer}"
                         existing = _sm.get("content", "")
                         if isinstance(existing, str):
                             _sm["content"] = existing + marker

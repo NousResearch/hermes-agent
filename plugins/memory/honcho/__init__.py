@@ -15,11 +15,13 @@ Config: Uses the existing Honcho config chain:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -268,6 +270,75 @@ class HonchoMemoryProvider(MemoryProvider):
         from plugins.memory.honcho.cli import cmd_setup
         cmd_setup(types.SimpleNamespace())
 
+    @staticmethod
+    def _memory_backfill_state_path(hermes_home: Path) -> Path:
+        return hermes_home / "state" / "honcho_memory_backfill.json"
+
+    @staticmethod
+    def _memory_backfill_fingerprint(memory_dir: Path) -> str:
+        hasher = hashlib.sha256()
+        found = False
+        for name in ("USER.md", "MEMORY.md", "SOUL.md"):
+            path = memory_dir / name
+            if not path.exists():
+                continue
+            content = path.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+            found = True
+            hasher.update(name.encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(content.encode("utf-8"))
+            hasher.update(b"\0")
+        return hasher.hexdigest() if found else ""
+
+    def _load_memory_backfill_state(self, hermes_home: Path) -> dict[str, str]:
+        path = self._memory_backfill_state_path(hermes_home)
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_memory_backfill_state(self, hermes_home: Path, state: dict[str, str]) -> None:
+        path = self._memory_backfill_state_path(hermes_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _maybe_backfill_existing_session_memory(self, cfg, session) -> None:
+        if not self._manager or not self._session_key:
+            return
+        if cfg.session_strategy == "per-session":
+            return
+        if not getattr(session, "messages", None):
+            return
+
+        from hermes_constants import get_hermes_home
+
+        hermes_home = Path(get_hermes_home())
+        memory_dir = hermes_home / "memories"
+        fingerprint = self._memory_backfill_fingerprint(memory_dir)
+        if not fingerprint:
+            return
+
+        state = self._load_memory_backfill_state(hermes_home)
+        if state.get(self._session_key) == fingerprint:
+            logger.debug(
+                "Honcho existing-session memory backfill already completed for %s",
+                self._session_key,
+            )
+            return
+
+        if self._manager.migrate_memory_files(self._session_key, str(memory_dir)):
+            state[self._session_key] = fingerprint
+            self._save_memory_backfill_state(hermes_home, state)
+            logger.debug(
+                "Honcho existing-session memory backfill completed for %s",
+                self._session_key,
+            )
+
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Honcho session manager.
 
@@ -392,6 +463,8 @@ class HonchoMemoryProvider(MemoryProvider):
                     "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",
                     self._session_key,
                 )
+            else:
+                self._maybe_backfill_existing_session_memory(cfg, session)
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 
@@ -1153,6 +1226,13 @@ class HonchoMemoryProvider(MemoryProvider):
                         return tool_error("Failed to update peer card.")
                     return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
                 card = self._manager.get_peer_card(self._session_key, peer=peer)
+                if not card:
+                    session_ctx = self._manager.get_session_context(self._session_key, peer=peer)
+                    raw_card = session_ctx.get("card", "") if session_ctx else ""
+                    if isinstance(raw_card, str):
+                        card = [line.strip() for line in raw_card.splitlines() if line.strip()]
+                    elif isinstance(raw_card, list):
+                        card = [str(line).strip() for line in raw_card if str(line).strip()]
                 if not card:
                     return json.dumps({"result": "No profile facts available yet."})
                 return json.dumps({"result": card})

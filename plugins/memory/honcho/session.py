@@ -988,10 +988,19 @@ class HonchoSessionManager:
 
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
-            return self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            if card:
+                return card
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
-            return []
+
+        ctx = self.get_session_context(session_key, peer=peer)
+        raw_card = ctx.get("card", "") if ctx else ""
+        if isinstance(raw_card, str):
+            return [line.strip() for line in raw_card.splitlines() if line.strip()]
+        if isinstance(raw_card, list):
+            return [str(line).strip() for line in raw_card if str(line).strip()]
+        return []
 
     def search_context(
         self,

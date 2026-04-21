@@ -212,6 +212,28 @@ class TestPeerLookupHelpers:
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
         assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
 
+    def test_get_peer_card_falls_back_to_session_context_card(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.get_card.return_value = None
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=None,
+            peer_representation="",
+            peer_card=["Name: Robert", "Prefers dark mode"],
+            messages=[],
+        )
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+
+        assert mgr.get_peer_card(session.key) == ["Name: Robert", "Prefers dark mode"]
+        honcho_session.context.assert_called_once_with(
+            summary=True,
+            peer_target=session.user_peer_id,
+            peer_perspective=session.user_peer_id,
+        )
+
     def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()
@@ -429,6 +451,26 @@ class TestConcludeToolDispatch:
 
         assert "Role: Assistant" in result
         provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="hermes")
+
+    def test_honcho_profile_falls_back_to_session_context_card(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.get_peer_card.return_value = []
+        provider._manager.get_session_context.return_value = {
+            "card": "Name: Robert\nPrefers dark mode",
+        }
+
+        result = provider.handle_tool_call(
+            "honcho_profile",
+            {"peer": "user"},
+        )
+
+        assert "Name: Robert" in result
+        assert "Prefers dark mode" in result
+        provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="user")
+        provider._manager.get_session_context.assert_called_once_with("telegram:123", peer="user")
 
     def test_honcho_search_can_target_explicit_peer_id(self):
         provider = HonchoMemoryProvider()
@@ -669,6 +711,47 @@ class TestPerSessionMigrateGuard:
         """per-directory strategy with empty session SHOULD call migrate_memory_files."""
         _, mock_manager = self._make_provider_with_strategy("per-directory")
         mock_manager.migrate_memory_files.assert_called_once()
+
+
+class TestExistingSessionBackfill:
+    def test_existing_session_with_empty_profile_backfills_memory_files_once(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch, MagicMock
+
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            enabled=True,
+            recall_mode="hybrid",
+            session_strategy="per-directory",
+        )
+        provider = HonchoMemoryProvider()
+
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = [{"role": "user", "content": "hi"}]
+        mock_manager.get_or_create.return_value = mock_session
+        mock_manager.get_peer_card.return_value = []
+
+        with TemporaryDirectory() as tmpdir:
+            hermes_home = Path(tmpdir)
+            memories = hermes_home / "memories"
+            memories.mkdir()
+            (memories / "USER.md").write_text("Call Stephen 'Boss.'", encoding="utf-8")
+
+            with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+                 patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+                 patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+                 patch("hermes_constants.get_hermes_home", return_value=hermes_home):
+                provider.initialize(session_id="test-session-001")
+
+                mock_manager.migrate_memory_files.assert_called_once()
+
+                provider2 = HonchoMemoryProvider()
+                provider2.initialize(session_id="test-session-001")
+                mock_manager.migrate_memory_files.assert_called_once()
 
 
 class TestChunkMessage:

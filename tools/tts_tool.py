@@ -703,6 +703,15 @@ def _check_neutts_available() -> bool:
         return False
 
 
+def _check_kittentts_available() -> bool:
+    """Check if the kittentts engine is importable (installed locally)."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("kittentts") is not None
+    except Exception:
+        return False
+
+
 def _default_neutts_ref_audio() -> str:
     """Return path to the bundled default voice reference audio."""
     return str(Path(__file__).parent / "neutts_samples" / "jo.wav")
@@ -955,7 +964,8 @@ def text_to_speech_tool(
                 return json.dumps({
                     "success": False,
                     "error": "KittenTTS provider selected but 'kittentts' package not installed. "
-                             "Run: pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
+                             "Run 'hermes setup tts' and choose KittenTTS, or install manually: "
+                             "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
                 }, ensure_ascii=False)
             logger.info("Generating speech with KittenTTS (local, ~25MB)...")
             _generate_kittentts(text, file_str, tts_config)
@@ -1083,6 +1093,8 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     if _check_neutts_available():
+        return True
+    if _check_kittentts_available():
         return True
     return False
 

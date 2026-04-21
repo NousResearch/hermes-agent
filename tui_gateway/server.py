@@ -1231,12 +1231,12 @@ def _(rid, params: dict) -> dict:
 @method("session.list")
 def _(rid, params: dict) -> dict:
     try:
-        db = _get_db()
-        # Show both TUI and CLI sessions — TUI is the successor to the CLI,
-        # so users expect to resume their old CLI sessions here too.
-        tui = db.list_sessions_rich(source="tui", limit=params.get("limit", 20))
-        cli = db.list_sessions_rich(source="cli", limit=params.get("limit", 20))
-        rows = sorted(tui + cli, key=lambda s: s.get("started_at") or 0, reverse=True)[:params.get("limit", 20)]
+        # Show sessions from every adapter — users resume telegram/discord/etc
+        # sessions by pasting the id directly, so the picker should surface them
+        # too.  Children (subagents/compression runs) stay filtered out via the
+        # hermes_state default.
+        limit = params.get("limit", 20)
+        rows = _get_db().list_sessions_rich(source=None, limit=limit)
         return _ok(rid, {"sessions": [
             {"id": s["id"], "title": s.get("title") or "", "preview": s.get("preview") or "",
              "started_at": s.get("started_at") or 0, "message_count": s.get("message_count") or 0,

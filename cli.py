@@ -3187,21 +3187,40 @@ class HermesCLI:
         API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from agent.smart_model_routing import apply_route
 
-        runtime = {
+        # CLI is always the owner (operator-driven). Apply ``model.routes``
+        # (or legacy ``model.by_source.owner`` / ``model.platforms.cli``)
+        # before building the route dict.
+        _cli_model = self.model
+        _cli_runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,
             "provider": self.provider,
             "api_mode": self.api_mode,
             "command": self.acp_command,
             "args": list(self.acp_args or []),
+        }
+        _cli_model_config = CLI_CONFIG.get("model") if isinstance(CLI_CONFIG, dict) else None
+        if not isinstance(_cli_model_config, dict):
+            _cli_model_config = None
+        try:
+            _cli_model, _cli_runtime = apply_route(
+                _cli_model, _cli_runtime, _cli_model_config,
+                {"platform": "cli", "source_kind": "owner"},
+            )
+        except Exception as _exc:
+            logger.debug("apply_route failed in CLI (ignored): %s", _exc)
+
+        runtime = {
+            **_cli_runtime,
             "credential_pool": getattr(self, "_credential_pool", None),
         }
         route = {
-            "model": self.model,
+            "model": _cli_model,
             "runtime": runtime,
             "signature": (
-                self.model,
+                _cli_model,
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],

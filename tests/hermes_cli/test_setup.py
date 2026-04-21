@@ -223,6 +223,43 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     assert "restart" in out.lower()
 
 
+def test_tools_summary_includes_gateway_managed_tools(monkeypatch):
+    """Setup should not report gateway-managed tools as unconfigured."""
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+
+    summary = setup_mod._get_section_config_summary(
+        {
+            "tts": {"use_gateway": True},
+            "web": {"use_gateway": True},
+            "browser": {"use_gateway": True},
+            "image_gen": {"use_gateway": True},
+        },
+        "tools",
+    )
+
+    assert summary == (
+        "TTS/Nous Gateway, Browser/Nous Gateway, "
+        "Web/Nous Gateway, Image/Nous Gateway"
+    )
+
+
+def test_tools_summary_prefers_gateway_over_direct_keys(monkeypatch):
+    """use_gateway should be visible even when direct provider keys exist."""
+    env = {
+        "ELEVENLABS_API_KEY": "eleven-key",
+        "BROWSERBASE_API_KEY": "browser-key",
+        "FIRECRAWL_API_KEY": "firecrawl-key",
+    }
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+
+    summary = setup_mod._get_section_config_summary(
+        {"web": {"use_gateway": True}},
+        "tools",
+    )
+
+    assert summary == "TTS/ElevenLabs, Browser, Web/Nous Gateway"
+
+
 def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
     """Removing the last custom provider in model setup should persist."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

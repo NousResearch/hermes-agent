@@ -2428,6 +2428,12 @@ def _gateway_platform_short_label(label: str) -> str:
     return base or label
 
 
+def _tool_uses_gateway(config: dict, section_key: str) -> bool:
+    """Return True when a tool section is explicitly routed via Nous gateway."""
+    section = config.get(section_key) if isinstance(config, dict) else None
+    return isinstance(section, dict) and bool(section.get("use_gateway"))
+
+
 def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
     """Return a short summary if a setup section is already configured, else None.
 
@@ -2465,12 +2471,24 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
 
     elif section_key == "tools":
         tools = []
-        if get_env_value("ELEVENLABS_API_KEY"):
+        if _tool_uses_gateway(config, "tts"):
+            tools.append("TTS/Nous Gateway")
+        elif get_env_value("ELEVENLABS_API_KEY"):
             tools.append("TTS/ElevenLabs")
-        if get_env_value("BROWSERBASE_API_KEY"):
+
+        if _tool_uses_gateway(config, "browser"):
+            tools.append("Browser/Nous Gateway")
+        elif get_env_value("BROWSERBASE_API_KEY"):
             tools.append("Browser")
-        if get_env_value("FIRECRAWL_API_KEY"):
+
+        if _tool_uses_gateway(config, "web"):
+            tools.append("Web/Nous Gateway")
+        elif get_env_value("FIRECRAWL_API_KEY"):
             tools.append("Firecrawl")
+
+        if _tool_uses_gateway(config, "image_gen"):
+            tools.append("Image/Nous Gateway")
+
         if tools:
             return ", ".join(tools)
         return None

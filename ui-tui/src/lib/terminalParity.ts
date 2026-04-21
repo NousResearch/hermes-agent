@@ -1,4 +1,4 @@
-import { detectVSCodeLikeTerminal, shouldPromptForTerminalSetup } from './terminalSetup.js'
+import { detectVSCodeLikeTerminal, shouldPromptForTerminalSetup, type FileOps } from './terminalSetup.js'
 
 export type MacTerminalHint = {
   key: string
@@ -24,11 +24,14 @@ export function detectMacTerminalContext(env: NodeJS.ProcessEnv = process.env): 
   }
 }
 
-export async function terminalParityHints(env: NodeJS.ProcessEnv = process.env): Promise<MacTerminalHint[]> {
+export async function terminalParityHints(
+  env: NodeJS.ProcessEnv = process.env,
+  options?: { fileOps?: Partial<FileOps>; homeDir?: string }
+): Promise<MacTerminalHint[]> {
   const ctx = detectMacTerminalContext(env)
   const hints: MacTerminalHint[] = []
 
-  if (ctx.vscodeLike && (await shouldPromptForTerminalSetup({ env }))) {
+  if (ctx.vscodeLike && (await shouldPromptForTerminalSetup({ env, fileOps: options?.fileOps, homeDir: options?.homeDir }))) {
     hints.push({
       key: 'ide-setup',
       tone: 'info',

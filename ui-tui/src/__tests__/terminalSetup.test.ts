@@ -30,6 +30,21 @@ describe('terminalSetup helpers', () => {
   it('strips line comments from keybindings JSON', () => {
     expect(stripJsonComments('// comment\n[{"key":"shift+enter"}]')).toBe('\n[{"key":"shift+enter"}]')
   })
+
+  it('strips inline comments and block comments', () => {
+    expect(stripJsonComments('[{"key":"a"} // inline\n]')).toBe('[{"key":"a"} \n]')
+    expect(stripJsonComments('[/* block */{"key":"a"}]')).toBe('[{"key":"a"}]')
+  })
+
+  it('removes trailing commas before ] or }', () => {
+    expect(JSON.parse(stripJsonComments('[{"key":"a"},]'))).toEqual([{ key: 'a' }])
+    expect(JSON.parse(stripJsonComments('[{"key":"a",}]'))).toEqual([{ key: 'a' }])
+  })
+
+  it('preserves comment-like sequences inside strings', () => {
+    const input = '[{"key":"a","args":{"text":"// not a comment"}}]'
+    expect(JSON.parse(stripJsonComments(input))).toEqual([{ key: 'a', args: { text: '// not a comment' } }])
+  })
 })
 
 describe('configureTerminalKeybindings', () => {
@@ -48,6 +63,7 @@ describe('configureTerminalKeybindings', () => {
     expect(result.success).toBe(true)
     expect(result.requiresRestart).toBe(true)
     expect(writeFile).toHaveBeenCalledTimes(1)
+    expect(copyFile).not.toHaveBeenCalled() // no existing file to back up
     const written = writeFile.mock.calls[0]?.[1] as string
     expect(written).toContain('shift+enter')
     expect(written).toContain('cmd+enter')
@@ -78,6 +94,24 @@ describe('configureTerminalKeybindings', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('cmd+z')
     expect(writeFile).not.toHaveBeenCalled()
+    expect(copyFile).not.toHaveBeenCalled() // no backup when not writing
+  })
+
+  it('backs up existing keybindings.json only when writing changes', async () => {
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockResolvedValue(JSON.stringify([]))
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(true)
+    expect(writeFile).toHaveBeenCalledTimes(1)
+    expect(copyFile).toHaveBeenCalledTimes(1) // backup created before writing
   })
 
   it('auto-detects the current IDE terminal', async () => {

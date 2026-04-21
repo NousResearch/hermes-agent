@@ -573,7 +573,7 @@ export function TextInput({
       }
 
       if (k.return) {
-        k.shift || (isMac && isActionMod(k))
+        k.shift || (isMac ? isActionMod(k) : k.meta)
           ? commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
           : cbSubmit.current?.(vRef.current)
 

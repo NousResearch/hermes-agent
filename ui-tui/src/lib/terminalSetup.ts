@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 export type SupportedTerminal = 'cursor' | 'vscode' | 'windsurf'
 
-type FileOps = {
+export type FileOps = {
   copyFile: typeof copyFile
   mkdir: typeof mkdir
   readFile: typeof readFile
@@ -83,8 +83,57 @@ export function detectVSCodeLikeTerminal(env: NodeJS.ProcessEnv = process.env): 
   return null
 }
 
+/**
+ * Strip JSONC features (// line comments, /* block comments *\/, trailing commas)
+ * so the result is valid JSON parseable by JSON.parse().
+ * Handles comments inside strings correctly (preserves them).
+ */
 export function stripJsonComments(content: string): string {
-  return content.replace(/^\s*\/\/.*$/gm, '')
+  let result = ''
+  let i = 0
+  const len = content.length
+
+  while (i < len) {
+    const ch = content[i]!
+
+    // String literal — copy as-is, including any comment-like chars inside
+    if (ch === '"') {
+      let j = i + 1
+      while (j < len) {
+        if (content[j] === '\\') {
+          j += 2 // skip escaped char
+        } else if (content[j] === '"') {
+          j++
+          break
+        } else {
+          j++
+        }
+      }
+      result += content.slice(i, j)
+      i = j
+      continue
+    }
+
+    // Line comment
+    if (ch === '/' && content[i + 1] === '/') {
+      const eol = content.indexOf('\n', i)
+      i = eol === -1 ? len : eol
+      continue
+    }
+
+    // Block comment
+    if (ch === '/' && content[i + 1] === '*') {
+      const end = content.indexOf('*/', i + 2)
+      i = end === -1 ? len : end + 2
+      continue
+    }
+
+    result += ch
+    i++
+  }
+
+  // Remove trailing commas before ] or }
+  return result.replace(/,(\s*[}\]])/g, '$1')
 }
 
 function isRemoteShellSession(env: NodeJS.ProcessEnv): boolean {
@@ -127,7 +176,6 @@ export async function configureTerminalKeybindings(
     env?: NodeJS.ProcessEnv
     fileOps?: Partial<FileOps>
     homeDir?: string
-    now?: () => Date
     platform?: NodeJS.Platform
   }
 ): Promise<TerminalSetupResult> {
@@ -159,9 +207,10 @@ export async function configureTerminalKeybindings(
     await ops.mkdir(configDir, { recursive: true })
 
     let keybindings: unknown[] = []
+    let hasExistingFile = false
     try {
       const content = await ops.readFile(keybindingsFile, 'utf8')
-      await backupFile(keybindingsFile, ops)
+      hasExistingFile = true
       const parsed: unknown = JSON.parse(stripJsonComments(content))
       if (!Array.isArray(parsed)) {
         return {
@@ -206,6 +255,10 @@ export async function configureTerminalKeybindings(
         success: true,
         message: `${meta.label} terminal keybindings already configured.`
       }
+    }
+
+    if (hasExistingFile) {
+      await backupFile(keybindingsFile, ops)
     }
 
     await ops.writeFile(keybindingsFile, `${JSON.stringify(keybindings, null, 2)}\n`, 'utf8')

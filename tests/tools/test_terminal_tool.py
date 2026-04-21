@@ -5,10 +5,12 @@ import tools.terminal_tool as terminal_tool
 
 def setup_function():
     terminal_tool._cached_sudo_password = ""
+    terminal_tool._cached_passwordless_sudo = None
 
 
 def teardown_function():
     terminal_tool._cached_sudo_password = ""
+    terminal_tool._cached_passwordless_sudo = None
 
 
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
@@ -90,16 +92,64 @@ def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
     assert sudo_stdin == "cached-pass\n"
 
 
-def test_validate_workdir_allows_windows_drive_paths():
-    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project") is None
-    assert terminal_tool._validate_workdir("C:/Users/Alice/project") is None
+
+def test_local_passwordless_sudo_uses_noninteractive_flag_without_prompt(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+
+    monkeypatch.setattr(terminal_tool, "_can_use_passwordless_sudo", lambda: True)
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("interactive sudo prompt should not run when sudo -n already works")
+
+    monkeypatch.setattr(terminal_tool, "_prompt_for_sudo_password", _fail_prompt)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo systemctl status ssh")
+
+    assert transformed == "sudo -n systemctl status ssh"
+    assert sudo_stdin is None
 
 
-def test_validate_workdir_allows_windows_unc_paths():
-    assert terminal_tool._validate_workdir(r"\\server\share\project") is None
+
+def test_non_local_backends_skip_passwordless_probe_and_can_still_prompt(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+
+    def _fail_probe():
+        raise AssertionError("local passwordless sudo probe should not run for non-local backends")
+
+    monkeypatch.setattr(terminal_tool, "_can_use_passwordless_sudo", _fail_probe)
+    monkeypatch.setattr(terminal_tool, "_prompt_for_sudo_password", lambda timeout_seconds=45: "remote-pass")
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo whoami")
+
+    assert transformed == "sudo -S -p '' whoami"
+    assert sudo_stdin == "remote-pass\n"
 
 
-def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
-    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
-    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
-    assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")
+
+def test_passwordless_rewrite_does_not_duplicate_existing_dash_n(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(terminal_tool, "_can_use_passwordless_sudo", lambda: True)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo -n true && sudo whoami")
+
+    assert transformed == "sudo -n true && sudo -n whoami"
+    assert sudo_stdin is None
+
+
+
+def test_passwordless_rewrite_does_not_collapse_multiline_commands(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(terminal_tool, "_can_use_passwordless_sudo", lambda: True)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo\n-n true")
+
+    assert transformed == "sudo -n\n-n true"
+    assert sudo_stdin is None

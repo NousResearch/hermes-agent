@@ -4623,7 +4623,7 @@ def _update_via_zip(args):
     # that a later `uv run hermes` expects. Fall back to the older editable
     # reinstall path when the lockfile sync is unavailable or fails.
     print("→ Updating Python dependencies...")
-<<    uv_bin = shutil.which("uv")
+    uv_bin = shutil.which("uv")
     if uv_bin:
         uv_env = {
             **os.environ,

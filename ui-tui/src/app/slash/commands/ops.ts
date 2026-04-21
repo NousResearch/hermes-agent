@@ -1,4 +1,4 @@
-import type { ToolsConfigureResponse } from '../../../gatewayTypes.js'
+import type { SlashExecResponse, ToolsConfigureResponse } from '../../../gatewayTypes.js'
 import type { PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand } from '../types.js'
@@ -207,10 +207,25 @@ export const opsCommands: SlashCommand[] = [
   {
     help: 'enable or disable tools (client-side history reset on change)',
     name: 'tools',
-    run: (arg, ctx) => {
+    run: (arg, ctx, cmd) => {
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {
+        ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(r => {
+            if (ctx.stale()) {
+              return
+            }
+
+            const body = r?.output || '/tools: no output'
+            const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+            const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(text, 'Tools') : ctx.transcript.sys(text)
+          })
+          .catch(ctx.guardedErr)
+
         return
       }
 

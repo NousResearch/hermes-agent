@@ -4090,7 +4090,14 @@ class FeishuAdapter(BasePlatformAdapter):
             content=payload,
             uuid_value=str(uuid.uuid4()),
         )
-        request = self._build_create_message_request("chat_id", body)
+        # Detect whether chat_id is an open_id (private message) or a group chat_id.
+        # Feishu API requires receive_id_type="open_id" for user DMs (oc_/ou_ prefix)
+        # and receive_id_type="chat_id" for group chats (ch_ prefix).
+        if chat_id.startswith(("oc_", "ou_")):
+            receive_id_type = "open_id"
+        else:
+            receive_id_type = "chat_id"
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod

@@ -42,8 +42,14 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 
 _HOME = str(Path.home())
 
+
+def _normalize_write_path(path: str) -> str:
+    """Normalize a path for deny-list and safe-root comparisons."""
+    return os.path.normcase(os.path.realpath(os.path.expanduser(str(path))))
+
+
 WRITE_DENIED_PATHS = {
-    os.path.realpath(p) for p in [
+    _normalize_write_path(p) for p in [
         os.path.join(_HOME, ".ssh", "authorized_keys"),
         os.path.join(_HOME, ".ssh", "id_rsa"),
         os.path.join(_HOME, ".ssh", "id_ed25519"),
@@ -65,7 +71,7 @@ WRITE_DENIED_PATHS = {
 }
 
 WRITE_DENIED_PREFIXES = [
-    os.path.realpath(p) + os.sep for p in [
+    _normalize_write_path(p) + os.sep for p in [
         os.path.join(_HOME, ".ssh"),
         os.path.join(_HOME, ".aws"),
         os.path.join(_HOME, ".gnupg"),
@@ -91,14 +97,14 @@ def _get_safe_write_root() -> Optional[str]:
     if not root:
         return None
     try:
-        return os.path.realpath(os.path.expanduser(root))
+        return _normalize_write_path(root)
     except Exception:
         return None
 
 
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    resolved = _normalize_write_path(path)
 
     # 1) Static deny list
     if resolved in WRITE_DENIED_PATHS:

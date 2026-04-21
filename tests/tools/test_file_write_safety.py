@@ -3,12 +3,22 @@
 Based on PR #1085 by ismoilh (salvaged).
 """
 
+import importlib
 import os
 from pathlib import Path
 
 import pytest
 
+import tools.file_operations as file_operations
 from tools.file_operations import _is_write_denied
+
+
+@pytest.fixture
+def windows_casefolded_file_operations():
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os.path, "normcase", lambda value: str(value).lower())
+        yield importlib.reload(file_operations)
+    importlib.reload(file_operations)
 
 
 class TestStaticDenyList:
@@ -77,6 +87,33 @@ class TestSafeWriteRoot:
         # Point safe root at home to include ~/.ssh
         monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", os.path.expanduser("~"))
         assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
+
+    def test_safe_root_comparison_is_case_insensitive_on_windows(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        windows_casefolded_file_operations,
+    ):
+        safe_root = tmp_path / "Workspace"
+        child = safe_root / "subdir" / "file.txt"
+        os.makedirs(child.parent, exist_ok=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root).upper())
+        assert windows_casefolded_file_operations._is_write_denied(str(child)) is False
+
+
+class TestWindowsCaseInsensitiveComparisons:
+    def test_static_deny_list_matches_case_insensitively_on_windows(
+        self,
+        windows_casefolded_file_operations,
+    ):
+        mixed_case_key = os.path.join(
+            windows_casefolded_file_operations._HOME.upper(),
+            ".SSH",
+            "ID_RSA",
+        )
+
+        assert windows_casefolded_file_operations._is_write_denied(mixed_case_key) is True
 
 
 class TestCheckSensitivePathMacOSBypass:

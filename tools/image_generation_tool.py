@@ -188,6 +188,38 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    "fal-ai/gpt-image-2": {
+        "display": "GPT Image 2",
+        "speed": "~20s",
+        "strengths": "SOTA text rendering + CJK, world-aware photorealism",
+        "price": "$0.04–0.06/image",
+        # GPT Image 2 uses FAL's standard preset enum (unlike 1.5's literal
+        # dimensions). We map to the 4:3 variants — the 16:9 presets
+        # (1024x576) fall below GPT-Image-2's 655,360 min-pixel requirement
+        # and would be rejected. 4:3 keeps us above the minimum on all
+        # three aspect ratios.
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_4_3",   # 1024x768
+            "square": "square_hd",            # 1024x1024
+            "portrait": "portrait_4_3",       # 768x1024
+        },
+        "defaults": {
+            # Same quality pinning as gpt-image-1.5: medium keeps Nous
+            # Portal billing predictable. "high" is 3-4x the per-image
+            # cost at the same size; "low" is too rough for production use.
+            "quality": "medium",
+            "num_images": 1,
+            "output_format": "png",
+        },
+        "supports": {
+            "prompt", "image_size", "quality", "num_images", "output_format",
+            "sync_mode",
+            # openai_api_key (BYOK) intentionally omitted — all users go
+            # through the shared FAL billing path.
+        },
+        "upscale": False,
+    },
     "fal-ai/ideogram/v3": {
         "display": "Ideogram V3",
         "speed": "~5s",

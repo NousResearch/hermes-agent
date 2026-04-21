@@ -152,7 +152,6 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2-omni",
     "zai": "glm-5v-turbo",
-    "nous": "xiaomi/mimo-v2-omni",
 }
 
 # OpenRouter app attribution headers
@@ -934,23 +933,16 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         model = _NOUS_MODEL
     # Free-tier users can't use paid auxiliary models — use the free
     # models instead: mimo-v2-omni for vision, mimo-v2-pro for text tasks.
-    # For vision tasks, always use mimo-v2-omni regardless of tier —
-    # Nous inference API does not support image inputs for gemini models.
+    # Paid accounts keep their tier-appropriate models: gemini-3-flash-preview
+    # for both text and vision tasks.
     try:
         from hermes_cli.models import check_nous_free_tier
         if check_nous_free_tier():
             model = _NOUS_FREE_TIER_VISION_MODEL if vision else _NOUS_FREE_TIER_AUX_MODEL
             logger.debug("Free-tier Nous account — using %s for auxiliary/%s",
                          model, "vision" if vision else "text")
-        elif vision:
-            model = _NOUS_FREE_TIER_VISION_MODEL
-            logger.debug("Nous vision task — using %s (gemini models lack "
-                         "image support on Nous inference API)", model)
     except Exception:
-        if vision:
-            model = _NOUS_FREE_TIER_VISION_MODEL
-    if vision:
-        logger.debug("Nous vision: final model = %s", model)
+        pass
     if runtime is not None:
         api_key, base_url = runtime
     else:

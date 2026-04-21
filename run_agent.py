@@ -1736,6 +1736,11 @@ class AIAgent:
         )
         self._user_turn_count = 0
 
+        # Background review tracking — manages the memory/skill review thread
+        self._review_in_progress = False
+        self._review_stats = {"success": 0, "failed": 0, "skipped": 0}
+        self._review_pool = None  # lazy init on first review
+
         # Cumulative token usage for the session
         self.session_prompt_tokens = 0
         self.session_completion_tokens = 0
@@ -2759,7 +2764,12 @@ class AIAgent:
         forked conversation. Writes directly to the shared memory/skill stores.
         Never modifies the main conversation history or produces user-visible output.
         """
-        import threading
+
+        # Guard: don't stack concurrent reviews
+        if self._review_in_progress:
+            self._review_stats["skipped"] += 1
+            logger.debug("Background review skipped — already in progress")
+            return
 
         # Pick the right prompt based on which triggers fired
         if review_memory and review_skills:
@@ -2769,30 +2779,32 @@ class AIAgent:
         else:
             prompt = self._SKILL_REVIEW_PROMPT
 
+        logger.info("Memory review started (turn %d)", self._user_turn_count)
+        self._review_in_progress = True
+
         def _run_review():
-            import contextlib, os as _os
             review_agent = None
             try:
-                with open(_os.devnull, "w") as _devnull, \
-                     contextlib.redirect_stdout(_devnull), \
-                     contextlib.redirect_stderr(_devnull):
-                    review_agent = AIAgent(
-                        model=self.model,
-                        max_iterations=8,
-                        quiet_mode=True,
-                        platform=self.platform,
-                        provider=self.provider,
-                    )
-                    review_agent._memory_store = self._memory_store
-                    review_agent._memory_enabled = self._memory_enabled
-                    review_agent._user_profile_enabled = self._user_profile_enabled
-                    review_agent._memory_nudge_interval = 0
-                    review_agent._skill_nudge_interval = 0
+                review_agent = AIAgent(
+                    model=self.model,
+                    max_iterations=8,
+                    quiet_mode=True,
+                    platform=self.platform,
+                    provider=self.provider,
+                    api_key=getattr(self, "api_key", None),
+                    base_url=getattr(self, "base_url", None),
+                    skip_context_files=True,
+                )
+                review_agent._memory_store = self._memory_store
+                review_agent._memory_enabled = self._memory_enabled
+                review_agent._user_profile_enabled = self._user_profile_enabled
+                review_agent._memory_nudge_interval = 0
+                review_agent._skill_nudge_interval = 0
 
-                    review_agent.run_conversation(
-                        user_message=prompt,
-                        conversation_history=messages_snapshot,
-                    )
+                review_agent.run_conversation(
+                    user_message=prompt,
+                    conversation_history=messages_snapshot,
+                )
 
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user.
@@ -2823,7 +2835,9 @@ class AIAgent:
                         actions.append(f"{label} updated")
 
                 if actions:
+                    self._review_stats["success"] += 1
                     summary = " · ".join(dict.fromkeys(actions))
+                    logger.info("Memory review completed: %d actions (%s)", len(actions), summary)
                     self._safe_print(f"  💾 {summary}")
                     _bg_cb = self.background_review_callback
                     if _bg_cb:
@@ -2831,10 +2845,15 @@ class AIAgent:
                             _bg_cb(f"💾 {summary}")
                         except Exception:
                             pass
+                else:
+                    self._review_stats["success"] += 1
+                    logger.info("Memory review completed: no actions needed")
 
             except Exception as e:
-                logger.debug("Background memory/skill review failed: %s", e)
+                self._review_stats["failed"] += 1
+                logger.warning("Background memory/skill review failed: %s", e)
             finally:
+                self._review_in_progress = False
                 # Close all resources (httpx client, subprocesses, etc.) so
                 # GC doesn't try to clean them up on a dead asyncio event
                 # loop (which produces "Event loop is closed" errors).
@@ -2844,8 +2863,18 @@ class AIAgent:
                     except Exception:
                         pass
 
-        t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
-        t.start()
+        # Use ThreadPoolExecutor instead of daemon thread — non-daemon threads
+        # run to completion even under memory pressure, and the future reference
+        # prevents GC from collecting the thread mid-execution.
+        if self._review_pool is None:
+            self._review_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="bg-review"
+            )
+        future = self._review_pool.submit(_run_review)
+        self._pending_review_futures = getattr(self, "_pending_review_futures", [])
+        self._pending_review_futures.append(future)
+        # Prune completed futures to avoid unbounded list growth
+        self._pending_review_futures = [f for f in self._pending_review_futures if not f.done()]
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
@@ -3877,6 +3906,15 @@ class AIAgent:
             if client is not None:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
+        except Exception:
+            pass
+
+        # 6. Shut down background review pool — wait for in-flight reviews
+        try:
+            pool = getattr(self, "_review_pool", None)
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+                self._review_pool = None
         except Exception:
             pass
 

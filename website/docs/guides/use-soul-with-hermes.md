@@ -260,5 +260,6 @@ Move project instructions into `AGENTS.md` and keep `SOUL.md` focused on identit
 
 - [Personality & SOUL.md](/docs/user-guide/features/personality)
 - [Context Files](/docs/user-guide/features/context-files)
+- [SOUL.md + VOICE.md Templates](/docs/guides/soul-and-voice-templates)
 - [Configuration](/docs/user-guide/configuration)
 - [Tips & Best Practices](/docs/guides/tips)

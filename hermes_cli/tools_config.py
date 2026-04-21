@@ -25,6 +25,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+from utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -1179,7 +1180,8 @@ def _configure_simple_requirements(ts_key: str):
                 _print_warning("    Skipped")
         elif idx == 1:
             base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
-            key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
+            is_native_openai = base_url_hostname(base_url) == "api.openai.com"
+            key_label = "    OPENAI_API_KEY" if is_native_openai else "    API key"
             api_key = _prompt(key_label, password=True)
             if api_key and api_key.strip():
                 save_env_value("OPENAI_API_KEY", api_key.strip())
@@ -1189,7 +1191,7 @@ def _configure_simple_requirements(ts_key: str):
                 _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
                 _aux["base_url"] = base_url
                 save_config(_cfg)
-                if "api.openai.com" in base_url.lower():
+                if is_native_openai:
                     save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
                 _print_success("    Saved")
             else:

@@ -12,6 +12,7 @@ import {
   RotateCw,
   Wifi,
   WifiOff,
+  Wrench,
   X,
 } from "lucide-react";
 import { Cell, Grid } from "@nous-research/ui";
@@ -265,7 +266,7 @@ export default function StatusPage() {
         </div>
       )}
 
-      <Grid className="border-b lg:!grid-cols-3">
+      <Grid className="border-b md:!grid-cols-2 lg:!grid-cols-4">
         {items.map(({ icon: Icon, label, value, badgeText, badgeVariant }) => (
           <Cell
             key={label}
@@ -293,15 +294,16 @@ export default function StatusPage() {
             )}
           </Cell>
         ))}
-      </Grid>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">{t.status.actions}</CardTitle>
-        </CardHeader>
+        <Cell className="flex min-w-0 flex-col gap-2 overflow-hidden">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-medium">
+              {t.status.actions}
+            </CardTitle>
+            <Wrench className="h-4 w-4 text-muted-foreground" />
+          </div>
 
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-wrap gap-3">
+          <div className="flex gap-4">
             <Button
               variant="outline"
               size="sm"
@@ -310,6 +312,7 @@ export default function StatusPage() {
                 pendingAction !== null ||
                 (activeAction !== null && actionStatus?.running !== false)
               }
+              className="flex-1 min-w-0"
             >
               <RotateCw
                 className={cn(
@@ -333,6 +336,7 @@ export default function StatusPage() {
                 pendingAction !== null ||
                 (activeAction !== null && actionStatus?.running !== false)
               }
+              className="flex-1 min-w-0"
             >
               <Download
                 className={cn(
@@ -348,71 +352,71 @@ export default function StatusPage() {
                 : t.status.updateHermes}
             </Button>
           </div>
+        </Cell>
+      </Grid>
 
-          {activeAction && (
-            <div className="border border-border bg-background-base/50">
-              <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  {actionStatus?.running ? (
-                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-warning" />
-                  ) : actionStatus?.exit_code === 0 ? (
-                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
-                  ) : actionStatus !== null ? (
-                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
-                  ) : (
-                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-                  )}
+      {activeAction && (
+        <div className="border border-border bg-background-base/50">
+          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {actionStatus?.running ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-warning" />
+              ) : actionStatus?.exit_code === 0 ? (
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+              ) : actionStatus !== null ? (
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+              ) : (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+              )}
 
-                  <span className="text-xs font-mondwest tracking-[0.12em] truncate">
-                    {activeAction === "restart"
-                      ? t.status.restartGateway
-                      : t.status.updateHermes}
-                  </span>
+              <span className="text-xs font-mondwest tracking-[0.12em] truncate">
+                {activeAction === "restart"
+                  ? t.status.restartGateway
+                  : t.status.updateHermes}
+              </span>
 
-                  <Badge
-                    variant={
-                      actionStatus?.running
-                        ? "warning"
-                        : actionStatus?.exit_code === 0
-                          ? "success"
-                          : actionStatus
-                            ? "destructive"
-                            : "outline"
-                    }
-                    className="text-[10px] shrink-0"
-                  >
-                    {actionStatus?.running
-                      ? t.status.running
-                      : actionStatus?.exit_code === 0
-                        ? t.status.actionFinished
-                        : actionStatus
-                          ? `${t.status.actionFailed} (${actionStatus.exit_code ?? "?"})`
-                          : t.common.loading}
-                  </Badge>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={dismissLog}
-                  className="shrink-0 opacity-60 hover:opacity-100 cursor-pointer"
-                  aria-label={t.common.close}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-
-              <pre
-                ref={logScrollRef}
-                className="max-h-72 overflow-auto px-3 py-2 font-mono-ui text-[11px] leading-relaxed whitespace-pre-wrap break-all"
+              <Badge
+                variant={
+                  actionStatus?.running
+                    ? "warning"
+                    : actionStatus?.exit_code === 0
+                      ? "success"
+                      : actionStatus
+                        ? "destructive"
+                        : "outline"
+                }
+                className="text-[10px] shrink-0"
               >
-                {actionStatus?.lines && actionStatus.lines.length > 0
-                  ? actionStatus.lines.join("\n")
-                  : t.status.waitingForOutput}
-              </pre>
+                {actionStatus?.running
+                  ? t.status.running
+                  : actionStatus?.exit_code === 0
+                    ? t.status.actionFinished
+                    : actionStatus
+                      ? `${t.status.actionFailed} (${actionStatus.exit_code ?? "?"})`
+                      : t.common.loading}
+              </Badge>
             </div>
-          )}
-        </CardContent>
-      </Card>
+
+            <button
+              type="button"
+              onClick={dismissLog}
+              className="shrink-0 opacity-60 hover:opacity-100 cursor-pointer"
+              aria-label={t.common.close}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <pre
+            ref={logScrollRef}
+            className="max-h-72 overflow-auto px-3 py-2 font-mono-ui text-[11px] leading-relaxed whitespace-pre-wrap break-all"
+          >
+            {actionStatus?.lines && actionStatus.lines.length > 0
+              ? actionStatus.lines.join("\n")
+              : t.status.waitingForOutput}
+          </pre>
+        </div>
+      )}
 
       {platforms.length > 0 && (
         <PlatformsCard

@@ -1,0 +1,30 @@
+services:
+  gateway:
+    build: .
+    image: hermes-agent
+    container_name: hermes
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-1001}
+      - HERMES_GID=${HERMES_GID:-1001}
+      # Uncomment to expose API server beyond localhost (requires API_SERVER_KEY):
+      # - API_SERVER_HOST=0.0.0.0
+      # - API_SERVER_KEY=${API_SERVER_KEY}
+    command: ["gateway", "run"]
+
+  dashboard:
+    image: hermes-agent
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - gateway
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-1001}
+      - HERMES_GID=${HERMES_GID:-1001}
+    command: ["dashboard", "--host", "0.0.0.0", "--insecure"]

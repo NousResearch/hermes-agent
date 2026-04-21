@@ -41,9 +41,15 @@ COPY --chown=hermes:hermes . .
 # Build web dashboard (Vite outputs to hermes_cli/web_dist/)
 RUN cd web && npm run build
 
+# ---------- Permissions ----------
+# Make install dir world-readable so any HERMES_UID can read it at runtime.
+# The venv needs to be traversable too.
+USER root
+RUN chmod -R a+rX /opt/hermes
+# Start as root so the entrypoint can usermod/groupmod + gosu.
+# If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
+
 # ---------- Python virtualenv ----------
-RUN chown hermes:hermes /opt/hermes
-USER hermes
 RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 

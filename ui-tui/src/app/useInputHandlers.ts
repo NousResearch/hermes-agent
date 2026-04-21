@@ -172,6 +172,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     const live = getUiState()
 
     if (isBlocked) {
+      // When approval/clarify/confirm overlays are active, their own useInput
+      // handlers must receive keystrokes (arrow keys, numbers, Enter).  Only
+      // intercept Ctrl+C here so the user can deny/dismiss — all other keys
+      // fall through to the component-level handlers.
+      if (overlay.approval || overlay.clarify || overlay.confirm) {
+        if (isCtrl(key, ch, 'c')) {
+          cancelOverlayFromCtrlC()
+        }
+        return
+      }
+
       if (overlay.pager) {
         if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
           return patchOverlayState({ pager: null })

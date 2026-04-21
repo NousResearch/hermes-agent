@@ -606,6 +606,110 @@ class TestSendDocument:
         assert result.success is True
         assert result.message_id == "fallback"
 
+    # --- Regression coverage for #13356 -----------------------------------
+    # Before the fix, ``send_document`` wrote the exception to stdout via
+    # ``print(...)`` instead of ``logger.error``.  On systemd/Docker gateway
+    # deployments the diagnostic was invisible, so operators seeing
+    # "Hermes says success, Telegram received nothing" had no way to
+    # see the underlying error.  These tests pin that every failure
+    # routes through the standard logger with a full stack trace (matches
+    # the pattern established by ``send_voice`` and ``send_image_file``).
+
+    @pytest.mark.asyncio
+    async def test_send_document_api_error_is_logged_with_exc_info(
+        self, connected_adapter, tmp_path, caplog
+    ):
+        """Native send_document failures must be logged via logger.error
+        with ``exc_info=True`` so operators can diagnose from gateway logs
+        (not stdout via ``print``).  See #13356."""
+        import logging
+        test_file = tmp_path / "file.pdf"
+        test_file.write_bytes(b"data")
+
+        connected_adapter._bot.send_document = AsyncMock(
+            side_effect=RuntimeError("Telegram upload rejected")
+        )
+        connected_adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="fallback")
+        )
+
+        with caplog.at_level(logging.ERROR, logger="gateway.platforms.telegram"):
+            await connected_adapter.send_document(
+                chat_id="12345", file_path=str(test_file),
+            )
+
+        matching = [
+            r for r in caplog.records
+            if r.name == "gateway.platforms.telegram" and r.levelno == logging.ERROR
+        ]
+        assert matching, (
+            "Expected an ERROR-level log from gateway.platforms.telegram on "
+            "send_document failure; caplog records: "
+            f"{[(r.name, r.levelname, r.getMessage()) for r in caplog.records]}"
+        )
+        log = matching[0]
+        # Full diagnostic must be attached (exc_info=True path).
+        assert log.exc_info is not None, (
+            "logger.error must be called with exc_info=True so the stack "
+            "trace lands in the gateway log — this is the whole point of "
+            "the #13356 fix."
+        )
+        # The underlying exception text must surface in the log message.
+        assert "Telegram upload rejected" in log.getMessage()
+        # And the log line must name the adapter so operators see which
+        # platform raised (matches ``send_voice`` / ``send_image_file``).
+        assert connected_adapter.name in log.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_send_document_logs_do_not_hit_stdout(
+        self, connected_adapter, tmp_path, capsys
+    ):
+        """Structural pin: the old ``print(...)`` path is gone.  Any
+        stdout output during a send_document failure would be a
+        regression (invisible to systemd / Docker log capture)."""
+        test_file = tmp_path / "file.pdf"
+        test_file.write_bytes(b"data")
+
+        connected_adapter._bot.send_document = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        connected_adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="fallback")
+        )
+
+        await connected_adapter.send_document(
+            chat_id="12345", file_path=str(test_file),
+        )
+        captured = capsys.readouterr()
+        # Nothing on stdout — all diagnostic must flow via ``logger``.
+        assert f"[{connected_adapter.name}] Failed to send document" not in captured.out
+
+    @pytest.mark.asyncio
+    async def test_send_document_still_invokes_base_fallback_on_error(
+        self, connected_adapter, tmp_path
+    ):
+        """Preserved-behaviour canary: even after the logging fix, the
+        native-failure path still falls through to the base adapter's
+        text fallback — matches sibling ``send_voice`` / ``send_image_file``
+        semantics.  This PR only changes observability, not routing."""
+        test_file = tmp_path / "file.pdf"
+        test_file.write_bytes(b"data")
+
+        connected_adapter._bot.send_document = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        connected_adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="fallback-msg-id")
+        )
+
+        result = await connected_adapter.send_document(
+            chat_id="12345", file_path=str(test_file),
+        )
+        # Base fallback ran (routed through self.send)
+        connected_adapter.send.assert_awaited_once()
+        assert result.success is True
+        assert result.message_id == "fallback-msg-id"
+
     @pytest.mark.asyncio
     async def test_send_document_reply_to(self, connected_adapter, tmp_path):
         """reply_to parameter is forwarded as reply_to_message_id."""
@@ -771,3 +875,66 @@ class TestSendVideo:
 
         call_kwargs = connected_adapter._bot.send_video.call_args[1]
         assert call_kwargs["message_thread_id"] == 789
+
+    # --- Regression coverage for #13356 (send_video path) ----------------
+    # Identical observability fix as ``send_document`` — the ``print(...)``
+    # path was the twin of the one flagged in the issue.
+
+    @pytest.mark.asyncio
+    async def test_send_video_api_error_is_logged_with_exc_info(
+        self, connected_adapter, tmp_path, caplog
+    ):
+        """Native send_video failures must route through logger.error with
+        ``exc_info=True`` so gateway log capture sees them."""
+        import logging
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+
+        connected_adapter._bot.send_video = AsyncMock(
+            side_effect=RuntimeError("Telegram video rejected")
+        )
+        connected_adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="fallback")
+        )
+
+        with caplog.at_level(logging.ERROR, logger="gateway.platforms.telegram"):
+            await connected_adapter.send_video(
+                chat_id="12345", video_path=str(test_file),
+            )
+
+        matching = [
+            r for r in caplog.records
+            if r.name == "gateway.platforms.telegram" and r.levelno == logging.ERROR
+        ]
+        assert matching, (
+            "Expected an ERROR-level log on send_video failure; caplog records: "
+            f"{[(r.name, r.levelname, r.getMessage()) for r in caplog.records]}"
+        )
+        log = matching[0]
+        assert log.exc_info is not None, (
+            "logger.error must be called with exc_info=True — the stack "
+            "trace is the whole diagnostic."
+        )
+        assert "Telegram video rejected" in log.getMessage()
+        assert connected_adapter.name in log.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_send_video_logs_do_not_hit_stdout(
+        self, connected_adapter, tmp_path, capsys
+    ):
+        """Structural pin: no ``print(...)`` leak on send_video errors."""
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+
+        connected_adapter._bot.send_video = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        connected_adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="fallback")
+        )
+
+        await connected_adapter.send_video(
+            chat_id="12345", video_path=str(test_file),
+        )
+        captured = capsys.readouterr()
+        assert f"[{connected_adapter.name}] Failed to send video" not in captured.out

@@ -1942,7 +1942,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send document: {e}")
+            # Route to the standard logger so operators see the
+            # diagnostic (exception type + stack) in gateway logs.
+            # The previous ``print`` went to stdout and was invisible
+            # in systemd/Docker-captured log streams — operators
+            # reporting "Hermes says success, Telegram received
+            # nothing" had no way to see the underlying error.  See
+            # #13356.  Matches the established pattern in
+            # ``send_voice`` / ``send_image_file`` below/above.
+            logger.error(
+                "[%s] Failed to send Telegram document, falling back to base adapter: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
 
     async def send_video(
@@ -1973,7 +1986,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send video: {e}")
+            # Route to the standard logger so operators see the
+            # diagnostic (exception type + stack) in gateway logs —
+            # same rationale as ``send_document`` above.  See #13356.
+            logger.error(
+                "[%s] Failed to send Telegram video, falling back to base adapter: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
             return await super().send_video(chat_id, video_path, caption, reply_to)
 
     async def send_image(

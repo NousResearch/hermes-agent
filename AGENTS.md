@@ -566,3 +566,52 @@ python -m pytest tests/ -q -n 4
 Worker count above 4 will surface test-ordering flakes that CI never sees.
 
 Always run the full suite before pushing changes.
+
+### Don't write change-detector tests
+
+A test is a **change-detector** if it fails whenever data that is **expected
+to change** gets updated — model catalogs, config version numbers,
+enumeration counts, hardcoded lists of provider models. These tests add no
+behavioral coverage; they just guarantee that routine source updates break
+CI and cost engineering time to "fix."
+
+**Do not write:**
+
+```python
+# catalog snapshot — breaks every model release
+assert "gemini-2.5-pro" in _PROVIDER_MODELS["gemini"]
+assert "MiniMax-M2.7" in models
+
+# config version literal — breaks every schema bump
+assert DEFAULT_CONFIG["_config_version"] == 21
+
+# enumeration count — breaks every time a skill/provider is added
+assert len(_PROVIDER_MODELS["huggingface"]) == 8
+```
+
+**Do write:**
+
+```python
+# behavior: does the catalog plumbing work at all?
+assert "gemini" in _PROVIDER_MODELS
+assert len(_PROVIDER_MODELS["gemini"]) >= 1
+
+# behavior: does migration bump the user's version to current latest?
+assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+
+# invariant: no plan-only model leaks into the legacy list
+assert not (set(moonshot_models) & coding_plan_only_models)
+
+# invariant: every model in the catalog has a context-length entry
+for m in _PROVIDER_MODELS["huggingface"]:
+    assert m.lower() in DEFAULT_CONTEXT_LENGTHS_LOWER
+```
+
+The rule: if the test reads like a snapshot of current data, delete it. If
+it reads like a contract about how two pieces of data must relate, keep it.
+When a PR adds a new provider/model and you want a test, make the test
+assert the relationship (e.g. "catalog entries all have context lengths"),
+not the specific names.
+
+Reviewers should reject new change-detector tests; authors should convert
+them into invariants before re-requesting review.

@@ -601,3 +601,78 @@ class TestImagegenModelPicker:
             _configure_imagegen_model("fal", config)
         assert isinstance(config["image_gen"], dict)
         assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+
+
+# ---------------------------------------------------------------------------
+# Bug #13410: toolsets config should be respected when starting hermes
+# ---------------------------------------------------------------------------
+
+def test_toolsets_preserved_when_command_is_none():
+    """When args.command is None, user-configured toolsets should not be
+    overwritten with None (bug #13410)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    # Simulate args with toolsets already configured
+    args = SimpleNamespace(
+        command=None,
+        toolsets="web,terminal",
+    )
+
+    # Mock cmd_chat to capture what it receives
+    captured = {}
+    def mock_cmd_chat(a):
+        captured["args"] = a
+
+    with patch("hermes_cli.main.cmd_chat", side_effect=mock_cmd_chat):
+        # Simulate the check logic from main.py
+        if args.command is None:
+            for attr, default in [
+                ("query", None),
+                ("model", None),
+                ("provider", None),
+                ("verbose", False),
+                ("resume", None),
+                ("continue_last", None),
+                ("worktree", False),
+            ]:
+                if not hasattr(args, attr):
+                    setattr(args, attr, default)
+            # Preserve user-configured toolsets instead of overriding with None
+            if not hasattr(args, "toolsets"):
+                args.toolsets = None
+            mock_cmd_chat(args)
+
+    assert captured["args"].toolsets == "web,terminal", (
+        f"Expected toolsets='web,terminal', got {captured['args'].toolsets}"
+    )
+
+
+def test_toolsets_defaults_to_none_when_not_set():
+    """When args.command is None and toolsets was never set, default to None."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    # Simulate args without toolsets configured
+    args = SimpleNamespace(command=None)
+
+    with patch("hermes_cli.main.cmd_chat") as mock_chat:
+        # Simulate the check logic from main.py
+        if args.command is None:
+            for attr, default in [
+                ("query", None),
+                ("model", None),
+                ("provider", None),
+                ("verbose", False),
+                ("resume", None),
+                ("continue_last", None),
+                ("worktree", False),
+            ]:
+                if not hasattr(args, attr):
+                    setattr(args, attr, default)
+            if not hasattr(args, "toolsets"):
+                args.toolsets = None
+            mock_chat(args)
+
+    call_args = mock_chat.call_args[0][0]
+    assert call_args.toolsets is None

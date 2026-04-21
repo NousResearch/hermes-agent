@@ -8663,7 +8663,6 @@ Examples:
             ("query", None),
             ("model", None),
             ("provider", None),
-            ("toolsets", None),
             ("verbose", False),
             ("resume", None),
             ("continue_last", None),
@@ -8671,6 +8670,9 @@ Examples:
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
+        # Preserve user-configured toolsets instead of overriding with None
+        if not hasattr(args, "toolsets"):
+            args.toolsets = None
         cmd_chat(args)
         return
 

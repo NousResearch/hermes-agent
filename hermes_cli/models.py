@@ -292,6 +292,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "big-pickle",
     ],
     "opencode-go": [
+        "kimi-k2.6",
         "kimi-k2.5",
         "glm-5.1",
         "glm-5",
@@ -299,6 +300,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "minimax-m2.7",
         "minimax-m2.5",
+        "qwen3.6-plus",
+        "qwen3.5-plus",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6",

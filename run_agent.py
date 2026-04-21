@@ -6994,6 +6994,8 @@ class AIAgent:
         """
         if "nousresearch" in self._base_url_lower:
             return True
+        if "tokenfactory.nebius" in self._base_url_lower:
+            return True
         if "ai-gateway.vercel.sh" in self._base_url_lower:
             return True
         if "models.github.ai" in self._base_url_lower or "api.githubcopilot.com" in self._base_url_lower:

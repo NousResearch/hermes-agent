@@ -56,6 +56,7 @@ AUTHOR_MAP = {
     "101283333+batuhankocyigit@users.noreply.github.com": "batuhankocyigit",
     "valdi.jorge@gmail.com": "jvcl",
     "francip@gmail.com": "francip",
+    "omni@comelse.com": "omnissiah-comelse",
     "oussama.redcode@gmail.com": "mavrickdeveloper",
     "126368201+vilkasdev@users.noreply.github.com": "vilkasdev",
     "137614867+cutepawss@users.noreply.github.com": "cutepawss",

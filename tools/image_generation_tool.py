@@ -623,7 +623,9 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
+        fal_key_value = os.getenv("FAL_KEY")
+        fal_key_set = bool(fal_key_value and fal_key_value.strip())
+        if not (fal_key_set or _resolve_managed_fal_gateway()):
             message = "FAL_KEY environment variable not set"
             if managed_nous_tools_enabled():
                 message += " and managed FAL gateway is unavailable"
@@ -734,7 +736,9 @@ def image_generate_tool(
 
 def check_fal_api_key() -> bool:
     """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
+    fal_key_value = os.getenv("FAL_KEY")
+    fal_key_set = bool(fal_key_value and fal_key_value.strip())
+    return bool(fal_key_set or _resolve_managed_fal_gateway())
 
 
 def check_image_generation_requirements() -> bool:

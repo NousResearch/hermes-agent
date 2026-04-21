@@ -5763,6 +5763,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             text=True,
                             timeout=10,
                         )
+                        units = []
                         for line in result.stdout.strip().splitlines():
                             parts = line.split()
                             if not parts:
@@ -5780,7 +5781,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 text=True,
                                 timeout=5,
                             )
-                            if check.stdout.strip() == "active":
+                            units.append((svc_name, check.stdout.strip()))
+
+                        units.sort(
+                            key=lambda item: (item[0] != "hermes-gateway", item[0])
+                        )
+
+                        for svc_name, state in units:
+                            if state == "active":
                                 restart = subprocess.run(
                                     scope_cmd + ["restart", svc_name],
                                     capture_output=True,
@@ -5833,6 +5841,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     print(
                                         f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
                                     )
+                                if (
+                                    svc_name == "hermes-gateway"
+                                    or svc_name.startswith("hermes-gateway-")
+                                ):
+                                    _time.sleep(5)
                     except (FileNotFoundError, subprocess.TimeoutExpired):
                         pass
 

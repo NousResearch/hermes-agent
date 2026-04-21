@@ -424,6 +424,51 @@ class TestCmdUpdateLaunchdRestart:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_update_restarts_default_gateway_before_profile_units(
+        self, mock_run, _mock_which, mock_args, monkeypatch,
+    ):
+        """Default gateway should restart before profile gateways.
+
+        systemctl list-units ordering is not a contract.  Restarting a profile
+        gateway first can leave the default profile racing against stale
+        gateway.pid state during the same update.
+        """
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        base_side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=True,
+        )
+        restarted: list[str] = []
+
+        def fake_run(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "systemctl --user list-units" in joined:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=(
+                        "hermes-gateway-scout.service loaded active running Hermes Gateway\n"
+                        "hermes-gateway.service loaded active running Hermes Gateway\n"
+                    ),
+                    stderr="",
+                )
+            if "systemctl --user restart" in joined:
+                restarted.append(cmd[-1])
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return base_side_effect(cmd, **kwargs)
+
+        mock_run.side_effect = fake_run
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        assert restarted[:2] == ["hermes-gateway", "hermes-gateway-scout"]
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_no_gateway_running_skips_restart(
         self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
     ):

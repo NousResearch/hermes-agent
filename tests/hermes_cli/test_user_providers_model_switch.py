@@ -514,3 +514,52 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     
     assert result.success is True
     assert result.error_message == ""
+
+
+def test_switch_model_preserves_user_provider_transport_api_mode(monkeypatch, tmp_path):
+    """/model should honor ``providers:`` transport metadata for custom endpoints.
+
+    Regression: providers defined in the canonical ``providers:`` dict can set
+    ``transport: anthropic_messages`` even when their base URL does not use the
+    conventional ``/anthropic`` suffix. The shared /model switch path resolved
+    those endpoints through runtime_provider but dropped the configured
+    transport, silently falling back to ``chat_completions``.
+    """
+    import yaml
+
+    config = {
+        "providers": {
+            "team-proxy": {
+                "base_url": "https://proxy.example.test/v1",
+                "name": "Team Proxy",
+                "model": "claude-sonnet-4-6",
+                "transport": "anthropic_messages",
+            }
+        }
+    }
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump(config))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None},
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="claude-sonnet-4-6",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4.6",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="or-key",
+        explicit_provider="team-proxy",
+        user_providers=config["providers"],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "team-proxy"
+    assert result.base_url == "https://proxy.example.test/v1"
+    assert result.api_mode == "anthropic_messages"

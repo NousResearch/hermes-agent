@@ -1141,6 +1141,33 @@ def test_named_custom_provider_anthropic_api_mode(monkeypatch):
     assert resolved["base_url"] == "https://proxy.example.com/anthropic"
 
 
+def test_named_user_provider_transport_maps_to_runtime_api_mode(monkeypatch):
+    """providers: dict entries should preserve transport-derived api_mode."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "team-proxy")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "team-proxy": {
+                    "base_url": "https://proxy.example.test/v1",
+                    "name": "Team Proxy",
+                    "model": "claude-sonnet-4-6",
+                    "transport": "anthropic_messages",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="team-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://proxy.example.test/v1"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["model"] == "claude-sonnet-4-6"
+
+
 # ------------------------------------------------------------------
 # fix #2562 — resolve_provider("custom") must not remap to "openrouter"
 # ------------------------------------------------------------------

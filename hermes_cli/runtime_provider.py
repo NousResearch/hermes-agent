@@ -148,6 +148,29 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _config_entry_api_mode(entry: Dict[str, Any]) -> Optional[str]:
+    """Resolve api_mode from a provider config entry.
+
+    ``providers:`` entries may carry either an explicit ``api_mode`` or a
+    higher-level ``transport`` field. Runtime resolution should preserve both
+    shapes so mid-session /model switches keep the configured wire protocol.
+    """
+    api_mode = _parse_api_mode(entry.get("api_mode"))
+    if api_mode:
+        return api_mode
+
+    transport = str(entry.get("transport", "") or "").strip().lower()
+    if not transport:
+        return None
+
+    try:
+        from hermes_cli.providers import TRANSPORT_TO_API_MODE
+    except Exception:
+        return None
+
+    return TRANSPORT_TO_API_MODE.get(transport)
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -317,12 +340,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    return {
+                    result = {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
-                        "model": entry.get("default_model", ""),
+                        "model": entry.get("default_model", "") or entry.get("model", ""),
                     }
+                    api_mode = _config_entry_api_mode(entry)
+                    if api_mode:
+                        result["api_mode"] = api_mode
+                    return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
             if display_name:
@@ -331,12 +358,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
-                        return {
+                        result = {
                             "name": display_name,
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
-                            "model": entry.get("default_model", ""),
+                            "model": entry.get("default_model", "") or entry.get("model", ""),
                         }
+                        api_mode = _config_entry_api_mode(entry)
+                        if api_mode:
+                            result["api_mode"] = api_mode
+                        return result
 
     # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")

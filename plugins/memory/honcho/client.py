@@ -31,6 +31,11 @@ GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
 
 
+def _global_config_path() -> Path:
+    """Return the current global Honcho config path."""
+    return Path.home() / ".honcho" / "config.json"
+
+
 def resolve_active_host() -> str:
     """Derive the Honcho host key from the active Hermes profile.
 
@@ -72,7 +77,7 @@ def resolve_config_path() -> Path:
     if default_path != local_path and default_path.exists():
         return default_path
 
-    return GLOBAL_CONFIG_PATH
+    return _global_config_path()
 
 
 _RECALL_MODE_ALIASES = {"auto": "hybrid"}

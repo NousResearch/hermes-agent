@@ -360,7 +360,7 @@ class TestResolveConfigPath:
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
              patch.object(Path, "home", return_value=fake_home):
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
 
     def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
         fake_home = tmp_path / "fakehome"
@@ -370,7 +370,21 @@ class TestResolveConfigPath:
              patch.object(Path, "home", return_value=fake_home):
             os.environ.pop("HERMES_HOME", None)
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
+
+    def test_uses_current_home_for_global_fallback_after_import(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        fake_home = tmp_path / "new-home"
+        fake_home.mkdir()
+        expected_global = fake_home / ".honcho" / "config.json"
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=fake_home):
+            result = resolve_config_path()
+
+        assert result == expected_global
+        assert result != GLOBAL_CONFIG_PATH
 
     def test_from_global_config_uses_local_path(self, tmp_path):
         hermes_home = tmp_path / "hermes"

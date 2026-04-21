@@ -106,3 +106,55 @@ class TestBaseUrlHostMatchesEdgeCases:
 
     def test_trailing_dot_on_domain_stripped(self):
         assert base_url_host_matches("https://openrouter.ai/v1", "openrouter.ai.") is True
+
+
+class TestOllamaUrlHostCheck:
+    """GHSA-76xc-57q6-vm5m — ollama.com was using a raw substring match for
+    credential selection (same bug class as GHSA-xf8p-v2cg-h7h5 for OpenRouter).
+    These tests lock in that the base_url_host_matches fix correctly rejects
+    the same attack vectors for Ollama.
+    """
+
+    def test_ollama_com_path_injection_rejected(self):
+        """http://evil.test/ollama.com/v1 — ollama.com appears in the path,
+        not the host. Must not be treated as Ollama Cloud."""
+        assert base_url_host_matches(
+            "http://127.0.0.1:9000/ollama.com/v1", "ollama.com"
+        ) is False
+
+    def test_ollama_com_subdomain_lookalike_rejected(self):
+        """ollama.com.attacker.test is a separate host, not ollama.com."""
+        assert base_url_host_matches(
+            "http://ollama.com.attacker.test:9000/v1", "ollama.com"
+        ) is False
+
+    def test_ollama_com_localtest_me_rejected(self):
+        """ollama.com.localtest.me resolves to 127.0.0.1 via localtest.me
+        but its true hostname is localtest.me, not ollama.com."""
+        assert base_url_host_matches(
+            "http://ollama.com.localtest.me:9000/v1", "ollama.com"
+        ) is False
+
+    def test_ollama_ai_is_not_ollama_com(self):
+        """Different TLD. ollama.ai is not ollama.com."""
+        assert base_url_host_matches(
+            "https://ollama.ai/v1", "ollama.com"
+        ) is False
+
+    def test_localhost_ollama_port_is_not_ollama_com(self):
+        """http://localhost:11434/v1 is a local Ollama install, but its
+        hostname is localhost, so OLLAMA_API_KEY (an ollama.com-only secret)
+        must not be sent."""
+        assert base_url_host_matches(
+            "http://localhost:11434/v1", "ollama.com"
+        ) is False
+
+    def test_genuine_ollama_com_matches(self):
+        assert base_url_host_matches(
+            "https://ollama.com/api/generate", "ollama.com"
+        ) is True
+
+    def test_ollama_com_subdomain_matches(self):
+        assert base_url_host_matches(
+            "https://api.ollama.com/v1", "ollama.com"
+        ) is True

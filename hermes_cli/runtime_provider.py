@@ -492,8 +492,12 @@ def _resolve_openrouter_runtime(
     else:
         # Custom endpoint: use api_key from config when using config base_url (#1760).
         # When the endpoint is Ollama Cloud, check OLLAMA_API_KEY — it's
-        # the canonical env var for ollama.com authentication.
-        _is_ollama_url = "ollama.com" in base_url.lower()
+        # the canonical env var for ollama.com authentication. Match on
+        # HOST, not substring — a custom base_url whose path contains
+        # "ollama.com" (e.g. http://127.0.0.1/ollama.com/v1) or whose
+        # hostname is a look-alike (ollama.com.attacker.test) must not
+        # receive the Ollama credential. See GHSA-76xc-57q6-vm5m.
+        _is_ollama_url = base_url_host_matches(base_url, "ollama.com")
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),

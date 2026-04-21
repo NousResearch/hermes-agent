@@ -448,6 +448,90 @@ class TestDetectLocalServerTypeAuth:
         }
 
 
+
+class TestDetectLlamaCppServerType:
+    """detect_local_server_type correctly identifies llama.cpp via /props endpoint."""
+
+    def _make_resp(self, status_code, text=""):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        return resp
+
+    def test_props_endpoint_at_server_root(self):
+        """llama.cpp exposes /props at server root (not /v1 prefix).
+        
+        When base_url is http://localhost:8080/v1, the detection should:
+        1. Strip /v1 to get http://localhost:8080
+        2. Try http://localhost:8080/props first (standard endpoint)
+        """
+        from agent.model_metadata import detect_local_server_type
+
+        props_resp = self._make_resp(200, '{"default_generation_settings": {"n_ctx": 8192}}')
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        
+        # Track which URLs were requested
+        requested_urls = []
+        def get_side_effect(url, **kwargs):
+            requested_urls.append(url)
+            if url.endswith("/props"):
+                return props_resp
+            return self._make_resp(404)
+        client_mock.get.side_effect = get_side_effect
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://localhost:8080/v1")
+
+        assert result == "llamacpp"
+        # Verify /props was tried at server root (not /v1/props)
+        assert "http://localhost:8080/props" in requested_urls
+
+    def test_props_endpoint_without_v1_prefix(self):
+        """When base_url already lacks /v1 prefix, detection still works."""
+        from agent.model_metadata import detect_local_server_type
+
+        props_resp = self._make_resp(200, '{"default_generation_settings": {"n_ctx": 4096}}')
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = props_resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://localhost:8080")
+
+        assert result == "llamacpp"
+
+    def test_fallback_to_v1_props(self):
+        """Falls back to /v1/props if /props returns 404."""
+        from agent.model_metadata import detect_local_server_type
+
+        props_404 = self._make_resp(404)
+        v1_props_ok = self._make_resp(200, '{"default_generation_settings": {"n_ctx": 8192}}')
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        
+        call_count = [0]
+        def get_side_effect(url, **kwargs):
+            call_count[0] += 1
+            if url.endswith("/props") and call_count[0] == 1:
+                return props_404  # First call: /props returns 404
+            if url.endswith("/v1/props"):
+                return v1_props_ok  # Second call: /v1/props returns 200
+            return self._make_resp(404)
+        client_mock.get.side_effect = get_side_effect
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://localhost:8080")
+
+        assert result == "llamacpp"
+
+
 class TestFetchEndpointModelMetadataLmStudio:
     """fetch_endpoint_model_metadata should use LM Studio's native models endpoint."""
 

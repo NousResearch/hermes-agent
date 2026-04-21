@@ -1333,7 +1333,9 @@ class TestExecuteToolCalls:
 
         assert callbacks == [agent._touch_activity, None]
         assert agent._current_tool is None
-        assert agent.get_activity_summary()["current_tool"] is None
+        activity = agent.get_activity_summary()
+        assert activity["current_tool"] is None
+        assert activity["last_activity_desc"] == "tool exited without completion: terminal"
 
     def test_quiet_tool_output_suppressed_when_progress_callback_present(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")

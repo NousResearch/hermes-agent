@@ -130,6 +130,27 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _report_tool_governance(config: dict) -> None:
+    tool_governance = (config.get("security") or {}).get("tool_governance") or {}
+
+    print()
+    print(color("◆ Tool Governance", Colors.CYAN, Colors.BOLD))
+
+    skill_allowed_tools = tool_governance.get("skill_allowed_tools", False)
+    channel_tool_review = tool_governance.get("channel_tool_review", False)
+    check_ok(
+        f"Skill allowed-tools enforcement: {'enabled' if skill_allowed_tools else 'disabled'}",
+        "(config.yaml)",
+    )
+    check_ok(
+        f"Channel tool review: {'enabled' if channel_tool_review else 'disabled'}",
+        "(config.yaml)",
+    )
+
+    if not skill_allowed_tools and not channel_tool_review:
+        check_info("Both governance policies are advisory/off by default until explicitly enabled")
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
     try:
@@ -462,6 +483,14 @@ def run_doctor(args):
                     for hint_line in ci.hint.splitlines():
                         check_info(hint_line)
                     issues.append(ci.message)
+        except Exception:
+            pass
+
+        try:
+            import yaml
+            with open(config_path, encoding="utf-8") as f:
+                raw_config = yaml.safe_load(f) or {}
+            _report_tool_governance(raw_config)
         except Exception:
             pass
 

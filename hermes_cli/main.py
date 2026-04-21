@@ -7256,12 +7256,12 @@ For more help on a command:
         "setup",
         help="Interactive setup wizard",
         description="Configure Hermes Agent with an interactive wizard. "
-        "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent",
+        "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent|security",
     )
     setup_parser.add_argument(
         "section",
         nargs="?",
-        choices=["model", "tts", "terminal", "gateway", "tools", "agent"],
+        choices=["model", "tts", "terminal", "gateway", "tools", "agent", "security"],
         default=None,
         help="Run a specific setup section instead of the full wizard",
     )
@@ -7822,6 +7822,36 @@ Examples:
 
     # config check
     config_subparsers.add_parser("check", help="Check for missing/outdated config")
+
+    # config governance
+    config_governance = config_subparsers.add_parser("governance", help="Show tool governance settings")
+    config_governance.add_argument("--enable-all", action="store_true", help="Enable all tool governance policies")
+    config_governance.add_argument("--disable-all", action="store_true", help="Disable all tool governance policies")
+    config_governance.add_argument(
+        "--preset",
+        choices=["messaging-safe", "skill-safe", "balanced"],
+        help="Apply a governance preset",
+    )
+    config_governance.add_argument(
+        "--enable-skill-allowed-tools",
+        action="store_true",
+        help="Enable skill allowed-tools enforcement",
+    )
+    config_governance.add_argument(
+        "--disable-skill-allowed-tools",
+        action="store_true",
+        help="Disable skill allowed-tools enforcement",
+    )
+    config_governance.add_argument(
+        "--enable-channel-review",
+        action="store_true",
+        help="Enable channel tool review",
+    )
+    config_governance.add_argument(
+        "--disable-channel-review",
+        action="store_true",
+        help="Disable channel tool review",
+    )
 
     # config migrate
     config_subparsers.add_parser("migrate", help="Update config with new options")

@@ -70,3 +70,11 @@ class TestTipIntegrationInCLI:
         # Should not contain nested/broken Rich tags
         assert markup.count("[/]") == 1
         assert "[dim #B8860B]" in markup
+
+
+class TestToolGovernanceTips:
+    def test_has_config_governance_tip(self):
+        assert any("hermes config governance" in tip for tip in TIPS)
+
+    def test_has_setup_security_tip(self):
+        assert any("hermes setup security" in tip for tip in TIPS)

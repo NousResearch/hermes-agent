@@ -923,6 +923,10 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+        "tool_governance": {
+            "skill_allowed_tools": False,
+            "channel_tool_review": False,
+        },
     },
 
     "cron": {
@@ -3763,6 +3767,8 @@ def show_config():
     
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+
+    _print_tool_governance_section(config)
     
     # Skill config
     try:
@@ -3819,6 +3825,78 @@ def edit_config():
     
     print(f"Opening {config_path} in {editor}...")
     subprocess.run([editor, str(config_path)])
+
+
+def _print_tool_governance_section(config: dict, *, show_commands: bool = False) -> None:
+    print()
+    print(color("◆ Tool Governance", Colors.CYAN, Colors.BOLD))
+    tool_governance = config.get('security', {}).get('tool_governance', {})
+    skill_allowed_tools = tool_governance.get('skill_allowed_tools', False)
+    channel_tool_review = tool_governance.get('channel_tool_review', False)
+
+    print(f"  skill_allowed_tools: {'on' if skill_allowed_tools else color('off', Colors.DIM)}")
+    print(f"  channel_tool_review: {'on' if channel_tool_review else color('off', Colors.DIM)}")
+    print(
+        "  security.tool_governance.skill_allowed_tools"
+        f"  {'on' if skill_allowed_tools else color('off', Colors.DIM)}"
+    )
+    print(
+        "  security.tool_governance.channel_tool_review"
+        f"  {'on' if channel_tool_review else color('off', Colors.DIM)}"
+    )
+
+    if show_commands:
+        print()
+        print("  Presets:")
+        print("    hermes config governance --preset messaging-safe")
+        print("    hermes config governance --preset skill-safe")
+        print("    hermes config governance --preset balanced")
+        print()
+        print("  Enable with:")
+        print("    hermes config set security.tool_governance.skill_allowed_tools true")
+        print("    hermes config set security.tool_governance.channel_tool_review true")
+        print()
+        print("  Disable with:")
+        print("    hermes config set security.tool_governance.skill_allowed_tools false")
+        print("    hermes config set security.tool_governance.channel_tool_review false")
+
+
+
+def _apply_tool_governance_toggles(args) -> None:
+    enable_all = bool(getattr(args, 'enable_all', False))
+    disable_all = bool(getattr(args, 'disable_all', False))
+    enable_skill_allowed_tools = bool(getattr(args, 'enable_skill_allowed_tools', False))
+    disable_skill_allowed_tools = bool(getattr(args, 'disable_skill_allowed_tools', False))
+    enable_channel_review = bool(getattr(args, 'enable_channel_review', False))
+    disable_channel_review = bool(getattr(args, 'disable_channel_review', False))
+    preset = getattr(args, 'preset', None)
+
+    if preset == 'messaging-safe':
+        enable_channel_review = True
+        disable_skill_allowed_tools = True
+    elif preset == 'skill-safe':
+        enable_skill_allowed_tools = True
+        disable_channel_review = True
+    elif preset == 'balanced':
+        enable_skill_allowed_tools = True
+        enable_channel_review = True
+
+    if enable_all:
+        enable_skill_allowed_tools = True
+        enable_channel_review = True
+    if disable_all:
+        disable_skill_allowed_tools = True
+        disable_channel_review = True
+
+    if enable_skill_allowed_tools:
+        set_config_value("security.tool_governance.skill_allowed_tools", "true")
+    elif disable_skill_allowed_tools:
+        set_config_value("security.tool_governance.skill_allowed_tools", "false")
+
+    if enable_channel_review:
+        set_config_value("security.tool_governance.channel_tool_review", "true")
+    elif disable_channel_review:
+        set_config_value("security.tool_governance.channel_tool_review", "false")
 
 
 def set_config_value(key: str, value: str):
@@ -3931,6 +4009,8 @@ def config_command(args):
             print("Examples:")
             print("  hermes config set model anthropic/claude-sonnet-4")
             print("  hermes config set terminal.backend docker")
+            print("  hermes config set security.tool_governance.skill_allowed_tools true")
+            print("  hermes config set security.tool_governance.channel_tool_review true")
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)
         set_config_value(key, value)
@@ -4032,7 +4112,16 @@ def config_command(args):
             print()
             print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
             print("    Run 'hermes config migrate' to add them")
+
+        _print_tool_governance_section(load_config())
         
+        print()
+
+    elif subcmd == "governance":
+        print()
+        print(color("🛡 Tool Governance", Colors.CYAN, Colors.BOLD))
+        _apply_tool_governance_toggles(args)
+        _print_tool_governance_section(load_config(), show_commands=True)
         print()
     
     else:
@@ -4043,6 +4132,7 @@ def config_command(args):
         print("  hermes config edit      Open config in editor")
         print("  hermes config set <key> <value>   Set a config value")
         print("  hermes config check     Check for missing/outdated config")
+        print("  hermes config governance Show tool governance settings")
         print("  hermes config migrate   Update config with new options")
         print("  hermes config path      Show config file path")
         print("  hermes config env-path  Show .env file path")

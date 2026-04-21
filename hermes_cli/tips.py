@@ -82,6 +82,8 @@ TIPS = [
     "hermes config set KEY VALUE auto-routes secrets to .env and everything else to config.yaml.",
     "hermes config edit opens config.yaml in your default editor.",
     "hermes config check scans for missing or stale configuration options.",
+    "hermes config governance shows tool-governance status and supports quick presets like --preset messaging-safe.",
+    "hermes setup security opens the dedicated setup section for tool-governance defaults.",
     "hermes sessions browse opens an interactive session picker with search.",
     "hermes sessions stats shows session counts by platform and database size.",
     "hermes sessions prune --older-than 30 cleans up old sessions.",

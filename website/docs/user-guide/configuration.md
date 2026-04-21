@@ -1049,6 +1049,7 @@ voice:
   record_key: "ctrl+b"         # Push-to-talk key inside the CLI
   max_recording_seconds: 120    # Hard stop for long recordings
   auto_tts: false               # Enable spoken replies automatically when /voice on
+  beep_enabled: true            # Play record start/stop beeps in CLI voice mode
   silence_threshold: 200        # RMS threshold for speech detection
   silence_duration: 3.0         # Seconds of silence before auto-stop
 ```

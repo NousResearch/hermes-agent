@@ -7414,11 +7414,12 @@ class HermesCLI:
             self._voice_stop_and_transcribe()
 
         # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
-        try:
-            from tools.voice_mode import play_beep
-            play_beep(frequency=880, count=1)
-        except Exception:
-            pass
+        if self._voice_beeps_enabled():
+            try:
+                from tools.voice_mode import play_beep
+                play_beep(frequency=880, count=1)
+            except Exception:
+                pass
 
         try:
             self._voice_recorder.start(on_silence_stop=_on_silence)
@@ -7466,11 +7467,12 @@ class HermesCLI:
             wav_path = self._voice_recorder.stop()
 
             # Audio cue: double beep after stream stopped (no CoreAudio conflict)
-            try:
-                from tools.voice_mode import play_beep
-                play_beep(frequency=660, count=2)
-            except Exception:
-                pass
+            if self._voice_beeps_enabled():
+                try:
+                    from tools.voice_mode import play_beep
+                    play_beep(frequency=660, count=2)
+                except Exception:
+                    pass
 
             if wav_path is None:
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -7620,6 +7622,17 @@ class HermesCLI:
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _voice_beeps_enabled(self) -> bool:
+        """Return whether CLI voice mode should play record start/stop beeps."""
+        try:
+            from hermes_cli.config import load_config
+            voice_cfg = load_config().get("voice", {})
+            if isinstance(voice_cfg, dict):
+                return bool(voice_cfg.get("beep_enabled", True))
+        except Exception:
+            pass
+        return True
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""

@@ -372,52 +372,52 @@ panels:
 - panel_id: p05
   block_id: b05
   scene_id: ep003_public_claim_scene
-  beat_purpose: heroine claims him in public and forces him to play along under witness pressure
+  beat_purpose: heroine publicly steps into his space and forces him to maintain the misunderstanding under corridor attention
   visible_characters:
   - protagonist
   - heroine
   camera:
-    angle: medium public two-shot with witness pressure around the edge
+    angle: medium corridor two-shot with surrounding student attention at the edge
     height: standing chest height
     lens_feel: medium with slight crowd compression
-    motion: sudden interruption in a public corridor
+    motion: sudden interruption in a busy corridor
   framing:
     shot_size: medium_two_shot
     subject_priority:
-    - heroine grabbing his arm
-    - protagonist caught under public attention
+    - heroine stepping in close at his side
+    - protagonist caught by sudden attention
     depth_layers:
-    - foreground implied crowd shoulders
-    - midground arm-grab contact
+    - foreground implied student shoulders
+    - midground sleeve-contact cue
     - background corridor depth
   blocking:
     character_positions:
       protagonist: center-left, halted mid-step as attention lands on him
-      heroine: center-right, closing distance and pulling his arm into frame
+      heroine: center-right, closing distance and drawing him into frame
     eyelines:
       protagonist: eyes cut toward heroine with startled compliance
-      heroine: eyes stay level and performative for the watching crowd
-    contact_state: heroine grips protagonist arm while he freezes before answering
+      heroine: eyes stay level and performative for the watching students
+    contact_state: heroine catches protagonist sleeve while he hesitates before answering
   gesture:
-    protagonist: body tenses as he gets dragged into the public performance
-    heroine: hand grips his arm with practiced authority
+    protagonist: shoulders tense as he realizes he has to go along with the public misunderstanding
+    heroine: one hand catches his sleeve with practiced confidence
   micro_expression:
-    protagonist: panic flashes before he forces agreement
+    protagonist: expression hardens as reluctant agreement sets in
     heroine: public confidence covers the calculation underneath
   prop_focus:
-    primary_prop: heroine hand on protagonist arm in the corridor
+    primary_prop: heroine hand near protagonist sleeve in the corridor
     secondary_props:
-    - crowd shoulder silhouettes
+    - student shoulder silhouettes
     - corridor vanishing line
   background_continuity:
     location_state: campus_public_corridor
     persistent_elements:
     - corridor vanishing line
-    - public foot-traffic implication
-    - arm-grab staging lane
+    - student foot-traffic implication
+    - sleeve-contact staging lane
     forbidden_absences:
     - corridor depth
-    - public witness pressure
+    - surrounding student attention
   negative_space_for_lettering:
     caption_zones:
     - zone_id: p05_caption_top
@@ -433,10 +433,10 @@ panels:
       y: 0.22
       w: 0.54
       h: 0.42
-      note: preserve the arm grip, faces, and public pressure line
+      note: preserve the sleeve contact, faces, and corridor attention line
   must_show:
-  - heroine physically claiming him in public
-  - protagonist frozen under witness pressure
+  - heroine initiating visible public proximity
+  - protagonist caught in corridor attention
   - corridor crowd implication
   must_not_show:
   - empty private background
@@ -552,12 +552,12 @@ panels:
 - panel_id: p07
   block_id: b07
   scene_id: ep003_late_night_texts
-  beat_purpose: late-night messages collide with the memory of physical closeness
+  beat_purpose: late-night messages collide with the memory of charged proximity
   visible_characters:
   - protagonist
   - heroine
   camera:
-    angle: layered close frame combining phone glow and body-memory fragment
+    angle: layered close frame combining phone glow and blurred memory fragment
     height: chest-to-hand level
     lens_feel: intimate close compression
     motion: suspended after-midnight recall
@@ -565,7 +565,7 @@ panels:
     shot_size: medium_two_shot
     subject_priority:
     - protagonist reaction to the message
-    - heroine memory fragment at his waistline
+    - heroine memory fragment near his side silhouette
     depth_layers:
     - foreground unreadable message glow
     - midground protagonist tension
@@ -573,31 +573,31 @@ panels:
   blocking:
     character_positions:
       protagonist: dominant in frame holding the phone close in the dark
-      heroine: partial memory silhouette at the frame edge near his waistline
+      heroine: partial memory silhouette at the frame edge near his side silhouette
     eyelines:
-      protagonist: dragged between the unreadable message UI and the physical memory
-      heroine: memory-presence only, implied by the recalled touch
-    contact_state: remembered waist contact rather than present-tense touch
+      protagonist: dragged between the unreadable message UI and the remembered proximity
+      heroine: memory-presence only, implied by the recalled nearness
+    contact_state: remembered side contact rather than present-tense touch
   gesture:
     protagonist: thumb hovers over the screen while his torso stiffens at the memory
-    heroine: recalled hand placement stays precise and disarming
+    heroine: recalled hand presence stays precise and disarming
   micro_expression:
     protagonist: pulse-drop shock as the message names what he wanted to ignore
-    heroine: remembered composure feels almost teasing in retrospect
+    heroine: remembered composure feels cool and disarming in retrospect
   prop_focus:
-    primary_prop: unreadable message glow tied to the waist-contact memory
+    primary_prop: unreadable message glow tied to the remembered proximity
     secondary_props:
     - cracked phone case
-    - body-memory silhouette
+    - memory silhouette
   background_continuity:
     location_state: night_message_memory
     persistent_elements:
     - unreadable message UI glow
     - dark campus-night palette
-    - memory-flash body fragment
+    - memory-flash silhouette
     forbidden_absences:
     - phone glow
-    - body-memory fragment
+    - memory fragment
   negative_space_for_lettering:
     caption_zones: []
     balloon_zones:
@@ -613,11 +613,11 @@ panels:
       y: 0.22
       w: 0.58
       h: 0.42
-      note: keep the phone glow and waist-contact memory unobstructed
+      note: keep the phone glow and remembered proximity unobstructed
   must_show:
   - protagonist reacting alone in the dark
   - unreadable message glow
-  - recalled waist-contact intimacy
+  - remembered side-contact tension
   must_not_show:
   - readable chat text
   - sunny lighting

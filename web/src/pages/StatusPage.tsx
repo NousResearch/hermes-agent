@@ -1,25 +1,54 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  CheckCircle2,
   Clock,
   Cpu,
   Database,
+  Download,
+  Loader2,
   Radio,
+  RotateCw,
   Wifi,
   WifiOff,
+  Wrench,
+  X,
 } from "lucide-react";
 import { Cell, Grid } from "@nous-research/ui";
 import { api } from "@/lib/api";
-import type { PlatformStatus, SessionInfo, StatusResponse } from "@/lib/api";
-import { timeAgo, isoTimeAgo } from "@/lib/utils";
+import type {
+  ActionStatusResponse,
+  PlatformStatus,
+  SessionInfo,
+  StatusResponse,
+} from "@/lib/api";
+import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Toast } from "@/components/Toast";
 import { useI18n } from "@/i18n";
+
+const ACTION_NAMES: Record<"restart" | "update", string> = {
+  restart: "gateway-restart",
+  update: "hermes-update",
+};
 
 export default function StatusPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [pendingAction, setPendingAction] = useState<
+    "restart" | "update" | null
+  >(null);
+  const [activeAction, setActiveAction] = useState<"restart" | "update" | null>(
+    null,
+  );
+  const [actionStatus, setActionStatus] = useState<ActionStatusResponse | null>(
+    null,
+  );
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const logScrollRef = useRef<HTMLPreElement | null>(null);
   const { t } = useI18n();
 
   useEffect(() => {
@@ -37,6 +66,75 @@ export default function StatusPage() {
     const interval = setInterval(load, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    if (!activeAction) return;
+    const name = ACTION_NAMES[activeAction];
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const resp = await api.getActionStatus(name);
+        if (cancelled) return;
+        setActionStatus(resp);
+        if (!resp.running) {
+          const ok = resp.exit_code === 0;
+          setToast({
+            type: ok ? "success" : "error",
+            message: ok
+              ? t.status.actionFinished
+              : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
+          });
+          return;
+        }
+      } catch {
+        // transient fetch error; keep polling
+      }
+      if (!cancelled) setTimeout(poll, 1500);
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAction, t.status.actionFinished, t.status.actionFailed]);
+
+  useEffect(() => {
+    const el = logScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [actionStatus?.lines]);
+
+  const runAction = async (action: "restart" | "update") => {
+    setPendingAction(action);
+    setActionStatus(null);
+    try {
+      if (action === "restart") {
+        await api.restartGateway();
+      } else {
+        await api.updateHermes();
+      }
+      setActiveAction(action);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setToast({
+        type: "error",
+        message: `${t.status.actionFailed}: ${detail}`,
+      });
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const dismissLog = () => {
+    setActiveAction(null);
+    setActionStatus(null);
+  };
 
   if (!status) {
     return (
@@ -144,6 +242,8 @@ export default function StatusPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <Toast toast={toast} />
+
       {alerts.length > 0 && (
         <div className="border border-destructive/30 bg-destructive/[0.06] p-4">
           <div className="flex items-start gap-3">
@@ -166,7 +266,7 @@ export default function StatusPage() {
         </div>
       )}
 
-      <Grid className="border-b lg:!grid-cols-3">
+      <Grid className="border-b md:!grid-cols-2 lg:!grid-cols-4">
         {items.map(({ icon: Icon, label, value, badgeText, badgeVariant }) => (
           <Cell
             key={label}
@@ -194,7 +294,129 @@ export default function StatusPage() {
             )}
           </Cell>
         ))}
+
+        <Cell className="flex min-w-0 flex-col gap-2 overflow-hidden">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-medium">
+              {t.status.actions}
+            </CardTitle>
+            <Wrench className="h-4 w-4 text-muted-foreground" />
+          </div>
+
+          <div className="flex gap-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => runAction("restart")}
+              disabled={
+                pendingAction !== null ||
+                (activeAction !== null && actionStatus?.running !== false)
+              }
+              className="flex-1 min-w-0"
+            >
+              <RotateCw
+                className={cn(
+                  "h-3.5 w-3.5",
+                  (pendingAction === "restart" ||
+                    (activeAction === "restart" && actionStatus?.running)) &&
+                    "animate-spin",
+                )}
+              />
+
+              {activeAction === "restart" && actionStatus?.running
+                ? t.status.restartingGateway
+                : t.status.restartGateway}
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => runAction("update")}
+              disabled={
+                pendingAction !== null ||
+                (activeAction !== null && actionStatus?.running !== false)
+              }
+              className="flex-1 min-w-0"
+            >
+              <Download
+                className={cn(
+                  "h-3.5 w-3.5",
+                  (pendingAction === "update" ||
+                    (activeAction === "update" && actionStatus?.running)) &&
+                    "animate-pulse",
+                )}
+              />
+
+              {activeAction === "update" && actionStatus?.running
+                ? t.status.updatingHermes
+                : t.status.updateHermes}
+            </Button>
+          </div>
+        </Cell>
       </Grid>
+
+      {activeAction && (
+        <div className="border border-border bg-background-base/50">
+          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {actionStatus?.running ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-warning" />
+              ) : actionStatus?.exit_code === 0 ? (
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+              ) : actionStatus !== null ? (
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+              ) : (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+              )}
+
+              <span className="text-xs font-mondwest tracking-[0.12em] truncate">
+                {activeAction === "restart"
+                  ? t.status.restartGateway
+                  : t.status.updateHermes}
+              </span>
+
+              <Badge
+                variant={
+                  actionStatus?.running
+                    ? "warning"
+                    : actionStatus?.exit_code === 0
+                      ? "success"
+                      : actionStatus
+                        ? "destructive"
+                        : "outline"
+                }
+                className="text-[10px] shrink-0"
+              >
+                {actionStatus?.running
+                  ? t.status.running
+                  : actionStatus?.exit_code === 0
+                    ? t.status.actionFinished
+                    : actionStatus
+                      ? `${t.status.actionFailed} (${actionStatus.exit_code ?? "?"})`
+                      : t.common.loading}
+              </Badge>
+            </div>
+
+            <button
+              type="button"
+              onClick={dismissLog}
+              className="shrink-0 opacity-60 hover:opacity-100 cursor-pointer"
+              aria-label={t.common.close}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <pre
+            ref={logScrollRef}
+            className="max-h-72 overflow-auto px-3 py-2 font-mono-ui text-[11px] leading-relaxed whitespace-pre-wrap break-all"
+          >
+            {actionStatus?.lines && actionStatus.lines.length > 0
+              ? actionStatus.lines.join("\n")
+              : t.status.waitingForOutput}
+          </pre>
+        </div>
+      )}
 
       {platforms.length > 0 && (
         <PlatformsCard
@@ -376,6 +598,11 @@ function PlatformsCard({ platforms, platformStateBadge }: PlatformsCardProps) {
       </CardContent>
     </Card>
   );
+}
+
+interface ToastState {
+  message: string;
+  type: "success" | "error";
 }
 
 interface PlatformsCardProps {

@@ -7,6 +7,7 @@ from hermes_cli.models import (
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
+    _PROVIDER_MODELS,
 )
 import hermes_cli.models as _models_mod
 
@@ -166,6 +167,35 @@ class TestDetectProviderForModel:
             result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
         assert result is not None
         assert result[0] not in ("nous",)  # nous has claude models but shouldn't be suggested
+
+
+    def test_google_oauth_gemini_model_prefers_oauth_provider_when_oauth_creds_exist(self):
+        """Shared Gemini model names should prefer google-gemini-cli when OAuth creds exist."""
+        original_gemini = list(_PROVIDER_MODELS.get("gemini", []))
+        original_google = list(_PROVIDER_MODELS.get("google-gemini-cli", []))
+        _PROVIDER_MODELS["gemini"] = ["gemini-2.5-flash"]
+        _PROVIDER_MODELS["google-gemini-cli"] = ["gemini-2.5-flash"]
+        try:
+            with patch("hermes_cli.models._provider_has_any_credentials", side_effect=lambda pid: pid == "google-gemini-cli"):
+                result = detect_provider_for_model("gemini-2.5-flash", "openai-codex")
+            assert result == ("google-gemini-cli", "gemini-2.5-flash")
+        finally:
+            _PROVIDER_MODELS["gemini"] = original_gemini
+            _PROVIDER_MODELS["google-gemini-cli"] = original_google
+
+    def test_google_api_key_gemini_model_prefers_ai_studio_when_api_key_creds_exist(self):
+        """Shared Gemini model names should still prefer AI Studio when that provider has creds."""
+        original_gemini = list(_PROVIDER_MODELS.get("gemini", []))
+        original_google = list(_PROVIDER_MODELS.get("google-gemini-cli", []))
+        _PROVIDER_MODELS["gemini"] = ["gemini-2.5-flash"]
+        _PROVIDER_MODELS["google-gemini-cli"] = ["gemini-2.5-flash"]
+        try:
+            with patch("hermes_cli.models._provider_has_any_credentials", side_effect=lambda pid: pid == "gemini"):
+                result = detect_provider_for_model("gemini-2.5-flash", "openai-codex")
+            assert result == ("gemini", "gemini-2.5-flash")
+        finally:
+            _PROVIDER_MODELS["gemini"] = original_gemini
+            _PROVIDER_MODELS["google-gemini-cli"] = original_google
 
 
 class TestFilterNousFreeModels:

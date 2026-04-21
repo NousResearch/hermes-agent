@@ -507,6 +507,37 @@ class TestValidateApiFallback:
 
 # -- validate — Codex auto-correction ------------------------------------------
 
+class TestValidateGoogleGeminiCliFallback:
+    """google-gemini-cli uses a curated catalog, not a live /models probe."""
+
+    def test_known_google_gemini_cli_model_accepted_when_api_probe_unreachable(self):
+        with patch("hermes_cli.models.fetch_api_models", return_value=None):
+            result = validate_requested_model("gemini-3-flash-preview", "google-gemini-cli")
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
+    def test_known_google_gemini_cli_flash_model_accepted_when_api_probe_unreachable(self):
+        with patch("hermes_cli.models.fetch_api_models", return_value=None):
+            result = validate_requested_model("gemini-2.5-flash", "google-gemini-cli")
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
+    def test_unknown_google_gemini_cli_model_warns_but_is_allowed(self):
+        with patch("hermes_cli.models.fetch_api_models", return_value=None):
+            result = validate_requested_model("gemini-next-future", "google-gemini-cli")
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "does not expose a /models endpoint" in result["message"]
+
+
 class TestValidateCodexAutoCorrection:
     """Auto-correction for typos on openai-codex provider."""
 

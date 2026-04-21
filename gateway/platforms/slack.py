@@ -2144,6 +2144,12 @@ class SlackAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             reply_to_text=reply_to_text,
             auto_skill=_auto_skill,
+            # In group channels, messages that flow through here without a
+            # direct @mention (thread continuity, existing session, etc.) are
+            # not explicitly addressed to the bot. Silence is a valid response,
+            # so the agent's empty/thinking-only retry loop should honor it.
+            # DMs and explicit @mentions always expect a reply. (#13248)
+            silence_allowed=(not is_dm) and (not is_mentioned),
         )
 
         # Only react when bot is directly addressed (DM or @mention).

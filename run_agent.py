@@ -10436,6 +10436,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        silence_allowed: bool = False,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -10509,6 +10510,12 @@ class AIAgent:
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._thinking_prefill_retries = 0
+        # Per-turn flag: when the gateway indicates the inbound message was not
+        # directly addressed to the bot (group chat, no @mention), silence is a
+        # valid outcome. We short-circuit thinking-only/empty-response retries
+        # to a plain empty response instead of nudging the model to speak. See
+        # issue #13248.
+        self._silence_allowed = bool(silence_allowed)
         self._post_tool_empty_retried = False
         self._last_content_with_tools = None
         self._last_content_tools_all_housekeeping = False
@@ -13538,7 +13545,7 @@ class AIAgent:
                             or getattr(assistant_message, "reasoning_details", None)
                             or _has_inline_thinking
                         )
-                        if _has_structured and self._thinking_prefill_retries < 2:
+                        if _has_structured and self._thinking_prefill_retries < 2 and not self._silence_allowed:
                             self._thinking_prefill_retries += 1
                             logger.info(
                                 "Thinking-only response (no visible content) — "
@@ -13574,7 +13581,7 @@ class AIAgent:
                             _has_structured
                             and self._thinking_prefill_retries >= 2
                         )
-                        if _truly_empty and (not _has_structured or _prefill_exhausted) and self._empty_content_retries < 3:
+                        if _truly_empty and (not _has_structured or _prefill_exhausted) and self._empty_content_retries < 3 and not self._silence_allowed:
                             self._empty_content_retries += 1
                             logger.warning(
                                 "Empty response (no content or reasoning) — "
@@ -13593,7 +13600,7 @@ class AIAgent:
                         # chain.  This covers the case where a model
                         # (e.g. GLM-4.5-Air) consistently returns empty
                         # due to context degradation or provider issues.
-                        if _truly_empty and self._fallback_chain:
+                        if _truly_empty and self._fallback_chain and not self._silence_allowed:
                             logger.warning(
                                 "Empty response after %d retries — "
                                 "attempting fallback (model=%s, provider=%s)",

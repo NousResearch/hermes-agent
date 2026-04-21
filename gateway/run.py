@@ -6502,6 +6502,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                silence_allowed=getattr(event, "silence_allowed", False),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -6536,11 +6537,18 @@ class GatewayRunner:
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)":
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
+                if getattr(event, "silence_allowed", False):
+                    # Intentional silence in a group channel (bot was not
+                    # addressed). Suppress the warning sentinel entirely —
+                    # sending anything would violate the silence contract.
+                    # (#13248)
+                    response = ""
+                else:
+                    response = (
+                        "⚠️ The model returned no response after processing tool "
+                        "results. This can happen with some models — try again or "
+                        "rephrase your question."
+                    )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -12796,6 +12804,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        silence_allowed: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -13835,7 +13844,7 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
-                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id, silence_allowed=silence_allowed)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

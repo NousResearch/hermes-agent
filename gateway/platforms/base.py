@@ -914,6 +914,13 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Silence-allowed flag — set by adapters for group messages that are not
+    # directly addressed to the bot (no @mention, not a DM, not a reply to the
+    # bot). When true, the agent may legitimately choose to produce no visible
+    # response, and the gateway's empty/thinking-only retry loop is suppressed
+    # to honor that silence instead of fighting it. See issue #13248.
+    silence_allowed: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

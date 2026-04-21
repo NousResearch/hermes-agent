@@ -7,6 +7,7 @@ import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Union
+from urllib.parse import urlparse
 
 import yaml
 
@@ -194,3 +195,24 @@ def env_int(key: str, default: int = 0) -> int:
 def env_bool(key: str, default: bool = False) -> bool:
     """Read an environment variable as a boolean."""
     return is_truthy_value(os.getenv(key, ""), default=default)
+
+
+# ─── URL Parsing Helpers ──────────────────────────────────────────────────────
+
+
+def base_url_hostname(base_url: str) -> str:
+    """Return the lowercased hostname for a base URL, or ``""`` if absent.
+
+    Use exact-hostname comparisons against known provider hosts
+    (``api.openai.com``, ``api.x.ai``, ``api.anthropic.com``) instead of
+    substring matches on the raw URL. Substring checks treat attacker- or
+    proxy-controlled paths/hosts like ``https://api.openai.com.example/v1``
+    or ``https://proxy.test/api.openai.com/v1`` as native endpoints, which
+    leads to wrong api_mode / auth routing.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    return (parsed.hostname or "").lower().rstrip(".")
+

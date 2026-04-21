@@ -2,7 +2,7 @@ import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type { CommandsCatalogResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
-import { formatToolCall } from '../lib/text.js'
+import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress } from '../types.js'
 
@@ -266,12 +266,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
 
         if (ev.payload.inline_diff && getUiState().inlineDiffs) {
+          const diffText = stripAnsi(String(ev.payload.inline_diff))
+
+          if (!diffText.trim()) {
+            return
+          }
+
           // Push into the active turn's segment stream so the diff renders
           // inline with the assistant's output.  Routing through `sys()`
           // lands it in the completed-history section above the streaming
           // bubble — which is why blitz testers saw diffs "appear at the
           // top, out of sequence" with the rest of the turn.
-          turnController.appendSegmentMessage({ role: 'system', text: ev.payload.inline_diff })
+          turnController.appendSegmentMessage({ role: 'system', text: diffText })
         }
 
         return

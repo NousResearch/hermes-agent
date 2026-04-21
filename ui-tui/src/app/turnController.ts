@@ -190,6 +190,16 @@ class TurnController {
    */
   appendSegmentMessage(msg: Msg) {
     this.flushStreamingSegment()
+
+    if (this.pendingSegmentTools.length) {
+      this.segmentMessages = [
+        ...this.segmentMessages,
+        { kind: 'trail', role: 'system', text: '', tools: this.pendingSegmentTools }
+      ]
+      this.pendingSegmentTools = []
+      patchTurnState({ streamPendingTools: [] })
+    }
+
     this.segmentMessages = [...this.segmentMessages, msg]
     patchTurnState({ streamSegments: this.segmentMessages })
   }

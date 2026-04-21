@@ -13,6 +13,8 @@ from tools.file_tools import (
     WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
     SEARCH_FILES_SCHEMA,
+    clear_exact_write_target,
+    register_exact_write_target,
 )
 
 
@@ -56,6 +58,9 @@ class TestReadFileHandler:
 
 
 class TestWriteFileHandler:
+    def teardown_method(self):
+        clear_exact_write_target()
+
     @patch("tools.file_tools._get_file_ops")
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
@@ -91,8 +96,47 @@ class TestWriteFileHandler:
         assert result["error"] == "boom"
         assert any("write_file error" in r.getMessage() for r in caplog.records)
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_exact_write_target_allows_expected_plan_path(self, mock_get):
+        mock_ops = MagicMock()
+        mock_ops.cwd = "/workspace"
+        mock_ops._expand_path.side_effect = lambda path: path
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+
+        register_exact_write_target("sess-1", ".hermes/plans/plan.md")
+        result = json.loads(write_file_tool(".hermes/plans/plan.md", "plan", task_id="sess-1"))
+
+        assert result["status"] == "ok"
+        mock_ops.write_file.assert_called_once_with(".hermes/plans/plan.md", "plan")
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_exact_write_target_rejects_home_escaped_plan_path(self, mock_get):
+        mock_ops = MagicMock()
+        mock_ops.cwd = "/workspace"
+        mock_ops._expand_path.side_effect = (
+            lambda path: "/root/.hermes/plans/plan.md" if path.startswith("~") else path
+        )
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+
+        register_exact_write_target("sess-1", ".hermes/plans/plan.md")
+        result = json.loads(write_file_tool("~/.hermes/plans/plan.md", "plan", task_id="sess-1"))
+
+        assert "error" in result
+        assert "exact path" in result["error"]
+        mock_ops.write_file.assert_not_called()
+
 
 class TestPatchHandler:
+    def teardown_method(self):
+        clear_exact_write_target()
+
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_calls_patch_replace(self, mock_get):
         mock_ops = MagicMock()
@@ -159,6 +203,30 @@ class TestPatchHandler:
         result = json.loads(patch_tool(mode="invalid_mode"))
         assert "error" in result
         assert "Unknown mode" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_exact_write_target_rejects_patch_to_other_path(self, mock_get):
+        mock_ops = MagicMock()
+        mock_ops.cwd = "/workspace"
+        mock_ops._expand_path.side_effect = lambda path: path
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+
+        register_exact_write_target("sess-1", ".hermes/plans/plan.md")
+        result = json.loads(
+            patch_tool(
+                mode="replace",
+                path="README.md",
+                old_string="old",
+                new_string="new",
+                task_id="sess-1",
+            )
+        )
+
+        assert "error" in result
+        assert "exact path" in result["error"]
+        mock_ops.patch_replace.assert_not_called()
 
 
 class TestSearchHandler:
@@ -291,6 +359,5 @@ class TestSearchHints:
         raw = search_tool(pattern="foo", offset=50, limit=50)
         assert "[Hint:" in raw
         assert "offset=100" in raw
-
 
 

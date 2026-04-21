@@ -3531,7 +3531,11 @@ class GatewayRunner:
 
         if canonical == "plan":
             try:
-                from agent.skill_commands import build_plan_path, build_skill_invocation_message
+                from agent.skill_commands import (
+                    build_plan_path,
+                    build_plan_runtime_note,
+                    build_skill_invocation_message,
+                )
 
                 user_instruction = event.get_command_args().strip()
                 plan_path = build_plan_path(user_instruction)
@@ -3539,10 +3543,7 @@ class GatewayRunner:
                     "/plan",
                     user_instruction,
                     task_id=_quick_key,
-                    runtime_note=(
-                        "Save the markdown plan with write_file to this exact relative path "
-                        f"inside the active workspace/backend cwd: {plan_path}"
-                    ),
+                    runtime_note=build_plan_runtime_note(plan_path),
                 )
                 if not event.text:
                     return "Failed to load the bundled /plan skill."
@@ -9966,9 +9967,18 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            plan_write_target = None
             try:
+                from agent.skill_commands import extract_plan_write_target
+                from tools.file_tools import clear_exact_write_target, register_exact_write_target
+
+                plan_write_target = extract_plan_write_target(message)
+                if plan_write_target:
+                    register_exact_write_target(session_id, plan_write_target)
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
+                if plan_write_target:
+                    clear_exact_write_target(session_id)
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result

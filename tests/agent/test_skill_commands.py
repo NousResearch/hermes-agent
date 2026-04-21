@@ -8,8 +8,10 @@ from unittest.mock import patch
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_plan_path,
+    build_plan_runtime_note,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    extract_plan_write_target,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -393,10 +395,7 @@ class TestPlanSkillHelpers:
             msg = build_skill_invocation_message(
                 "/plan",
                 "Add a /plan command",
-                runtime_note=(
-                    "Save the markdown plan with write_file to this exact relative path inside "
-                    "the active workspace/backend cwd: .hermes/plans/plan.md"
-                ),
+                runtime_note=build_plan_runtime_note(".hermes/plans/plan.md"),
             )
 
         assert msg is not None
@@ -405,3 +404,14 @@ class TestPlanSkillHelpers:
         assert "Add a /plan command" in msg
         assert ".hermes/plans/plan.md" in msg
         assert "Runtime note:" in msg
+
+    def test_extract_plan_write_target_returns_runtime_path(self):
+        runtime_note = build_plan_runtime_note(".hermes/plans/plan.md")
+        message = f"Plan mode skill\n\n[Runtime note: {runtime_note}]"
+
+        assert extract_plan_write_target(message) == ".hermes/plans/plan.md"
+
+    def test_extract_plan_write_target_ignores_other_runtime_notes(self):
+        message = "[Runtime note: Use patch for edits and read_file before writing.]"
+
+        assert extract_plan_write_target(message) is None

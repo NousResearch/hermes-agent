@@ -158,6 +158,8 @@ _file_ops_cache: dict = {}
 #                      by the same task don't trigger false warnings.
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
+_exact_write_target_lock = threading.Lock()
+_exact_write_targets: dict[str, str] = {}
 
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
@@ -520,6 +522,49 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
 
 
+def register_exact_write_target(task_id: str, path: str) -> None:
+    """Require writes for a task to target one exact path until cleared."""
+    if not task_id or not path:
+        return
+    with _exact_write_target_lock:
+        _exact_write_targets[task_id] = path
+
+
+def clear_exact_write_target(task_id: str | None = None) -> None:
+    """Clear exact write-target constraints for one task or all tasks."""
+    with _exact_write_target_lock:
+        if task_id:
+            _exact_write_targets.pop(task_id, None)
+        else:
+            _exact_write_targets.clear()
+
+
+def _normalize_tool_path_for_task(path: str, file_ops: ShellFileOperations) -> str:
+    """Normalize a tool path the same way the active backend resolves it."""
+    expanded = file_ops._expand_path(path)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(file_ops.cwd or "/", expanded)
+    return os.path.normpath(expanded)
+
+
+def _check_exact_write_targets(paths: list[str], task_id: str, file_ops: ShellFileOperations) -> str | None:
+    """Return an error if a task-scoped exact write target is active and violated."""
+    with _exact_write_target_lock:
+        expected_path = _exact_write_targets.get(task_id)
+    if not expected_path:
+        return None
+
+    expected_resolved = _normalize_tool_path_for_task(expected_path, file_ops)
+    for path in paths:
+        candidate_resolved = _normalize_tool_path_for_task(path, file_ops)
+        if candidate_resolved != expected_resolved:
+            return (
+                f"This task must write the plan to the exact path: {expected_path}. "
+                f"Refusing to write to: {path}"
+            )
+    return None
+
+
 def reset_file_dedup(task_id: str = None):
     """Clear the deduplication cache for file reads.
 
@@ -614,8 +659,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     if sensitive_err:
         return tool_error(sensitive_err)
     try:
-        stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
+        exact_target_err = _check_exact_write_targets([path], task_id, file_ops)
+        if exact_target_err:
+            return tool_error(exact_target_err)
+        stale_warning = _check_file_staleness(path, task_id)
         result = file_ops.write_file(path, content)
         result_dict = result.to_dict()
         if stale_warning:
@@ -649,27 +697,32 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if sensitive_err:
             return tool_error(sensitive_err)
     try:
+        if mode == "replace":
+            if not path:
+                return tool_error("path required")
+            if old_string is None or new_string is None:
+                return tool_error("old_string and new_string required")
+        elif mode == "patch":
+            if not patch:
+                return tool_error("patch content required")
+        else:
+            return tool_error(f"Unknown mode: {mode}")
+
+        file_ops = _get_file_ops(task_id)
+        exact_target_err = _check_exact_write_targets(_paths_to_check, task_id, file_ops)
+        if exact_target_err:
+            return tool_error(exact_target_err)
         # Check staleness for all files this patch will touch.
         stale_warnings = []
         for _p in _paths_to_check:
             _sw = _check_file_staleness(_p, task_id)
             if _sw:
                 stale_warnings.append(_sw)
-
-        file_ops = _get_file_ops(task_id)
         
         if mode == "replace":
-            if not path:
-                return tool_error("path required")
-            if old_string is None or new_string is None:
-                return tool_error("old_string and new_string required")
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
-            if not patch:
-                return tool_error("patch content required")
             result = file_ops.patch_v4a(patch)
-        else:
-            return tool_error(f"Unknown mode: {mode}")
         
         result_dict = result.to_dict()
         if stale_warnings:

@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_PLAN_RUNTIME_NOTE_PREFIX = (
+    "Save the markdown plan with write_file to this exact relative path "
+    "inside the active workspace/backend cwd: "
+)
+_PLAN_RUNTIME_NOTE_RE = re.compile(
+    re.escape(f"[Runtime note: {_PLAN_RUNTIME_NOTE_PREFIX}") + r"(?P<path>[^\]\n]+)\]"
+)
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -42,6 +49,22 @@ def build_plan_path(
     slug = slug or "conversation-plan"
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
     return Path(".hermes") / "plans" / f"{timestamp}-{slug}.md"
+
+
+def build_plan_runtime_note(plan_path: Path | str) -> str:
+    """Return the runtime note that tells the model where /plan output must go."""
+    return f"{_PLAN_RUNTIME_NOTE_PREFIX}{plan_path}"
+
+
+def extract_plan_write_target(message: str) -> str | None:
+    """Extract the exact /plan write target from a skill runtime note, if present."""
+    if not message:
+        return None
+    match = _PLAN_RUNTIME_NOTE_RE.search(message)
+    if not match:
+        return None
+    target = match.group("path").strip()
+    return target or None
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:

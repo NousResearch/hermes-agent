@@ -28,7 +28,9 @@ describe('readClipboardText', () => {
   it('tries powershell.exe first on WSL', async () => {
     const run = vi.fn().mockResolvedValue({ stdout: 'from wsl\n' })
 
-    await expect(readClipboardText('linux', run, { WSL_INTEROP: '/tmp/socket' } as NodeJS.ProcessEnv)).resolves.toBe('from wsl\n')
+    await expect(readClipboardText('linux', run, { WSL_INTEROP: '/tmp/socket' } as NodeJS.ProcessEnv)).resolves.toBe(
+      'from wsl\n'
+    )
     expect(run).toHaveBeenCalledWith(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
@@ -39,7 +41,9 @@ describe('readClipboardText', () => {
   it('uses wl-paste on Wayland Linux', async () => {
     const run = vi.fn().mockResolvedValue({ stdout: 'from wayland\n' })
 
-    await expect(readClipboardText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)).resolves.toBe('from wayland\n')
+    await expect(readClipboardText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)).resolves.toBe(
+      'from wayland\n'
+    )
     expect(run).toHaveBeenCalledWith(
       'wl-paste',
       ['--type', 'text'],
@@ -53,7 +57,9 @@ describe('readClipboardText', () => {
       .mockRejectedValueOnce(new Error('wl-paste missing'))
       .mockResolvedValueOnce({ stdout: 'from xclip\n' })
 
-    await expect(readClipboardText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)).resolves.toBe('from xclip\n')
+    await expect(readClipboardText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)).resolves.toBe(
+      'from xclip\n'
+    )
     expect(run).toHaveBeenNthCalledWith(
       1,
       'wl-paste',
@@ -71,7 +77,9 @@ describe('readClipboardText', () => {
   it('returns null when every clipboard backend fails', async () => {
     const run = vi.fn().mockRejectedValue(new Error('clipboard failed'))
 
-    await expect(readClipboardText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)).resolves.toBeNull()
+    await expect(
+      readClipboardText('linux', run, { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv)
+    ).resolves.toBeNull()
   })
 })
 
@@ -101,6 +109,7 @@ describe('writeClipboardText', () => {
 
   it('writes text to pbcopy on macOS', async () => {
     const stdin = { end: vi.fn() }
+
     const child = {
       once: vi.fn((event: string, cb: (code?: number) => void) => {
         if (event === 'close') {
@@ -111,10 +120,15 @@ describe('writeClipboardText', () => {
       }),
       stdin
     }
+
     const start = vi.fn().mockReturnValue(child)
 
     await expect(writeClipboardText('hello world', 'darwin', start as any)).resolves.toBe(true)
-    expect(start).toHaveBeenCalledWith('pbcopy', [], expect.objectContaining({ stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true }))
+    expect(start).toHaveBeenCalledWith(
+      'pbcopy',
+      [],
+      expect.objectContaining({ stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
+    )
     expect(stdin.end).toHaveBeenCalledWith('hello world')
   })
 
@@ -129,6 +143,7 @@ describe('writeClipboardText', () => {
       }),
       stdin: { end: vi.fn() }
     }
+
     const start = vi.fn().mockReturnValue(child)
 
     await expect(writeClipboardText('hello world', 'darwin', start as any)).resolves.toBe(false)

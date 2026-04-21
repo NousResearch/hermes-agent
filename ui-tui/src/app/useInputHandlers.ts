@@ -7,7 +7,6 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-
 import { isAction, isMac } from '../lib/platform.js'
 
 import { getInputSelection } from './inputSelectionStore.js'

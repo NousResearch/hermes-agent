@@ -6582,28 +6582,37 @@ class GatewayRunner:
                 error_detail = agent_result.get("error", "unknown error")
                 error_str = str(error_detail).lower()
 
-                # Detect context-overflow failures and give specific guidance.
-                # Generic 400 "Error" from Anthropic with large sessions is the
-                # most common cause of this (#1630).
-                _is_ctx_fail = any(p in error_str for p in (
-                    "context", "token", "too large", "too long",
-                    "exceed", "payload",
-                )) or (
-                    "400" in error_str
-                    and len(history) > 50
-                )
-
-                if _is_ctx_fail:
-                    response = (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                # Silence contract: in non-addressed group messages, don't
+                # leak failure telemetry to the channel. Log and drop. (#13248)
+                if getattr(event, "silence_allowed", False):
+                    logger.warning(
+                        "silence_allowed turn failed — suppressing error surface: %s",
+                        str(error_detail)[:300],
                     )
+                    response = ""
                 else:
-                    response = (
-                        f"The request failed: {str(error_detail)[:300]}\n"
-                        "Try again or use /reset to start a fresh session."
+                    # Detect context-overflow failures and give specific guidance.
+                    # Generic 400 "Error" from Anthropic with large sessions is the
+                    # most common cause of this (#1630).
+                    _is_ctx_fail = any(p in error_str for p in (
+                        "context", "token", "too large", "too long",
+                        "exceed", "payload",
+                    )) or (
+                        "400" in error_str
+                        and len(history) > 50
                     )
+
+                    if _is_ctx_fail:
+                        response = (
+                            "⚠️ Session too large for the model's context window.\n"
+                            "Use /compact to compress the conversation, or "
+                            "/reset to start fresh."
+                        )
+                    else:
+                        response = (
+                            f"The request failed: {str(error_detail)[:300]}\n"
+                            "Try again or use /reset to start a fresh session."
+                        )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -13260,6 +13269,14 @@ class GatewayRunner:
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
+                return
+            # When the inbound message wasn't directly addressed to the bot
+            # (group channel, no @mention), suppress all status telemetry.
+            # Silence is a valid outcome; posting retry/fallback/compression
+            # warnings to the channel violates that and spams users who
+            # weren't even talking to us. Status still logs internally via
+            # the logger call inside _emit_status. (#13248)
+            if silence_allowed:
                 return
             try:
                 asyncio.run_coroutine_threadsafe(

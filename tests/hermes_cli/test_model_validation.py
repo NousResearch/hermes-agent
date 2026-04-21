@@ -457,29 +457,62 @@ class TestValidateApiNotFound:
         assert "not found" in result["message"]
 
 
-# -- validate — API unreachable — reject with guidance ----------------
+# -- validate — API unreachable — soft-accept via catalog or warning --------
 
 class TestValidateApiFallback:
-    def test_any_model_rejected_when_api_down(self):
-        result = _validate("anthropic/claude-opus-4.6", api_models=None)
-        assert result["accepted"] is False
-        assert result["persist"] is False
+    """When /models is unreachable, the validator must accept the model (with
+    a warning) rather than reject it outright — otherwise provider switches
+    fail in the gateway for any provider whose /models endpoint is down or
+    doesn't exist (e.g. opencode-go returns 404 HTML).
 
-    def test_unknown_model_also_rejected_when_api_down(self):
-        result = _validate("anthropic/claude-next-gen", api_models=None)
-        assert result["accepted"] is False
-        assert result["persist"] is False
-        assert "could not reach" in result["message"].lower()
+    Two paths:
+      1. Provider has a curated catalog (``_PROVIDER_MODELS`` / live fetch):
+         validate against it (recognized=True for known models,
+         recognized=False with 'Note:' for unknown).
+      2. Provider has no catalog: accept with a generic 'Note:' warning.
 
-    def test_zai_model_rejected_when_api_down(self):
+    In both cases ``accepted`` and ``persist`` must be True so the gateway can
+    write the ``_session_model_overrides`` entry.
+    """
+
+    def test_known_model_accepted_via_catalog_when_api_down(self):
+        # Force the openrouter catalog lookup to return a deterministic list.
+        with patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["anthropic/claude-opus-4.6", "openai/gpt-5.4"],
+        ):
+            result = _validate("anthropic/claude-opus-4.6", api_models=None)
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+
+    def test_unknown_model_accepted_with_note_when_api_down(self):
+        with patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["anthropic/claude-opus-4.6", "openai/gpt-5.4"],
+        ):
+            result = _validate("anthropic/claude-next-gen", api_models=None)
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        # Message flags it as unverified against the catalog.
+        assert "not found" in result["message"].lower() or "note" in result["message"].lower()
+
+    def test_zai_known_model_accepted_via_catalog_when_api_down(self):
+        # glm-5 is in the zai curated catalog (_PROVIDER_MODELS["zai"]).
         result = _validate("glm-5", provider="zai", api_models=None)
-        assert result["accepted"] is False
-        assert result["persist"] is False
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
 
-    def test_unknown_provider_rejected_when_api_down(self):
-        result = _validate("some-model", provider="totally-unknown", api_models=None)
-        assert result["accepted"] is False
-        assert result["persist"] is False
+    def test_unknown_provider_soft_accepted_when_api_down(self):
+        # No catalog for unknown providers — soft-accept with a Note.
+        with patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            result = _validate("some-model", provider="totally-unknown", api_models=None)
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "note" in result["message"].lower()
 
     def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
         with patch(

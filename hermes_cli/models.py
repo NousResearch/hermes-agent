@@ -46,6 +46,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("minimax/minimax-m2.5",            ""),
     ("z-ai/glm-5.1",                    ""),
     ("z-ai/glm-5-turbo",                ""),
+    ("moonshotai/kimi-k2.6",            ""),
     ("moonshotai/kimi-k2.5",            ""),
     ("x-ai/grok-4.20-beta",             ""),
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
@@ -131,6 +132,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "kimi-coding": [
         "kimi-for-coding",
+        "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
@@ -138,6 +140,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "moonshot": [
+        "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",

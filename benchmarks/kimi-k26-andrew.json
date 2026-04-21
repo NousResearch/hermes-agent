@@ -1,0 +1,65 @@
+{
+  "name": "kimi-k26-andrew",
+  "description": "Small real-world benchmark set for Andrew-style evaluation of Kimi 2.6 and competing models.",
+  "version": 1,
+  "criteria": [
+    "clarity",
+    "usefulness",
+    "tightness",
+    "taste",
+    "instruction_following",
+    "structured_output_reliability"
+  ],
+  "cases": [
+    {
+      "id": "doc-hooks",
+      "category": "story",
+      "prompt": "Give me 3 documentary hooks for a story about Filipino spider fighting that starts as a colorful kids game and slowly escalates into a darker blood-sport pipeline. Keep each hook under 22 words.",
+      "expect": [
+        "3 hooks",
+        "clear escalation arc",
+        "concise and vivid"
+      ]
+    },
+    {
+      "id": "episode-structure",
+      "category": "story",
+      "prompt": "Outline a 6-beat episode structure for a documentary that begins in a playful world and ends with social consequences. Each beat must be one sentence.",
+      "expect": [
+        "6 beats",
+        "progressive escalation",
+        "strong ending payoff"
+      ]
+    },
+    {
+      "id": "research-distill",
+      "category": "research",
+      "prompt": "You are helping a documentary producer. Summarize the strongest 5 angles from a messy research dump about an underground subculture. Output bullets only, one line each, no fluff.",
+      "expect": [
+        "5 bullets",
+        "prioritized angles",
+        "minimal fluff"
+      ]
+    },
+    {
+      "id": "ops-decision",
+      "category": "ops",
+      "prompt": "I run multiple AI providers. Give me a 4-bullet framework for deciding when to use a direct provider API versus an aggregator like OpenRouter. Be specific, not generic.",
+      "expect": [
+        "4 bullets",
+        "concrete tradeoffs",
+        "operator useful"
+      ]
+    },
+    {
+      "id": "json-discipline",
+      "category": "structured-output",
+      "prompt": "Return valid JSON with keys: headline, risk_level, actions. headline must be a string, risk_level must be one of low/medium/high, actions must be an array of exactly 3 short strings. Scenario: a billing provider is already at 92% of monthly cap halfway through the month.",
+      "expect": [
+        "valid JSON",
+        "correct enum",
+        "exactly 3 actions"
+      ]
+    }
+  ]
+}

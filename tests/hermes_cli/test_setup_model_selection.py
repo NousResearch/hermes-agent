@@ -33,7 +33,7 @@ class TestSetupProviderModelSelection:
 
     @pytest.mark.parametrize("provider_id,expected_defaults", [
         ("zai", ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]),
-        ("kimi-coding", ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]),
+        ("kimi-coding", ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]),
         ("minimax", ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"]),
         ("minimax-cn", ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"]),
         ("opencode-zen", ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash"]),

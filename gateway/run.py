@@ -1460,6 +1460,59 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    def _preserve_pending_followup_during_drain(
+        self,
+        *,
+        adapter: Any,
+        session_key: str,
+        event: MessageEvent,
+        pending_event: MessageEvent | None,
+        pending_text: str | None,
+    ) -> tuple[MessageEvent | None, str | None]:
+        """Keep queued follow-ups across restart drains instead of dropping them.
+
+        During a restart drain, `_handle_message_with_agent()` may dequeue a
+        pending follow-up from the adapter right before shutdown. If we simply
+        discard it, `stop()` persists zero pending events and the next gateway
+        instance has nothing to restore.
+
+        Re-queue the follow-up into the adapter when queue-during-drain mode is
+        enabled so `stop()` can serialize it into `.restart_pending_events.json`.
+        """
+        if not self._draining or not (pending_event or pending_text):
+            return pending_event, pending_text
+
+        if self._restart_requested and self._queue_during_drain_enabled() and adapter and session_key:
+            queued_event = pending_event
+            if queued_event is None and pending_text:
+                queued_event = MessageEvent(
+                    text=pending_text,
+                    message_type=MessageType.TEXT,
+                    source=event.source,
+                    message_id=event.message_id,
+                    channel_prompt=event.channel_prompt,
+                )
+            if queued_event is not None:
+                merge_pending_message_event(
+                    adapter._pending_messages,
+                    session_key,
+                    queued_event,
+                    merge_text=True,
+                )
+                logger.info(
+                    "Preserving pending follow-up for session %s across gateway %s",
+                    session_key[:20] if session_key else "?",
+                    self._status_action_label(),
+                )
+            return None, None
+
+        logger.info(
+            "Discarding pending follow-up for session %s during gateway %s",
+            session_key[:20] if session_key else "?",
+            self._status_action_label(),
+        )
+        return None, None
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
@@ -9482,13 +9535,13 @@ class GatewayRunner:
                         pass
 
             if self._draining and (pending_event or pending):
-                logger.info(
-                    "Discarding pending follow-up for session %s during gateway %s",
-                    session_key[:20] if session_key else "?",
-                    self._status_action_label(),
+                pending_event, pending = self._preserve_pending_followup_during_drain(
+                    adapter=adapter,
+                    session_key=session_key,
+                    event=event,
+                    pending_event=pending_event,
+                    pending_text=pending,
                 )
-                pending_event = None
-                pending = None
 
             if pending_event or pending:
                 logger.debug("Processing pending message: '%s...'", pending[:40])

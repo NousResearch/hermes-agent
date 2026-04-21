@@ -315,3 +315,72 @@ def test_restore_restart_pending_events_rehydrates_adapter_queue(tmp_path, monke
     assert restored_event.message_id == "msg-restart"
     assert restored_event.channel_prompt == "channel prompt"
     assert not checkpoint.exists()
+
+
+def test_preserve_pending_followup_during_restart_drain_requeues_event():
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+
+    event = MessageEvent(
+        text="original request",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m-drain",
+        channel_prompt="prompt",
+    )
+    follow_up = MessageEvent(
+        text="follow-up survives restart",
+        message_type=MessageType.TEXT,
+        source=event.source,
+        message_id="m-follow",
+        channel_prompt="prompt",
+    )
+    session_key = build_session_key(event.source)
+
+    pending_event, pending_text = runner._preserve_pending_followup_during_drain(
+        adapter=adapter,
+        session_key=session_key,
+        event=event,
+        pending_event=follow_up,
+        pending_text=follow_up.text,
+    )
+
+    assert pending_event is None
+    assert pending_text is None
+    assert session_key in adapter._pending_messages
+    assert adapter._pending_messages[session_key].text == "follow-up survives restart"
+
+
+def test_preserve_pending_followup_during_restart_drain_still_discards_without_queue_mode():
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "interrupt"
+
+    event = MessageEvent(
+        text="original request",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m-drain",
+    )
+    follow_up = MessageEvent(
+        text="drop me",
+        message_type=MessageType.TEXT,
+        source=event.source,
+        message_id="m-follow",
+    )
+    session_key = build_session_key(event.source)
+
+    pending_event, pending_text = runner._preserve_pending_followup_during_drain(
+        adapter=adapter,
+        session_key=session_key,
+        event=event,
+        pending_event=follow_up,
+        pending_text=follow_up.text,
+    )
+
+    assert pending_event is None
+    assert pending_text is None
+    assert session_key not in adapter._pending_messages

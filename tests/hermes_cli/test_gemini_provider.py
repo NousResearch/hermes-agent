@@ -130,7 +130,16 @@ class TestGeminiModelCatalog:
         are data that changes with Google releases and don't belong in tests.
         """
         assert "gemini" in _PROVIDER_MODELS
-        assert len(_PROVIDER_MODELS["gemini"]) >= 1
+        models = _PROVIDER_MODELS["gemini"]
+        assert "gemini-3-pro-preview" in models
+        assert "gemini-3-flash-preview" in models
+        assert "gemma-4-31b-it" not in models
+
+    def test_provider_models_has_3x(self):
+        models = _PROVIDER_MODELS["gemini"]
+        assert "gemini-3.1-pro-preview" in models
+        assert "gemini-3-flash-preview" in models
+        assert "gemini-3.1-flash-lite-preview" in models
 
     def test_provider_label(self):
         assert "gemini" in _PROVIDER_LABELS

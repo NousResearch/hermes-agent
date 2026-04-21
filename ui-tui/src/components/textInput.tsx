@@ -438,10 +438,18 @@ export function TextInput({
     const h = cbPaste.current?.(e)
 
     if (isPasteResultPromise(h)) {
+      const fallbackText = e.text
+
       void h
         .then(result => {
           if (result && editVersionRef.current === startVersion) {
             commit(result.value, result.cursor)
+          } else if (result && fallbackText && PRINTABLE.test(fallbackText)) {
+            // User typed while async paste was in-flight — fall back to raw text insert
+            // so the pasted content is not silently lost.
+            const cur = curRef.current
+            const v = vRef.current
+            commit(v.slice(0, cur) + fallbackText + v.slice(cur), cur + fallbackText.length)
           }
         })
         .catch(() => {})

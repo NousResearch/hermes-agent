@@ -14,6 +14,7 @@ import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
+import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
 import type { ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 
@@ -43,6 +44,24 @@ const trimSnips = (snips: PasteSnippet[]): PasteSnippet[] => {
   return out.length === snips.length ? snips : out
 }
 
+/** Insert text at the cursor position, adding spacing to separate from adjacent non-whitespace. */
+function insertAtCursor(value: string, cursor: number, text: string): { cursor: number; value: string } {
+  const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
+  const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
+  const insert = `${lead}${text}${tail}`
+
+  return {
+    cursor: cursor + insert.length,
+    value: value.slice(0, cursor) + insert + value.slice(cursor)
+  }
+}
+
+/**
+ * Quick client-side heuristic to detect text that looks like a dropped file path.
+ * When this returns true the composer sends RPC calls to the server for actual
+ * validation. Keep in sync with _detect_file_drop() in cli.py — see that
+ * function for the canonical prefix list.
+ */
 export function looksLikeDroppedPath(text: string): boolean {
   const trimmed = text.trim()
 
@@ -50,19 +69,31 @@ export function looksLikeDroppedPath(text: string): boolean {
     return false
   }
 
-  return (
-    trimmed.startsWith('/') ||
-    trimmed.startsWith('~') ||
+  // file:// URIs, relative, home-relative, quoted, and Windows drive paths
+  if (
+    trimmed.startsWith('file://') ||
+    trimmed.startsWith('~/') ||
     trimmed.startsWith('./') ||
     trimmed.startsWith('../') ||
-    trimmed.startsWith('file://') ||
     trimmed.startsWith('"/') ||
     trimmed.startsWith("'/") ||
     trimmed.startsWith('"~') ||
     trimmed.startsWith("'~") ||
-    (/^[A-Za-z]:[\\/]/.test(trimmed)) ||
-    (/^["'][A-Za-z]:[\\/]/.test(trimmed))
-  )
+    (/^[A-Za-z]:[/\\]/.test(trimmed)) ||
+    (/^["'][A-Za-z]:[/\\]/.test(trimmed))
+  ) {
+    return true
+  }
+
+  // Bare absolute paths (start with /) — require a second '/' or a '.' to avoid
+  // false positives on short strings like "/api" or "/help" which would trigger
+  // unnecessary RPC round-trips.
+  if (trimmed.startsWith('/')) {
+    const rest = trimmed.slice(1)
+    return rest.includes('/') || rest.includes('.')
+  }
+
+  return false
 }
 
 export function useComposerState({ gw, onClipboardPaste, onImageAttached, submitRef }: UseComposerStateOptions): UseComposerStateResult {
@@ -114,14 +145,7 @@ export function useComposerState({ gw, onClipboardPaste, onImageAttached, submit
               return { cursor, value }
             }
 
-            const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
-            const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
-            const insert = `${lead}${remainder}${tail}`
-
-            return {
-              cursor: cursor + insert.length,
-              value: value.slice(0, cursor) + insert + value.slice(cursor)
-            }
+            return insertAtCursor(value, cursor, remainder)
           }
         } catch {
           // Fall back to generic file-drop detection below.
@@ -134,14 +158,7 @@ export function useComposerState({ gw, onClipboardPaste, onImageAttached, submit
           })
 
           if (dropped?.matched && dropped.text) {
-            const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
-            const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
-            const insert = `${lead}${dropped.text}${tail}`
-
-            return {
-              cursor: cursor + insert.length,
-              value: value.slice(0, cursor) + insert + value.slice(cursor)
-            }
+            return insertAtCursor(value, cursor, dropped.text)
           }
         } catch {
           // Fall through to normal text paste behavior.
@@ -158,9 +175,7 @@ export function useComposerState({ gw, onClipboardPaste, onImageAttached, submit
       }
 
       const label = pasteTokenLabel(cleanedText, lineCount)
-      const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
-      const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
-      const insert = `${lead}${label}${tail}`
+      const inserted = insertAtCursor(value, cursor, label)
 
       setPasteSnips(prev => trimSnips([...prev, { label, text: cleanedText }]))
 
@@ -177,10 +192,7 @@ export function useComposerState({ gw, onClipboardPaste, onImageAttached, submit
         })
         .catch(() => {})
 
-      return {
-        cursor: cursor + insert.length,
-        value: value.slice(0, cursor) + insert + value.slice(cursor)
-      }
+      return inserted
     },
     [gw, onClipboardPaste, onImageAttached]
   )
@@ -188,7 +200,7 @@ export function useComposerState({ gw, onClipboardPaste, onImageAttached, submit
   const handleTextPaste = useCallback(
     ({ bracketed, cursor, hotkey, text, value }: PasteEvent): MaybePromise<null | { cursor: number; value: string }> => {
       if (hotkey) {
-        const preferOsc52 = Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY || process.env.SSH_CLIENT)
+        const preferOsc52 = isRemoteShellSession(process.env)
         const readPreferredText = preferOsc52
           ? readOsc52Clipboard(querier).then(async osc52Text => {
               if (isUsableClipboardText(osc52Text)) {
@@ -215,7 +227,7 @@ export function useComposerState({ gw, onClipboardPaste, onImageAttached, submit
 
       return handleResolvedPaste({ bracketed: !!bracketed, cursor, text, value })
     },
-    [gw, handleResolvedPaste, onClipboardPaste, querier]
+    [handleResolvedPaste, onClipboardPaste, querier]
   )
 
   const openEditor = useCallback(() => {

@@ -1,4 +1,4 @@
-import { detectVSCodeLikeTerminal, shouldPromptForTerminalSetup, type FileOps } from './terminalSetup.js'
+import { detectVSCodeLikeTerminal, isRemoteShellSession, shouldPromptForTerminalSetup, type FileOps } from './terminalSetup.js'
 
 export type MacTerminalHint = {
   key: string
@@ -18,7 +18,7 @@ export function detectMacTerminalContext(env: NodeJS.ProcessEnv = process.env): 
 
   return {
     isAppleTerminal: termProgram === 'Apple_Terminal' || !!env['TERM_SESSION_ID'],
-    isRemote: !!(env['SSH_CONNECTION'] || env['SSH_TTY'] || env['SSH_CLIENT']),
+    isRemote: isRemoteShellSession(env),
     isTmux: !!env['TMUX'],
     vscodeLike: detectVSCodeLikeTerminal(env)
   }

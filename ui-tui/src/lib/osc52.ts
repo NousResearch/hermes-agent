@@ -48,17 +48,20 @@ export function parseOsc52ClipboardData(data: string): null | string {
   }
 }
 
-export async function readOsc52Clipboard(querier: null | OscQuerier): Promise<null | string> {
+export async function readOsc52Clipboard(querier: null | OscQuerier, timeoutMs = 500): Promise<null | string> {
   if (!querier) {
     return null
   }
 
-  const response = await querier.send<OscResponse>({
+  const timeout = new Promise<undefined>(resolve => setTimeout(resolve, timeoutMs))
+  const query = querier.send<OscResponse>({
     request: buildOsc52ClipboardQuery(),
     match: (r: unknown): r is OscResponse => {
       return !!r && typeof r === 'object' && (r as OscResponse).type === 'osc' && (r as OscResponse).code === 52
     }
   })
+
+  const response = await Promise.race([query, timeout])
 
   await querier.flush()
 

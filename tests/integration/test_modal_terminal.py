@@ -76,12 +76,14 @@ def test_modal_requirements():
     if config['env_type'] != 'modal':
         print(f"\n⚠️  TERMINAL_ENV is '{config['env_type']}', not 'modal'")
         print("   Set TERMINAL_ENV=modal in .env or export it to test Modal backend")
-        return False
-    
+        pytest.skip(
+            f"TERMINAL_ENV='{config['env_type']}', skipping Modal-specific test"
+        )
+
     requirements_met = check_terminal_requirements()
     print(f"\nRequirements check: {'✅ Passed' if requirements_met else '❌ Failed'}")
-    
-    return requirements_met
+
+    assert requirements_met, "Modal terminal requirements not met"
 
 
 def test_simple_command():
@@ -107,7 +109,7 @@ def test_simple_command():
     # Cleanup
     cleanup_vm(test_task_id)
     
-    return success
+    assert success, f"Simple command failed: exit={result_json.get('exit_code')}, error={result_json.get('error')}"
 
 
 def test_python_execution():
@@ -135,7 +137,7 @@ def test_python_execution():
     # Cleanup
     cleanup_vm(test_task_id)
     
-    return success
+    assert success, f"Python execution failed: exit={result_json.get('exit_code')}, error={result_json.get('error')}"
 
 
 def test_pip_install():
@@ -168,7 +170,7 @@ def test_pip_install():
     # Cleanup
     cleanup_vm(test_task_id)
     
-    return success
+    assert success, f"Pip install failed: exit={result_json.get('exit_code')}, error={result_json.get('error')}"
 
 
 def test_filesystem_persistence():
@@ -202,7 +204,12 @@ def test_filesystem_persistence():
     # Cleanup
     cleanup_vm(test_task_id)
     
-    return success
+    assert success, (
+        f"Filesystem persistence failed: "
+        f"write_exit={result1_json.get('exit_code')}, "
+        f"read_exit={result2_json.get('exit_code')}, "
+        f"output={result2_json.get('output', '')[:100]!r}"
+    )
 
 
 def test_environment_isolation():
@@ -234,7 +241,9 @@ def test_environment_isolation():
     cleanup_vm(task1)
     cleanup_vm(task2)
     
-    return isolated
+    assert isolated, (
+        f"Environment isolation failed — task1 data leaked into task2: {output[:200]!r}"
+    )
 
 
 def main():
@@ -258,34 +267,48 @@ def main():
             return
     
     results = {}
-    
+
+    def _run(name, fn):
+        try:
+            fn()
+            results[name] = True
+        except pytest.skip.Exception:
+            results[name] = None  # skipped
+        except AssertionError:
+            results[name] = False
+
     # Run tests
-    results['requirements'] = test_modal_requirements()
-    
-    if not results['requirements']:
-        print("\n❌ Requirements not met. Cannot continue with other tests.")
+    _run('requirements', test_modal_requirements)
+
+    if results.get('requirements') is not True:
+        print("\n❌ Requirements not met or skipped. Cannot continue with other tests.")
         return
-    
-    results['simple_command'] = test_simple_command()
-    results['python_execution'] = test_python_execution()
-    results['pip_install'] = test_pip_install()
-    results['filesystem_persistence'] = test_filesystem_persistence()
-    results['environment_isolation'] = test_environment_isolation()
-    
+
+    _run('simple_command', test_simple_command)
+    _run('python_execution', test_python_execution)
+    _run('pip_install', test_pip_install)
+    _run('filesystem_persistence', test_filesystem_persistence)
+    _run('environment_isolation', test_environment_isolation)
+
     # Summary
     print("\n" + "=" * 60)
     print("TEST SUMMARY")
     print("=" * 60)
-    
-    passed = sum(1 for v in results.values() if v)
-    total = len(results)
-    
-    for test_name, passed_test in results.items():
-        status = "✅ PASSED" if passed_test else "❌ FAILED"
+
+    passed = sum(1 for v in results.values() if v is True)
+    total = sum(1 for v in results.values() if v is not None)
+
+    for test_name, result in results.items():
+        if result is True:
+            status = "✅ PASSED"
+        elif result is False:
+            status = "❌ FAILED"
+        else:
+            status = "⏭️  SKIPPED"
         print(f"  {test_name}: {status}")
-    
+
     print(f"\nTotal: {passed}/{total} tests passed")
-    
+
     return passed == total
 
 

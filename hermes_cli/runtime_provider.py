@@ -906,8 +906,7 @@ def resolve_runtime_provider(
                 code="no_aws_credentials",
             )
         # Read bedrock-specific config from config.yaml
-        from hermes_cli.config import load_config as _load_bedrock_config
-        _bedrock_cfg = _load_bedrock_config().get("bedrock", {})
+        _bedrock_cfg = load_config().get("bedrock", {})
         # Region priority: config.yaml bedrock.region → env var → us-east-1
         region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
         auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"

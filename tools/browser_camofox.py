@@ -543,7 +543,6 @@ def camofox_vision(question: str, annotate: bool = False,
         )
 
         try:
-            from hermes_cli.config import load_config
             _cfg = load_config()
             _vision_cfg = _cfg.get("auxiliary", {}).get("vision", {})
             _vision_timeout = float(_vision_cfg.get("timeout", 120))

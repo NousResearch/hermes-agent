@@ -2605,8 +2605,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             # Scan ``$HERMES_HOME/plugins/`` for currently installed user plugins.
             grandfathered: List[str] = []
             try:
-                from hermes_constants import get_hermes_home as _ghome
-                user_plugins_dir = _ghome() / "plugins"
+                user_plugins_dir = get_hermes_home() / "plugins"
                 if user_plugins_dir.is_dir():
                     for child in sorted(user_plugins_dir.iterdir()):
                         if not child.is_dir():

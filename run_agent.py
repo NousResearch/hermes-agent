@@ -1453,11 +1453,10 @@ class AIAgent:
                     if _mp and _mp.is_available():
                         self._memory_manager.add_provider(_mp)
                     if self._memory_manager.providers:
-                        from hermes_constants import get_hermes_home as _ghh
                         _init_kwargs = {
                             "session_id": self.session_id,
                             "platform": platform or "cli",
-                            "hermes_home": str(_ghh()),
+                            "hermes_home": str(get_hermes_home()),
                             "agent_context": "primary",
                         }
                         # Thread session title for memory provider scoping
@@ -2777,10 +2776,10 @@ class AIAgent:
             prompt = self._SKILL_REVIEW_PROMPT
 
         def _run_review():
-            import contextlib, os as _os
+            import contextlib
             review_agent = None
             try:
-                with open(_os.devnull, "w") as _devnull, \
+                with open(os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
@@ -3852,14 +3851,12 @@ class AIAgent:
 
         # 2. Clean terminal sandbox environments
         try:
-            from tools.terminal_tool import cleanup_vm
             cleanup_vm(task_id)
         except Exception:
             pass
 
         # 3. Clean browser daemon sessions
         try:
-            from tools.browser_tool import cleanup_browser
             cleanup_browser(task_id)
         except Exception:
             pass
@@ -7777,8 +7774,7 @@ class AIAgent:
             # the tool returns True on the next poll.
             if self._interrupt_requested:
                 try:
-                    from tools.interrupt import set_interrupt as _sif
-                    _sif(True, _worker_tid)
+                    _set_interrupt(True, _worker_tid)
                 except Exception:
                     pass
             # Set the activity callback on THIS worker thread so
@@ -7809,8 +7805,7 @@ class AIAgent:
             with self._tool_worker_threads_lock:
                 self._tool_worker_threads.discard(_worker_tid)
             try:
-                from tools.interrupt import set_interrupt as _sif
-                _sif(False, _worker_tid)
+                _set_interrupt(False, _worker_tid)
             except Exception:
                 pass
 
@@ -11864,7 +11859,7 @@ def main(
     
     # Handle tool listing
     if list_tools:
-        from model_tools import get_all_tool_names, get_toolset_for_tool, get_available_toolsets
+        from model_tools import get_all_tool_names, get_available_toolsets
         from toolsets import get_all_toolsets, get_toolset_info
         
         print("📋 Available Tools & Toolsets:")

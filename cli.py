@@ -7159,7 +7159,6 @@ class HermesCLI:
 
             # Refresh the agent's tool list so the model can call new tools
             if self.agent is not None:
-                from model_tools import get_tool_definitions
                 self.agent.tools = get_tool_definitions(
                     enabled_toolsets=self.agent.enabled_toolsets
                     if hasattr(self.agent, "enabled_toolsets") else None,
@@ -7242,7 +7241,6 @@ class HermesCLI:
         full history of tool calls (not just the current one in the spinner).
         """
         if event_type == "tool.completed":
-            import time as _time
             self._tool_start_time = 0.0
             # Print stacked scrollback line for "all" / "new" modes
             if function_name and self.tool_progress_mode in ("all", "new"):
@@ -7271,7 +7269,6 @@ class HermesCLI:
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
-            import time as _time
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(function_name)
             label = preview or function_name
@@ -7280,7 +7277,7 @@ class HermesCLI:
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
-            self._tool_start_time = _time.monotonic()
+            self._tool_start_time = time.monotonic()
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {}
@@ -7538,7 +7535,6 @@ class HermesCLI:
         try:
             from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
-            import re
 
             # Strip markdown and non-speech content for cleaner TTS
             tts_text = text[:4000] if len(text) > 4000 else text
@@ -8374,8 +8370,7 @@ class HermesCLI:
                             try:
                                 _dbg = _hermes_home / "interrupt_debug.log"
                                 with open(_dbg, "a") as _f:
-                                    import time as _t
-                                    _f.write(f"{_t.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
+                                    _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
                                              f"children={len(self.agent._active_children)}, "
                                              f"parent._interrupt={self.agent._interrupt_requested}\n")
                                     for _ci, _ch in enumerate(self.agent._active_children):
@@ -8451,9 +8446,8 @@ class HermesCLI:
             # buffer so tool/status lines render ABOVE our response box.
             # The flush pushes data into the renderer queue; the short
             # sleep lets the renderer actually paint it before we draw.
-            import time as _time
             sys.stdout.flush()
-            _time.sleep(0.15)
+            time.sleep(0.15)
 
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
@@ -9119,8 +9113,7 @@ class HermesCLI:
                         try:
                             _dbg = _hermes_home / "interrupt_debug.log"
                             with open(_dbg, "a") as _f:
-                                import time as _t
-                                _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                                _f.write(f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
                                          f"agent_running={self._agent_running}\n")
                         except Exception:
                             pass
@@ -9268,8 +9261,7 @@ class HermesCLI:
             2. Interrupt the running agent (first press)
             3. Force exit (second press within 2s, or when idle)
             """
-            import time as _time
-            now = _time.time()
+            now = time.time()
 
             # Cancel active voice recording.
             # Run cancel() in a background thread to prevent blocking the
@@ -9377,12 +9369,11 @@ class HermesCLI:
         @kb.add('c-z')
         def handle_ctrl_z(event):
             """Handle Ctrl+Z - suspend process to background (Unix only)."""
-            import sys
             if sys.platform == 'win32':
                 _cprint(f"\n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}")
                 event.app.invalidate()
                 return
-            import os, signal as _sig
+            import signal as _sig
             from prompt_toolkit.application import run_in_terminal
             from hermes_cli.skin_engine import get_active_skin
             agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
@@ -9696,31 +9687,29 @@ class HermesCLI:
         # extra instructions (sudo countdown, approval navigation, clarify).
         # The agent-running interrupt hint is now an inline placeholder above.
         def get_hint_text():
-            import time as _time
-
             if cli_ref._sudo_state:
-                remaining = max(0, int(cli_ref._sudo_deadline - _time.monotonic()))
+                remaining = max(0, int(cli_ref._sudo_deadline - time.monotonic()))
                 return [
                     ('class:hint', '  password hidden · Enter to skip'),
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
             if cli_ref._secret_state:
-                remaining = max(0, int(cli_ref._secret_deadline - _time.monotonic()))
+                remaining = max(0, int(cli_ref._secret_deadline - time.monotonic()))
                 return [
                     ('class:hint', '  secret hidden · Enter to skip'),
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
             if cli_ref._approval_state:
-                remaining = max(0, int(cli_ref._approval_deadline - _time.monotonic()))
+                remaining = max(0, int(cli_ref._approval_deadline - time.monotonic()))
                 return [
                     ('class:hint', '  ↑/↓ to select, Enter to confirm'),
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
             if cli_ref._clarify_state:
-                remaining = max(0, int(cli_ref._clarify_deadline - _time.monotonic()))
+                remaining = max(0, int(cli_ref._clarify_deadline - time.monotonic()))
                 countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
                 if cli_ref._clarify_freetext:
                     return [
@@ -10268,22 +10257,20 @@ class HermesCLI:
         app._on_resize = _resize_clear_ghosts
 
         def spinner_loop():
-            import time as _time
-
             last_idle_refresh = 0.0
             while not self._should_exit:
                 if not self._app:
-                    _time.sleep(0.1)
+                    time.sleep(0.1)
                     continue
                 if self._command_running:
                     self._invalidate(min_interval=0.1)
-                    _time.sleep(0.1)
+                    time.sleep(0.1)
                 else:
-                    now = _time.monotonic()
+                    now = time.monotonic()
                     if now - last_idle_refresh >= 1.0:
                         last_idle_refresh = now
                         self._invalidate(min_interval=1.0)
-                    _time.sleep(0.2)
+                    time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
@@ -10352,8 +10339,7 @@ class HermesCLI:
                         continue
                     
                     # Expand paste references back to full content
-                    import re as _re
-                    _paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+                    _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
@@ -10445,13 +10431,12 @@ class HermesCLI:
             try:
                 if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
                     self.agent.interrupt(f"received signal {signum}")
-                    import time as _t
                     try:
                         _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
                     except (TypeError, ValueError):
                         _grace = 1.5
                     if _grace > 0:
-                        _t.sleep(_grace)
+                        time.sleep(_grace)
             except Exception:
                 pass  # never block signal handling
             raise KeyboardInterrupt()
@@ -10484,8 +10469,7 @@ class HermesCLI:
         # uv-managed Python, fd 0 can be invalid or unregisterable with the
         # asyncio selector, causing "KeyError: '0 is not registered'" (#6393).
         try:
-            import os as _os
-            _os.fstat(0)
+            os.fstat(0)
         except OSError:
             print(
                 "Error: stdin (fd 0) is not available.\n"
@@ -10778,13 +10762,12 @@ def main(
             _agent = getattr(cli, "agent", None)
             if _agent is not None:
                 _agent.interrupt(f"received signal {signum}")
-                import time as _t
                 try:
                     _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
                 except (TypeError, ValueError):
                     _grace = 1.5
                 if _grace > 0:
-                    _t.sleep(_grace)
+                    time.sleep(_grace)
         except Exception:
             pass  # never block signal handling
         raise KeyboardInterrupt()

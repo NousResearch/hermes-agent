@@ -4319,8 +4319,6 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     tmp.replace(prompt_path)
 
     # Poll for response
-    import time as _time
-
     deadline = _time.monotonic() + timeout
     while _time.monotonic() < deadline:
         if response_path.exists():
@@ -5214,8 +5212,6 @@ def _install_hangup_protection(gateway_mode: bool = False):
     # (2) Mirror output to update.log and wrap stdio for broken-pipe
     # tolerance.  Any failure here is non-fatal; we just skip the wrap.
     try:
-        from hermes_cli.config import get_hermes_home
-
         logs_dir = get_hermes_home() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = logs_dir / "update.log"
@@ -5791,8 +5787,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     # Verify the service actually survived the
                                     # restart.  systemctl restart returns 0 even
                                     # if the new process crashes immediately.
-                                    import time as _time
-
                                     _time.sleep(3)
                                     verify = subprocess.run(
                                         scope_cmd + ["is-active", svc_name],
@@ -7679,9 +7673,7 @@ Examples:
             )
             cmd_info["setup_fn"](plugin_parser)
     except Exception as _exc:
-        import logging as _log
-
-        _log.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
+        logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
     # =========================================================================
     # memory command
@@ -8145,8 +8137,6 @@ Examples:
 
             # Launch hermes --resume <id> by replacing the current process
             print(f"Resuming session: {selected_id}")
-            import shutil
-
             hermes_bin = shutil.which("hermes")
             if hermes_bin:
                 os.execvp(hermes_bin, ["hermes", "--resume", selected_id])

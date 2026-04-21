@@ -434,7 +434,6 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
     elif tts_provider == "neutts":
         try:
-            import importlib.util
             neutts_ok = importlib.util.find_spec("neutts") is not None
         except Exception:
             neutts_ok = False
@@ -963,7 +962,6 @@ def _setup_tts_provider(config: dict):
     if selected == "neutts":
         # Check if already installed
         try:
-            import importlib.util
             already_installed = importlib.util.find_spec("neutts") is not None
         except Exception:
             already_installed = False

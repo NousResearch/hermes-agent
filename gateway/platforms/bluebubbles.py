@@ -75,7 +75,7 @@ def _redact(text: str) -> str:
 def check_bluebubbles_requirements() -> bool:
     try:
         import aiohttp  # noqa: F401
-        import httpx as _httpx  # noqa: F401
+        import httpx  # noqa: F401
     except ImportError:
         return False
     return True

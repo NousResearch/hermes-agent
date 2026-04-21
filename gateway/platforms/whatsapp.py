@@ -399,7 +399,6 @@ class WhatsAppAdapter(BasePlatformAdapter):
             
             # Check if bridge is already running and connected
             import aiohttp
-            import asyncio
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(

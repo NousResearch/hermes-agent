@@ -1608,7 +1608,6 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from datetime import datetime
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
@@ -2687,7 +2686,6 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     days = params.get("days", 30)
     try:
-        import time
         cutoff = time.time() - days * 86400
         rows = [s for s in _get_db().list_sessions_rich(limit=500) if (s.get("started_at") or 0) >= cutoff]
         return _ok(rid, {"days": days, "sessions": len(rows), "messages": sum(s.get("message_count", 0) for s in rows)})

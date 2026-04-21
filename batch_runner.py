@@ -1190,12 +1190,12 @@ def main(
     """
     # Handle list distributions
     if list_distributions:
-        from toolset_distributions import list_distributions as get_all_dists, print_distribution_info
-        
+        from toolset_distributions import print_distribution_info
+
         print("📊 Available Toolset Distributions")
         print("=" * 70)
-        
-        all_dists = get_all_dists()
+
+        all_dists = list_distributions()
         for dist_name in sorted(all_dists.keys()):
             print_distribution_info(dist_name)
         

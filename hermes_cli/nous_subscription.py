@@ -586,7 +586,6 @@ def get_gateway_eligible_tools(
         return [], [], []
 
     if config is None:
-        from hermes_cli.config import load_config
         config = load_config() or {}
 
     # Quick provider check without the heavy get_nous_subscription_features call

@@ -975,8 +975,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
             if _injection_detected:
                 _warnings.append("skill content contains patterns that may indicate prompt injection")
-            import logging as _logging
-            _logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
+            logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
 
         parsed_frontmatter: Dict[str, Any] = {}
         try:

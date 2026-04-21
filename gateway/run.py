@@ -3274,10 +3274,9 @@ class GatewayRunner:
                     return "Usage: /queue <prompt>"
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
-                    queued_event = _ME(
+                    queued_event = MessageEvent(
                         text=queued_text,
-                        message_type=_MT.TEXT,
+                        message_type=MessageType.TEXT,
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
@@ -3299,10 +3298,9 @@ class GatewayRunner:
                     # Agent hasn't started yet — queue as turn-boundary fallback.
                     adapter = self.adapters.get(source.platform)
                     if adapter:
-                        from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
-                        queued_event = _ME(
+                        queued_event = MessageEvent(
                             text=steer_text,
-                            message_type=_MT.TEXT,
+                            message_type=MessageType.TEXT,
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
@@ -3322,10 +3320,9 @@ class GatewayRunner:
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
-                    queued_event = _ME(
+                    queued_event = MessageEvent(
                         text=steer_text,
-                        message_type=_MT.TEXT,
+                        message_type=MessageType.TEXT,
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
@@ -3857,9 +3854,7 @@ class GatewayRunner:
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype in ("", "application/octet-stream"):
-                    import os as _os2
-
-                    _ext = _os2.path.splitext(path)[1].lower()
+                    _ext = os.path.splitext(path)[1].lower()
                     if _ext in _TEXT_EXTENSIONS:
                         mtype = "text/plain"
                     else:
@@ -8302,7 +8297,6 @@ class GatewayRunner:
         if not adapter:
             return
         try:
-            from gateway.platforms.base import MessageEvent, MessageType
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
@@ -8407,7 +8401,6 @@ class GatewayRunner:
                             break
                     if adapter and source.chat_id:
                         try:
-                            from gateway.platforms.base import MessageEvent, MessageType
                             synth_event = MessageEvent(
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
@@ -8929,7 +8922,6 @@ class GatewayRunner:
         if _streaming_enabled:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                from gateway.config import Platform
                 _adapter = self.adapters.get(source.platform)
                 if _adapter:
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
@@ -9279,8 +9271,7 @@ class GatewayRunner:
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
             # would become a separate message bubble, which is noisy.
-            from gateway.platforms.base import BasePlatformAdapter as _BaseAdapter
-            if type(adapter).edit_message is _BaseAdapter.edit_message:
+            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()

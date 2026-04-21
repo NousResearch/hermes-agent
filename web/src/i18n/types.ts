@@ -67,6 +67,7 @@ export interface Translations {
     };
     nav: {
       analytics: string;
+      chat: string;
       config: string;
       cron: string;
       documentation: string;
@@ -132,6 +133,7 @@ export interface Translations {
     confirmDeleteMessage: string;
     sessionDeleted: string;
     failedToDelete: string;
+    resumeInChat: string;
     previousPage: string;
     nextPage: string;
     roles: {

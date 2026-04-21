@@ -1287,7 +1287,15 @@ def cmd_whatsapp(args):
         print(f"\n✗ Bridge script not found at {bridge_script}")
         return
 
-    if not (bridge_dir / "node_modules").exists():
+    node_modules_dir = bridge_dir / "node_modules"
+    dependency_sentinels = [
+        node_modules_dir / "@whiskeysockets" / "baileys" / "package.json",
+        node_modules_dir / "express" / "package.json",
+        node_modules_dir / "qrcode-terminal" / "package.json",
+        node_modules_dir / "pino" / "package.json",
+    ]
+
+    if not node_modules_dir.exists() or any(not sentinel.exists() for sentinel in dependency_sentinels):
         print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
         npm = shutil.which("npm")
         if not npm:

@@ -215,6 +215,43 @@ class TestConnectCleanup:
     """Verify failure paths release the scoped session lock."""
 
     @pytest.mark.asyncio
+    async def test_releases_lock_when_baileys_package_is_missing(self):
+        adapter = _make_adapter()
+
+        def _path_exists(path_obj):
+            path_str = str(path_obj).replace("\\", "/")
+            if path_str.endswith("node_modules"):
+                return True
+            if path_str.endswith("@whiskeysockets/baileys/package.json"):
+                return False
+            return True
+
+        install_result = MagicMock(returncode=0, stderr="")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        mock_fh = MagicMock()
+
+        with (
+            patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True),
+            patch.object(Path, "exists", autospec=True, side_effect=_path_exists),
+            patch.object(Path, "mkdir", return_value=None),
+            patch("subprocess.run", return_value=install_result) as mock_run,
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("builtins.open", return_value=mock_fh),
+            patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock),
+            patch("gateway.platforms.whatsapp.asyncio.create_task"),
+            patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+            patch("gateway.status.release_scoped_lock") as mock_release,
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        assert any(call.args and call.args[0][:2] == ["npm", "install"] for call in mock_run.call_args_list)
+        mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
+        assert adapter._platform_lock_identity is None
+
+    @pytest.mark.asyncio
     async def test_releases_lock_when_npm_install_fails(self):
         adapter = _make_adapter()
 

@@ -112,18 +112,37 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
-    """Return True when the live PID still looks like the Hermes gateway."""
+    """Return True when the live PID still looks like the Hermes gateway.
+
+    Excludes CLI invocations like ``hermes gateway run`` or ``hermes gateway
+    status`` that match the broad ``"hermes gateway"`` pattern but are not
+    actually the gateway daemon — a common false-positive when starting the
+    gateway from an interactive CLI session (issue #13242).
+    """
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
         return False
 
-    patterns = (
+    gateway_patterns = (
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",
-        "hermes gateway",
         "gateway/run.py",
     )
-    return any(pattern in cmdline for pattern in patterns)
+    if any(pattern in cmdline for pattern in gateway_patterns):
+        return True
+
+    # Only accept 'hermes gateway' if it is NOT followed by a CLI subcommand
+    # like 'run', 'stop', 'status', 'restart', 'install', etc. A real gateway
+    # process has 'gateway' as the final subcommand (no further args) or is
+    # invoked via the module runner.
+    if "hermes gateway" in cmdline:
+        cli_subcommands = ("run", "stop", "status", "restart", "install",
+                           "uninstall", "start", "setup", "doctor")
+        # If a CLI subcommand appears after 'hermes gateway', this is a
+        # CLI process, not the gateway daemon.
+        return not any(f"gateway {cmd}" in cmdline for cmd in cli_subcommands)
+
+    return False
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:

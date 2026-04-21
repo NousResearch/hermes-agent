@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
@@ -139,6 +140,81 @@ def _is_expected_write_exception(exc: Exception) -> bool:
     if isinstance(exc, OSError) and exc.errno in _EXPECTED_WRITE_ERRNOS:
         return True
     return False
+
+
+def _get_case_validation_root() -> Path:
+    """Return the profile-aware Hermes learning case root."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home().expanduser() / "learning" / "cases"
+
+
+def _get_case_validator_script() -> Path:
+    """Return the profile-aware Hermes case validator script path."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home().expanduser() / "learning" / "scripts" / "validate-case.mjs"
+
+
+def _resolve_case_json_target(filepath: str | None, task_cwd: str | None = None) -> Path | None:
+    """Return a resolved case JSON path when the target is under learning/cases."""
+    if not filepath:
+        return None
+    try:
+        candidate = Path(os.path.expandvars(filepath)).expanduser()
+        if not candidate.is_absolute() and task_cwd:
+            candidate = Path(os.path.expandvars(task_cwd)).expanduser() / candidate
+        candidate = candidate.resolve(strict=False)
+        if candidate.suffix.lower() != ".json":
+            return None
+        candidate.relative_to(_get_case_validation_root().resolve(strict=False))
+        return candidate
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _collect_case_json_validation_targets(paths: list[str], task_cwd: str | None = None) -> list[Path]:
+    """Return de-duplicated case JSON targets that require validation."""
+    targets: list[Path] = []
+    seen: set[Path] = set()
+    for raw_path in paths:
+        resolved = _resolve_case_json_target(raw_path, task_cwd=task_cwd)
+        if resolved is None or resolved in seen:
+            continue
+        seen.add(resolved)
+        targets.append(resolved)
+    return targets
+
+
+def _validate_case_json_targets(paths: list[str], task_cwd: str | None = None) -> str | None:
+    """Validate case JSON files and return an error string on failure."""
+    targets = _collect_case_json_validation_targets(paths, task_cwd=task_cwd)
+    if not targets:
+        return None
+
+    validator_script = _get_case_validator_script()
+    if not validator_script.exists():
+        return f"Case JSON validator script not found: {validator_script}"
+
+    for target in targets:
+        try:
+            result = subprocess.run(
+                ["node", str(validator_script), str(target)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            return "Case JSON validation failed: 'node' executable not found"
+        except Exception as exc:
+            return f"Case JSON validation failed for {target}: {exc}"
+
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip() or "validation failed"
+            return f"Case JSON validation failed for {target}: {details}"
+
+    return None
 
 
 _file_ops_lock = threading.Lock()
@@ -606,11 +682,17 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
         result_dict = result.to_dict()
+        validation_error = None
+        if not result_dict.get("error"):
+            validation_error = _validate_case_json_targets([path], task_cwd=file_ops.cwd)
         if stale_warning:
             result_dict["_warning"] = stale_warning
+        if validation_error:
+            return tool_error(validation_error)
         # Refresh the stored timestamp so consecutive writes by this
         # task don't trigger false staleness warnings.
-        _update_read_timestamp(path, task_id)
+        if not result_dict.get("error"):
+            _update_read_timestamp(path, task_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -658,10 +740,23 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result = file_ops.patch_v4a(patch)
         else:
             return tool_error(f"Unknown mode: {mode}")
-        
+
         result_dict = result.to_dict()
+        validation_paths = []
+        if mode == "replace":
+            validation_paths = [path] if path else []
+        elif not result_dict.get("error"):
+            validation_paths = [
+                *result_dict.get("files_modified", []),
+                *result_dict.get("files_created", []),
+            ]
+        validation_error = None
+        if not result_dict.get("error"):
+            validation_error = _validate_case_json_targets(validation_paths, task_cwd=file_ops.cwd)
         if stale_warnings:
             result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
+        if validation_error:
+            return tool_error(validation_error)
         # Refresh stored timestamps for all successfully-patched paths so
         # consecutive edits by this task don't trigger false warnings.
         if not result_dict.get("error"):

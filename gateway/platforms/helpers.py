@@ -34,7 +34,7 @@ class MessageDeduplicator:
         self._dedup = MessageDeduplicator()
 
         # In message handler:
-        if self._dedup.is_duplicate(msg_id):
+        if self._dedup.is_duplicate(msg_id, chat_id):
             return
     """
 
@@ -43,20 +43,28 @@ class MessageDeduplicator:
         self._max_size = max_size
         self._ttl = ttl_seconds
 
-    def is_duplicate(self, msg_id: str) -> bool:
+    def is_duplicate(self, msg_id: str, chat_id: Optional[str] = None) -> bool:
         """Return True if *msg_id* was already seen within the TTL window."""
         if not msg_id:
             return False
+        key = f"{chat_id}:{msg_id}" if chat_id is not None else msg_id
         now = time.time()
-        if msg_id in self._seen:
-            if now - self._seen[msg_id] < self._ttl:
-                return True
-            # Entry has expired — remove it and treat as new
-            del self._seen[msg_id]
-        self._seen[msg_id] = now
+        cutoff = now - self._ttl
+
+        # Drop entries whose TTL has expired so a fresh message can be accepted again.
+        expired = [k for k, ts in self._seen.items() if ts < cutoff]
+        for k in expired:
+            del self._seen[k]
+
+        if key in self._seen:
+            return True
+
+        self._seen[key] = now
+
+        # Secondary defensive cap: if the cache still grows too large, drop the oldest remaining entries.
         if len(self._seen) > self._max_size:
-            cutoff = now - self._ttl
-            self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+            newest = sorted(self._seen.items(), key=lambda item: item[1], reverse=True)[: self._max_size]
+            self._seen = dict(newest)
         return False
 
     def clear(self):

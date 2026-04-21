@@ -68,4 +68,19 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Final exec: two supported invocation patterns.
+#
+#   docker run <image>                 -> exec `hermes` with no args (legacy default)
+#   docker run <image> chat -q "..."   -> exec `hermes chat -q "..."` (legacy wrap)
+#   docker run <image> sleep infinity  -> exec `sleep infinity` directly
+#   docker run <image> bash            -> exec `bash` directly
+#
+# If the first positional arg resolves to an executable on PATH, we assume the
+# caller wants to run it directly (needed by the launcher which runs long-lived
+# `sleep infinity` sandbox containers — see tools/environments/docker.py).
+# Otherwise we treat the args as a hermes subcommand and wrap with `hermes`,
+# preserving the documented `docker run <image> <subcommand>` behavior.
+if [ $# -gt 0 ] && command -v "$1" >/dev/null 2>&1; then
+    exec "$@"
+fi
 exec hermes "$@"

@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
@@ -1894,8 +1895,15 @@ class BasePlatformAdapter(ABC):
                             speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            tts_kwargs = {"text": speech_text}
+                            if event.source.platform == Platform.TELEGRAM:
+                                telegram_tts_dir = Path(tempfile.gettempdir()) / "hermes_voice"
+                                telegram_tts_dir.mkdir(parents=True, exist_ok=True)
+                                tts_kwargs["output_path"] = str(
+                                    telegram_tts_dir / f"tts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ogg"
+                                )
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool, **tts_kwargs
                             )
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")

@@ -387,6 +387,31 @@ class TestSendVoiceReply:
         assert call_args.kwargs.get("chat_id") == "123"
 
     @pytest.mark.asyncio
+    async def test_telegram_elevenlabs_requests_ogg_tempfile(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+
+        captured = {}
+
+        def _fake_tts(*, text, output_path):
+            captured["text"] = text
+            captured["output_path"] = output_path
+            return json.dumps({"success": True, "file_path": output_path})
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=_fake_tts), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello world")
+
+        assert captured["output_path"].endswith(".ogg")
+        mock_adapter.send_voice.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_empty_text_after_strip_skips(self, runner):
         event = _make_event()
 

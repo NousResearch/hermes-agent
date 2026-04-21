@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
@@ -10,6 +12,33 @@ from typing import Any, Dict
 _DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
+_ELEVENLABS_KEYCHAIN_SERVICES = (
+    "openclaw/elevenlabs-api-key",
+    "elevenlabs-api-key",
+    "ELEVENLABS_API_KEY",
+    "elevenlabs",
+)
+
+
+def _read_macos_keychain_generic_password(service: str) -> str:
+    """Return a generic-password secret from macOS Keychain, or "" if missing."""
+    if platform.system() != "Darwin" or not service:
+        return ""
+
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except Exception:
+        return ""
+
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
 
 
 def managed_nous_tools_enabled() -> bool:
@@ -104,6 +133,19 @@ def resolve_openai_audio_api_key() -> str:
         os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
         or os.getenv("OPENAI_API_KEY", "")
     ).strip()
+
+
+def resolve_elevenlabs_api_key() -> str:
+    """Return ElevenLabs API key from env or macOS Keychain fallback."""
+    direct = os.getenv("ELEVENLABS_API_KEY", "").strip()
+    if direct:
+        return direct
+
+    for service in _ELEVENLABS_KEYCHAIN_SERVICES:
+        secret = _read_macos_keychain_generic_password(service)
+        if secret:
+            return secret
+    return ""
 
 
 def prefers_gateway(config_section: str) -> bool:

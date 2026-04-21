@@ -45,7 +45,12 @@ from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway, resolve_openai_audio_api_key
+from tools.tool_backend_helpers import (
+    managed_nous_tools_enabled,
+    prefers_gateway,
+    resolve_elevenlabs_api_key,
+    resolve_openai_audio_api_key,
+)
 from tools.xai_http import hermes_xai_user_agent
 
 # ---------------------------------------------------------------------------
@@ -143,6 +148,31 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
+def _get_session_platform() -> str:
+    """Best-effort platform detection for tool-side delivery decisions.
+
+    Primary source is the gateway session context var/env mirror
+    ``HERMES_SESSION_PLATFORM``. Some gateway entrypoints only expose the
+    session key (for example ``agent:main:telegram:dm:12345``), so fall back to
+    parsing ``HERMES_SESSION_KEY`` when the explicit platform value is absent.
+    """
+    from gateway.session_context import get_session_env
+
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    if platform:
+        return platform
+
+    session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
+    if session_key:
+        parts = session_key.split(":")
+        if len(parts) >= 3 and parts[0] == "agent":
+            candidate = parts[2].strip().lower()
+            if candidate:
+                return candidate
+
+    return ""
+
+
 # ===========================================================================
 # ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
 # ===========================================================================
@@ -231,9 +261,12 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key = os.getenv("ELEVENLABS_API_KEY", "")
+    api_key = resolve_elevenlabs_api_key()
     if not api_key:
-        raise ValueError("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/")
+        raise ValueError(
+            "ELEVENLABS_API_KEY not set and no macOS Keychain fallback was found. "
+            "Get one at https://elevenlabs.io/"
+        )
 
     el_config = tts_config.get("elevenlabs", {})
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
@@ -793,17 +826,22 @@ def text_to_speech_tool(
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
 
-    # Detect platform from gateway env var to choose the best output format.
+    # Detect platform from session context to choose the best output format.
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
+    # produce Opus natively (no ffmpeg needed). Edge TTS always outputs MP3
     # and needs ffmpeg for conversion.
-    from gateway.session_context import get_session_env
-    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
+    platform = _get_session_platform()
     want_opus = (platform == "telegram")
 
     # Determine output path
     if output_path:
         file_path = Path(output_path).expanduser()
+        # Telegram voice replies should stay voice-compatible even when callers
+        # provide a custom filename. Preserve the basename but coerce the
+        # extension to .ogg for providers that can generate Opus natively.
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+            if file_path.suffix.lower() not in {".ogg", ".opus"}:
+                file_path = file_path.with_suffix(".ogg")
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
@@ -977,7 +1015,7 @@ def check_tts_requirements() -> bool:
         pass
     try:
         _import_elevenlabs()
-        if os.getenv("ELEVENLABS_API_KEY"):
+        if resolve_elevenlabs_api_key():
             return True
     except ImportError:
         pass
@@ -1097,9 +1135,12 @@ def stream_tts_to_speaker(
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))
 
-        api_key = os.getenv("ELEVENLABS_API_KEY", "")
+        api_key = resolve_elevenlabs_api_key()
         if not api_key:
-            logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
+            logger.warning(
+                "ELEVENLABS_API_KEY not set and no macOS Keychain fallback was found; "
+                "streaming TTS audio disabled"
+            )
         else:
             try:
                 ElevenLabs = _import_elevenlabs()

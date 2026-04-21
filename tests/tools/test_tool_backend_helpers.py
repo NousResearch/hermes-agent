@@ -22,6 +22,7 @@ from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     normalize_browser_cloud_provider,
     normalize_modal_mode,
+    resolve_elevenlabs_api_key,
     resolve_modal_backend_state,
     resolve_openai_audio_api_key,
 )
@@ -280,6 +281,37 @@ class TestResolveModalBackendState:
         result = self._resolve(monkeypatch, "bogus", has_direct=True, managed_ready=False)
         assert result["requested_mode"] == "auto"
         assert result["mode"] == "auto"
+
+
+# ---------------------------------------------------------------------------
+# resolve_elevenlabs_api_key
+# ---------------------------------------------------------------------------
+class TestResolveElevenlabsApiKey:
+    """Priority: env var first, then macOS Keychain fallback."""
+
+    def test_env_key_preferred(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "env-key")
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers._read_macos_keychain_generic_password",
+            lambda service: "keychain-key",
+        )
+        assert resolve_elevenlabs_api_key() == "env-key"
+
+    def test_keychain_fallback_used(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers._read_macos_keychain_generic_password",
+            lambda service: "keychain-key" if service == "openclaw/elevenlabs-api-key" else "",
+        )
+        assert resolve_elevenlabs_api_key() == "keychain-key"
+
+    def test_no_key_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers._read_macos_keychain_generic_password",
+            lambda service: "",
+        )
+        assert resolve_elevenlabs_api_key() == ""
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,13 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    for key in ("OPENAI_API_KEY", "MINIMAX_API_KEY", "HERMES_SESSION_PLATFORM"):
+    for key in (
+        "OPENAI_API_KEY",
+        "MINIMAX_API_KEY",
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_KEY",
+        "ELEVENLABS_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -57,6 +63,103 @@ class TestEdgeTtsSpeed:
         comm_cls = self._run({"speed": 1.0}, tmp_path)
         kwargs = comm_cls.call_args[1]
         assert "rate" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs credential resolution
+# ---------------------------------------------------------------------------
+
+class TestElevenLabsCredentials:
+    def test_generate_elevenlabs_uses_resolved_api_key(self, tmp_path):
+        chunks = [b"abc", b"def"]
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert.return_value = chunks
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_elevenlabs", return_value=mock_cls), \
+             patch("tools.tts_tool.resolve_elevenlabs_api_key", return_value="resolved-key"):
+            from tools.tts_tool import _generate_elevenlabs
+
+            out = tmp_path / "out.ogg"
+            result = _generate_elevenlabs("Hello", str(out), {"elevenlabs": {}})
+
+        assert result == str(out)
+        assert out.read_bytes() == b"abcdef"
+        assert mock_cls.call_args.kwargs["api_key"] == "resolved-key"
+
+    def test_check_requirements_accepts_keychain_fallback(self):
+        with patch("tools.tts_tool._import_edge_tts", side_effect=ImportError), \
+             patch("tools.tts_tool._import_elevenlabs", return_value=MagicMock()), \
+             patch("tools.tts_tool.resolve_elevenlabs_api_key", return_value="resolved-key"):
+            from tools.tts_tool import check_tts_requirements
+
+            assert check_tts_requirements() is True
+
+
+class TestSessionPlatformDetection:
+    def test_prefers_explicit_session_platform(self, monkeypatch):
+        from tools.tts_tool import _get_session_platform
+
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:discord:dm:123")
+
+        assert _get_session_platform() == "telegram"
+
+    def test_falls_back_to_session_key_platform(self, monkeypatch):
+        from tools.tts_tool import _get_session_platform
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:telegram:dm:12345")
+
+        assert _get_session_platform() == "telegram"
+
+    def test_telegram_session_key_defaults_elevenlabs_to_ogg(self, tmp_path, monkeypatch):
+        import json
+
+        from tools.tts_tool import text_to_speech_tool
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:telegram:dm:12345")
+
+        chunks = [b"abc", b"def"]
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert.return_value = chunks
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
+             patch("tools.tts_tool._import_elevenlabs", return_value=mock_cls), \
+             patch("tools.tts_tool.resolve_elevenlabs_api_key", return_value="resolved-key"):
+            result = json.loads(text_to_speech_tool("Hello from Telegram", output_path=None))
+
+        assert result["success"] is True
+        assert result["provider"] == "elevenlabs"
+        assert result["file_path"].endswith(".ogg")
+        assert result["voice_compatible"] is True
+        assert "[[audio_as_voice]]" in result["media_tag"]
+
+    def test_telegram_custom_mp3_path_is_coerced_to_ogg_for_voice_delivery(self, tmp_path, monkeypatch):
+        import json
+
+        from tools.tts_tool import text_to_speech_tool
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:telegram:dm:12345")
+
+        chunks = [b"abc", b"def"]
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert.return_value = chunks
+        mock_cls = MagicMock(return_value=mock_client)
+
+        requested = tmp_path / "voice-note-test.mp3"
+
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
+             patch("tools.tts_tool._import_elevenlabs", return_value=mock_cls), \
+             patch("tools.tts_tool.resolve_elevenlabs_api_key", return_value="resolved-key"):
+            result = json.loads(text_to_speech_tool("Hello from Telegram", output_path=str(requested)))
+
+        assert result["success"] is True
+        assert result["provider"] == "elevenlabs"
+        assert result["file_path"].endswith("voice-note-test.ogg")
+        assert result["voice_compatible"] is True
+        assert "[[audio_as_voice]]" in result["media_tag"]
+        assert not requested.exists()
 
 
 # ---------------------------------------------------------------------------

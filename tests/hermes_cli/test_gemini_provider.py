@@ -125,18 +125,12 @@ class TestGeminiCredentials:
 # ── Model Catalog ──
 
 class TestGeminiModelCatalog:
-    def test_provider_models_exist(self):
+    def test_provider_entry_exists(self):
+        """Gemini provider has a model catalog entry. Specific model names
+        are data that changes with Google releases and don't belong in tests.
+        """
         assert "gemini" in _PROVIDER_MODELS
-        models = _PROVIDER_MODELS["gemini"]
-        assert "gemini-2.5-pro" in models
-        assert "gemini-2.5-flash" in models
-        assert "gemma-4-31b-it" not in models
-
-    def test_provider_models_has_3x(self):
-        models = _PROVIDER_MODELS["gemini"]
-        assert "gemini-3.1-pro-preview" in models
-        assert "gemini-3-flash-preview" in models
-        assert "gemini-3.1-flash-lite-preview" in models
+        assert len(_PROVIDER_MODELS["gemini"]) >= 1
 
     def test_provider_label(self):
         assert "gemini" in _PROVIDER_LABELS

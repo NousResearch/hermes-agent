@@ -40,13 +40,22 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOU
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
-# session.branch). While they're running, inbound RPCs — notably
-# approval.respond and session.interrupt — sit unread in the stdin pipe.
-# We route only those slow handlers onto a small thread pool; everything
-# else stays on the main thread so ordering stays sane for the fast path.
-# write_json is already _stdout_lock-guarded, so concurrent response
-# writes are safe.
-_LONG_HANDLERS = frozenset({"cli.exec", "session.branch", "session.resume", "shell.exec", "slash.exec"})
+# session.branch, skills.manage).  While they're running, inbound RPCs —
+# notably approval.respond and session.interrupt — sit unread in the
+# stdin pipe.  We route only those slow handlers onto a small thread pool;
+# everything else stays on the main thread so ordering stays sane for the
+# fast path.  write_json is already _stdout_lock-guarded, so concurrent
+# response writes are safe.
+_LONG_HANDLERS = frozenset(
+    {
+        "cli.exec",
+        "session.branch",
+        "session.resume",
+        "shell.exec",
+        "skills.manage",
+        "slash.exec",
+    }
+)
 
 _pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4)),

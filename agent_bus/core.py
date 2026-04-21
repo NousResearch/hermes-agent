@@ -14,13 +14,46 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent_bus import storage
+from agent_bus import finalizer, storage
 
 logger = logging.getLogger(__name__)
 
 VALID_AGENTS = {"hermes", "openclaw"}
 VALID_PRIORITIES = {"P0", "P1", "P2", "P3"}
 VALID_TERMINAL_STATUSES = {"done", "fail", "timeout"}
+
+
+def _run_close_gate(
+    *,
+    task_id: str,
+    outcome: str,
+    summary: str,
+    current_status: str,
+) -> str:
+    """Run finalizer Gate A + Gate B. Returns ``"proceed"`` or ``"idempotent"``.
+
+    Raises ``ValueError`` (with the finalizer error code as the message) when
+    the gate rejects and the mode is enforcing. In ``off`` or ``advisory`` mode,
+    rejections are logged but treated as ``"proceed"`` so legacy behaviour is
+    preserved until full rollout (see `finalizer-gate-spec-v0.md` §11 Rollout).
+    """
+    decision, code = finalizer.enforce_close(
+        {"task_id": task_id, "outcome": outcome, "summary": summary},
+        current_status=current_status,
+        logger=logger,
+    )
+    if decision == "idempotent":
+        return "idempotent"
+    if decision == "proceed":
+        return "proceed"
+    # decision == "reject"
+    if finalizer.is_enforcing():
+        raise ValueError(code or "FINALIZER_REJECTED")
+    logger.warning(
+        "finalizer[%s]: would reject close task=%s code=%s — proceeding in legacy mode",
+        finalizer.get_mode(), task_id, code,
+    )
+    return "proceed"
 
 SLACK_CHANNEL_OPS_EVOLUTION = "C0AT8C6GJTH"
 SLACK_CHANNEL_HERMES_INBOX = "C0ATLDC284D"
@@ -255,8 +288,13 @@ def complete_task(
         raise ValueError(
             f"Only the recipient ({task['to_agent']}) can complete; caller was {agent}"
         )
-    if task["status"] in VALID_TERMINAL_STATUSES:
-        raise ValueError(f"Task {task_id} is already terminal ({task['status']})")
+
+    decision = _run_close_gate(
+        task_id=task_id, outcome="done", summary=result, current_status=task["status"],
+    )
+    if decision == "idempotent":
+        logger.info("complete_task: idempotent re-close for %s", task_id)
+        return _task_view(task_id)
 
     storage.update_task(task_id, status="done", result=result, completed_at=_now())
     storage.add_event(task_id, agent, "done", {"result": result, "learning": learning})
@@ -307,8 +345,13 @@ def fail_task(
         raise ValueError(
             f"Only the recipient ({task['to_agent']}) can fail; caller was {agent}"
         )
-    if task["status"] in VALID_TERMINAL_STATUSES:
-        raise ValueError(f"Task {task_id} is already terminal ({task['status']})")
+
+    decision = _run_close_gate(
+        task_id=task_id, outcome="fail", summary=reason, current_status=task["status"],
+    )
+    if decision == "idempotent":
+        logger.info("fail_task: idempotent re-close for %s", task_id)
+        return _task_view(task_id)
 
     storage.update_task(task_id, status="fail", result=reason, completed_at=_now())
     storage.add_event(task_id, agent, "fail", {"reason": reason, "learning": learning})
@@ -333,6 +376,84 @@ def fail_task(
     if _notify_user_of_outcome(updated):
         storage.update_task(task_id, user_notified=1)
     return updated
+
+
+def keep_alive_task(
+    *,
+    task_id: str,
+    agent: str,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Mark a long-running task as still alive and extend its deadline.
+
+    Not a terminal state — pairs with `finalizer-gate-spec-v0.md` §4.
+    Valid from ack / progress / keep-alive. Pending tasks must ack first.
+    Terminal tasks cannot go back to keep-alive.
+
+    Extends ``deadline`` by ``FINALIZER_KEEPALIVE_TIMEOUT_SEC`` (default 1800s).
+    Does not broadcast to Slack by default (noise reduction).
+    """
+    _validate_agent(agent, "agent")
+    task = storage.get_task_row(task_id)
+    if not task:
+        raise ValueError(f"Task not found: {task_id}")
+    if task["to_agent"] != agent:
+        raise ValueError(
+            f"Only the recipient ({task['to_agent']}) can keep-alive; caller was {agent}"
+        )
+
+    ok, code = finalizer.validate_transition(task["status"], finalizer.OUTCOME_KEEP_ALIVE)
+    if not ok:
+        if finalizer.is_enforcing():
+            raise ValueError(code or "FINALIZER_REJECTED")
+        logger.warning(
+            "finalizer[%s]: would reject keep_alive task=%s code=%s — proceeding in legacy mode",
+            finalizer.get_mode(), task_id, code,
+        )
+
+    extend = finalizer.keepalive_timeout_sec()
+    new_deadline = _now() + extend
+    storage.update_task(task_id, status="keep-alive", deadline=new_deadline)
+    storage.add_event(
+        task_id, agent, "keep_alive",
+        {"note": note, "extended_sec": extend},
+    )
+    return _task_view(task_id)
+
+
+def amend_learning(
+    *,
+    task_id: str,
+    agent: str,
+    learning: str,
+) -> Dict[str, Any]:
+    """Attach or replace the learning file for an already-terminal task.
+
+    Decouples the close path from learning persistence — if the original
+    close swallowed a learning-write error, the recipient can retry later
+    without re-closing the task.
+    """
+    _validate_agent(agent, "agent")
+    if not learning or not learning.strip():
+        raise ValueError("learning is required")
+    task = storage.get_task_row(task_id)
+    if not task:
+        raise ValueError(f"Task not found: {task_id}")
+    if task["to_agent"] != agent:
+        raise ValueError(
+            f"Only the recipient ({task['to_agent']}) can amend learning; caller was {agent}"
+        )
+    if task["status"] not in VALID_TERMINAL_STATUSES:
+        raise ValueError(
+            f"amend_learning requires a terminal task (status={task['status']!r})"
+        )
+
+    outcome = task["status"] if task["status"] in ("done", "fail") else "done"
+    learning_path = _write_learning(task_id, agent, learning, outcome=outcome)
+    if learning_path:
+        storage.update_task(task_id, learning_wiki_path=str(learning_path))
+    storage.add_event(task_id, agent, "amend_learning", {"path": str(learning_path) if learning_path else None})
+    return _task_view(task_id)
 
 
 def get_task(task_id: str) -> Optional[Dict[str, Any]]:

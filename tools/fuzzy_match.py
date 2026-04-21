@@ -681,3 +681,24 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
         return ""
 
     return "\n---\n".join(parts)
+
+
+def format_no_match_hint(error: Optional[str], match_count: int,
+                         old_string: str, content: str) -> str:
+    """Return a '\\n\\nDid you mean...' snippet for plain no-match errors.
+
+    Gated so the hint only fires for actual "old_string not found" failures.
+    Ambiguous-match ("Found N matches"), escape-drift, and identical-strings
+    errors all have ``match_count == 0`` but a "did you mean?" snippet would
+    be misleading — those failed for unrelated reasons.
+
+    Returns an empty string when there's nothing useful to append.
+    """
+    if match_count != 0:
+        return ""
+    if not error or not error.startswith("Could not find"):
+        return ""
+    hint = find_closest_lines(old_string, content)
+    if not hint:
+        return ""
+    return "\n\nDid you mean one of these sections?\n" + hint

@@ -4308,10 +4308,6 @@ class AIAgent:
         if self._memory_store:
             self._memory_store.load_from_disk()
 
-    def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
-        """Convert chat-completions tool schemas to Responses function-tool schemas."""
-        return _codex_responses_tools(tools if tools is not None else self.tools)
-
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
         """Generate a deterministic call_id from tool call content.
@@ -4334,33 +4330,6 @@ class AIAgent:
     ) -> str:
         """Build a valid Responses `function_call.id` (must start with `fc_`)."""
         return _codex_derive_responses_function_call_id(call_id, response_item_id)
-
-    def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Convert internal chat-style messages to Responses input items."""
-        return _codex_chat_messages_to_responses_input(messages)
-
-    def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
-        return _codex_preflight_codex_input_items(raw_items)
-
-    def _preflight_codex_api_kwargs(
-        self,
-        api_kwargs: Any,
-        *,
-        allow_stream: bool = False,
-    ) -> Dict[str, Any]:
-        return _codex_preflight_codex_api_kwargs(api_kwargs, allow_stream=allow_stream)
-
-    def _extract_responses_message_text(self, item: Any) -> str:
-        """Extract assistant text from a Responses message output item."""
-        return _codex_extract_responses_message_text(item)
-
-    def _extract_responses_reasoning_text(self, item: Any) -> str:
-        """Extract a compact reasoning text from a Responses reasoning item."""
-        return _codex_extract_responses_reasoning_text(item)
-
-    def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
-        """Normalize a Responses API object to an assistant_message-like object."""
-        return _codex_normalize_codex_response(response)
 
     def _thread_identity(self) -> str:
         thread = threading.current_thread()
@@ -4854,7 +4823,7 @@ class AIAgent:
         active_client = client or self._ensure_primary_openai_client(reason="codex_create_stream_fallback")
         fallback_kwargs = dict(api_kwargs)
         fallback_kwargs["stream"] = True
-        fallback_kwargs = self._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
+        fallback_kwargs = self._get_codex_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
         stream_or_response = active_client.responses.create(**fallback_kwargs)
 
         # Compatibility shim for mocks or providers that still return a concrete response.
@@ -6596,6 +6565,15 @@ class AIAgent:
             self._anthropic_transport = t
         return t
 
+    def _get_codex_transport(self):
+        """Return the cached ResponsesApiTransport instance (lazy singleton)."""
+        t = getattr(self, "_codex_transport", None)
+        if t is None:
+            from agent.transports import get_transport
+            t = get_transport("codex_responses")
+            self._codex_transport = t
+        return t
+
     def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
         if not any(
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
@@ -6752,14 +6730,7 @@ class AIAgent:
             }
 
         if self.api_mode == "codex_responses":
-            instructions = ""
-            payload_messages = api_messages
-            if api_messages and api_messages[0].get("role") == "system":
-                instructions = str(api_messages[0].get("content") or "").strip()
-                payload_messages = api_messages[1:]
-            if not instructions:
-                instructions = DEFAULT_AGENT_IDENTITY
-
+            _ct = self._get_codex_transport()
             is_github_responses = (
                 base_url_host_matches(self.base_url, "models.github.ai")
                 or base_url_host_matches(self.base_url, "api.githubcopilot.com")
@@ -6771,64 +6742,20 @@ class AIAgent:
                     and "/backend-api/codex" in self._base_url_lower
                 )
             )
-
-            # Resolve reasoning effort: config > default (medium)
-            reasoning_effort = "medium"
-            reasoning_enabled = True
-            if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                if self.reasoning_config.get("enabled") is False:
-                    reasoning_enabled = False
-                elif self.reasoning_config.get("effort"):
-                    reasoning_effort = self.reasoning_config["effort"]
-
-            # Clamp effort levels not supported by the Responses API model.
-            # GPT-5.4 supports none/low/medium/high/xhigh but not "minimal".
-            # "minimal" is valid on OpenRouter and GPT-5 but fails on 5.2/5.4.
-            _effort_clamp = {"minimal": "low"}
-            reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
-
-            kwargs = {
-                "model": self.model,
-                "instructions": instructions,
-                "input": self._chat_messages_to_responses_input(payload_messages),
-                "tools": self._responses_tools(),
-                "tool_choice": "auto",
-                "parallel_tool_calls": True,
-                "store": False,
-            }
-
-            if not is_github_responses:
-                kwargs["prompt_cache_key"] = self.session_id
-
             is_xai_responses = self.provider == "xai" or self._base_url_hostname == "api.x.ai"
-
-            if reasoning_enabled and is_xai_responses:
-                # xAI reasons automatically — no effort param, just include encrypted content
-                kwargs["include"] = ["reasoning.encrypted_content"]
-            elif reasoning_enabled:
-                if is_github_responses:
-                    # Copilot's Responses route advertises reasoning-effort support,
-                    # but not OpenAI-specific prompt cache or encrypted reasoning
-                    # fields. Keep the payload to the documented subset.
-                    github_reasoning = self._github_models_reasoning_extra_body()
-                    if github_reasoning is not None:
-                        kwargs["reasoning"] = github_reasoning
-                else:
-                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                    kwargs["include"] = ["reasoning.encrypted_content"]
-            elif not is_github_responses and not is_xai_responses:
-                kwargs["include"] = []
-
-            if self.request_overrides:
-                kwargs.update(self.request_overrides)
-
-            if self.max_tokens is not None and not is_codex_backend:
-                kwargs["max_output_tokens"] = self.max_tokens
-
-            if is_xai_responses and getattr(self, "session_id", None):
-                kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
-
-            return kwargs
+            return _ct.build_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                reasoning_config=self.reasoning_config,
+                session_id=getattr(self, "session_id", None),
+                max_tokens=self.max_tokens,
+                request_overrides=self.request_overrides,
+                is_github_responses=is_github_responses,
+                is_codex_backend=is_codex_backend,
+                is_xai_responses=is_xai_responses,
+                github_reasoning_extra=self._github_models_reasoning_extra_body() if is_github_responses else None,
+            )
 
         sanitized_messages = api_messages
         needs_sanitization = False
@@ -7438,7 +7365,7 @@ class AIAgent:
             if not _aux_available and self.api_mode == "codex_responses":
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
-                codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
+                codex_kwargs["tools"] = self._get_codex_transport().convert_tools([memory_tool_def])
                 if _flush_temperature is not None:
                     codex_kwargs["temperature"] = _flush_temperature
                 else:
@@ -7473,9 +7400,15 @@ class AIAgent:
             # Extract tool calls from the response, handling all API formats
             tool_calls = []
             if self.api_mode == "codex_responses" and not _aux_available:
-                assistant_msg, _ = self._normalize_codex_response(response)
-                if assistant_msg and assistant_msg.tool_calls:
-                    tool_calls = assistant_msg.tool_calls
+                _ct_flush = self._get_codex_transport()
+                _cnr_flush = _ct_flush.normalize_response(response)
+                if _cnr_flush and _cnr_flush.tool_calls:
+                    tool_calls = [
+                        SimpleNamespace(
+                            id=tc.id, type="function",
+                            function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
+                        ) for tc in _cnr_flush.tool_calls
+                    ]
             elif self.api_mode == "anthropic_messages" and not _aux_available:
                 _tfn = self._get_anthropic_transport()
                 _flush_nr = _tfn.normalize_response(response, strip_tool_prefix=self._is_anthropic_oauth)
@@ -8519,8 +8452,9 @@ class AIAgent:
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
                 summary_response = self._run_codex_stream(codex_kwargs)
-                assistant_message, _ = self._normalize_codex_response(summary_response)
-                final_response = (assistant_message.content or "").strip() if assistant_message else ""
+                _ct_sum = self._get_codex_transport()
+                _cnr_sum = _ct_sum.normalize_response(summary_response)
+                final_response = (_cnr_sum.content or "").strip()
             else:
                 summary_kwargs = {
                     "model": self.model,
@@ -8577,8 +8511,9 @@ class AIAgent:
                     codex_kwargs = self._build_api_kwargs(api_messages)
                     codex_kwargs.pop("tools", None)
                     retry_response = self._run_codex_stream(codex_kwargs)
-                    retry_msg, _ = self._normalize_codex_response(retry_response)
-                    final_response = (retry_msg.content or "").strip() if retry_msg else ""
+                    _ct_retry = self._get_codex_transport()
+                    _cnr_retry = _ct_retry.normalize_response(retry_response)
+                    final_response = (_cnr_retry.content or "").strip()
                 elif self.api_mode == "anthropic_messages":
                     _tretry = self._get_anthropic_transport()
                     _ant_kw2 = _tretry.build_kwargs(model=self.model, messages=api_messages, tools=None,
@@ -9340,7 +9275,7 @@ class AIAgent:
                     if self._force_ascii_payload:
                         _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
-                        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
+                        api_kwargs = self._get_codex_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -9428,38 +9363,34 @@ class AIAgent:
                     response_invalid = False
                     error_details = []
                     if self.api_mode == "codex_responses":
-                        output_items = getattr(response, "output", None) if response is not None else None
-                        if response is None:
-                            response_invalid = True
-                            error_details.append("response is None")
-                        elif not isinstance(output_items, list):
-                            response_invalid = True
-                            error_details.append("response.output is not a list")
-                        elif not output_items:
-                            # Stream backfill may have failed, but
-                            # _normalize_codex_response can still recover
-                            # from response.output_text. Only mark invalid
-                            # when that fallback is also absent.
-                            _out_text = getattr(response, "output_text", None)
-                            _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
-                            if _out_text_stripped:
-                                logger.debug(
-                                    "Codex response.output is empty but output_text is present "
-                                    "(%d chars); deferring to normalization.",
-                                    len(_out_text_stripped),
-                                )
-                            else:
-                                _resp_status = getattr(response, "status", None)
-                                _resp_incomplete = getattr(response, "incomplete_details", None)
-                                logger.warning(
-                                    "Codex response.output is empty after stream backfill "
-                                    "(status=%s, incomplete_details=%s, model=%s). %s",
-                                    _resp_status, _resp_incomplete,
-                                    getattr(response, "model", None),
-                                    f"api_mode={self.api_mode} provider={self.provider}",
-                                )
+                        _ct_v = self._get_codex_transport()
+                        if not _ct_v.validate_response(response):
+                            if response is None:
                                 response_invalid = True
-                                error_details.append("response.output is empty")
+                                error_details.append("response is None")
+                            else:
+                                # output_text fallback: stream backfill may have failed
+                                # but normalize can still recover from output_text
+                                _out_text = getattr(response, "output_text", None)
+                                _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
+                                if _out_text_stripped:
+                                    logger.debug(
+                                        "Codex response.output is empty but output_text is present "
+                                        "(%d chars); deferring to normalization.",
+                                        len(_out_text_stripped),
+                                    )
+                                else:
+                                    _resp_status = getattr(response, "status", None)
+                                    _resp_incomplete = getattr(response, "incomplete_details", None)
+                                    logger.warning(
+                                        "Codex response.output is empty after stream backfill "
+                                        "(status=%s, incomplete_details=%s, model=%s). %s",
+                                        _resp_status, _resp_incomplete,
+                                        getattr(response, "model", None),
+                                        f"api_mode={self.api_mode} provider={self.provider}",
+                                    )
+                                    response_invalid = True
+                                    error_details.append("response.output is empty")
                     elif self.api_mode == "anthropic_messages":
                         _tv = self._get_anthropic_transport()
                         if not _tv.validate_response(response):
@@ -10885,7 +10816,40 @@ class AIAgent:
 
             try:
                 if self.api_mode == "codex_responses":
-                    assistant_message, finish_reason = self._normalize_codex_response(response)
+                    _ct = self._get_codex_transport()
+                    _cnr = _ct.normalize_response(response)
+                    # Back-compat shim: downstream expects SimpleNamespace with
+                    # codex-specific fields (.codex_reasoning_items, .reasoning_details,
+                    # and .call_id/.response_item_id on tool calls).
+                    _tc_list = None
+                    if _cnr.tool_calls:
+                        _tc_list = []
+                        for tc in _cnr.tool_calls:
+                            _tc_ns = SimpleNamespace(
+                                id=tc.id, type="function",
+                                function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
+                            )
+                            if tc.provider_data:
+                                if tc.provider_data.get("call_id"):
+                                    _tc_ns.call_id = tc.provider_data["call_id"]
+                                if tc.provider_data.get("response_item_id"):
+                                    _tc_ns.response_item_id = tc.provider_data["response_item_id"]
+                            _tc_list.append(_tc_ns)
+                    assistant_message = SimpleNamespace(
+                        content=_cnr.content,
+                        tool_calls=_tc_list or None,
+                        reasoning=_cnr.reasoning,
+                        reasoning_content=None,
+                        codex_reasoning_items=(
+                            _cnr.provider_data.get("codex_reasoning_items")
+                            if _cnr.provider_data else None
+                        ),
+                        reasoning_details=(
+                            _cnr.provider_data.get("reasoning_details")
+                            if _cnr.provider_data else None
+                        ),
+                    )
+                    finish_reason = _cnr.finish_reason
                 elif self.api_mode == "anthropic_messages":
                     _transport = self._get_anthropic_transport()
                     _nr = _transport.normalize_response(

@@ -516,13 +516,12 @@ class TestGatewayFormatting:
         assert "**" in text  # Markdown bold
 
     def test_gateway_format_hides_cost(self, populated_db):
+        """Gateway format omits dollar figures and internal cache details."""
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "$" in text
-        assert "Top Skills" in text
-        assert "Est. cost" in text
+        assert "$" not in text
         assert "cache" not in text.lower()
 
     def test_gateway_format_shows_models(self, populated_db):

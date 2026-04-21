@@ -1231,12 +1231,34 @@ def _(rid, params: dict) -> dict:
 @method("session.list")
 def _(rid, params: dict) -> dict:
     try:
-        # Show sessions from every adapter — users resume telegram/discord/etc
-        # sessions by pasting the id directly, so the picker should surface them
-        # too.  Children (subagents/compression runs) stay filtered out via the
-        # hermes_state default.
-        limit = params.get("limit", 20)
-        rows = _get_db().list_sessions_rich(source=None, limit=limit)
+        # Resume picker should include human conversation surfaces beyond
+        # tui/cli (notably telegram from blitz row #7), but avoid internal
+        # sources that clutter the modal (tool/acp/etc).
+        allow = frozenset(
+            {
+                "cli",
+                "tui",
+                "telegram",
+                "discord",
+                "slack",
+                "whatsapp",
+                "wecom",
+                "weixin",
+                "feishu",
+                "signal",
+                "mattermost",
+                "matrix",
+                "qq",
+            }
+        )
+
+        limit = int(params.get("limit", 20) or 20)
+        fetch_limit = max(limit * 5, 100)
+        rows = [
+            s
+            for s in _get_db().list_sessions_rich(source=None, limit=fetch_limit)
+            if (s.get("source") or "").strip().lower() in allow
+        ][:limit]
         return _ok(rid, {"sessions": [
             {"id": s["id"], "title": s.get("title") or "", "preview": s.get("preview") or "",
              "started_at": s.get("started_at") or 0, "message_count": s.get("message_count") or 0,

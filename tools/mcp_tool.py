@@ -1582,6 +1582,129 @@ def _handle_auth_error_and_retry(
         "server": server_name,
     }, ensure_ascii=False)
 
+
+# Substrings (lower-cased match) that indicate the MCP server rejected
+# the request because its server-side transport session expired /
+# was garbage-collected.  The caller's OAuth token is still valid —
+# only the transport-layer session state needs rebuilding.  See #13383.
+_SESSION_EXPIRED_MARKERS: tuple = (
+    "invalid or expired session",
+    "expired session",
+    "session expired",
+    "session not found",
+    "unknown session",
+)
+
+
+def _is_session_expired_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like an MCP transport session expiry.
+
+    Streamable HTTP MCP servers may garbage-collect server-side session
+    state while the OAuth token remains valid — idle TTL, server
+    restart, horizontal-scaling pod rotation, etc.  The SDK surfaces
+    this as a JSON-RPC error whose message contains phrases like
+    ``"Invalid or expired session"``.  This class of failure is
+    distinct from :func:`_is_auth_error`: re-running the OAuth refresh
+    flow would be pointless because the access token is fine.  What's
+    needed is a transport reconnect — tear down and rebuild the
+    ``streamablehttp_client`` + ``ClientSession`` pair, which is
+    exactly what ``MCPServerTask._reconnect_event`` triggers.
+    """
+    if isinstance(exc, InterruptedError):
+        return False
+    # Exception messages vary across SDK versions + server
+    # implementations, so match on a small allow-list of stable
+    # substrings rather than exception type.  Kept narrow to avoid
+    # false positives on unrelated server errors.
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)
+
+
+def _handle_session_expired_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Trigger a transport reconnect and retry once on session expiry.
+
+    Unlike :func:`_handle_auth_error_and_retry`, this does **not** call
+    the OAuth manager's ``handle_401`` — the access token is still
+    valid, only the server-side session state is stale.  Setting
+    ``_reconnect_event`` causes the server task's lifecycle loop to
+    tear down the current ``streamablehttp_client`` + ``ClientSession``
+    and rebuild them, reusing the existing OAuth provider instance.
+    See #13383.
+
+    Args:
+        server_name: Name of the MCP server that raised.
+        exc: The exception from the failed call.
+        retry_call: Zero-arg callable that re-runs the operation,
+            returning the same JSON string format as the handler.
+        op_description: Human-readable name of the operation (logs).
+
+    Returns:
+        A JSON string if reconnect + retry was attempted and produced
+        a response, or ``None`` to fall through to the caller's
+        generic error path (not a session-expired error, no server
+        record, reconnect didn't ready in time, or retry also failed).
+    """
+    if not _is_session_expired_error(exc):
+        return None
+
+    with _lock:
+        srv = _servers.get(server_name)
+    if srv is None or not hasattr(srv, "_reconnect_event"):
+        return None
+
+    loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return None
+
+    logger.info(
+        "MCP server '%s': %s failed with session-expired error (%s); "
+        "signalling transport reconnect and retrying once.",
+        server_name, op_description, exc,
+    )
+
+    # Trigger the same reconnect mechanism the OAuth recovery path
+    # uses, then wait briefly for the new session to come back ready.
+    loop.call_soon_threadsafe(srv._reconnect_event.set)
+    deadline = time.monotonic() + 15
+    ready = False
+    while time.monotonic() < deadline:
+        if srv.session is not None and srv._ready.is_set():
+            ready = True
+            break
+        time.sleep(0.25)
+    if not ready:
+        logger.warning(
+            "MCP server '%s': reconnect did not ready within 15s after "
+            "session-expired error; falling through to error response.",
+            server_name,
+        )
+        return None
+
+    try:
+        result = retry_call()
+        try:
+            parsed = json.loads(result)
+            if "error" not in parsed:
+                _server_error_counts[server_name] = 0
+                return result
+        except (json.JSONDecodeError, TypeError):
+            _server_error_counts[server_name] = 0
+            return result
+    except Exception as retry_exc:
+        logger.warning(
+            "MCP %s/%s retry after session reconnect failed: %s",
+            server_name, op_description, retry_exc,
+        )
+    return None
+
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
@@ -1868,6 +1991,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
 
+            # Transport session expiry (#13383): same reconnect flow
+            # but skips OAuth recovery because the access token is
+            # still valid — only the server-side session is stale.
+            recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once,
+                f"tools/call {tool_name}",
+            )
+            if recovered is not None:
+                return recovered
+
             _bump_server_error(server_name)
             logger.error(
                 "MCP tool %s/%s call failed: %s",
@@ -1918,6 +2051,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "resources/list",
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_session_expired_and_retry(
                 server_name, exc, _call_once, "resources/list",
             )
             if recovered is not None:
@@ -1976,6 +2114,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
+            recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once, "resources/read",
+            )
+            if recovered is not None:
+                return recovered
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
             )
@@ -2029,6 +2172,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "prompts/list",
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_session_expired_and_retry(
                 server_name, exc, _call_once, "prompts/list",
             )
             if recovered is not None:
@@ -2094,6 +2242,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "prompts/get",
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_session_expired_and_retry(
                 server_name, exc, _call_once, "prompts/get",
             )
             if recovered is not None:

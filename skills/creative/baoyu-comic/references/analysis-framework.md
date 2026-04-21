@@ -147,7 +147,7 @@ title: "Alan Turing: The Father of Computing"
 topic: alan-turing-biography
 time_span: 1912-1954
 source_language: en
-user_language: zh  # From EXTEND.md or detected
+user_language: zh  # User-specified or detected from conversation
 aspect_ratio: "3:4"
 recommended_page_count: 16
 recommended_art: ligne-claire  # ligne-claire|manga|realistic|ink-brush|chalk
@@ -161,7 +161,7 @@ recommended_layout: mixed      # standard|cinematic|dense|splash|mixed|webtoon
 | Field | Description |
 |-------|-------------|
 | `source_language` | Detected language of source content |
-| `user_language` | Output language for comic (from EXTEND.md > --lang > source_language) |
+| `user_language` | Output language for comic (user-specified option > conversation language > source_language) |
 
 ## Analysis Checklist
 

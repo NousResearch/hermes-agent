@@ -1,25 +1,23 @@
 # Partial Workflows
 
-Options to run specific parts of the workflow.
+Options to run specific parts of the workflow. Trigger these via natural language (e.g., "just the storyboard", "regenerate page 3").
 
 ## Options Summary
 
 | Option | Steps Executed | Output |
 |--------|----------------|--------|
-| `--storyboard-only` | 1-3 | `storyboard.md` + `characters/` |
-| `--prompts-only` | 1-5 | + `prompts/*.md` |
-| `--images-only` | 7-9 | + images + PDF |
-| `--regenerate N` | 7 (partial) | Specific page(s) + PDF |
+| Storyboard only | 1-3 | `storyboard.md` + `characters/` |
+| Prompts only | 1-5 | + `prompts/*.md` |
+| Images only | 7-9 | + images + PDF |
+| Regenerate N | 7 (partial) | Specific page(s) + PDF |
 
 ---
 
-## Using `--storyboard-only`
+## Storyboard-only
 
-Generate storyboard and characters without prompts or images:
+Generate storyboard and characters without prompts or images.
 
-```bash
-/baoyu-comic content.md --storyboard-only
-```
+**User cue**: "storyboard only", "just the outline", "don't generate images yet".
 
 **Workflow**: Steps 1-3 only (stop after storyboard + characters)
 
@@ -35,13 +33,11 @@ Generate storyboard and characters without prompts or images:
 
 ---
 
-## Using `--prompts-only`
+## Prompts-only
 
-Generate storyboard, characters, and prompts without images:
+Generate storyboard, characters, and prompts without images.
 
-```bash
-/baoyu-comic content.md --prompts-only
-```
+**User cue**: "prompts only", "write the prompts but don't generate yet".
 
 **Workflow**: Steps 1-5 (generate prompts, skip images)
 
@@ -58,13 +54,11 @@ Generate storyboard, characters, and prompts without images:
 
 ---
 
-## Using `--images-only`
+## Images-only
 
-Generate images from existing prompts (starts at Step 7):
+Generate images from existing prompts (starts at Step 7).
 
-```bash
-/baoyu-comic comic/topic-slug/ --images-only
-```
+**User cue**: "generate images from existing prompts", "run the images now" (pointing at an existing `comic/topic-slug/` directory).
 
 **Workflow**: Skip to Step 7, then 8-9
 
@@ -85,29 +79,20 @@ Generate images from existing prompts (starts at Step 7):
 
 ---
 
-## Using `--regenerate`
+## Regenerate
 
-Regenerate specific pages only:
+Regenerate specific pages only.
 
-```bash
-# Single page
-/baoyu-comic comic/topic-slug/ --regenerate 3
-
-# Multiple pages
-/baoyu-comic comic/topic-slug/ --regenerate 2,5,8
-
-# Cover page
-/baoyu-comic comic/topic-slug/ --regenerate 0
-```
+**User cue**: "regenerate page 3", "redo pages 2, 5, 8", "regenerate the cover".
 
 **Workflow**:
 1. Read existing prompts for specified pages
-2. Regenerate images only for those pages
+2. Regenerate images only for those pages via `image_generate`
 3. Regenerate PDF
 
 **Prerequisites** (must exist):
 - `prompts/NN-{cover|page}-[slug].md` for specified pages
-- `characters/characters.png` (for reference)
+- `characters/characters.png` (for reference, if it was used originally)
 
 **Output**:
 - Regenerated `NN-{cover|page}-[slug].png` for specified pages

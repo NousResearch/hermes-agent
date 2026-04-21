@@ -10,11 +10,11 @@
 | Tone | romantic |
 | Layout | standard (default) |
 
-Equivalent to: `--art manga --tone romantic`
+Equivalent to: art=manga, tone=romantic
 
 ## Unique Rules
 
-This preset includes special rules beyond the art+tone combination. When `--style shoujo` is used, ALL rules below must be applied.
+This preset includes special rules beyond the art+tone combination. When the `shoujo` preset is selected, ALL rules below must be applied.
 
 ### Decorative Elements (Required)
 

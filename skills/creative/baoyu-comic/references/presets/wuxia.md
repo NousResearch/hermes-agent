@@ -10,11 +10,11 @@
 | Tone | action |
 | Layout | splash (default) |
 
-Equivalent to: `--art ink-brush --tone action`
+Equivalent to: art=ink-brush, tone=action
 
 ## Unique Rules
 
-This preset includes special rules beyond the art+tone combination. When `--style wuxia` is used, ALL rules below must be applied.
+This preset includes special rules beyond the art+tone combination. When the `wuxia` preset is selected, ALL rules below must be applied.
 
 ### Qi/Energy Effects (Required)
 

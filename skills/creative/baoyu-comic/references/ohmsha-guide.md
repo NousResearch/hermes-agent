@@ -1,6 +1,6 @@
 # Ohmsha Manga Guide Style
 
-Guidelines for `--style ohmsha` educational manga comics.
+Guidelines for educational manga comics using the `ohmsha` preset.
 
 ## Character Setup
 
@@ -10,7 +10,7 @@ Guidelines for `--style ohmsha` educational manga comics.
 | Mentor (Role B) | 哆啦A梦 | Knowledgeable, patient, uses gadgets as technical metaphors |
 | Antagonist (Role C, optional) | 胖虎 | Represents misunderstanding, or "noise" in the data |
 
-Custom characters: `--characters "Student:小明,Mentor:教授,Antagonist:Bug怪"`
+Custom characters: ask the user for role → name mappings (e.g., `Student:小明, Mentor:教授, Antagonist:Bug怪`).
 
 ## Character Reference Sheet Style
 

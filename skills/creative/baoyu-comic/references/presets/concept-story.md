@@ -10,11 +10,11 @@
 | Tone | warm |
 | Layout | standard (default) |
 
-Equivalent to: `--art manga --tone warm`
+Equivalent to: art=manga, tone=warm
 
 ## Unique Rules
 
-This preset includes special rules beyond the art+tone combination. When `--style concept-story` is used, ALL rules below must be applied.
+This preset includes special rules beyond the art+tone combination. When the `concept-story` preset is selected, ALL rules below must be applied.
 
 ### Concept Visualization System (CRITICAL)
 

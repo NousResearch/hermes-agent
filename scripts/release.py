@@ -129,6 +129,7 @@ AUTHOR_MAP = {
     "brooklyn.bb.nicholson@gmail.com": "brooklynnicholson",
     "withapurpose37@gmail.com": "StefanIsMe",
     "4317663+helix4u@users.noreply.github.com": "helix4u",
+    "ifkellx@users.noreply.github.com": "Ifkellx",
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
     "akhater@gmail.com": "akhater",

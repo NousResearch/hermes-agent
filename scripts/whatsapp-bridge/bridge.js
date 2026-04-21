@@ -372,6 +372,37 @@ async function startSocket() {
 const app = express();
 app.use(express.json());
 
+// Host-header validation — defends against DNS rebinding.
+// The bridge binds loopback-only (127.0.0.1) but a victim browser on
+// the same machine could be tricked into fetching from an attacker
+// hostname that TTL-flips to 127.0.0.1. Reject any request whose Host
+// header doesn't resolve to a loopback alias.
+// See GHSA-ppp5-vxwm-4cf7.
+const _ACCEPTED_HOST_VALUES = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  '::1',
+]);
+
+app.use((req, res, next) => {
+  const raw = (req.headers.host || '').trim();
+  if (!raw) {
+    return res.status(400).json({ error: 'Missing Host header' });
+  }
+  // Strip port suffix: "localhost:3000" → "localhost"
+  const hostOnly = (raw.includes(':')
+    ? raw.substring(0, raw.lastIndexOf(':'))
+    : raw
+  ).replace(/^\[|\]$/g, '').toLowerCase();
+  if (!_ACCEPTED_HOST_VALUES.has(hostOnly)) {
+    return res.status(400).json({
+      error: 'Invalid Host header. Bridge accepts loopback hosts only.',
+    });
+  }
+  next();
+});
+
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);

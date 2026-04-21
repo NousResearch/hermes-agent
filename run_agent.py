@@ -6069,6 +6069,15 @@ class AIAgent:
         if getattr(self, "_stream_needs_break", False) and text and text.strip():
             self._stream_needs_break = False
             text = "\n\n" + text
+            prepended_break = True
+        else:
+            prepended_break = False
+        if isinstance(text, str):
+            text = sanitize_context(self._strip_think_blocks(text or ""))
+            if not prepended_break:
+                text = text.lstrip("\n")
+        if not text:
+            return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
         delivered = False
         for cb in callbacks:
@@ -8040,7 +8049,7 @@ class AIAgent:
         # API replay, session transcript, gateway delivery, CLI display,
         # compression, title generation.
         if isinstance(_san_content, str) and _san_content:
-            _san_content = self._strip_think_blocks(_san_content).strip()
+            _san_content = sanitize_context(self._strip_think_blocks(_san_content)).strip()
 
         msg = {
             "role": "assistant",
@@ -12711,8 +12720,9 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
-                    final_response = self._strip_think_blocks(final_response).strip()
+                    # Strip internal context / reasoning wrappers from the user-facing
+                    # response (keep only clean visible text in transcript + UI).
+                    final_response = sanitize_context(self._strip_think_blocks(final_response)).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 

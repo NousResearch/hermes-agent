@@ -1139,6 +1139,25 @@ def test_interim_commentary_strips_leaked_memory_context(monkeypatch):
     }
 
 
+def test_stream_delta_strips_leaked_memory_context(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    leaked = (
+        "<memory-context>\n"
+        "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+        "## Honcho Context\n"
+        "stale memory\n"
+        "</memory-context>\n\n"
+        "Visible answer"
+    )
+
+    agent._fire_stream_delta(leaked)
+
+    assert observed == ["Visible answer"]
+
+
 def test_run_conversation_codex_continues_after_commentary_phase_message(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [

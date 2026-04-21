@@ -69,6 +69,7 @@ Internal dogfooding and QA skills used to test Hermes Agent itself.
 | Skill | Description | Path |
 |-------|-------------|------|
 | `dogfood` | Systematic exploratory QA testing of web applications — find bugs, capture evidence, and generate structured reports | `dogfood` |
+| `adversarial-ux-test` | Roleplay the most difficult, tech-resistant user for a product — browse in-persona, rant, then filter through a RED/YELLOW/WHITE/GREEN pragmatism layer so only real UX friction becomes tickets. | `dogfood/adversarial-ux-test` |
 
 ## email
 

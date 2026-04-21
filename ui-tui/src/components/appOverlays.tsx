@@ -157,8 +157,8 @@ export function FloatingOverlays({
             <Box marginTop={1}>
               <Text color={ui.theme.color.dim}>
                 {overlay.pager.offset + pagerPageSize < overlay.pager.lines.length
-                  ? `Enter/Space for more · q to close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
-                  : `end · q to close (${overlay.pager.lines.length} lines)`}
+                  ? `↑↓ scroll · Space/PgDn next · g/G top/bottom · q close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
+                  : `end · ↑↓ scroll · q close (${overlay.pager.lines.length} lines)`}
               </Text>
             </Box>
           </Box>

@@ -174,14 +174,30 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isBlocked) {
       if (overlay.pager) {
-        if (key.return || ch === ' ') {
-          const nextOffset = overlay.pager.offset + pagerPageSize
+        const { lines, offset } = overlay.pager
 
+        if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
+          return patchOverlayState({ pager: null })
+        }
+
+        const move = (delta: number) =>
           patchOverlayState({
-            pager: nextOffset >= overlay.pager.lines.length ? null : { ...overlay.pager, offset: nextOffset }
+            pager: {
+              ...overlay.pager!,
+              offset: Math.max(0, Math.min(offset + delta, Math.max(0, lines.length - pagerPageSize)))
+            }
           })
-        } else if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
-          patchOverlayState({ pager: null })
+
+        if (key.upArrow || ch === 'k') return move(-1)
+        if (key.downArrow || ch === 'j') return move(1)
+        if (key.pageUp || ch === 'b') return move(-pagerPageSize)
+        if (ch === 'g') return move(-lines.length)
+        if (ch === 'G') return move(lines.length)
+
+        if (key.return || ch === ' ' || key.pageDown) {
+          const next = offset + pagerPageSize
+
+          patchOverlayState({ pager: next >= lines.length ? null : { ...overlay.pager!, offset: next } })
         }
 
         return

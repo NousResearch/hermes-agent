@@ -102,6 +102,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
+  const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
@@ -160,7 +161,7 @@ export function useMainApp(gw: GatewayClient) {
     [historyItems, messageId]
   )
 
-  const virtualHistory = useVirtualHistory(scrollRef, virtualRows)
+  const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols)
 
   const scrollWithSelection = useCallback(
     (delta: number) => {
@@ -283,6 +284,14 @@ export function useMainApp(gw: GatewayClient) {
     sys
   })
 
+  useEffect(() => {
+    if (ui.busy) {
+      setTurnStartedAt(prev => prev ?? Date.now())
+    } else {
+      setTurnStartedAt(null)
+    }
+  }, [ui.busy])
+
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
   // ── Terminal tab title ─────────────────────────────────────────────
@@ -297,12 +306,20 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    const onResize = () =>
-      rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const onResize = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = undefined
+        void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
+      }, 100)
+    }
 
     stdout.on('resize', onResize)
 
     return () => {
+      clearTimeout(timer)
       stdout.off('resize', onResize)
     }
   }, [rpc, stdout, ui.sid])
@@ -380,12 +397,18 @@ export function useMainApp(gw: GatewayClient) {
     sys
   })
 
-  const prevSidRef = useRef<null | string>(null)
+  // Drain one queued message whenever the session settles (busy → false):
+  // agent turn ends, interrupt, shell.exec finishes, error recovered, or the
+  // session first comes up with pre-queued messages. Without this, shell.exec
+  // and error paths never emit message.complete, so anything enqueued while
+  // `!sleep` / a failed turn was running would stay stuck forever.
   useEffect(() => {
-    const prev = prevSidRef.current
-    prevSidRef.current = ui.sid
-
-    if (prev !== null || !ui.sid || ui.busy || composerRefs.queueEditRef.current !== null) {
+    if (
+      !ui.sid ||
+      ui.busy ||
+      composerRefs.queueEditRef.current !== null ||
+      composerRefs.queueRef.current.length === 0
+    ) {
       return
     }
 
@@ -416,7 +439,6 @@ export function useMainApp(gw: GatewayClient) {
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { dequeue: composerActions.dequeue, queueEditRef: composerRefs.queueEditRef, sendQueued },
         gateway,
         session: {
           STARTUP_RESUME_ID,
@@ -432,11 +454,8 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      composerActions,
-      composerRefs,
       gateway,
       panel,
-      sendQueued,
       session.newSession,
       session.resetSession,
       session.resumeById,
@@ -451,6 +470,7 @@ export function useMainApp(gw: GatewayClient) {
     const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 
     const exitHandler = () => {
+      turnController.reset()
       patchUiState({ busy: false, sid: null, status: 'gateway exited' })
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
       sys('error: gateway exited')
@@ -632,9 +652,21 @@ export function useMainApp(gw: GatewayClient) {
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,
+      turnStartedAt: ui.sid ? turnStartedAt : null,
       voiceLabel: voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
-    [cwd, gitBranch, goodVibesTick, sessionStartedAt, stickyPrompt, ui, voiceEnabled, voiceProcessing, voiceRecording]
+    [
+      cwd,
+      gitBranch,
+      goodVibesTick,
+      sessionStartedAt,
+      stickyPrompt,
+      turnStartedAt,
+      ui,
+      voiceEnabled,
+      voiceProcessing,
+      voiceRecording
+    ]
   )
 
   const appTranscript = useMemo(

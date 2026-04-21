@@ -2,13 +2,19 @@
 Hermes Plugin System
 ====================
 
-Discovers, loads, and manages plugins from three sources:
+Discovers, loads, and manages plugins from four sources:
 
-1. **User plugins**   – ``~/.hermes/plugins/<name>/``
-2. **Project plugins** – ``./.hermes/plugins/<name>/`` (opt-in via
+1. **Bundled plugins** – ``<repo>/plugins/<name>/`` (shipped with hermes-agent;
+   ``memory/`` and ``context_engine/`` subdirs are excluded — they have their
+   own discovery paths)
+2. **User plugins**   – ``~/.hermes/plugins/<name>/``
+3. **Project plugins** – ``./.hermes/plugins/<name>/`` (opt-in via
    ``HERMES_ENABLE_PROJECT_PLUGINS``)
-3. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
+4. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
    entry-point group.
+
+Later sources override earlier ones on name collision, so a user or project
+plugin with the same name as a bundled plugin replaces it.
 
 Each directory plugin must contain a ``plugin.yaml`` manifest **and** an
 ``__init__.py`` with a ``register(ctx)`` function.
@@ -54,6 +60,8 @@ logger = logging.getLogger(__name__)
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
+    "transform_terminal_output",
+    "transform_tool_result",
     "pre_llm_call",
     "post_llm_call",
     "pre_api_request",
@@ -62,6 +70,7 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "subagent_stop",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -75,7 +84,12 @@ def _env_enabled(name: str) -> bool:
 
 
 def _get_disabled_plugins() -> set:
-    """Read the disabled plugins list from config.yaml."""
+    """Read the disabled plugins list from config.yaml.
+
+    Kept for backward compat and explicit deny-list semantics. A plugin
+    name in this set will never load, even if it appears in
+    ``plugins.enabled``.
+    """
     try:
         from hermes_cli.config import load_config
         config = load_config()
@@ -83,6 +97,36 @@ def _get_disabled_plugins() -> set:
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
+
+
+def _get_enabled_plugins() -> Optional[set]:
+    """Read the enabled-plugins allow-list from config.yaml.
+
+    Plugins are opt-in by default — only plugins whose name appears in
+    this set are loaded. Returns:
+
+    * ``None`` — the key is missing or malformed. Callers should treat
+      this as "nothing enabled yet" (the opt-in default); the first
+      ``migrate_config`` run populates the key with a grandfathered set
+      of currently-installed user plugins so existing setups don't
+      break on upgrade.
+    * ``set()`` — an empty list was explicitly set; nothing loads.
+    * ``set(...)`` — the concrete allow-list.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        plugins_cfg = config.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            return None
+        if "enabled" not in plugins_cfg:
+            return None
+        enabled = plugins_cfg.get("enabled")
+        if not isinstance(enabled, list):
+            return None
+        return set(enabled)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -420,26 +464,65 @@ class PluginManager:
 
         manifests: List[PluginManifest] = []
 
-        # 1. User plugins (~/.hermes/plugins/)
+        # 1. Bundled plugins (<repo>/plugins/<name>/)
+        # Repo-shipped generic plugins live next to hermes_cli/.  Memory and
+        # context_engine subdirs are handled by their own discovery paths, so
+        # skip those names here.  Bundled plugins are discovered (so they
+        # show up in `hermes plugins`) but only loaded when added to
+        # `plugins.enabled` in config.yaml — opt-in like any other plugin.
+        repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+        manifests.extend(
+            self._scan_directory(
+                repo_plugins,
+                source="bundled",
+                skip_names={"memory", "context_engine"},
+            )
+        )
+
+        # 2. User plugins (~/.hermes/plugins/)
         user_dir = get_hermes_home() / "plugins"
         manifests.extend(self._scan_directory(user_dir, source="user"))
 
-        # 2. Project plugins (./.hermes/plugins/)
+        # 3. Project plugins (./.hermes/plugins/)
         if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
             project_dir = Path.cwd() / ".hermes" / "plugins"
             manifests.extend(self._scan_directory(project_dir, source="project"))
 
-        # 3. Pip / entry-point plugins
+        # 4. Pip / entry-point plugins
         manifests.extend(self._scan_entry_points())
 
-        # Load each manifest (skip user-disabled plugins)
+        # Load each manifest (skip user-disabled plugins).
+        # Later sources override earlier ones on name collision — user plugins
+        # take precedence over bundled, project plugins take precedence over
+        # user.  Dedup here so we only load the final winner.
         disabled = _get_disabled_plugins()
+        enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
+        winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
+            winners[manifest.name] = manifest
+        for manifest in winners.values():
+            # Explicit disable always wins.
             if manifest.name in disabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = "disabled via config"
                 self._plugins[manifest.name] = loaded
                 logger.debug("Skipping disabled plugin '%s'", manifest.name)
+                continue
+            # Opt-in gate: plugins must be in the enabled allow-list.
+            # If the allow-list is missing (None), treat as "nothing enabled"
+            # — users have to explicitly enable plugins to load them.
+            # Memory and context_engine providers are excluded from this gate
+            # since they have their own single-select config (memory.provider
+            # / context.engine), not the enabled list.
+            if enabled is None or manifest.name not in enabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "not enabled in config (run `hermes plugins enable {}` to activate)".format(
+                    manifest.name
+                )
+                self._plugins[manifest.name] = loaded
+                logger.debug(
+                    "Skipping '%s' (not in plugins.enabled)", manifest.name
+                )
                 continue
             self._load_plugin(manifest)
 
@@ -454,14 +537,26 @@ class PluginManager:
     # Directory scanning
     # -----------------------------------------------------------------------
 
-    def _scan_directory(self, path: Path, source: str) -> List[PluginManifest]:
-        """Read ``plugin.yaml`` manifests from subdirectories of *path*."""
+    def _scan_directory(
+        self,
+        path: Path,
+        source: str,
+        skip_names: Optional[Set[str]] = None,
+    ) -> List[PluginManifest]:
+        """Read ``plugin.yaml`` manifests from subdirectories of *path*.
+
+        *skip_names* is an optional allow-list of names to ignore (used
+        for the bundled scan to exclude ``memory`` / ``context_engine``
+        subdirs that have their own discovery path).
+        """
         manifests: List[PluginManifest] = []
         if not path.is_dir():
             return manifests
 
         for child in sorted(path.iterdir()):
             if not child.is_dir():
+                continue
+            if skip_names and child.name in skip_names:
                 continue
             manifest_file = child / "plugin.yaml"
             if not manifest_file.exists():
@@ -530,7 +625,7 @@ class PluginManager:
         loaded = LoadedPlugin(manifest=manifest)
 
         try:
-            if manifest.source in ("user", "project"):
+            if manifest.source in ("user", "project", "bundled"):
                 module = self._load_directory_module(manifest)
             else:
                 module = self._load_entrypoint_module(manifest)
@@ -779,23 +874,31 @@ def get_pre_tool_call_block_message(
     return None
 
 
+def _ensure_plugins_discovered() -> PluginManager:
+    """Return the global manager after running idempotent plugin discovery."""
+    manager = get_plugin_manager()
+    manager.discover_and_load()
+    return manager
+
+
 def get_plugin_context_engine():
     """Return the plugin-registered context engine, or None."""
-    return get_plugin_manager()._context_engine
+    return _ensure_plugins_discovered()._context_engine
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
-    entry = get_plugin_manager()._plugin_commands.get(name)
+    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
 
 
 def get_plugin_commands() -> Dict[str, dict]:
     """Return the full plugin commands dict (name → {handler, description, plugin}).
 
-    Safe to call before discovery — returns an empty dict if no plugins loaded.
+    Triggers idempotent plugin discovery so callers can use plugin commands
+    before any explicit discover_plugins() call.
     """
-    return get_plugin_manager()._plugin_commands
+    return _ensure_plugins_discovered()._plugin_commands
 
 
 def get_plugin_toolsets() -> List[tuple]:

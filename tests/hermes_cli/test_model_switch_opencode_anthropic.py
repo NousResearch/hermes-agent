@@ -214,7 +214,7 @@ class TestAgentSwitchModelDefenseInDepth:
         # client factory.
         captured = {}
 
-        def _fake_build_anthropic_client(api_key, base_url):
+        def _fake_build_anthropic_client(api_key, base_url, **kwargs):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
             return object()  # placeholder client — no real calls expected
@@ -226,7 +226,7 @@ class TestAgentSwitchModelDefenseInDepth:
         class _Sentinel(Exception):
             pass
 
-        def _raise_after_capture(api_key, base_url):
+        def _raise_after_capture(api_key, base_url, **kwargs):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
             raise _Sentinel("strip verified")

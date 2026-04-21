@@ -1,4 +1,5 @@
 import atexit
+import concurrent.futures
 import copy
 import json
 import os
@@ -35,6 +36,23 @@ _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45))
+
+# ── Async RPC dispatch (#12546) ──────────────────────────────────────
+# A handful of handlers block the dispatcher loop in entry.py for seconds
+# to minutes (slash.exec, cli.exec, shell.exec, session.resume,
+# session.branch). While they're running, inbound RPCs — notably
+# approval.respond and session.interrupt — sit unread in the stdin pipe.
+# We route only those slow handlers onto a small thread pool; everything
+# else stays on the main thread so ordering stays sane for the fast path.
+# write_json is already _stdout_lock-guarded, so concurrent response
+# writes are safe.
+_LONG_HANDLERS = frozenset({"cli.exec", "session.branch", "session.resume", "shell.exec", "slash.exec"})
+
+_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4)),
+    thread_name_prefix="tui-rpc",
+)
+atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -198,6 +216,29 @@ def handle_request(req: dict) -> dict | None:
     if not fn:
         return _err(req.get("id"), -32601, f"unknown method: {req.get('method')}")
     return fn(req.get("id"), req.get("params", {}))
+
+
+def dispatch(req: dict) -> dict | None:
+    """Route inbound RPCs — long handlers to the pool, everything else inline.
+
+    Returns a response dict when handled inline. Returns None when the
+    handler was scheduled on the pool; the worker writes its own
+    response via write_json when done.
+    """
+    if req.get("method") not in _LONG_HANDLERS:
+        return handle_request(req)
+
+    def run():
+        try:
+            resp = handle_request(req)
+        except Exception as exc:
+            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+        if resp is not None:
+            write_json(resp)
+
+    _pool.submit(run)
+
+    return None
 
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
@@ -1567,7 +1608,6 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from datetime import datetime
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
@@ -2458,27 +2498,24 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.model_switch import list_authenticated_providers
-        from hermes_cli.models import provider_model_ids
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
         cfg = _load_cfg()
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
+        # list_authenticated_providers already populates each provider's
+        # "models" with the curated list (same source as `hermes model` and
+        # classic CLI's /model picker). Do NOT overwrite with live
+        # provider_model_ids() — that bypasses curation and pulls in
+        # non-agentic models (e.g. Nous /models returns ~400 IDs including
+        # TTS, embeddings, rerankers, image/video generators).
         providers = list_authenticated_providers(
             current_provider=current_provider,
             user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
             custom_providers=cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), list) else [],
             max_models=50,
         )
-        for provider in providers:
-            try:
-                models = provider_model_ids(provider.get("slug"))
-                if models:
-                    provider["models"] = models
-                    provider["total_models"] = len(models)
-            except Exception as e:
-                provider["warning"] = f"model catalog unavailable: {e}"
         return _ok(rid, {"providers": providers, "model": current_model, "provider": current_provider})
     except Exception as e:
         return _err(rid, 5033, str(e))
@@ -2649,7 +2686,6 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     days = params.get("days", 30)
     try:
-        import time
         cutoff = time.time() - days * 86400
         rows = [s for s in _get_db().list_sessions_rich(limit=500) if (s.get("started_at") or 0) >= cutoff]
         return _ok(rid, {"days": days, "sessions": len(rows), "messages": sum(s.get("message_count", 0) for s in rows)})

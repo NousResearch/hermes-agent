@@ -1540,7 +1540,6 @@ def _interrupted_call_result() -> str:
 def _interpolate_env_vars(value):
     """Recursively resolve ``${VAR}`` placeholders from ``os.environ``."""
     if isinstance(value, str):
-        import re
         def _replace(m):
             return os.environ.get(m.group(1), m.group(0))
         return re.sub(r"\$\{([^}]+)\}", _replace, value)

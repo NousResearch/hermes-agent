@@ -292,8 +292,14 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     return _COMMON_BETAS
 
 
-def build_anthropic_client(api_key: str, base_url: str = None):
+def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
+
+    If *timeout* is provided it overrides the default 900s read timeout.  The
+    connect timeout stays at 10s.  Callers pass this from the per-provider /
+    per-model ``request_timeout_seconds`` config so Anthropic-native and
+    Anthropic-compatible providers respect the same knob as OpenAI-wire
+    providers.
 
     Returns an anthropic.Anthropic instance.
     """
@@ -305,8 +311,9 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
-        "timeout": Timeout(timeout=900.0, connect=10.0),
+        "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
     }
     if normalized_base_url:
         kwargs["base_url"] = normalized_base_url
@@ -1517,4 +1524,43 @@ def normalize_anthropic_response(
             reasoning_details=reasoning_details or None,
         ),
         finish_reason,
+    )
+
+
+def normalize_anthropic_response_v2(
+    response,
+    strip_tool_prefix: bool = False,
+) -> "NormalizedResponse":
+    """Normalize Anthropic response to NormalizedResponse.
+
+    Wraps the existing normalize_anthropic_response() and maps its output
+    to the shared transport types.  This allows incremental migration —
+    one call site at a time — without changing the original function.
+    """
+    from agent.transports.types import NormalizedResponse, build_tool_call
+
+    assistant_msg, finish_reason = normalize_anthropic_response(response, strip_tool_prefix)
+
+    tool_calls = None
+    if assistant_msg.tool_calls:
+        tool_calls = [
+            build_tool_call(
+                id=tc.id,
+                name=tc.function.name,
+                arguments=tc.function.arguments,
+            )
+            for tc in assistant_msg.tool_calls
+        ]
+
+    provider_data = {}
+    if getattr(assistant_msg, "reasoning_details", None):
+        provider_data["reasoning_details"] = assistant_msg.reasoning_details
+
+    return NormalizedResponse(
+        content=assistant_msg.content,
+        tool_calls=tool_calls,
+        finish_reason=finish_reason,
+        reasoning=getattr(assistant_msg, "reasoning", None),
+        usage=None,  # Anthropic usage is on the raw response, not the normaliser
+        provider_data=provider_data or None,
     )

@@ -22,6 +22,7 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    DEFAULT_FALLBACK_CONTEXT,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -290,7 +291,10 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_custom_endpoint_without_metadata_skips_name_based_default(self, mock_endpoint_fetch, mock_fetch):
+    def test_custom_endpoint_empty_metadata_falls_through_to_defaults(self, mock_endpoint_fetch, mock_fetch):
+        """When a custom endpoint returns no model metadata at all,
+        resolution should fall through to models.dev and hardcoded defaults
+        rather than immediately defaulting to 128K (probe tier 0)."""
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
@@ -300,7 +304,39 @@ class TestGetModelContextLength:
             api_key="test-key",
         )
 
-        assert result == CONTEXT_PROBE_TIERS[0]
+        # "glm" substring matches the hardcoded DEFAULT_CONTEXT_LENGTHS entry
+        # which returns 202752, rather than the probe-tier fallback of 128K
+        assert result == 202752
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_match_no_context_length_falls_through(self, mock_endpoint_fetch, mock_fetch):
+        """Regression: when a custom endpoint lists a model but its metadata
+        has no context_length field, the resolver must fall through to models.dev
+        and hardcoded defaults instead of returning the 128K fallback.
+
+        Any OpenAI-compatible server (Ollama, Chutes, LM Studio, etc.) may
+        return {name: "model-name"} without context_length — the resolution
+        chain should keep trying rather than giving up at step 2.
+        """
+        mock_fetch.return_value = {}
+        # Endpoint returns the model but with no context_length
+        mock_endpoint_fetch.return_value = {
+            "glm-5.1": {"name": "glm-5.1"}
+        }
+
+        result = get_model_context_length(
+            "glm-5.1",
+            # Use an unknown custom endpoint — known provider URLs skip
+            # the endpoint metadata block entirely, so the regression path
+            # wouldn't be exercised with e.g. ollama.com.
+            base_url="https://llm.chutes.ai/v1",
+            provider="custom",
+        )
+
+        # Should fall through to the hardcoded "glm": 202752 default,
+        # NOT return 128000 (DEFAULT_FALLBACK_CONTEXT)
+        assert result == 202752
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")

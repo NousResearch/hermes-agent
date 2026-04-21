@@ -995,20 +995,19 @@ def get_model_context_length(
             context_length = matched.get("context_length")
             if isinstance(context_length, int):
                 return context_length
-        if not _is_known_provider_base_url(base_url):
-            # 3. Try querying local server directly
-            if is_local_endpoint(base_url):
-                local_ctx = _query_local_context_length(model, base_url)
-                if local_ctx and local_ctx > 0:
-                    save_context_length(model, base_url, local_ctx)
-                    return local_ctx
-            logger.info(
-                "Could not detect context length for model %r at %s — "
-                "defaulting to %s tokens (probe-down). Set model.context_length "
-                "in config.yaml to override.",
-                model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
+            # Matched but no context_length — fall through to models.dev
+            # and hardcoded defaults rather than immediately defaulting to 128K.
+            logger.debug(
+                "Endpoint %s has model %r but no context_length metadata — "
+                "falling through to models.dev and hardcoded defaults.",
+                base_url, model,
             )
-            return DEFAULT_FALLBACK_CONTEXT
+        # 3. Try querying local server directly (custom endpoints only)
+        if is_local_endpoint(base_url):
+            local_ctx = _query_local_context_length(model, base_url)
+            if local_ctx and local_ctx > 0:
+                save_context_length(model, base_url, local_ctx)
+                return local_ctx
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (

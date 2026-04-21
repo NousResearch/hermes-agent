@@ -52,6 +52,19 @@ class TestPlatformConfigRoundtrip:
         assert restored.enabled is False
         assert restored.token is None
 
+    def test_from_dict_ignores_null_nested_values(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "home_channel": None,
+                "extra": None,
+            },
+        )
+
+        assert restored.enabled is True
+        assert restored.home_channel is None
+        assert restored.extra == {}
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -181,6 +194,18 @@ class TestGatewayConfigRoundtrip:
 
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_from_dict_tolerates_null_platform_entries(self):
+        restored = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "telegram": None,
+                },
+            },
+        )
+
+        assert Platform.TELEGRAM in restored.platforms
+        assert restored.platforms[Platform.TELEGRAM] == PlatformConfig()
 
 
 class TestLoadGatewayConfig:

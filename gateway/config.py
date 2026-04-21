@@ -173,17 +173,25 @@ class PlatformConfig:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+        if not isinstance(data, dict):
+            data = {}
+
         home_channel = None
-        if "home_channel" in data:
-            home_channel = HomeChannel.from_dict(data["home_channel"])
-        
+        home_channel_data = data.get("home_channel")
+        if isinstance(home_channel_data, dict):
+            home_channel = HomeChannel.from_dict(home_channel_data)
+
+        extra = data.get("extra")
+        if not isinstance(extra, dict):
+            extra = {}
+
         return cls(
             enabled=data.get("enabled", False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
@@ -377,8 +385,15 @@ class GatewayConfig:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+        if not isinstance(data, dict):
+            data = {}
+
+        raw_platforms = data.get("platforms")
+        if not isinstance(raw_platforms, dict):
+            raw_platforms = {}
+
         platforms = {}
-        for platform_name, platform_data in data.get("platforms", {}).items():
+        for platform_name, platform_data in raw_platforms.items():
             try:
                 platform = Platform(platform_name)
                 platforms[platform] = PlatformConfig.from_dict(platform_data)

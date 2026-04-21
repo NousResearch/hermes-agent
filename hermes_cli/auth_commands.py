@@ -152,6 +152,22 @@ def auth_add_command(args) -> None:
 
     pool = load_pool(provider)
 
+    # Clear any env:<VAR> suppressions for this provider — re-adding a
+    # credential is a strong signal the user wants auth for this provider
+    # re-enabled.  Matches the Codex device_code re-link pattern below.
+    if not provider.startswith(CUSTOM_POOL_PREFIX):
+        try:
+            from hermes_cli.auth import (
+                _load_auth_store,
+                unsuppress_credential_source,
+            )
+            suppressed = _load_auth_store().get("suppressed_sources", {})
+            for src in list(suppressed.get(provider, []) or []):
+                if src.startswith("env:"):
+                    unsuppress_credential_source(provider, src)
+        except Exception:
+            pass
+
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
         if not token:
@@ -339,14 +355,56 @@ def auth_remove_command(args) -> None:
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
     # If this was an env-seeded credential, also clear the env var from .env
-    # so it doesn't get re-seeded on the next load_pool() call.
+    # so it doesn't get re-seeded on the next load_pool() call.  If the env
+    # var is also (or only) exported by the user's shell/systemd, .env
+    # cleanup alone is not enough — the next process to call load_pool()
+    # will re-read os.environ and resurrect the entry.  Suppress the
+    # env:<VAR> source so _seed_from_env() skips it, and tell the user
+    # where the shell-level copy is still living so they can remove it.
     if removed.source.startswith("env:"):
+        import os as _os
         env_var = removed.source[len("env:"):]
         if env_var:
-            from hermes_cli.config import remove_env_value
+            from hermes_cli.config import get_env_path, remove_env_value
+            from hermes_cli.auth import suppress_credential_source
+
+            # Detect whether the var lives in .env, the shell env, or both,
+            # BEFORE remove_env_value() mutates os.environ.
+            env_in_process = bool(_os.getenv(env_var))
+            env_in_dotenv = False
+            try:
+                env_path = get_env_path()
+                if env_path.exists():
+                    env_in_dotenv = any(
+                        line.strip().startswith(f"{env_var}=")
+                        for line in env_path.read_text(errors="replace").splitlines()
+                    )
+            except OSError:
+                pass
+            shell_exported = env_in_process and not env_in_dotenv
+
             cleared = remove_env_value(env_var)
             if cleared:
                 print(f"Cleared {env_var} from .env")
+            suppress_credential_source(provider, removed.source)
+            if shell_exported:
+                print(
+                    f"Note: {env_var} is still set in your shell environment "
+                    f"(not in ~/.hermes/.env)."
+                )
+                print(
+                    "  Unset it there (shell profile, systemd EnvironmentFile, "
+                    "launchd plist, etc.) or it will keep being visible to Hermes."
+                )
+                print(
+                    f"  The pool entry is now suppressed — Hermes will ignore "
+                    f"{env_var} until you run `hermes auth add {provider}`."
+                )
+            else:
+                print(
+                    f"Suppressed env:{env_var} — it will not be re-seeded even "
+                    f"if the variable is re-exported later."
+                )
 
     # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
     # clear the underlying auth store / credential file so it doesn't get

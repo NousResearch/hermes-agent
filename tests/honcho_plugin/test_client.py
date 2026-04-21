@@ -282,6 +282,39 @@ class TestResolveSessionName:
         config = HonchoClientConfig(sessions={"/home/user/proj": "custom-session"})
         assert config.resolve_session_name("/home/user/proj") == "custom-session"
 
+    @pytest.mark.parametrize(
+        "override_key,lookup_key",
+        [
+            # Trailing separator on the override.
+            ("/home/user/proj/", "/home/user/proj"),
+            # Trailing separator on the lookup.
+            ("/home/user/proj", "/home/user/proj/"),
+            # Redundant '.' segment.
+            ("/home/user/./proj", "/home/user/proj"),
+            # Redundant '..' segment.
+            ("/home/user/sub/../proj", "/home/user/proj"),
+        ],
+    )
+    def test_manual_override_matches_normalized_spellings(self, override_key, lookup_key):
+        """Overrides hit regardless of trailing slash / redundant path segments.
+
+        Regression for #13284.
+        """
+        config = HonchoClientConfig(sessions={override_key: "custom-session"})
+        assert config.resolve_session_name(lookup_key) == "custom-session"
+
+    def test_manual_override_expands_tilde_in_override_key(self, monkeypatch, tmp_path):
+        """Tilde-spelled override keys match absolute-spelled lookups.
+
+        Regression for #13284.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = HonchoClientConfig(sessions={"~/proj": "custom-session"})
+        assert (
+            config.resolve_session_name(str(tmp_path / "proj"))
+            == "custom-session"
+        )
+
     def test_derive_from_dirname(self):
         config = HonchoClientConfig()
         result = config.resolve_session_name("/home/user/my-project")

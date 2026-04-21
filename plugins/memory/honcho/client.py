@@ -522,6 +522,43 @@ class HonchoClientConfig:
             pass
         return None
 
+    @staticmethod
+    def _normalize_cwd(path: str) -> str:
+        """Normalize a cwd-style string for equivalence comparison.
+
+        Expands ``~``, strips a trailing separator, and returns an absolute
+        path.  Falls back to a best-effort normalization when the path
+        does not exist on disk (e.g. test fixtures, remote cwds), since
+        the lookup happens regardless of filesystem presence.
+        """
+        try:
+            expanded = os.path.expanduser(path)
+            # Path.resolve(strict=False) handles non-existent paths on 3.11+.
+            return str(Path(expanded).resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            # Defensive fallback: best-effort textual normalization.
+            return os.path.normpath(os.path.expanduser(path))
+
+    def _match_session_override(self, cwd: str) -> str | None:
+        """Return the manually configured session name for ``cwd``, if any.
+
+        Compares the normalized absolute path of ``cwd`` against the
+        normalized form of each configured override key, so ``/tmp/x`` and
+        ``/tmp/x/`` (and similar equivalents) hit the same entry.
+        """
+        if not self.sessions:
+            return None
+        # Exact string match first — fast path, preserves existing
+        # behaviour when keys are already absolute-normalized.
+        direct = self.sessions.get(cwd)
+        if direct:
+            return direct
+        target = self._normalize_cwd(cwd)
+        for key, value in self.sessions.items():
+            if self._normalize_cwd(key) == target:
+                return value
+        return None
+
     def resolve_session_name(
         self,
         cwd: str | None = None,
@@ -545,8 +582,10 @@ class HonchoClientConfig:
         if not cwd:
             cwd = os.getcwd()
 
-        # Manual override always wins
-        manual = self.sessions.get(cwd)
+        # Manual override always wins — but compare by normalized absolute path
+        # so equivalent spellings of the same directory (trailing slash, relative,
+        # ~) all resolve to the same override.  See #13284.
+        manual = self._match_session_override(cwd)
         if manual:
             return manual
 

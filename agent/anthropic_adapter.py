@@ -846,7 +846,7 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
         model = model[len("anthropic/"):]
         lower = model.lower()
     _BEDROCK_PREFIXES = ("global.", "us.", "eu.", "ap.", "jp.")
-    if preserve_dots and any(lower.startswith(p) for p in _BEDROCK_PREFIXES):
+    if any(lower.startswith(p) for p in _BEDROCK_PREFIXES):
         return model
     if not preserve_dots:
         # OpenRouter uses dots for version separators (claude-opus-4.6),

@@ -376,17 +376,15 @@ class TestBedrockModelNameNormalization:
             "apac.anthropic.claude-haiku-4-5", preserve_dots=True
         ) == "apac.anthropic.claude-haiku-4-5"
 
-    def test_preserve_false_mangles_as_documented(self):
-        """Canary: with ``preserve_dots=False`` the function still
-        produces the broken all-hyphen form — this is the shape that
-        Bedrock rejected and that the fix avoids.  Keeping this test
-        locks in the existing behaviour of ``normalize_model_name`` so a
-        future refactor doesn't accidentally decouple the knob from its
-        effect."""
+    def test_bedrock_prefix_preserved_regardless_of_preserve_dots(self):
+        """Bedrock inference profile IDs are auto-detected by prefix and
+        always returned unmangled — ``preserve_dots`` is irrelevant for
+        these IDs because the dots are namespace separators, not version
+        separators."""
         from agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=False
-        ) == "global-anthropic-claude-opus-4-7"
+        ) == "global.anthropic.claude-opus-4-7"
 
     def test_bare_foundation_model_id_preserved(self):
         """Non-inference-profile Bedrock IDs
@@ -422,12 +420,10 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
             f"{kwargs['model']!r}"
         )
 
-    def test_bedrock_model_mangled_without_preserve_dots(self):
-        """Inverse canary: without the flag, ``build_anthropic_kwargs``
-        still produces the broken form — so the fix in
-        ``_anthropic_preserve_dots`` is the load-bearing piece that
-        wires ``preserve_dots=True`` through to this builder for the
-        Bedrock case."""
+    def test_bedrock_model_preserved_without_preserve_dots(self):
+        """Bedrock inference profile IDs survive ``build_anthropic_kwargs``
+        even without ``preserve_dots=True`` — the prefix auto-detection in
+        ``normalize_model_name`` is the load-bearing piece."""
         from agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="global.anthropic.claude-opus-4-7",
@@ -437,4 +433,4 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
             reasoning_config=None,
             preserve_dots=False,
         )
-        assert kwargs["model"] == "global-anthropic-claude-opus-4-7"
+        assert kwargs["model"] == "global.anthropic.claude-opus-4-7"

@@ -12,10 +12,10 @@ import type {
   ToolsetInfo,
 } from "./types";
 
-const BASE = ""; // same-origin
+import { officeUrl } from "./publicPath";
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(BASE + url, {
+  const r = await fetch(officeUrl(url), {
     headers: { "content-type": "application/json", ...(init?.headers || {}) },
     ...init,
   });

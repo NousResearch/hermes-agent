@@ -24,9 +24,14 @@ npm install
 npm run build
 cd ../..
 
-# 3) launch the office
+# 3) launch the office (standalone) **or** use the Gateway user API server
 hermes office
 # → opens http://127.0.0.1:8765 in your browser
+
+# Integrated mode (same process as Open WebUI’s backend — default port 8642):
+# Enable the API server in ~/.hermes/.env (API_SERVER_ENABLED=true, API_SERVER_KEY=…)
+# then:  hermes gateway
+# → open http://127.0.0.1:8642/office/  (REST under /api/office/, WS /ws/office)
 ```
 
 If you skip step (2), the API still runs and the page shows a friendly
@@ -72,6 +77,10 @@ cd ../..
 # 3) 启动
 hermes office
 # 浏览器自动打开 http://127.0.0.1:8765
+
+# 或与用户侧 Gateway API 合一（与 Open WebUI 同一后端，默认 8642）：
+# ~/.hermes/.env 打开 API_SERVER_ENABLED，设置 API_SERVER_KEY，再运行 hermes gateway
+# 浏览器访问 http://127.0.0.1:8642/office/（接口前缀 /api/office/，WebSocket /ws/office）
 ```
 
 ### 30 秒上手

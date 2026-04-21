@@ -402,8 +402,28 @@ if AIOHTTP_AVAILABLE:
         cors_headers = None
         if adapter is not None:
             if not adapter._origin_allowed(origin):
-                return web.Response(status=403)
-            cors_headers = adapter._cors_headers_for_origin(origin)
+                path = request.path
+                if (
+                    origin
+                    and (
+                        path.startswith("/api/office")
+                        or path.startswith("/office")
+                        or path == "/ws/office"
+                    )
+                    and (
+                        origin.startswith("http://127.0.0.1")
+                        or origin.startswith("http://localhost")
+                    )
+                ):
+                    hdr = dict(_CORS_HEADERS)
+                    hdr["Access-Control-Allow-Origin"] = origin
+                    hdr["Vary"] = "Origin"
+                    hdr["Access-Control-Max-Age"] = "600"
+                    cors_headers = hdr
+                else:
+                    return web.Response(status=403)
+            else:
+                cors_headers = adapter._cors_headers_for_origin(origin)
 
         if request.method == "OPTIONS":
             if cors_headers is None:
@@ -2500,6 +2520,13 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            try:
+                from hermes_office.gateway_http import register_digital_office_routes
+
+                if register_digital_office_routes(self._app):
+                    logger.info("[%s] Digital Office UI mounted at /office/", self.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[%s] Digital Office not available: %s", self.name, exc)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

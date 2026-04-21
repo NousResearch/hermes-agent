@@ -2,6 +2,8 @@
 
 import type { ActivityEvent } from "./types";
 
+import { officeUrl } from "./publicPath";
+
 export type WsMessage =
   | { kind: "hello"; version: string }
   | (ActivityEvent & { kind: ActivityEvent["kind"] });
@@ -65,5 +67,5 @@ export class OfficeSocket {
 
 function wsUrl(): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.host}/ws/office`;
+  return `${proto}://${location.host}${officeUrl("/ws/office")}`;
 }

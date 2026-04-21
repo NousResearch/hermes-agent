@@ -581,6 +581,7 @@ Always run the full suite before pushing changes.
 - Aim for highest-quality output regardless of token cost; do deep research and back claims with numbers/sources.
 - Provide Windows PowerShell command examples (not bash-only) since the user runs Win32.
 - After any code/script change, run a smoke test (curl/HTTP probe or pytest) and report the verified result.
+- Cursor Continual Learning plugin: use the continual-learning skill and `/`-prefixed commands; the agents-memory-updater subagent and stop hook can persist durable notes into `AGENTS.md` (mine transcripts or explicit session facts).
 
 ## Learned Workspace Facts
 
@@ -589,7 +590,7 @@ Always run the full suite before pushing changes.
 - Hermes refuses to start when the model context is < 64K. Ollama Modelfiles must set `PARAMETER num_ctx 65536` (or higher); also export `OLLAMA_CONTEXT_LENGTH=65536`.
 - Local LLM: Ollama on `http://127.0.0.1:11434/v1`. Smallest Gemma 4 is `gemma4:e2b` (~7.2 GB) wrapped as `gemma4-e2b-hermes` via `models/Modelfile.gemma4-e2b-hermes`; 26B variant at `models/Modelfile.gemma4-26b-hermes`.
 - `~/.hermes/config.yaml` is wired to the local stack: `model.provider: custom`, `base_url: http://127.0.0.1:11434/v1`, `default: gemma4-e2b-hermes`, `context_length: 65536`.
-- Two web UIs run concurrently on different ports: `hermes office` (digital office canvas, port **8765**, source under `hermes_office/`) and `hermes-webui` (monitoring dashboard, port **8643**, installed at `~/.hermes/hermes-webui`).
+- Digital Office: standalone `hermes office` on **8765**, or embedded on the **Gateway API server** (same port as Open WebUI’s backend, default **8642** — open `http://127.0.0.1:8642/office/`); gateway mount/static wiring lives in `gateway/platforms/api_server.py`. Optional `hermes-webui` on **8643** (`~/.hermes/hermes-webui`) is a separate monitoring UI. Check the office mount with `tests/gateway/test_api_server_office_mount.py` or `scripts/webui_office_smoke.py`; `web/scripts/sync-web-assets.mjs` syncs packaged web assets when the `web/` app consumes office builds.
 - `hermes-webui` auth bypass: env `HERMES_WEBUI_NO_AUTH=1` disables the token gate; default `scripts/start_hermes_webui.ps1` enables it on loopback and forces auth back on when `-Lan` is used.
 - On Windows do NOT use `scripts/run_tests.sh`; use `python -m pytest tests/ -q -n 4` with `$env:PYTHONIOENCODING='utf-8'`. `tests/hermes_cli/test_gateway_service.py` is POSIX-only (systemctl/launchd/`os.getuid`) and skips on win32.
 - Windows test patterns: pass `encoding="utf-8"` to every `Path.read_text()`/`open()` (default GBK breaks on UTF-8 sources); split/join `PATH` with `os.pathsep`, never literal `:` (collides with `C:\` drive prefixes).

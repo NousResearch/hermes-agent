@@ -205,8 +205,10 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
-    except Exception:
-        pass  # Non-fatal; gateway can still run with .env values
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "Failed to apply config.yaml settings to environment: %s", e
+        )
 
 # Apply IPv4 preference if configured (before any HTTP clients are created).
 try:
@@ -214,15 +216,19 @@ try:
     _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
     if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
         apply_ipv4_preference(force=True)
-except Exception:
-    pass
+except Exception as e:
+    logging.getLogger(__name__).warning(
+        "Failed to apply IPv4 preference: %s", e
+    )
 
 # Validate config structure early — log warnings so gateway operators see problems
 try:
     from hermes_cli.config import print_config_warnings
     print_config_warnings()
-except Exception:
-    pass
+except Exception as e:
+    logging.getLogger(__name__).warning(
+        "Failed to validate config.yaml: %s", e
+    )
 
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"

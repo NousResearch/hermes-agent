@@ -57,7 +57,11 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             blocked.parent.mkdir(parents=True, exist_ok=True)
             blocked.write_text('{"token":"sk-test-secret-1234567890"}')
 
-            with patch.dict(os.environ, {"HOME": str(home)}, clear=False):
+            with patch.dict(
+                os.environ,
+                {"HOME": str(home), "HERMES_HOME": str(home / ".hermes")},
+                clear=False,
+            ):
                 response = self._dispatch(
                     {
                         "jsonrpc": "2.0",

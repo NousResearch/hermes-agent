@@ -29,4 +29,4 @@ Create a cartoon-style infographic illustration following these guidelines:
 
 ---
 
-Please use nano banana pro to generate the illustration based on the content provided below:
+Generate the illustration based on the content provided below:

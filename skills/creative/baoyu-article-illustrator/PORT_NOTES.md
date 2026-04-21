@@ -4,7 +4,7 @@ Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.57.
 
 ## Changes from upstream
 
-`SKILL.md`, `references/workflow.md`, `references/usage.md`, `references/style-presets.md`, `references/styles.md`, and `references/prompt-construction.md` were adapted. The 21 style files, 4 palette files, and `prompts/system.md` are verbatim copies. The `references/config/` directory was removed entirely.
+`SKILL.md`, `references/workflow.md`, `references/usage.md`, `references/style-presets.md`, `references/styles.md`, `references/prompt-construction.md`, and `prompts/system.md` were adapted. The 23 style files and 4 palette files are verbatim copies. The `references/config/` directory was removed entirely.
 
 ### Adaptations
 
@@ -14,19 +14,20 @@ Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.57.
 | Trigger | `/baoyu-article-illustrator` slash command + CLI flags | Natural language skill matching |
 | User config | EXTEND.md (project/user/XDG paths) + first-time-setup | Removed — not part of Hermes infra |
 | User prompts | `AskUserQuestion` (batched, multi-question) | `clarify` tool (one question at a time) |
-| Image generation | `baoyu-imagine` (Bun/TypeScript, multi-provider, accepts `--ref`) | `image_generate` tool (describes references in prompt text) |
+| Image generation | `baoyu-imagine` (Bun/TypeScript, multi-provider, accepts `--ref`, writes to local path) | `image_generate` (returns URL only; agent downloads via `terminal`/`curl`) |
+| Backend selection | User picks provider via CLI flags | Not agent-selectable — `image_generate` uses the user-configured FAL model. Removed hardcoded "nano banana pro" line from `prompts/system.md`. |
+| Reference images | Passed to backend via `--ref`, copied via shell | `vision_analyze` extracts a textual description (binary never touched by `write_file`/`read_file`); description is embedded in prompts. Optional `terminal cp` for a local record. |
 | Platform support | Linux/macOS/Windows/WSL/PowerShell | Linux/macOS only |
-| File operations | Bash commands | Hermes file tools (`write_file`, `read_file`) |
+| File operations | Bash commands | Hermes file tools: `write_file`/`read_file` for text, `terminal` for binaries and URL downloads, `vision_analyze` for reading images |
 | Watermark | Driven by EXTEND.md `watermark.enabled` | Optional — user asks for it per-article |
 | Output directory | EXTEND.md `default_output_dir` (imgs-subdir / same-dir / illustrations-subdir / independent) | Defaults based on input type; user overrides in request |
 
 ### What was preserved
 
 - Type × Style × Palette three-dimension framework
-- All style definitions (23 files)
-- All palette definitions (4 files)
-- Core reference files (workflow, prompt-construction, styles, style-presets)
-- `prompts/system.md` (generation prompt template)
+- All style definitions (23 files, verbatim)
+- All palette definitions (4 files, verbatim)
+- Core reference files (workflow, prompt-construction, styles, style-presets) — adapted for Hermes tooling
 - Core principles and workflow structure (analyze → confirm → outline → prompts → generate)
 - Prompt-file-as-reproducibility-record discipline
 - Author, version, homepage attribution
@@ -44,4 +45,4 @@ curl -sL https://raw.githubusercontent.com/JimLiu/baoyu-skills/main/skills/baoyu
 diff <(curl -sL https://raw.githubusercontent.com/JimLiu/baoyu-skills/main/skills/baoyu-article-illustrator/references/styles/blueprint.md) references/styles/blueprint.md
 ```
 
-`references/styles/*`, `references/palettes/*`, and `prompts/system.md` can be overwritten directly. `SKILL.md`, `references/workflow.md`, `references/usage.md`, `references/style-presets.md`, `references/styles.md`, and `references/prompt-construction.md` must be manually merged since they contain Hermes-specific adaptations.
+`references/styles/*` and `references/palettes/*` can be overwritten directly. `SKILL.md`, `references/workflow.md`, `references/usage.md`, `references/style-presets.md`, `references/styles.md`, `references/prompt-construction.md`, and `prompts/system.md` must be manually merged since they contain Hermes-specific adaptations (tool wiring, backend neutrality, removed EXTEND.md references).

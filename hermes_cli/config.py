@@ -387,6 +387,26 @@ DEFAULT_CONFIG = {
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.
         "env_passthrough": [],
+        # Extra files to source in the login shell when building the
+        # per-session environment snapshot.  Use this when tools like nvm,
+        # pyenv, asdf, or custom PATH entries are registered by files that
+        # a bash login shell would skip — most commonly ``~/.bashrc``
+        # (bash doesn't source bashrc in non-interactive login mode) or
+        # zsh-specific files like ``~/.zshrc`` / ``~/.zprofile``.
+        # Paths support ``~`` / ``${VAR}``. Missing files are silently
+        # skipped. When empty, Hermes auto-appends ``~/.bashrc`` if the
+        # snapshot shell is bash (this is the ``auto_source_bashrc``
+        # behaviour — disable with that key if you want strict login-only
+        # semantics).
+        "shell_init_files": [],
+        # When true (default), Hermes sources ``~/.bashrc`` in the login
+        # shell used to build the environment snapshot.  This captures
+        # PATH additions, shell functions, and aliases defined in the
+        # user's bashrc — which a plain ``bash -l -c`` would otherwise
+        # miss because bash skips bashrc in non-interactive login mode.
+        # Turn this off if you have a bashrc that misbehaves when sourced
+        # non-interactively (e.g. one that hard-exits on TTY checks).
+        "auto_source_bashrc": True,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
         # Explicit environment variables to set inside Docker containers.
@@ -704,6 +724,20 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
+        # content with the absolute skill directory and the active session id
+        # before the agent sees it.  Lets skill authors reference bundled
+        # scripts without the agent having to join paths.
+        "template_vars": True,
+        # Pre-execute inline shell snippets written as !`cmd` in SKILL.md
+        # body.  Their stdout is inlined into the skill message before the
+        # agent reads it, so skills can inject dynamic context (dates, git
+        # state, detected tool versions, …).  Off by default because any
+        # content from the skill author runs on the host without approval;
+        # only enable for skill sources you trust.
+        "inline_shell": False,
+        # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
+        "inline_shell_timeout": 10,
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

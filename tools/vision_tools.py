@@ -272,7 +272,7 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     if mime_type:
         mime = mime_type
     else:
-        mime = _detect_image_mime_type(data)
+        mime = _detect_image_mime_type(image_path)
         if not mime:
             mime = _determine_mime_type(image_path)
     

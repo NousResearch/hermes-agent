@@ -184,6 +184,13 @@ def test_terminal_output_transform_integration_with_real_plugin(monkeypatch, tmp
         'lambda **kw: "PLUGIN-HEAD\\n" + kw["output"] + "\\nPLUGIN-TAIL")\n',
         encoding="utf-8",
     )
+    # Plugins are opt-in: write config.yaml enabling this plugin.
+    import yaml
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"enabled": ["terminal_transform"]}}),
+        encoding="utf-8",
+    )
+    plugins_mod._plugin_manager = plugins_mod.PluginManager()
 
     plugins_mod.discover_plugins()
 

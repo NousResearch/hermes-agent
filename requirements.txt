@@ -2,35 +2,40 @@
 # The canonical dependency list is in pyproject.toml.
 # Preferred install: pip install -e ".[all]"
 
-# Core dependencies
-openai
-python-dotenv
-fire
-httpx
-rich
-tenacity
-prompt_toolkit
-pyyaml
-requests
-jinja2
-pydantic>=2.0
-PyJWT[crypto]
-debugpy
+# Core dependencies (versions synced with pyproject.toml)
+openai>=2.21.0,<3
+python-dotenv>=1.2.1,<2
+fire>=0.7.1,<1
+httpx[socks]>=0.28.1,<1
+rich>=14.3.3,<15
+tenacity>=9.1.4,<10
+prompt_toolkit>=3.0.52,<4
+pyyaml>=6.0.2,<7
+requests>=2.33.0,<3
+jinja2>=3.1.5,<4
+pydantic>=2.12.5,<3
+PyJWT[crypto]>=2.12.0,<3
+
+# Development / debugging
+debugpy>=1.8.0,<2
 
 # Web tools
-firecrawl-py
-parallel-web>=0.4.2
+exa-py>=2.9.0,<3
+firecrawl-py>=4.16.0,<5
+parallel-web>=0.4.2,<1
 
 # Image generation
-fal-client
+fal-client>=0.13.1,<1
 
 # Text-to-speech (Edge TTS is free, no API key needed)
-edge-tts
+edge-tts>=7.2.7,<8
 
 # Optional: For cron expression parsing (cronjob scheduling)
-croniter
+croniter>=6.0.0,<7
 
 # Optional: For messaging platform integrations (gateway)
-python-telegram-bot[webhooks]>=22.6
-discord.py>=2.0
-aiohttp>=3.9.0
+python-telegram-bot[webhooks]>=22.6,<23
+discord.py[voice]>=2.7.1,<3
+aiohttp>=3.13.3,<4
+slack-bolt>=1.18.0,<2
+slack-sdk>=3.27.0,<4

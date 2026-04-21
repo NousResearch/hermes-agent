@@ -19,14 +19,13 @@ Comic Progress:
 - [ ] Step 7: Generate images
   - [ ] 7.1 Character sheet (if needed)
   - [ ] 7.2 Generate pages
-- [ ] Step 8: Merge to PDF
-- [ ] Step 9: Completion report
+- [ ] Step 8: Completion report
 ```
 
 ## Flow Diagram
 
 ```
-Input → Analyze → [Check Existing?] → [Confirm: Style + Reviews] → Storyboard → [Review Outline?] → Prompts → [Review Prompts?] → Images → PDF → Complete
+Input → Analyze → [Check Existing?] → [Confirm: Style + Reviews] → Storyboard → [Review Outline?] → Prompts → [Review Prompts?] → Images → Complete
 ```
 
 ---
@@ -40,8 +39,8 @@ Read source content, save it if needed, and perform deep analysis.
 **Actions**:
 1. **Save source content** (if not already a file):
    - If user provides a file path: use as-is
-   - If user pastes content: save to `source.md` in target directory using `write_file`
-   - **Backup rule**: If `source.md` exists, rename to `source-backup-YYYYMMDD-HHMMSS.md`
+   - If user pastes content: save to `source-{slug}.md` in the target directory using `write_file`, where `{slug}` is the kebab-case topic slug used for the output directory
+   - **Backup rule**: If `source-{slug}.md` already exists, rename it to `source-{slug}-backup-YYYYMMDD-HHMMSS.md` before writing
 2. Read source content
 3. **Deep analysis** following `analysis-framework.md`:
    - Target audience identification
@@ -246,7 +245,7 @@ Create image generation prompts for all pages.
 
 **For each page (cover + pages)**:
 1. Create prompt following art style + tone guidelines
-2. Include character visual descriptions for consistency
+2. **Embed character descriptions** inline (copy relevant traits from `characters/characters.md`) — `image_generate` is prompt-only, so the prompt text is the sole vehicle for character consistency
 3. Save to `prompts/NN-{cover|page}-[slug].md` using `write_file`
    - **Backup rule**: If prompt file exists, rename to `prompts/NN-{cover|page}-[slug]-backup-YYYYMMDD-HHMMSS.md`
 
@@ -257,8 +256,9 @@ Create image generation prompts for all pages.
 ## Visual Style
 Art: [art style] | Tone: [tone] | Layout: [layout type]
 
-## Character Reference
-[Character descriptions from characters/characters.md]
+## Character Reference (embedded inline — maintain exact traits below)
+- [Character A]: [detailed visual traits from characters/characters.md]
+- [Character B]: [detailed visual traits from characters/characters.md]
 
 ## Panel Breakdown
 [From storyboard.md - panel descriptions, actions, dialogue]
@@ -306,15 +306,21 @@ options:
 
 ## Step 7: Generate Images
 
-With confirmed prompts from Step 5/6, use the `image_generate` tool for all image rendering.
+With confirmed prompts from Step 5/6, use the `image_generate` tool. The tool accepts only `prompt` and `aspect_ratio` (`landscape` | `portrait` | `square`) and **returns a URL** — it does not accept reference images and does not write local files. Every invocation must be followed by a download step.
 
-**Aspect ratio mapping** — `image_generate` supports `landscape`, `portrait`, and `square`:
+**Aspect ratio mapping** — map the storyboard's `aspect_ratio` to the tool's enum:
 
 | Storyboard ratio | `image_generate` format |
 |------------------|-------------------------|
 | `3:4`, `9:16`, `2:3` | `portrait` |
 | `4:3`, `16:9`, `3:2` | `landscape` |
 | `1:1` | `square` |
+
+**Download procedure** (run after every successful `image_generate` call):
+
+1. Extract the `url` field from the tool result
+2. Fetch it to disk, e.g. `curl -fsSL "<url>" -o comic/{slug}/<target>.png`
+3. Verify the file is non-empty (`test -s <target>.png`); on failure, retry the generation once
 
 ### 7.1 Generate Character Reference Sheet (conditional)
 
@@ -331,96 +337,56 @@ Character sheet is recommended for multi-page comics with recurring characters, 
 **When generating**:
 1. Use Reference Sheet Prompt from `characters/characters.md`
 2. **Backup rule**: If `characters/characters.png` exists, rename to `characters/characters-backup-YYYYMMDD-HHMMSS.png`
-3. Call `image_generate` with `landscape` format → save to `characters/characters.png`
-4. **Compress** to reduce payload size when used as a reference:
-   - macOS: `sips -s format jpeg -s formatOptions 80 characters.png --out characters-compressed.jpg`
-   - Linux: `pngquant --quality=65-80 characters.png -o characters-compressed.png`
+3. Call `image_generate` with `landscape` format
+4. Download the returned URL → save to `characters/characters.png`
+
+**Important**: the downloaded sheet is for the **agent's own reference** when writing each page's prompt text below. `image_generate` cannot accept it as a visual input.
 
 ### 7.2 Generate Comic Pages
 
 **Before generating any page**:
 1. Confirm each prompt file exists at `prompts/NN-{cover|page}-[slug].md`
-2. Check whether `image_generate` accepts a reference image in the current runtime
-3. Determine if character sheet exists
-4. Choose the appropriate strategy below
+2. Confirm that each prompt has character descriptions embedded inline (see Step 5). `image_generate` is prompt-only, so the prompt text is the sole consistency mechanism.
 
-**Page Generation Strategy**:
+**Page Generation Strategy** (embed everything in the prompt text):
 
-| Character Sheet | `image_generate` reference support | Strategy |
-|-----------------|------------------------------------|----------|
-| Exists | Supported | **A**: Pass character sheet as reference with every page |
-| Exists | Not supported | **B**: Embed character descriptions in every prompt |
-| Skipped | — | **C**: Prompt file contains all descriptions inline |
+| Character sheet | Strategy |
+|-----------------|----------|
+| Exists | Use it as an agent-side reference when composing each prompt; embed the key traits inline in the prompt text |
+| Skipped | Prompt file already contains all descriptions inline |
 
-**Strategy A: Pass reference image**
-
-- For every page, read `prompts/NN-{type}-[slug].md` as the prompt input
-- Save output to `NN-{type}-[slug].png`
-- Use aspect ratio from storyboard (mapped to `landscape`/`portrait`/`square`)
-- Pass `characters/characters.png` (or compressed version) as the reference image
-
-**Reference failure recovery**:
-If generation fails when passing the reference:
-1. **Compress/convert** reference image:
-   - `sips -s format jpeg -s formatOptions 70 characters.png --out characters-compressed.jpg`
-   - Or reduce resolution: `sips -Z 1024 characters.png --out characters-small.png`
-2. **Retry** with compressed/converted image
-3. **If still fails**: Fall back to **Strategy C** — generate WITHOUT reference, with character descriptions embedded in prompt text
-
-**Strategy B: Embedding character descriptions in prompt**
-
-When reference images are not supported, create combined prompt files:
+**Example embedded prompt** (`prompts/01-page-xxx.md`):
 
 ```markdown
-# prompts/01-page-xxx.md (with embedded character reference)
+# Page 01: [Title]
 
-## Character Reference (maintain consistency)
-[Copy relevant sections from characters/characters.md here]
-- 大雄：Japanese boy, round glasses, yellow shirt, navy shorts...
-- 哆啦 A 梦：Round blue robot cat, white belly, red nose, golden bell...
+## Character Reference (embedded inline — maintain consistency)
+- 大雄：Japanese boy, round glasses, yellow shirt, navy shorts, worried expression...
+- 哆啦 A 梦：Round blue robot cat, white belly, red nose, golden bell, 4D pocket...
 
 ## Page Content
-[Original page prompt here]
+[Original page prompt body — panels, dialogue, visual metaphors]
 ```
-
-**Strategy C: Prompt-only (no character sheet)**
-
-When character sheet was skipped or the reference failed:
-- Prompt file already contains all character descriptions inline
-- No reference image needed
-- Rely on detailed text descriptions for character consistency
 
 **For each page (cover + pages)**:
 1. Read prompt from `prompts/NN-{cover|page}-[slug].md`
 2. **Backup rule**: If image file exists, rename to `NN-{cover|page}-[slug]-backup-YYYYMMDD-HHMMSS.png`
-3. Generate image via `image_generate` using Strategy A, B, or C
-4. Save to `NN-{cover|page}-[slug].png`
+3. Call `image_generate` with the prompt text and mapped aspect ratio
+4. Download the returned URL → save to `NN-{cover|page}-[slug].png`
 5. Report progress after each generation: "Generated X/N: [page title]"
 
 ---
 
-## Step 8: Merge to PDF
-
-After all images generated:
-
-```bash
-bun {baseDir}/scripts/merge-to-pdf.ts <comic-dir>
-```
-
-Where `{baseDir}` is this skill's directory. Creates `{topic-slug}.pdf` with all pages as full-page images.
-
----
-
-## Step 9: Completion Report
+## Step 8: Completion Report
 
 ```
 Comic Complete!
 Title: [title] | Art: [art] | Tone: [tone] | Pages: [count] | Aspect: [ratio] | Language: [lang]
 Location: [path]
+✓ source-{slug}.md (if content was pasted)
 ✓ analysis.md
 ✓ characters.png (if generated)
 ✓ 00-cover-[slug].png ... NN-page-[slug].png
-✓ {topic-slug}.pdf
 ```
 
 ---
@@ -429,9 +395,9 @@ Location: [path]
 
 | Action | Steps |
 |--------|-------|
-| **Edit** | Update prompt → Regenerate image → Regenerate PDF |
-| **Add** | Create prompt at position → Generate image → Renumber subsequent (NN+1) → Update storyboard → Regenerate PDF |
-| **Delete** | Remove files → Renumber subsequent (NN-1) → Update storyboard → Regenerate PDF |
+| **Edit** | Update prompt → Regenerate image → Download new PNG |
+| **Add** | Create prompt at position → Generate image → Download PNG → Renumber subsequent (NN+1) → Update storyboard |
+| **Delete** | Remove files → Renumber subsequent (NN-1) → Update storyboard |
 
 **File naming**: `NN-{cover|page}-[slug].png` (e.g., `03-page-enigma-machine.png`)
 - Slugs: kebab-case, unique, derived from content

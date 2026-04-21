@@ -22,10 +22,10 @@ Trigger this skill when the user asks to create a knowledge/educational comic, b
 
 ## Reference Images
 
-Users may supply reference images to guide art style, palette, scene composition, or subject. This is **separate from** the auto-generated character sheet (Step 7.1) — both can coexist: user refs guide the look, the character sheet anchors recurring character identity.
+Hermes' `image_generate` tool is **prompt-only** — it accepts a text prompt and an aspect ratio, and returns an image URL. It does **NOT** accept reference images. When the user supplies a reference image, use it to **extract traits in text** that get embedded in every page prompt:
 
 **Intake**: Accept file paths when the user provides them (or pastes images in conversation).
-- File path(s) → copy to `refs/NN-ref-{slug}.{ext}` alongside the comic output
+- File path(s) → copy to `refs/NN-ref-{slug}.{ext}` alongside the comic output for provenance
 - Pasted image with no path → ask the user for the path via `clarify`, or extract style traits verbally as a text fallback
 - No reference → skip this section
 
@@ -33,9 +33,9 @@ Users may supply reference images to guide art style, palette, scene composition
 
 | Usage | Effect |
 |-------|--------|
-| `direct` | Pass the file to `image_generate` as a reference image on every page (or selected pages) |
 | `style` | Extract style traits (line treatment, texture, mood) and append to every page's prompt body |
 | `palette` | Extract hex colors and append to every page's prompt body |
+| `scene` | Extract scene composition or subject notes and append to the relevant page(s) |
 
 **Record in each page's prompt frontmatter** when refs exist:
 
@@ -43,14 +43,11 @@ Users may supply reference images to guide art style, palette, scene composition
 references:
   - ref_id: 01
     filename: 01-ref-scene.png
-    usage: direct
+    usage: style
+    traits: "muted earth tones, soft-edged ink wash, low-contrast backgrounds"
 ```
 
-**At generation time**:
-- Verify each referenced file exists on disk
-- If `usage: direct` AND `image_generate` accepts multiple reference images → pass both the character sheet (Step 7.2) and the user refs; compress images first per Step 7.1's guidance to avoid payload failures
-- If only one ref slot is available → prefer the character sheet for pages with recurring characters; embed user-ref traits in the prompt body instead
-- For `style`/`palette` usage → embed extracted traits in every page's prompt text
+Character consistency is still driven by the **character sheet workflow** (Step 7.1–7.2) below, which relies on detailed text descriptions rather than direct image references.
 
 ## Options
 
@@ -63,7 +60,7 @@ references:
 | Layout | standard (default), cinematic, dense, splash, mixed, webtoon, four-panel | Panel arrangement |
 | Aspect | 3:4 (default, portrait), 4:3 (landscape), 16:9 (widescreen) | Page aspect ratio |
 | Language | auto (default), zh, en, ja, etc. | Output language |
-| Refs | File paths | Reference images applied to every page for style / palette / scene guidance. See [Reference Images](#reference-images) above. |
+| Refs | File paths | Reference images used for style / palette trait extraction (not passed to the image model). See [Reference Images](#reference-images) above. |
 
 ### Partial Workflow Options
 
@@ -94,14 +91,6 @@ Details: [references/partial-workflows.md](references/partial-workflows.md)
 
 - **Compatibility matrix** and **content-signal → preset** table live in [references/auto-selection.md](references/auto-selection.md). Read it before recommending combinations in Step 2.
 
-## Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `scripts/merge-to-pdf.ts` | Merge comic pages into PDF (runs with `bun`) |
-
-Resolve `{baseDir}` as this SKILL.md's directory; script path is `{baseDir}/scripts/merge-to-pdf.ts`.
-
 ## File Structure
 
 Output directory: `comic/{topic-slug}/`
@@ -111,14 +100,14 @@ Output directory: `comic/{topic-slug}/`
 **Contents**:
 | File | Description |
 |------|-------------|
-| `source-{slug}.{ext}` | Source files |
+| `source-{slug}.md` | Saved source content (kebab-case slug matches the output directory) |
 | `analysis.md` | Content analysis |
 | `storyboard.md` | Storyboard with panel breakdown |
 | `characters/characters.md` | Character definitions |
-| `characters/characters.png` | Character reference sheet |
+| `characters/characters.png` | Character reference sheet (downloaded from `image_generate`) |
 | `prompts/NN-{cover\|page}-[slug].md` | Generation prompts |
-| `NN-{cover\|page}-[slug].png` | Generated images |
-| `{topic-slug}.pdf` | Final merged PDF |
+| `NN-{cover\|page}-[slug].png` | Generated images (downloaded from `image_generate`) |
+| `refs/NN-ref-{slug}.{ext}` | User-supplied reference images (optional, for provenance) |
 
 ## Language Handling
 
@@ -151,22 +140,21 @@ Comic Progress:
 - [ ] Step 6: Review prompts (conditional)
 - [ ] Step 7: Generate images
   - [ ] 7.1 Generate character sheet (if needed) → characters/characters.png
-  - [ ] 7.2 Generate pages (with character ref if sheet exists)
-- [ ] Step 8: Merge to PDF
-- [ ] Step 9: Completion report
+  - [ ] 7.2 Generate pages (with character descriptions embedded in prompt)
+- [ ] Step 8: Completion report
 ```
 
 ### Flow
 
 ```
-Input → Analyze → [Check Existing?] → [Confirm: Style + Reviews] → Storyboard → [Review?] → Prompts → [Review?] → Images → PDF → Complete
+Input → Analyze → [Check Existing?] → [Confirm: Style + Reviews] → Storyboard → [Review?] → Prompts → [Review?] → Images → Complete
 ```
 
 ### Step Summary
 
 | Step | Action | Key Output |
 |------|--------|------------|
-| 1.1 | Analyze content | `analysis.md` |
+| 1.1 | Analyze content | `analysis.md`, `source-{slug}.md` |
 | 1.2 | Check existing directory | Handle conflicts |
 | 2 | Confirm style, focus, audience, reviews | User preferences |
 | 3 | Generate storyboard + characters | `storyboard.md`, `characters/` |
@@ -174,9 +162,8 @@ Input → Analyze → [Check Existing?] → [Confirm: Style + Reviews] → Story
 | 5 | Generate prompts | `prompts/*.md` |
 | 6 | Review prompts (if requested) | User approval |
 | 7.1 | Generate character sheet (if needed) | `characters/characters.png` |
-| 7.2 | Generate pages (with character ref if available) | `*.png` files |
-| 8 | Merge to PDF | `{slug}.pdf` |
-| 9 | Completion report | Summary |
+| 7.2 | Generate pages | `*.png` files |
+| 8 | Completion report | Summary |
 
 ### User Questions
 
@@ -184,11 +171,11 @@ Use the `clarify` tool to confirm options. Since `clarify` handles one question 
 
 ### Step 7: Image Generation
 
-Use Hermes' built-in `image_generate` tool for all image rendering.
+Use Hermes' built-in `image_generate` tool for all image rendering. Its schema accepts only `prompt` and `aspect_ratio` (`landscape` | `portrait` | `square`); it **returns a URL**, not a local file. Every generated page or character sheet must therefore be downloaded to the output directory.
 
 **Prompt file requirement (hard)**: write each image's full, final prompt to a standalone file under `prompts/` (naming: `NN-{type}-[slug].md`) BEFORE calling `image_generate`. The prompt file is the reproducibility record.
 
-**Aspect ratio mapping** — `image_generate` supports `landscape`, `portrait`, and `square`. Map as follows:
+**Aspect ratio mapping** — the storyboard's `aspect_ratio` field maps to `image_generate`'s format as follows:
 
 | Storyboard ratio | `image_generate` format |
 |------------------|-------------------------|
@@ -196,19 +183,21 @@ Use Hermes' built-in `image_generate` tool for all image rendering.
 | `4:3`, `16:9`, `3:2` | `landscape` |
 | `1:1` | `square` |
 
-**7.1 Character sheet** — generate it (to `characters/characters.png`, aspect `landscape`) when the comic is multi-page with recurring characters. Skip for simple presets (e.g., four-panel minimalist) or single-page comics. Compress to JPEG before using as a reference (`sips -s format jpeg -s formatOptions 80 …` on macOS, `pngquant --quality=65-80 …` on Linux) to avoid payload failures. The prompt file at `characters/characters.md` must exist before invoking `image_generate`.
+**Download step** — after every `image_generate` call:
+1. Read the URL from the tool result
+2. Fetch the image bytes (e.g., `curl -fsSL "<url>" -o <target>.png`)
+3. Verify the file exists and is non-empty before proceeding to the next page
 
-**7.2 Pages** — each page's prompt MUST already be at `prompts/NN-{cover|page}-[slug].md` before invoking `image_generate`. Strategy depends on the character sheet:
+**7.1 Character sheet** — generate it (to `characters/characters.png`, aspect `landscape`) when the comic is multi-page with recurring characters. Skip for simple presets (e.g., four-panel minimalist) or single-page comics. The prompt file at `characters/characters.md` must exist before invoking `image_generate`. After download, the character sheet is consumed **for the agent's own reference** when writing each page's prompt text — Hermes' `image_generate` cannot accept it as a visual input.
 
-| Character sheet | `image_generate` reference support | Strategy |
-|-----------------|------------------------------------|----------|
-| Exists | Supported | Pass sheet as reference image on every page |
-| Exists | Not supported | Prepend character descriptions to every prompt file |
-| Skipped | — | All descriptions inline in prompt |
+**7.2 Pages** — each page's prompt MUST already be at `prompts/NN-{cover|page}-[slug].md` before invoking `image_generate`. Because `image_generate` is prompt-only, character consistency is enforced by **embedding character descriptions in every prompt**:
 
-**Backup rule**: existing `prompts/…md` and `…png` files → rename with `-backup-YYYYMMDD-HHMMSS` suffix (use `write_file` / standard shell rename) before regenerating. Aspect ratio from storyboard (default `3:4`; preset may override).
+| Character sheet | Strategy |
+|-----------------|----------|
+| Exists | Prepend relevant character descriptions (from `characters/characters.md`) to every page prompt |
+| Skipped | Prompt file already contains all descriptions inline |
 
-**Reference failure recovery**: compress sheet → retry → still fails → drop the reference and embed character descriptions in the prompt text.
+**Backup rule**: existing `prompts/…md` and `…png` files → rename with `-backup-YYYYMMDD-HHMMSS` suffix before regenerating.
 
 Full step-by-step workflow (analysis, storyboard, review gates, regeneration variants): [references/workflow.md](references/workflow.md).
 
@@ -235,18 +224,18 @@ Full step-by-step workflow (analysis, storyboard, review gates, regeneration var
 
 | Action | Steps |
 |--------|-------|
-| **Edit** | **Update prompt file FIRST** → regenerate image → regenerate PDF |
-| **Add** | Create prompt at position → generate with character ref → renumber subsequent → update storyboard → regenerate PDF |
-| **Delete** | Remove files → renumber subsequent → update storyboard → regenerate PDF |
+| **Edit** | **Update prompt file FIRST** → regenerate image → download new PNG |
+| **Add** | Create prompt at position → generate with character descriptions embedded → renumber subsequent → update storyboard |
+| **Delete** | Remove files → renumber subsequent → update storyboard |
 
 **IMPORTANT**: When updating pages, ALWAYS update the prompt file (`prompts/NN-{cover|page}-[slug].md`) FIRST before regenerating. This ensures changes are documented and reproducible.
 
 ## Pitfalls
 
 - Image generation: 10-30 seconds per page; auto-retry once on failure
+- **Always download** the URL returned by `image_generate` to a local PNG — downstream tooling (and the user's review) expects files in the output directory, not ephemeral URLs
 - Use stylized alternatives for sensitive public figures
 - **Step 2 confirmation required** - do not skip
 - **Steps 4/6 conditional** - only if user requested in Step 2
-- **Step 7.1 character sheet** - recommended for multi-page comics, optional for simple presets
-- **Step 7.2 character reference** - pass sheet as reference if it exists; compress/convert on failure; fall back to prompt-only
+- **Step 7.1 character sheet** - recommended for multi-page comics, optional for simple presets. It is an **agent-facing** reference used to write consistent page prompts; `image_generate` does not accept it as a visual input
 - **Strip secrets** — scan source content for API keys, tokens, or credentials before writing any output file

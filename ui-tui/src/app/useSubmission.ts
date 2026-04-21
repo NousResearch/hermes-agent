@@ -234,11 +234,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const submit = useCallback(
     (value: string) => {
-      if (value.startsWith('/') && composerState.completions.length) {
+      if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
 
         if (row?.text) {
-          const text = row.text.startsWith('/') && composerState.compReplace > 0 ? row.text.slice(1) : row.text
+          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
           const next = value.slice(0, composerState.compReplace) + text
 
           if (next !== value) {

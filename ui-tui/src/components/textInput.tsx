@@ -400,22 +400,20 @@ export function TextInput({
       return
     }
 
-    if (selected) {
-      setInputSelection({
-        clear: () => {
+    setInputSelection({
+      clear: () => {
+        if (selRef.current) {
           selRef.current = null
           setSel(null)
-        },
-        end: selected.end,
-        start: selected.start,
-        value: vRef.current
-      })
-    } else {
-      setInputSelection(null)
-    }
+        }
+      },
+      end: selected?.end ?? curRef.current,
+      start: selected?.start ?? curRef.current,
+      value: vRef.current
+    })
 
     return () => setInputSelection(null)
-  }, [focus, selected])
+  }, [cur, focus, selected])
 
   useEffect(
     () => () => {

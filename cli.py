@@ -10431,16 +10431,25 @@ class HermesCLI:
         
         # Install a custom asyncio exception handler that suppresses the
         # "Event loop is closed" RuntimeError from httpx transport cleanup
-        # and the "0 is not registered" KeyError from broken stdin (#6393).
+        # and selector-registration failures from broken/unusable stdin (#6393).
         # The RuntimeError fix is defense-in-depth — the primary fix is
-        # neuter_async_httpx_del which disables __del__ entirely.  The
-        # KeyError fix handles macOS + uv-managed Python environments where
-        # fd 0 is not reliably available to the asyncio selector.
+        # neuter_async_httpx_del which disables __del__ entirely.  The stdin
+        # fixes handle environments where fd 0 is not reliably registerable
+        # with the asyncio kqueue selector, which shows up as:
+        #   - KeyError "0 is not registered" — uv-managed cPython quirk
+        #   - OSError EBADF                   — fd 0 closed
+        #   - OSError EINVAL                  — TTY-like device not supported
+        #                                       by kqueue EVFILT_READ (seen
+        #                                       with some non-Apple terminal
+        #                                       emulators on macOS 26)
+        import errno as _errno
         def _suppress_closed_loop_errors(loop, context):
             exc = context.get("exception")
             if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
                 return  # silently suppress
             if isinstance(exc, KeyError) and "is not registered" in str(exc):
+                return  # suppress selector registration failures (#6393)
+            if isinstance(exc, OSError) and getattr(exc, "errno", None) in (_errno.EBADF, _errno.EINVAL):
                 return  # suppress selector registration failures (#6393)
             # Fall back to default handler for everything else
             loop.default_exception_handler(context)
@@ -10477,11 +10486,29 @@ class HermesCLI:
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393).
             # This is the fallback for cases that slip past the fstat() guard.
-            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            # Multiple flavors depending on Python and stdin state:
+            #   - KeyError "0 is not registered" — asyncio selector path
+            #   - OSError EBADF                   — fd 0 closed
+            #   - OSError EINVAL                  — TTY-like fd rejected by
+            #                                       kqueue EVFILT_READ on macOS
+            #                                       (e.g. certain non-Apple
+            #                                       terminal emulators)
+            _stdin_errno = getattr(_stdin_err, "errno", None)
+            _stdin_unusable = (
+                isinstance(_stdin_err, KeyError)
+                or _stdin_errno in (_errno.EBADF, _errno.EINVAL)
+                or "is not registered" in str(_stdin_err)
+                or "Bad file descriptor" in str(_stdin_err)
+            )
+            if _stdin_unusable:
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
-                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
-                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                    "This can happen when the terminal emulator's PTY is not\n"
+                    "compatible with macOS kqueue (some non-Apple terminals on\n"
+                    "macOS 26), or with certain Python installations (e.g.\n"
+                    "uv-managed cPython on macOS).\n"
+                    "Workarounds: launch from Terminal.app or iTerm2, or\n"
+                    "reinstall Python via pyenv/Homebrew and re-run: hermes setup"
                 )
             else:
                 raise

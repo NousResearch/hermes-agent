@@ -218,7 +218,9 @@ export class GatewayClient extends EventEmitter {
     this.pending.clear()
   }
 
-  private onTimeout(id: string) {
+  // Arrow class-field — stable identity, so `setTimeout(this.onTimeout, …, id)`
+  // doesn't allocate a bound function per request.
+  private onTimeout = (id: string) => {
     const p = this.pending.get(id)
 
     if (p) {
@@ -258,7 +260,7 @@ export class GatewayClient extends EventEmitter {
     const id = `r${++this.reqId}`
 
     return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(this.onTimeout.bind(this), REQUEST_TIMEOUT_MS, id)
+      const timeout = setTimeout(this.onTimeout, REQUEST_TIMEOUT_MS, id)
 
       timeout.unref?.()
 

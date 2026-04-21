@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
+from utils import base_url_hostname
+
 from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
@@ -1078,7 +1080,7 @@ def get_model_context_length(
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (
-        base_url and "api.anthropic.com" in base_url
+        base_url and base_url_hostname(base_url) == "api.anthropic.com"
     ):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
         if ctx:

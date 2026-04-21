@@ -22,6 +22,7 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -803,7 +804,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         elif _vision_idx == 1:  # OpenAI-compatible endpoint
             _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
             _api_key_label = "  API key"
-            if "api.openai.com" in _base_url.lower():
+            _is_native_openai = base_url_hostname(_base_url) == "api.openai.com"
+            if _is_native_openai:
                 _api_key_label = "  OpenAI API key"
             _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
@@ -811,7 +813,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 # Save vision base URL to config (not .env — only secrets go there)
                 _vaux = config.setdefault("auxiliary", {}).setdefault("vision", {})
                 _vaux["base_url"] = _base_url
-                if "api.openai.com" in _base_url.lower():
+                if _is_native_openai:
                     _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
                     _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
                     _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)

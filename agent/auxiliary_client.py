@@ -48,6 +48,7 @@ from openai import OpenAI
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
+from utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -1516,8 +1517,7 @@ def resolve_provider_client(
         # Auto-detect: api.openai.com + codex model name pattern
         if api_mode and api_mode != "codex_responses":
             return False  # explicit non-codex mode
-        normalized_base = (base_url_str or "").strip().lower()
-        if "api.openai.com" in normalized_base and "openrouter" not in normalized_base:
+        if base_url_hostname(base_url_str) == "api.openai.com":
             model_lower = (model_str or "").lower()
             if "codex" in model_lower:
                 return True
@@ -2025,7 +2025,7 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     # Only use max_completion_tokens for direct OpenAI custom endpoints
     if (not or_key
             and _read_nous_auth() is None
-            and "api.openai.com" in custom_base.lower()):
+            and base_url_hostname(custom_base) == "api.openai.com"):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
 
@@ -2460,7 +2460,7 @@ def _build_call_kwargs(
         # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
         if provider == "custom":
             custom_base = base_url or _current_custom_base_url()
-            if "api.openai.com" in custom_base.lower():
+            if base_url_hostname(custom_base) == "api.openai.com":
                 kwargs["max_completion_tokens"] = max_tokens
             else:
                 kwargs["max_tokens"] = max_tokens

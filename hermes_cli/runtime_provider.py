@@ -6,7 +6,6 @@ import logging
 import os
 import re
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -30,18 +29,11 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
+from utils import base_url_hostname
 
 
 def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
-
-
-def _base_url_hostname(base_url: str) -> str:
-    raw = (base_url or "").strip()
-    if not raw:
-        return ""
-    parsed = urlparse(raw if "://" in raw else f"//{raw}")
-    return (parsed.hostname or "").lower().rstrip(".")
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -56,7 +48,7 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
       ``chat_completions``.
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
-    hostname = _base_url_hostname(base_url)
+    hostname = base_url_hostname(base_url)
     if hostname == "api.x.ai":
         return "codex_responses"
     if hostname == "api.openai.com":

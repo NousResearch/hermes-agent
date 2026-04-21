@@ -7045,13 +7045,21 @@ class AIAgent:
             options["num_ctx"] = self._ollama_num_ctx
             extra_body["options"] = options
 
-        # Ollama / custom provider: pass think=false when reasoning is disabled.
+        # Ollama-only: pass think=false when reasoning is disabled.
         # Ollama does not recognise the OpenRouter-style `reasoning` extra_body
         # field, so we use its native `think` parameter instead.
         # This prevents thinking-capable models (Qwen3, etc.) from generating
         # <think> blocks and producing empty-response errors when the user has
         # set reasoning_effort: none.
-        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
+        # NOTE: guard on Ollama/local endpoints only — cloud custom providers
+        # (Mistral, Fireworks, Together.ai, vLLM remote, etc.) reject the
+        # `think` parameter with HTTP 422.
+        _is_ollama_endpoint = (
+            "ollama" in self._base_url_lower
+            or ":11434" in self._base_url_lower
+            or is_local_endpoint(self.base_url or "")
+        )
+        if _is_ollama_endpoint and self.reasoning_config and isinstance(self.reasoning_config, dict):
             _effort = (self.reasoning_config.get("effort") or "").strip().lower()
             _enabled = self.reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:

@@ -24,6 +24,7 @@ import json
 import asyncio
 import logging
 import threading
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
@@ -187,6 +188,43 @@ _LEGACY_TOOLSET_MAP = {
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
 }
+def _get_governance_contract_allowed_tool_names() -> set[str]:
+    try:
+        from hermes_cli.config import load_config as _load_agent_config
+        cfg = _load_agent_config()
+    except Exception:
+        return set()
+
+    governance_cfg = ((cfg.get("agent", {}) or {}).get("governance", {}) or {})
+    if not governance_cfg.get("enabled"):
+        return set()
+
+    pack_root = Path(governance_cfg.get("pack_root", "hermes_governance"))
+    contracts_path = pack_root / "contracts" / "tool_contracts.v1.json"
+
+    try:
+        payload = json.loads(contracts_path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+
+    allowed: set[str] = set()
+    for tool in payload.get("tools", []):
+        if isinstance(tool, dict):
+            name = tool.get("name")
+            if isinstance(name, str) and name.strip():
+                allowed.add(name.strip())
+    return allowed
+
+
+def _filter_governance_tools(tool_definitions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    allowed_tool_names = _get_governance_contract_allowed_tool_names()
+    if not allowed_tool_names:
+        return tool_definitions
+
+    return [
+        td for td in tool_definitions
+        if td.get("function", {}).get("name") in allowed_tool_names
+    ]
 
 
 # =============================================================================
@@ -262,6 +300,7 @@ def get_tool_definitions(
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = _filter_governance_tools(filtered_tools)
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

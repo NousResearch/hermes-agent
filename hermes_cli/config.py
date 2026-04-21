@@ -368,6 +368,14 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        "governance": {
+            "enabled": False,
+            "pack_root": "hermes_governance",
+            "escalation_materiality_eur": 10000,
+            "deadline_escalation_days": 7,
+            "strict_final_response_schema": True,
+        },
+
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

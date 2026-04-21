@@ -1,0 +1,383 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/schemas/final_response.schema.json",
+  "title": "HermesFinalResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "certainty",
+    "scope",
+    "facts",
+    "sources",
+    "analysis",
+    "risks",
+    "next_action",
+    "audit_trail"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "INFORMATION_SOURCEE",
+        "ANALYSE_PREPARATOIRE",
+        "ESCALADE_REQUISE",
+        "BLOQUE"
+      ]
+    },
+    "certainty": {
+      "type": "string",
+      "enum": [
+        "HAUTE",
+        "MOYENNE",
+        "FAIBLE_VERIFICATION_REQUISE"
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain",
+        "jurisdiction",
+        "fact_date",
+        "source_checked_at",
+        "risk_level"
+      ],
+      "properties": {
+        "domain": {
+          "type": "string",
+          "enum": [
+            "accounting",
+            "fiscal",
+            "legal",
+            "social",
+            "audit",
+            "compliance",
+            "privacy",
+            "mixed"
+          ]
+        },
+        "jurisdiction": {
+          "type": "string"
+        },
+        "fact_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "source_checked_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        }
+      }
+    },
+    "facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verified_facts",
+        "assumptions",
+        "missing_facts"
+      ],
+      "properties": {
+        "verified_facts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          }
+        },
+        "missing_facts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_type",
+          "reference",
+          "effective_date",
+          "checked_at",
+          "verified"
+        ],
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "law",
+              "regulation",
+              "case_law",
+              "doctrine",
+              "professional_standard",
+              "internal_document",
+              "other"
+            ]
+          },
+          "reference": {
+            "type": "string"
+          },
+          "effective_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          }
+        }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "major",
+        "minor",
+        "conclusion"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "syllogism",
+            "accounting_analysis",
+            "technical_control",
+            "blocked"
+          ]
+        },
+        "major": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "minor": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "conclusion": {
+          "type": "string",
+          "maxLength": 512
+        }
+      }
+    },
+    "calculations": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label",
+          "inputs",
+          "formula",
+          "rounding_mode",
+          "result",
+          "consistency_checks"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "object"
+          },
+          "formula": {
+            "type": "string"
+          },
+          "rounding_mode": {
+            "type": "string"
+          },
+          "result": {
+            "type": [
+              "number",
+              "string"
+            ]
+          },
+          "consistency_checks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "account_number",
+          "label",
+          "debit_eur",
+          "credit_eur"
+        ],
+        "properties": {
+          "account_number": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "debit_eur": {
+            "type": "number",
+            "minimum": 0
+          },
+          "credit_eur": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "level",
+          "category",
+          "reference",
+          "impact",
+          "mitigation"
+        ],
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": [
+              "FAIBLE",
+              "MOYEN",
+              "ÉLEVÉ",
+              "CRITIQUE"
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "mitigation": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "next_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "message"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "answer_ready",
+            "need_more_facts",
+            "escalate",
+            "blocked"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "requested_facts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "escalation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      }
+    },
+    "audit_trail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tools_called",
+        "policy_rule_hits",
+        "audit_summary",
+        "redactions_applied"
+      ],
+      "properties": {
+        "tools_called": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "policy_rule_hits": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "audit_summary": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "redactions_applied": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

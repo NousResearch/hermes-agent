@@ -82,6 +82,11 @@ from hermes_constants import OPENROUTER_BASE_URL
 from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.governance_runtime import (
+    GovernanceBlocked,
+    GovernanceRuntime,
+    GovernanceState,
+)
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -1287,6 +1292,27 @@ class AIAgent:
             else:
                 print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+            _governance_agent_cfg = _load_agent_config()
+        except Exception:
+            _governance_agent_cfg = {}
+
+        self._governance_runtime = None
+        self._governance_state = GovernanceState()
+        self._governance_cfg = (_governance_agent_cfg.get("agent", {}) or {}).get("governance", {}) or {}
+
+        if self._governance_cfg.get("enabled"):
+            pack_root = self._governance_cfg.get("pack_root", "hermes_governance")
+            self._governance_runtime = GovernanceRuntime(
+                pack_root=Path(pack_root),
+                escalation_materiality_eur=float(
+                    self._governance_cfg.get("escalation_materiality_eur", 10000)
+                ),
+                deadline_escalation_days=int(
+                    self._governance_cfg.get("deadline_escalation_days", 7)
+                ),
+            )
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -1294,16 +1320,37 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
+        if self._governance_runtime and self.tools:
+            self.tools = self._governance_runtime.prepare_tool_definitions(self.tools)
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
         if self.tools:
             self.valid_tool_names = {tool["function"]["name"] for tool in self.tools}
             tool_names = sorted(self.valid_tool_names)
+
+            if self._governance_runtime:
+                required_governance_tools = {
+                    "search_fiscal_sources",
+                    "search_accounting_sources",
+                    "search_legal_sources",
+                    "compute_tax_liability",
+                    "get_client_records",
+                    "log_audit_event",
+                    "escalate_to_human_supervisor",
+                }
+                missing_governance_tools = sorted(
+                    required_governance_tools - self.valid_tool_names
+                )
+                if missing_governance_tools:
+                    raise RuntimeError(
+                        "Governance-enabled Hermes is missing required Phase 1 tools: "
+                        + ", ".join(missing_governance_tools)
+                    )
+
             if not self.quiet_mode:
                 print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
-                
-                # Show filtering info if applied
+
                 if enabled_toolsets:
                     print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
                 if disabled_toolsets:
@@ -4119,7 +4166,10 @@ class AIAgent:
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
-        return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+        base_prompt = "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+        if self._governance_runtime:
+            return self._governance_runtime.build_effective_system_prompt(base_prompt)
+        return base_prompt
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -7615,22 +7665,33 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
-        # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
             if not _should_parallelize_tool_batch(tool_calls):
-                return self._execute_tool_calls_sequential(
+                self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
+            else:
+                self._execute_tool_calls_concurrent(
                     assistant_message, messages, effective_task_id, api_call_count
                 )
 
-            return self._execute_tool_calls_concurrent(
-                assistant_message, messages, effective_task_id, api_call_count
-            )
+            self._apply_governance_policy_after_tools(effective_task_id)
+
+            if (
+                self._governance_runtime
+                and self._governance_state.fiscal_search_satisfied
+                and tool_calls
+                and any(tc.function.name == "search_fiscal_sources" for tc in tool_calls)
+                and self._governance_state.fiscal_search_call_count >= 2
+            ):
+                raise GovernanceBlocked("hard_stop_fiscal_finalize")
+
         finally:
             self._executing_tools = False
 
-    def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
-                     tool_call_id: Optional[str] = None) -> str:
+    def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,    
+                 tool_call_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -7648,6 +7709,70 @@ class AIAgent:
             pass
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
+        if (
+            self._governance_runtime
+            and function_name == "search_fiscal_sources"
+            and self._governance_state.fiscal_search_satisfied
+            and self._governance_state.fiscal_search_cached_result
+        ):
+            self._governance_state.fiscal_search_cache_hits += 1
+
+            if self._governance_state.fiscal_search_cache_hits >= 2:
+                raise GovernanceBlocked("hard_stop_fiscal_finalize")
+
+            try:
+                cached_payload = json.loads(
+                    self._governance_state.fiscal_search_cached_result
+                )
+            except Exception:
+                cached_payload = {
+                    "success": True,
+                    "result_text": self._governance_state.fiscal_search_cached_result,
+                    "has_results": True,
+                }
+
+            cached_result = cached_payload.get("result") or {}
+            if not isinstance(cached_result, dict):
+                cached_result = {}
+
+            minimal_sources = (cached_result.get("sources") or [])[:1]
+            minimal_links = (cached_payload.get("source_links") or [])[:1]
+            minimal_count = 1 if (minimal_sources or minimal_links) else 0
+
+            repair_payload = {
+                "success": True,
+                "ok": True,
+                "tool_name": "search_fiscal_sources",
+                "trace_id": cached_payload.get("trace_id"),
+                "timestamp": cached_payload.get("timestamp"),
+                "source_type": cached_payload.get("source_type"),
+                "tax_scope": cached_payload.get("tax_scope"),
+                "fact_date": cached_payload.get("fact_date"),
+                "search_used": cached_payload.get("search_used"),
+                "result_count": minimal_count,
+                "result_text": "",
+                "source_links": minimal_links,
+                "has_results": minimal_count > 0,
+                "cache_hit": True,
+                "loop_prevented": True,
+                "finalize_now": True,
+                "instruction": (
+                    "Verified fiscal source already available. "
+                    "Do not call search_fiscal_sources again. "
+                    "Produce the final JSON response now."
+                ),
+                "result": {
+                    "sources": minimal_sources,
+                    "coverage_status": "verified" if minimal_count > 0 else "not_verified",
+                    "primary_sources_verified": minimal_count > 0,
+                    "conflicts_detected": bool(cached_result.get("conflicts_detected", False)),
+                    "search_used": cached_payload.get("search_used"),
+                    "result_count": minimal_count,
+                    "result_text": "",
+                    "source_links": minimal_links,
+                },
+            }
+            return json.dumps(repair_payload, ensure_ascii=False)
 
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
@@ -7699,7 +7824,7 @@ class AIAgent:
             )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
-            return _delegate_task(
+            result = _delegate_task(
                 goal=function_args.get("goal"),
                 context=function_args.get("context"),
                 toolsets=function_args.get("toolsets"),
@@ -7708,12 +7833,53 @@ class AIAgent:
                 parent_agent=self,
             )
         else:
-            return handle_function_call(
-                function_name, function_args, effective_task_id,
+            normalized_function_args = function_args
+            if self._governance_runtime:
+                normalized_function_args = self._governance_runtime.validate_tool_arguments(
+                    function_name,
+                    function_args,
+                )
+
+            result = handle_function_call(
+                function_name, normalized_function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
+            )
+
+        normalized_function_args = locals().get("normalized_function_args", function_args)
+
+        if self._governance_runtime:
+            self._governance_runtime.update_state_from_tool_result(
+                self._governance_state,
+                function_name,
+                result,
+                normalized_function_args,
+            )
+
+        return result
+
+    def _apply_governance_policy_after_tools(self, effective_task_id: str) -> None:
+        if not self._governance_runtime:
+            return
+
+        outcome = self._governance_runtime.evaluate_policy(self._governance_state)
+        applied = self._governance_runtime.apply_policy_outcome_to_state(
+            self._governance_state,
+            outcome,
+        )
+
+        for pending in applied["tool_calls"]:
+            self._invoke_tool(
+                pending["name"],
+                pending["arguments"],
+                effective_task_id,
+            )
+
+        if applied["stop_generation"]:
+            raise GovernanceBlocked(
+                f"Governance policy stopped generation with status={self._governance_state.status}"
             )
 
     @staticmethod
@@ -7734,12 +7900,16 @@ class AIAgent:
             if len(raw_line) <= wrap_width:
                 out_lines.append(raw_line)
             else:
-                wrapped = _tw.wrap(raw_line, width=wrap_width,
-                                   break_long_words=True,
-                                   break_on_hyphens=False)
+                wrapped = _tw.wrap(
+                    raw_line,
+                    width=wrap_width,
+                    break_long_words=True,
+                    break_on_hyphens=False,
+                )
                 out_lines.extend(wrapped or [raw_line])
         body = ("\n" + indent).join(out_lines)
         return f"{indent}{label}{body}"
+
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -8309,17 +8479,16 @@ class AIAgent:
                     spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
+                    function_result = self._invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        tool_call.id,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
                 finally:
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
@@ -8329,16 +8498,15 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
+                    function_result = self._invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        tool_call.id,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
             result_preview = function_result if self.verbose_logging else (
@@ -8668,6 +8836,10 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        self._persist_user_message_override = persist_user_message
+        if self._governance_runtime:
+            self._governance_state = GovernanceState()
+
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -11277,7 +11449,29 @@ class AIAgent:
                         except Exception:
                             pass
 
-                    self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                    try:
+                        self._execute_tool_calls(
+                            assistant_message,
+                            messages,
+                            effective_task_id,
+                            api_call_count,
+                        )
+
+                    except GovernanceBlocked as exc:
+                        if (
+                            self._governance_runtime
+                            and str(exc) == "hard_stop_fiscal_finalize"
+                            and self._governance_state.fiscal_search_satisfied
+                        ):
+                            final_response = self._governance_runtime.build_forced_fiscal_final_response(
+                                self._governance_state
+                            )
+                            break
+                        final_response = self._governance_runtime.build_blocked_final_response(
+                            self._governance_state,
+                            str(exc),
+                        )
+                        break
 
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the
@@ -11346,6 +11540,31 @@ class AIAgent:
                 else:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
+                    if (
+                        self._governance_runtime
+                        and self._governance_cfg.get("strict_final_response_schema", True)
+                    ):
+                        try:
+                            validated_payload = self._governance_runtime.validate_final_response_text(final_response)
+                            final_response = json.dumps(validated_payload, ensure_ascii=False)
+                        except GovernanceBlocked as exc:
+                            try:
+                                self._governance_runtime.register_final_response_repair_attempt(
+                                    self._governance_state
+                                )
+                            except GovernanceBlocked as repair_exc:
+                                final_response = self._governance_runtime.build_blocked_final_response(
+                                    self._governance_state,
+                                    str(repair_exc),
+                                )
+                                break
+
+                            messages.append({
+                                "role": "user",
+                                "content": self._governance_runtime.build_repair_message(str(exc)),
+                            })
+                            continue
+
                     
                     # Fix: unmute output when entering the no-tool-call branch
                     # so the user can see empty-response warnings and recovery
@@ -11715,8 +11934,21 @@ class AIAgent:
                     "— requesting summary..."
                 )
             final_response = self._handle_max_iterations(messages, api_call_count)
-        
+
+        if self._governance_runtime and not interrupted:
+            try:
+                validated_payload = self._governance_runtime.validate_final_response_text(
+                    final_response or "",
+                )
+                final_response = json.dumps(validated_payload, ensure_ascii=False)
+            except GovernanceBlocked as exc:
+                final_response = self._governance_runtime.build_blocked_final_response(
+                    self._governance_state,
+                    str(exc),
+                )
+
         # Determine if conversation completed successfully
+
         completed = final_response is not None and api_call_count < self.max_iterations
 
         # Save trajectory if enabled.  ``user_message`` may be a multimodal

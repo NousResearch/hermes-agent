@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/schemas/policy_context.schema.json",
+  "title": "HermesPolicyContext",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "classification",
+    "facts",
+    "verification",
+    "privacy",
+    "execution",
+    "case",
+    "signals",
+    "config"
+  ],
+  "properties": {
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain",
+        "risk_level",
+        "contains_reserved_act",
+        "requires_personalized_recommendation"
+      ],
+      "properties": {
+        "domain": {
+          "type": "string"
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "contains_reserved_act": {
+          "type": "boolean"
+        },
+        "requires_personalized_recommendation": {
+          "type": "boolean"
+        }
+      }
+    },
+    "facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "materiality_eur",
+        "deadline_days_remaining",
+        "summary"
+      ],
+      "properties": {
+        "materiality_eur": {
+          "type": "number",
+          "minimum": 0
+        },
+        "deadline_days_remaining": {
+          "type": "integer"
+        },
+        "summary": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_tools_called",
+        "primary_sources_verified",
+        "conflicts_detected",
+        "tool_errors",
+        "tool_errors_count",
+        "source_refs",
+        "tool_call_fingerprints",
+        "repeated_tool_call_violations",
+        "repeated_tool_call_violations_count",
+        "total_tool_calls"
+      ],
+      "properties": {
+        "required_tools_called": {
+          "type": "boolean"
+        },
+        "primary_sources_verified": {
+          "type": "boolean"
+        },
+        "conflicts_detected": {
+          "type": "boolean"
+        },
+        "tool_errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tool_errors_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tool_call_fingerprints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "repeated_tool_call_violations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "repeated_tool_call_violations_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_tool_calls": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contains_sensitive_data",
+        "contains_pii",
+        "contains_special_category_data",
+        "contains_financial_identifiers",
+        "contains_secrets",
+        "detected_categories",
+        "requested_fields",
+        "disclosed_fields",
+        "lawful_basis",
+        "purpose_code",
+        "masking_applied",
+        "masking_failures_count",
+        "output_contains_raw_identifier",
+        "audit_logged_for_data_access",
+        "requested_fields_exceed_policy",
+        "missing_lawful_basis",
+        "missing_supervisor_approval",
+        "retention_class"
+      ],
+      "properties": {
+        "contains_sensitive_data": {
+          "type": "boolean"
+        },
+        "contains_pii": {
+          "type": "boolean"
+        },
+        "contains_special_category_data": {
+          "type": "boolean"
+        },
+        "contains_financial_identifiers": {
+          "type": "boolean"
+        },
+        "contains_secrets": {
+          "type": "boolean"
+        },
+        "detected_categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requested_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "disclosed_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lawful_basis": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "purpose_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "masking_applied": {
+          "type": "boolean"
+        },
+        "masking_failures_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_contains_raw_identifier": {
+          "type": "boolean"
+        },
+        "audit_logged_for_data_access": {
+          "type": "boolean"
+        },
+        "requested_fields_exceed_policy": {
+          "type": "boolean"
+        },
+        "missing_lawful_basis": {
+          "type": "boolean"
+        },
+        "missing_supervisor_approval": {
+          "type": "boolean"
+        },
+        "retention_class": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "restricted",
+            "confidential"
+          ]
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "client_file_execution_requested",
+        "supervisor_execution_approved"
+      ],
+      "properties": {
+        "client_file_execution_requested": {
+          "type": "boolean"
+        },
+        "supervisor_execution_approved": {
+          "type": "boolean"
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ongoing_dispute",
+        "requested_optimization_scheme"
+      ],
+      "properties": {
+        "ongoing_dispute": {
+          "type": "boolean"
+        },
+        "requested_optimization_scheme": {
+          "type": "boolean"
+        }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "suspected_fraud",
+        "fact_treatment_inconsistency"
+      ],
+      "properties": {
+        "suspected_fraud": {
+          "type": "boolean"
+        },
+        "fact_treatment_inconsistency": {
+          "type": "boolean"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "escalation_materiality_eur",
+        "deadline_escalation_days",
+        "max_identical_tool_calls",
+        "max_final_repair_attempts"
+      ],
+      "properties": {
+        "escalation_materiality_eur": {
+          "type": "number",
+          "minimum": 0
+        },
+        "deadline_escalation_days": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_identical_tool_calls": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_final_repair_attempts": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

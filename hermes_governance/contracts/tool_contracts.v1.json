@@ -1,0 +1,921 @@
+{
+  "version": "2.0.0",
+  "runtime_contract": {
+    "model_mode": "function_calling",
+    "default_jurisdiction": "FR",
+    "default_currency": "EUR",
+    "final_response_schema_ref": "../schemas/final_response.schema.json",
+    "mandatory_audit_tool": "log_audit_event",
+    "strict_tool_name_matching": true,
+    "expose_only_registered_tools": true,
+    "allowed_passthrough_tools": [],
+    "strip_unknown_arguments": true,
+    "max_identical_tool_calls": 2,
+    "max_final_repair_attempts": 2,
+    "strict_tool_argument_validation": true,
+    "strict_tool_result_validation": true,
+    "strict_privacy_redaction": true
+  },
+  "shared_result_envelope": {
+    "type": "object",
+    "required": [
+      "ok",
+      "tool_name",
+      "trace_id",
+      "timestamp",
+      "result"
+    ],
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      },
+      "tool_name": {
+        "type": "string"
+      },
+      "trace_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "error_code": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "error_message": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "result": {
+        "type": "object"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "search_fiscal_sources",
+      "domain": [
+        "fiscal"
+      ],
+      "must_call_when": [
+        "Toute question fiscale",
+        "Toute citation CGI, LPF, BOFiP, rescrit ou seuil fiscal",
+        "Toute demande de calcul nécessitant la règle fiscale applicable"
+      ],
+      "blocks_if_unavailable": true,
+      "usage_rules": [
+        "Construire une requête fiscale compacte orientée fondement: impôt + traitement + objet + base normative.",
+        "Pour une non-déductibilité, inclure explicitement déductibilité ou non déductible, la nature de la charge et CGI ou BOFiP.",
+        "Ne jamais répéter à l'identique une recherche déjà utile; raffiner uniquement avec un nouveau fondement ou une nouvelle date pertinente."
+      ],
+      "argument_aliases": {
+        "query": [
+          "search_query",
+          "question",
+          "prompt",
+          "request"
+        ],
+        "tax_scope": [
+          "scope",
+          "tax_type",
+          "tax_domain"
+        ],
+        "fact_date": [
+          "date",
+          "as_of_date",
+          "effective_date",
+          "reference_date"
+        ],
+        "jurisdiction": [
+          "country_code"
+        ]
+      },
+      "arguments_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query",
+          "tax_scope",
+          "fact_date"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 8
+          },
+          "tax_scope": {
+            "type": "string",
+            "enum": [
+              "IS",
+              "IR",
+              "TVA",
+              "CVAE",
+              "CFE",
+              "LPF",
+              "registration",
+              "withholding",
+              "other"
+            ]
+          },
+          "fact_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "jurisdiction": {
+            "type": "string",
+            "default": "FR"
+          },
+          "need_primary_sources_only": {
+            "type": "boolean",
+            "default": true
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 5
+          }
+        }
+      },
+      "result_contract": {
+        "required_fields": [
+          "sources",
+          "coverage_status",
+          "primary_sources_verified"
+        ],
+        "properties": {
+          "coverage_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "partial",
+              "not_verified"
+            ]
+          },
+          "primary_sources_verified": {
+            "type": "boolean"
+          },
+          "sources": {
+            "type": "array"
+          },
+          "conflicts_detected": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "search_accounting_sources",
+      "domain": [
+        "accounting"
+      ],
+      "must_call_when": [
+        "Toute écriture comptable",
+        "Toute question PCG, ANC, plan de comptes ou comptabilisation d'opération",
+        "Tout arbitrage entre traitement comptable et fiscal"
+      ],
+      "blocks_if_unavailable": true,
+      "usage_rules": [
+        "Utiliser exclusivement les arguments canoniques query, ledger_context et fact_date.",
+        "Si l'outil a déjà répondu utilement, ne pas relancer le même fingerprint; changer le périmètre ou terminer.",
+        "Jusqu'à disponibilité d'un backend comptable complet, bloquer sur absence de fondement normatif exploitable."
+      ],
+      "argument_aliases": {
+        "query": [
+          "search_query",
+          "question",
+          "prompt",
+          "request"
+        ],
+        "ledger_context": [
+          "context",
+          "scope",
+          "accounting_scope",
+          "ledger_scope"
+        ],
+        "fact_date": [
+          "date",
+          "as_of_date",
+          "effective_date",
+          "reference_date"
+        ],
+        "jurisdiction": [
+          "country_code"
+        ]
+      },
+      "arguments_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query",
+          "ledger_context",
+          "fact_date"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 8
+          },
+          "ledger_context": {
+            "type": "string",
+            "enum": [
+              "general",
+              "inventory",
+              "fixed_assets",
+              "revenue",
+              "expense",
+              "bank_reconciliation",
+              "closing",
+              "other"
+            ]
+          },
+          "fact_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "jurisdiction": {
+            "type": "string",
+            "default": "FR"
+          },
+          "include_ifrs_divergence": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result_contract": {
+        "required_fields": [
+          "sources",
+          "coverage_status"
+        ]
+      }
+    },
+    {
+      "name": "search_legal_sources",
+      "domain": [
+        "legal"
+      ],
+      "must_call_when": [
+        "Toute question de droit civil ou commercial",
+        "Toute référence au Code de commerce ou Code civil"
+      ],
+      "blocks_if_unavailable": true,
+      "usage_rules": [
+        "Réserver cet outil au droit commun et au droit commercial; ne pas l'utiliser pour compenser une recherche fiscale ratée.",
+        "Toujours cibler le fondement textuel attendu dans query."
+      ],
+      "argument_aliases": {
+        "query": [
+          "search_query",
+          "question",
+          "prompt",
+          "request"
+        ],
+        "legal_scope": [
+          "scope",
+          "domain_scope"
+        ],
+        "fact_date": [
+          "date",
+          "as_of_date",
+          "effective_date",
+          "reference_date"
+        ]
+      },
+      "arguments_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query",
+          "legal_scope",
+          "fact_date"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 8
+          },
+          "legal_scope": {
+            "type": "string",
+            "enum": [
+              "commercial",
+              "civil",
+              "company_law",
+              "contracts",
+              "securities",
+              "other"
+            ]
+          },
+          "fact_date": {
+            "type": "string",
+            "format": "date"
+          }
+        }
+      },
+      "result_contract": {
+        "required_fields": [
+          "sources",
+          "coverage_status"
+        ]
+      }
+    },
+    {
+      "name": "get_code_article_version",
+      "domain": [
+        "legal",
+        "fiscal"
+      ],
+      "must_call_when": [
+        "Toute demande d'article de code précis avec date de vigueur",
+        "Toute vérification de version d'un article de code à une date donnée",
+        "Toute citation d'article de code nécessitant une garantie temporelle"
+      ],
+      "blocks_if_unavailable": true,
+      "usage_rules": [
+        "Utiliser exclusivement les arguments canoniques article_ref, code_name et fact_date.",
+        "Construire une recherche NUM_ARTICLE exacte puis sélectionner la version dont la fenêtre de vigueur couvre fact_date.",
+        "Interdiction absolue d'inférer la bonne version à partir du rang de recherche seul; si la fenêtre de vigueur n'est pas démontrable, bloquer en not_verified."
+      ],
+      "argument_aliases": {
+        "article_ref": [
+          "reference",
+          "article",
+          "article_number",
+          "num_article"
+        ],
+        "code_name": [
+          "code",
+          "code_title",
+          "code_label"
+        ],
+        "fact_date": [
+          "date",
+          "as_of_date",
+          "effective_date",
+          "reference_date"
+        ],
+        "include_text": [
+          "need_article_text",
+          "need_text",
+          "full_text"
+        ]
+      },
+      "arguments_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "article_ref",
+          "code_name",
+          "fact_date"
+        ],
+        "properties": {
+          "article_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "code_name": {
+            "type": "string",
+            "minLength": 3
+          },
+          "fact_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "jurisdiction": {
+            "type": "string",
+            "default": "FR"
+          },
+          "include_text": {
+            "type": "boolean",
+            "default": true
+          },
+          "max_candidate_blocks": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 20
+          }
+        }
+      },
+      "result_contract": {
+        "required_fields": [
+          "article_ref",
+          "code_name",
+          "fact_date",
+          "version_found",
+          "in_force_on_fact_date",
+          "coverage_status",
+          "source_url"
+        ],
+        "properties": {
+          "article_ref": {
+            "type": "string"
+          },
+          "code_name": {
+            "type": "string"
+          },
+          "fact_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "version_found": {
+            "type": "boolean"
+          },
+          "in_force_on_fact_date": {
+            "type": "boolean"
+          },
+          "coverage_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "not_verified"
+            ]
+          },
+          "vigueur_start": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vigueur_end": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "compute_tax_liability",
+      "domain": [
+        "fiscal"
+      ],
+      "must_call_when": [
+        "Toute simulation fiscale",
+        "Toute demande de montant d'impôt"
+      ],
+      "blocks_if_unavailable": true,
+      "usage_rules": [
+        "Ne pas appeler ce calculateur sans références légales déjà vérifiées.",
+        "Les références normatives doivent être propagées dans legal_basis_refs."
+      ],
+      "argument_aliases": {
+        "tax_type": [
+          "tax_scope"
+        ],
+        "period_start": [
+          "start_date"
+        ],
+        "period_end": [
+          "end_date"
+        ]
+      },
+      "arguments_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tax_type",
+          "period_start",
+          "period_end",
+          "inputs",
+          "legal_basis_refs"
+        ],
+        "properties": {
+          "tax_type": {
+            "type": "string",
+            "enum": [
+              "IS",
+              "IR",
+              "TVA",
+              "withholding",
+              "other"
+            ]
+          },
+          "period_start": {
+            "type": "string",
+            "format": "date"
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date"
+          },
+          "inputs": {
+            "type": "object"
+          },
+          "legal_basis_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "rounding_mode": {
+            "type": "string",
+            "enum": [
+              "half_up",
+              "half_even",
+              "truncate"
+            ],
+            "default": "half_up"
+          }
+        }
+      },
+      "result_contract": {
+        "required_fields": [
+          "inputs_echo",
+          "formula_trace",
+          "amount",
+          "rounding_mode",
+          "consistency_checks"
+        ]
+      }
+    },
+    {
+      "name": "get_client_records",
+      "domain": [
+        "data_access"
+      ],
+      "must_call_when": [
+        "Toute réponse nécessitant des données client absentes de la requête",
+        "Toute consultation de GED, ERP ou base comptable"
+      ],
+      "blocks_if_unavailable": false,
+      "usage_rules": [
+        "Ne charger que les types de dossiers strictement nécessaires.",
+        "Tout accès réussi doit être suivi d'un log_audit_event.",
+        "requested_fields doit être une allowlist minimale et lawful_basis doit être explicite."
+      ],
+      "arguments_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "client_id",
+          "record_types",
+          "purpose",
+          "purpose_code",
+          "lawful_basis",
+          "requested_fields"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "record_types": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "ledger_entries",
+                "bank_transactions",
+                "tax_filings",
+                "contracts",
+                "other"
+              ]
+            }
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 10
+          },
+          "date_range_start": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "date_range_end": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "minimize_fields": {
+            "type": "boolean",
+            "default": true
+          },
+          "purpose_code": {
+            "type": "string",
+            "enum": [
+              "bank_reconciliation",
+              "ledger_analysis",
+              "tax_review",
+              "compliance_control",
+              "fraud_review",
+              "other"
+            ]
+          },
+          "lawful_basis": {
+            "type": "string",
+            "enum": [
+              "contract",
+              "legal_obligation",
+              "legitimate_interest",
+              "explicit_consent",
+              "other"
+            ]
+          },
+          "requested_fields": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "transaction_date",
+                "booking_date",
+                "amount",
+                "currency",
+                "counterparty_label",
+                "ledger_account",
+                "entry_reference",
+                "tax_code",
+                "document_reference",
+                "status"
+              ]
+            }
+          },
+          "supervisor_approval_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "result_contract": {
+        "required_fields": [
+          "records",
+          "fields_disclosed",
+          "privacy_flags",
+          "retention_class"
+        ],
+        "properties": {
+          "records": {
+            "type": "array"
+          },
+          "fields_disclosed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "privacy_flags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retention_class": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "restricted",
+              "confidential"
+            ]
+          },
+          "requires_supervisor_approval": {
+            "type": "boolean"
+          }
+        }
+      },
+      "user_visible_fields": [
+        "fields_disclosed",
+        "privacy_flags"
+      ]
+    },
+    {
+      "name": "log_audit_event",
+      "domain": [
+        "audit"
+      ],
+      "must_call_when": [
+        "Après accès à des données client",
+        "Lors d'une escalade",
+        "Lors d'un blocage",
+        "À la clôture d'une réponse finale à risque moyen ou plus"
+      ],
+      "blocks_if_unavailable": false,
+      "usage_rules": [
+        "Le summary doit rester déterministe et court.",
+        "Ne pas utiliser cet outil comme substitut à une source métier.",
+        "metadata ne doit jamais contenir d'identifiants bruts non masqués."
+      ],
+      "arguments_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_type",
+          "severity",
+          "summary"
+        ],
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "data_access",
+              "source_verification",
+              "policy_block",
+              "escalation",
+              "final_response",
+              "security_incident"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "linked_trace_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "rule_id": {
+                "type": "string"
+              },
+              "detected_categories": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "materiality_eur": {
+                "type": "number"
+              },
+              "tool_errors": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "fingerprints": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "violations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "privacy_review_outcome": {
+                "type": "string",
+                "enum": [
+                  "approved",
+                  "blocked",
+                  "redacted"
+                ]
+              },
+              "redaction_applied": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "result_contract": {
+        "required_fields": [
+          "audit_event_id",
+          "accepted"
+        ]
+      }
+    },
+    {
+      "name": "escalate_to_human_supervisor",
+      "domain": [
+        "escalation"
+      ],
+      "must_call_when": [
+        "Acte réservé détecté",
+        "Matérialité au-dessus du seuil",
+        "Conflit normatif non résolu",
+        "Contentieux ou procédure",
+        "Source primaire indisponible",
+        "Exécution sur données client sans approbation",
+        "Données sensibles ou risque RGPD sans filière dédiée"
+      ],
+      "blocks_if_unavailable": true,
+      "usage_rules": [
+        "Cette fonction est terminale du point de vue du modèle.",
+        "La synthèse d'escalade doit référencer les faits bloquants et les sources déjà vérifiées.",
+        "facts et source_refs doivent être préalablement assainis."
+      ],
+      "arguments_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason_code",
+          "severity",
+          "summary",
+          "facts",
+          "blocking_points",
+          "confidentiality_level",
+          "redaction_applied"
+        ],
+        "properties": {
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "reserved_act",
+              "materiality_threshold",
+              "ongoing_dispute",
+              "norm_conflict",
+              "source_not_verified",
+              "suspected_fraud",
+              "client_data_execution_block",
+              "deadline_risk",
+              "sensitive_data",
+              "other"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "facts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "blocking_points": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "source_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidentiality_level": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "restricted",
+              "confidential"
+            ]
+          },
+          "redaction_applied": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result_contract": {
+        "required_fields": [
+          "escalation_id",
+          "accepted",
+          "supervisor_queue"
+        ]
+      },
+      "user_visible_fields": [
+        "accepted"
+      ]
+    }
+  ]
+}

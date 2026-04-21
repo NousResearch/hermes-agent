@@ -1,0 +1,873 @@
+{
+  "version": "2.0.0",
+  "engine": "json-logic-compatible",
+  "description": "Politique d'escalade et de blocage Hermes. Les règles sont évaluées dans l'ordre. La première règle terminale arrête la génération finale.",
+  "context_contract": {
+    "required_paths": [
+      "classification.domain",
+      "classification.risk_level",
+      "classification.contains_reserved_act",
+      "classification.requires_personalized_recommendation",
+      "facts.materiality_eur",
+      "facts.deadline_days_remaining",
+      "facts.summary",
+      "verification.required_tools_called",
+      "verification.primary_sources_verified",
+      "verification.conflicts_detected",
+      "verification.tool_errors",
+      "verification.tool_errors_count",
+      "verification.source_refs",
+      "verification.tool_call_fingerprints",
+      "verification.repeated_tool_call_violations",
+      "verification.repeated_tool_call_violations_count",
+      "verification.total_tool_calls",
+      "privacy.contains_sensitive_data",
+      "privacy.detected_categories",
+      "execution.client_file_execution_requested",
+      "execution.supervisor_execution_approved",
+      "case.ongoing_dispute",
+      "case.requested_optimization_scheme",
+      "signals.suspected_fraud",
+      "signals.fact_treatment_inconsistency",
+      "config.escalation_materiality_eur",
+      "config.deadline_escalation_days",
+      "config.max_identical_tool_calls",
+      "config.max_final_repair_attempts",
+      "privacy.contains_pii",
+      "privacy.contains_special_category_data",
+      "privacy.contains_financial_identifiers",
+      "privacy.contains_secrets",
+      "privacy.requested_fields",
+      "privacy.disclosed_fields",
+      "privacy.lawful_basis",
+      "privacy.purpose_code",
+      "privacy.masking_applied",
+      "privacy.masking_failures_count",
+      "privacy.output_contains_raw_identifier",
+      "privacy.audit_logged_for_data_access",
+      "privacy.requested_fields_exceed_policy",
+      "privacy.missing_lawful_basis",
+      "privacy.missing_supervisor_approval",
+      "privacy.retention_class"
+    ]
+  },
+  "rules": [
+    {
+      "id": "reserved-act-or-personalized-advice",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "or": [
+          {
+            "==": [
+              {
+                "var": "classification.contains_reserved_act"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "classification.requires_personalized_recommendation"
+              },
+              true
+            ]
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "set_certainty",
+          "value": "FAIBLE_VERIFICATION_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "reserved_act",
+            "severity": "critical",
+            "summary": "Acte réservé ou recommandation personnalisée détecté.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Le périmètre demandé dépasse le rôle d'assistant documentaire."
+            ],
+            "source_refs": {
+              "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            }
+          }
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "escalation",
+            "severity": "critical",
+            "summary": "Escalade pour acte réservé ou conseil personnalisé.",
+            "metadata": {
+              "rule_id": "reserved-act-or-personalized-advice"
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "sensitive-data-escalation",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "==": [
+          {
+            "var": "privacy.contains_sensitive_data"
+          },
+          true
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "set_certainty",
+          "value": "FAIBLE_VERIFICATION_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "sensitive_data",
+            "severity": "critical",
+            "summary": "Données sensibles détectées dans la requête ou les pièces.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Revue humaine RGPD requise avant poursuite."
+            ],
+            "source_refs": {
+              "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            }
+          }
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "security_incident",
+            "severity": "critical",
+            "summary": "Escalade RGPD sur détection de données sensibles.",
+            "metadata": {
+              "rule_id": "sensitive-data-escalation",
+              "detected_categories": {
+                "var": "privacy.detected_categories"
+              }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "repeated-identical-tool-call",
+      "severity": "high",
+      "terminal": true,
+      "when": {
+        ">": [
+          {
+            "var": "verification.repeated_tool_call_violations_count"
+          },
+          0
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "BLOQUE"
+        },
+        {
+          "type": "set_certainty",
+          "value": "FAIBLE_VERIFICATION_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "policy_block",
+            "severity": "high",
+            "summary": "Blocage sur répétition d'appel outil identique.",
+            "metadata": {
+              "rule_id": "repeated-identical-tool-call",
+              "fingerprints": {
+                "var": "verification.tool_call_fingerprints"
+              },
+              "violations": {
+                "var": "verification.repeated_tool_call_violations"
+              }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "secret-detected-escalation",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "==": [
+          {
+            "var": "privacy.contains_secrets"
+          },
+          true
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "set_certainty",
+          "value": "FAIBLE_VERIFICATION_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "sensitive_data",
+            "severity": "critical",
+            "summary": "Secret applicatif ou jeton détecté.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Présence de secret ou jeton incompatible avec une réponse autonome."
+            ],
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            },
+            "source_refs": {
+              "var": "verification.source_refs"
+            }
+          }
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "security_incident",
+            "severity": "critical",
+            "summary": "Escalade pour détection de secret applicatif.",
+            "metadata": {
+              "rule_id": "secret-detected-escalation",
+              "detected_categories": {
+                "var": "privacy.detected_categories"
+              },
+              "privacy_review_outcome": "blocked",
+              "redaction_applied": {
+                "var": "privacy.masking_applied"
+              }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "privacy-governance-block",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "or": [
+          {
+            "==": [
+              {
+                "var": "privacy.output_contains_raw_identifier"
+              },
+              true
+            ]
+          },
+          {
+            ">": [
+              {
+                "var": "privacy.masking_failures_count"
+              },
+              0
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "privacy.requested_fields_exceed_policy"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "privacy.missing_lawful_basis"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "privacy.missing_supervisor_approval"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "privacy.audit_logged_for_data_access"
+              },
+              false
+            ]
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "BLOQUE"
+        },
+        {
+          "type": "set_certainty",
+          "value": "FAIBLE_VERIFICATION_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "policy_block",
+            "severity": "critical",
+            "summary": "Blocage sur violation confidentialité ou traçabilité.",
+            "metadata": {
+              "rule_id": "privacy-governance-block",
+              "detected_categories": {
+                "var": "privacy.detected_categories"
+              },
+              "privacy_review_outcome": "blocked",
+              "redaction_applied": {
+                "var": "privacy.masking_applied"
+              }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "confidential-retention-escalation",
+      "severity": "high",
+      "terminal": true,
+      "when": {
+        "==": [
+          {
+            "var": "privacy.retention_class"
+          },
+          "confidential"
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "sensitive_data",
+            "severity": "high",
+            "summary": "Flux classifié confidentiel.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Le niveau de confidentialité impose une revue humaine."
+            ],
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            },
+            "source_refs": {
+              "var": "verification.source_refs"
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "mandatory-tool-or-source-missing",
+      "severity": "high",
+      "terminal": true,
+      "when": {
+        "or": [
+          {
+            "==": [
+              {
+                "var": "verification.required_tools_called"
+              },
+              false
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "verification.primary_sources_verified"
+              },
+              false
+            ]
+          },
+          {
+            ">": [
+              {
+                "var": "verification.tool_errors_count"
+              },
+              0
+            ]
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "BLOQUE"
+        },
+        {
+          "type": "set_certainty",
+          "value": "FAIBLE_VERIFICATION_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "policy_block",
+            "severity": "high",
+            "summary": "Blocage faute de vérification complète par outils ou sources primaires.",
+            "metadata": {
+              "rule_id": "mandatory-tool-or-source-missing",
+              "tool_errors": {
+                "var": "verification.tool_errors"
+              }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "materiality-threshold",
+      "severity": "high",
+      "terminal": true,
+      "when": {
+        ">": [
+          {
+            "var": "facts.materiality_eur"
+          },
+          {
+            "var": "config.escalation_materiality_eur"
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "materiality_threshold",
+            "severity": "high",
+            "summary": "Seuil de matérialité dépassé.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Enjeu financier supérieur au seuil configuré."
+            ],
+            "source_refs": {
+              "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            }
+          }
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "escalation",
+            "severity": "high",
+            "summary": "Escalade pour matérialité au-dessus du seuil.",
+            "metadata": {
+              "rule_id": "materiality-threshold",
+              "materiality_eur": {
+                "var": "facts.materiality_eur"
+              }
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "ongoing-dispute-or-tax-procedure",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "==": [
+          {
+            "var": "case.ongoing_dispute"
+          },
+          true
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "ongoing_dispute",
+            "severity": "critical",
+            "summary": "Contentieux ou procédure identifié.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Cas contentieux non traitable sans revue humaine."
+            ],
+            "source_refs": {
+              "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "abuse-fraud-or-major-inconsistency",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "or": [
+          {
+            "==": [
+              {
+                "var": "case.requested_optimization_scheme"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "signals.suspected_fraud"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "signals.fact_treatment_inconsistency"
+              },
+              true
+            ]
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "suspected_fraud",
+            "severity": "critical",
+            "summary": "Schéma d'optimisation, fraude potentielle ou incohérence majeure détecté.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Risque réglementaire ou pénal élevé."
+            ],
+            "source_refs": {
+              "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            }
+          }
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "escalation",
+            "severity": "critical",
+            "summary": "Escalade pour optimisation risquée, fraude potentielle ou incohérence majeure.",
+            "metadata": {
+              "rule_id": "abuse-fraud-or-major-inconsistency"
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "norm-conflict-unresolved",
+      "severity": "high",
+      "terminal": true,
+      "when": {
+        "==": [
+          {
+            "var": "verification.conflicts_detected"
+          },
+          true
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "norm_conflict",
+            "severity": "high",
+            "summary": "Conflit normatif non résolu.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Divergence de référentiels nécessitant arbitrage humain."
+            ],
+            "source_refs": {
+              "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "deadline-risk",
+      "severity": "high",
+      "terminal": true,
+      "when": {
+        "<=": [
+          {
+            "var": "facts.deadline_days_remaining"
+          },
+          {
+            "var": "config.deadline_escalation_days"
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "deadline_risk",
+            "severity": "high",
+            "summary": "Échéance proche nécessitant validation humaine prioritaire.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Fenêtre de correction ou de dépôt trop courte."
+            ],
+            "source_refs": {
+              "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "client-file-execution-without-approval",
+      "severity": "critical",
+      "terminal": true,
+      "when": {
+        "and": [
+          {
+            "==": [
+              {
+                "var": "execution.client_file_execution_requested"
+              },
+              true
+            ]
+          },
+          {
+            "==": [
+              {
+                "var": "execution.supervisor_execution_approved"
+              },
+              false
+            ]
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "set_status",
+          "value": "ESCALADE_REQUISE"
+        },
+        {
+          "type": "call_tool",
+          "tool": "escalate_to_human_supervisor",
+          "args_template": {
+            "reason_code": "client_data_execution_block",
+            "severity": "critical",
+            "summary": "Exécution sur fichiers clients demandée sans approbation.",
+            "facts": {
+              "var": "facts.summary"
+            },
+            "blocking_points": [
+              "Validation explicite du superviseur absente."
+            ],
+            "source_refs": {
+              "var": "verification.source_refs"
+            },
+            "confidentiality_level": {
+              "var": "privacy.retention_class"
+            },
+            "redaction_applied": {
+              "var": "privacy.masking_applied"
+            }
+          }
+        },
+        {
+          "type": "call_tool",
+          "tool": "log_audit_event",
+          "args_template": {
+            "event_type": "policy_block",
+            "severity": "critical",
+            "summary": "Blocage d'exécution sur fichiers clients sans approbation.",
+            "metadata": {
+              "rule_id": "client-file-execution-without-approval"
+            }
+          }
+        },
+        {
+          "type": "stop_generation",
+          "value": true
+        }
+      ]
+    }
+  ],
+  "default_outcome": {
+    "status": "ANALYSE_PREPARATOIRE",
+    "certainty": "MOYENNE",
+    "stop_generation": false
+  }
+}

@@ -47,6 +47,8 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
+from tools.environments.docker import get_docker_rpc_dir
+
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
 # ``_use_tcp_rpc`` in ``_execute_local`` below.  That makes execute_code
@@ -866,7 +868,10 @@ def _execute_remote(
     temp_dir = _env_temp_dir(env)
     sandbox_dir = f"{temp_dir}/hermes_exec_{sandbox_id}"
     quoted_sandbox_dir = shlex.quote(sandbox_dir)
-    quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
+    rpc_dir = f"{sandbox_dir}/rpc"
+    if env_type == "docker":
+        rpc_dir = get_docker_rpc_dir(effective_task_id)
+    quoted_rpc_dir = shlex.quote(rpc_dir)
 
     tool_call_log: list = []
     tool_call_counter = [0]
@@ -894,7 +899,9 @@ def _execute_remote(
 
         # Create sandbox directory on remote
         env.execute(
-            f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10,
+            f"mkdir -p {quoted_sandbox_dir} && rm -rf {quoted_rpc_dir} && mkdir -p {quoted_rpc_dir}",
+            cwd="/",
+            timeout=10,
         )
 
         # Generate and ship files
@@ -908,7 +915,7 @@ def _execute_remote(
         rpc_thread = threading.Thread(
             target=_rpc_poll_loop,
             args=(
-                env, f"{sandbox_dir}/rpc", effective_task_id,
+                env, rpc_dir, effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
                 sandbox_tools, stop_event,
             ),
@@ -918,7 +925,7 @@ def _execute_remote(
 
         # Build environment variable prefix for the script
         env_prefix = (
-            f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
+            f"HERMES_RPC_DIR={quoted_rpc_dir} "
             f"PYTHONDONTWRITEBYTECODE=1"
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
@@ -970,6 +977,13 @@ def _execute_remote(
             )
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
+        if rpc_dir != f"{sandbox_dir}/rpc":
+            try:
+                env.execute(
+                    f"rm -rf {quoted_rpc_dir}", cwd="/", timeout=15,
+                )
+            except Exception:
+                logger.debug("Failed to clean up remote RPC dir %s", rpc_dir)
 
     duration = round(time.monotonic() - exec_start, 2)
 

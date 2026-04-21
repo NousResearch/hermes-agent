@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from typing import Optional
 
@@ -86,6 +87,13 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
         normalized[key] = value
 
     return normalized
+
+
+def get_docker_rpc_dir(task_id: str) -> str:
+    """Return the shared RPC directory path used for a Docker task."""
+    safe_task_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id or "default")
+    safe_task_id = safe_task_id.strip("._") or "default"
+    return os.path.join(tempfile.gettempdir(), "hermes_rpc", safe_task_id)
 
 
 def _load_hermes_env_vars() -> dict[str, str]:

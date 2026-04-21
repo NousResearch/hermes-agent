@@ -36,6 +36,7 @@ import threading
 import unittest
 from unittest.mock import patch, MagicMock
 
+from tools.environments.docker import get_docker_rpc_dir
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     execute_code,
@@ -173,6 +174,42 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
         self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
+
+    def test_execute_remote_uses_task_specific_docker_rpc_dir(self):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                self.commands.append((command, cwd, timeout))
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "python3 script.py" in command:
+                    return {"output": "hello\n", "returncode": 0}
+                return {"output": ""}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "docker")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("print('hello')", "task/one", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        rpc_dir = get_docker_rpc_dir("task/one")
+        mkdir_cmd = env.commands[1][0]
+        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
+        cleanup_cmds = [cmd for cmd, _, _ in env.commands if "rm -rf" in cmd]
+
+        self.assertIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
+        self.assertIn(f"rm -rf {rpc_dir} && mkdir -p {rpc_dir}", mkdir_cmd)
+        self.assertIn(f"HERMES_RPC_DIR={rpc_dir}", run_cmd)
+        self.assertTrue(any(cmd.endswith(f"rm -rf {rpc_dir}") for cmd in cleanup_cmds))
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")

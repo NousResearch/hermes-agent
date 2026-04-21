@@ -886,7 +886,10 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-from tools.environments.docker import DockerEnvironment as _DockerEnvironment
+from tools.environments.docker import (
+    DockerEnvironment as _DockerEnvironment,
+    get_docker_rpc_dir as _get_docker_rpc_dir,
+)
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
@@ -1139,6 +1142,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
+        # Inject HERMES_RPC_DIR into docker_env so it is available to all
+        # exec calls (including the RPC polling thread started by execute_code).
+        # This solves the bug where hermes_tools.py could not read
+        # HERMES_RPC_DIR because it was only set inline for the python3
+        # script.py process and not the container's persistent environment.
+        docker_env_with_rpc = dict(docker_env)
+        docker_env_with_rpc.setdefault("HERMES_RPC_DIR", _get_docker_rpc_dir(task_id))
         return _DockerEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
@@ -1147,7 +1157,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             host_cwd=host_cwd,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
-            env=docker_env,
+            env=docker_env_with_rpc,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
             extra_args=docker_extra_args,
         )

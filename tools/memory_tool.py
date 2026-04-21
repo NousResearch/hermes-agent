@@ -557,7 +557,7 @@ MEMORY_SCHEMA = {
                 "description": "Short unique substring identifying the entry to replace or remove."
             },
         },
-        "required": ["action", "target"],
+        "required": ["action", "target", "old_text"],
     },
 }
 

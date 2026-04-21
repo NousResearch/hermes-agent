@@ -244,6 +244,15 @@ TOOL_CATEGORIES = {
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
             },
+            {
+                "name": "You.com",
+                "badge": "free tier",
+                "tag": "Search and extract — 100 free searches/day without API key",
+                "web_backend": "youdotcom",
+                "env_vars": [
+                    {"key": "YDC_API_KEY", "prompt": "You.com API key (optional for search, required for extract)", "url": "https://you.com/platform"},
+                ],
+            },
         ],
     },
     "image_gen": {

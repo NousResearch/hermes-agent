@@ -17,6 +17,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract, crawl)
+- You.com: https://you.com (search, extract; 100 free searches/day without API key)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "youdotcom"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -98,6 +99,7 @@ def _get_backend() -> str:
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
+        ("youdotcom", _has_env("YDC_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
     )
     for backend, available in backend_candidates:
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "youdotcom":
+        return True  # Search API allows 100 free searches/day without key
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -187,6 +191,7 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "YDC_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
     ]
@@ -956,6 +961,119 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+# ─── You.com Client ───────────────────────────────────────────────────────────
+
+_YDC_SEARCH_BASE_URL = "https://api.you.com"
+_YDC_CONTENTS_BASE_URL = "https://ydc-index.io"
+
+
+def _ydc_headers() -> Dict[str, str]:
+    """Return headers for You.com API requests.
+
+    The Search API allows 100 free searches/day without an API key.
+    The Research and Contents APIs always require a key.
+    """
+    api_key = os.getenv("YDC_API_KEY", "").strip()
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
+    return headers
+
+
+def _ydc_search(query: str, limit: int = 10) -> dict:
+    """Search using the You.com Search API and return results as a dict.
+
+    The Search API returns raw web and news results. Supports 100 free
+    searches/day without an API key.
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    logger.info("You.com search: '%s' (limit=%d)", query, limit)
+    params = {"query": query}
+    if limit != 10:
+        params["count"] = str(limit)
+
+    resp = httpx.get(
+        f"{_YDC_SEARCH_BASE_URL}/v1/agents/search",
+        params=params,
+        headers=_ydc_headers(),
+        timeout=30,
+    )
+    if not resp.is_success:
+        raise RuntimeError(f"You.com Search API error {resp.status_code}: {resp.text}")
+
+    data = resp.json()
+    results_data = data.get("results", {})
+    web_items = results_data.get("web", [])
+    news_items = results_data.get("news", [])
+
+    web_results = []
+    for i, item in enumerate(web_items[:limit]):
+        web_results.append({
+            "url": item.get("url", ""),
+            "title": item.get("title", ""),
+            "description": item.get("description", ""),
+            "position": i + 1,
+        })
+
+    if news_items:
+        for j, item in enumerate(news_items[:max(0, limit - len(web_results))]):
+            web_results.append({
+                "url": item.get("url", ""),
+                "title": item.get("title", ""),
+                "description": item.get("description", ""),
+                "position": len(web_results) + 1,
+            })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _ydc_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the You.com Contents API.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+
+    Requires YDC_API_KEY.
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    if not os.getenv("YDC_API_KEY", "").strip():
+        raise ValueError(
+            "YDC_API_KEY environment variable is required for the You.com Contents API. "
+            "Get your API key at https://you.com/platform"
+        )
+
+    logger.info("You.com extract: %d URL(s)", len(urls))
+    resp = httpx.post(
+        f"{_YDC_CONTENTS_BASE_URL}/v1/contents",
+        headers=_ydc_headers(),
+        json={"urls": urls, "formats": ["markdown", "metadata"]},
+        timeout=60,
+    )
+    if not resp.is_success:
+        raise RuntimeError(f"You.com Contents API error {resp.status_code}: {resp.text}")
+
+    results = []
+    for item in resp.json():
+        url = item.get("url", "")
+        title = item.get("title", "")
+        markdown = item.get("markdown", "")
+        results.append({
+            "url": url,
+            "title": title or "",
+            "content": markdown or "",
+            "raw_content": markdown or "",
+            "metadata": item.get("metadata", {"sourceURL": url, "title": title or ""}),
+        })
+
+    return results
+
+
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
@@ -1118,6 +1236,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "youdotcom":
+            response_data = _ydc_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1252,6 +1379,8 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "youdotcom":
+                results = _ydc_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1922,9 +2051,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "youdotcom"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "youdotcom"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1959,6 +2088,8 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "youdotcom":
+            print("   Using You.com API (https://you.com)")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
@@ -1971,7 +2102,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set YDC_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

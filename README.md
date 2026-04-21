@@ -33,9 +33,9 @@ Current grounded receipts in this branch:
 - Telegram-approvable app access for `hermes-computer-use` sessions (`Allow Once`, `Session`, `Always`, `Deny`)
 - Window-scoped `get_app_state(...)` with screenshot + frontmost metadata + approval-gated accessibility capture
 - A proven local unlock path from `loginwindow` into the desktop, with the password kept inside local process env / file reads instead of tool arguments or transcript text
-- A grounded local click smoke on TextEdit: the adapter clicked the real AX close button coordinates and the target window disappeared, leaving another TextEdit document frontmost
+- A grounded real click receipt on TextEdit, verified both locally and through the live MCP/chat path after clearing stale duplicate server processes
 
-This is best described today as a Codex-style / official-computer-use-inspired Hermes implementation with real local control already working and live runtime cleanup still underway.
+This is best described today as a Codex-style / official-computer-use-inspired Hermes implementation with real local control already working. The remaining work is detached-cursor polish, broader session UX, and careful boundary-setting around permission dialogs — not proving that click works at all.
 
 📎 See the branch write-up: [docs/computer-use-macos-preview.md](docs/computer-use-macos-preview.md)
 

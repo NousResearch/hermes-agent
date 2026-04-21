@@ -47,15 +47,16 @@ Artifacts:
 - [lockscreen-password-ui.png](media/computer-use/lockscreen-password-ui.png)
 - [unlocked-terminal-after-input.png](media/computer-use/unlocked-terminal-after-input.png)
 
-### 4. Real local click proof
+### 4. Real click proof, including the live MCP path
 
-A grounded local smoke test on TextEdit succeeded.
+A grounded TextEdit smoke test succeeded both through the local backend and through the live MCP/chat route.
 
 What was verified:
 - the adapter captured the AX close button frame
 - the click targeted the real center coordinates of that button
 - the local click backend returned `success=true`
-- after the click, the target TextEdit window was gone and another TextEdit document became frontmost
+- after stale duplicate `computer_use_mcp_server.py` processes were removed, the live MCP `click(...)` path also returned `success=true`
+- after the live click, the target TextEdit window was gone and another TextEdit document became frontmost
 
 Artifacts:
 - [textedit-window-state.png](media/computer-use/textedit-window-state.png)
@@ -63,16 +64,13 @@ Artifacts:
 
 ## What is still in progress
 
-The branch still needs runtime cleanup for the live MCP route.
+The short-term work is no longer “make live click real.”
+That part is now grounded and working.
 
-During testing, we observed a split between:
-- the fresh worktree code path, which already proved real local click success
-- the live chat/MCP route, which in one run still reported `preview_only`
-
-Grounded inspection showed duplicate `computer_use_mcp_server.py` processes at the same time.
-
-So the remaining work is not “invent clicking from scratch.”
-It is “make the live runtime consistently use the newest server/session path and remove stale process confusion.”
+The honest remaining boundary is higher-level polish:
+- detached / non-disruptive cursor UX still needs a cleaner native session story
+- permission-dialog interaction is still not something to overpromise
+- the approval/session experience can still be tightened for a more Codex-like feel
 
 ## How to describe this branch honestly
 
@@ -81,12 +79,12 @@ Strong but accurate description:
 - app approval is already wired into Telegram
 - window-scoped state is already working
 - local unlock is already proven
-- local click is already proven
-- live runtime cleanup is the remaining short-term polish
+- real click is already proven in both local and live MCP paths
+- the remaining work is UX polish and deeper session semantics, not basic capability
 
 In other words:
 
-> Official-computer-use-inspired UX, Hermes-native approval flow, and real local desktop control — already partially working, with final runtime cleanup still underway.
+> Official-computer-use-inspired UX, Hermes-native approval flow, and real local desktop control — already working end to end for the current verified slice, with detached-cursor polish and broader UX refinement still ahead.
 
 ## Suggested GitHub positioning
 

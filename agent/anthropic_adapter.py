@@ -1362,6 +1362,31 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
+        # 2b. Move extra system blocks into a user-message prefix.
+        #     The Claude Code / OAuth subscription route applies an internal
+        #     size/content check on the `system` field.  When Hermes ships a
+        #     large custom system prompt (agent instructions, tool guides,
+        #     operator personas), the check rejects the request with a
+        #     confusing 400:
+        #         "You're out of extra usage. Add more at
+        #          claude.ai/settings/usage and keep going."
+        #     The same request succeeds with a pay-per-token API key.
+        #     Workaround: keep only the CC identity block in `system` and
+        #     fold the rest into a `[CONTEXT]...[/CONTEXT]` user-message
+        #     prefix followed by an assistant "Understood." acknowledgment.
+        #     Content is preserved verbatim — only the transport slot changes.
+        if isinstance(system, list) and len(system) > 1:
+            overflow_blocks = system[1:]
+            system = system[:1]
+            overflow_text = "\n\n".join(
+                b.get("text", "") for b in overflow_blocks
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+            )
+            if overflow_text:
+                ctx_msg = {"role": "user", "content": f"[CONTEXT]\n{overflow_text}\n[/CONTEXT]"}
+                ack_msg = {"role": "assistant", "content": "Understood."}
+                anthropic_messages = [ctx_msg, ack_msg] + anthropic_messages
+
         # 3. Prefix tool names with mcp_ (Claude Code convention)
         if anthropic_tools:
             for tool in anthropic_tools:

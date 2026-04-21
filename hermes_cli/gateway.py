@@ -1660,6 +1660,85 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"
 
 
+def _launchd_target(label: str) -> str:
+    return f"{_launchd_domain()}/{label}"
+
+
+def _list_hermes_launchd_services() -> list[tuple[str, Path]]:
+    """Return installed Hermes launchd service labels and plist paths.
+
+    The default profile is returned first so status/restart flows remain
+    deterministic and easier to read.
+    """
+    launch_agents = _launchd_user_home() / "Library" / "LaunchAgents"
+    if not launch_agents.exists():
+        return []
+
+    services: list[tuple[str, Path]] = []
+    for plist_path in sorted(
+        launch_agents.glob("ai.hermes.gateway*.plist"),
+        key=lambda path: (0 if path.stem == "ai.hermes.gateway" else 1, path.stem),
+    ):
+        label = plist_path.stem
+        if label == "ai.hermes.gateway" or label.startswith("ai.hermes.gateway-"):
+            services.append((label, plist_path))
+    return services
+
+
+def _launchd_service_loaded(label: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", _launchd_target(label)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _launchd_restart_service(label: str, plist_path: Path) -> None:
+    """Restart a specific Hermes launchd service label safely."""
+    target = _launchd_target(label)
+    try:
+        subprocess.run(
+            ["launchctl", "kickstart", "-k", target],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        return
+    except subprocess.CalledProcessError as e:
+        if e.returncode not in (3, 113):
+            raise
+
+    subprocess.run(
+        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        check=True,
+        timeout=30,
+    )
+    subprocess.run(
+        ["launchctl", "kickstart", target],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def restart_all_launchd_services() -> list[str]:
+    """Restart loaded Hermes launchd services across all profiles."""
+    restarted: list[str] = []
+    for label, plist_path in _list_hermes_launchd_services():
+        if not _launchd_service_loaded(label):
+            continue
+        _launchd_restart_service(label, plist_path)
+        restarted.append(label)
+    return restarted
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -3671,34 +3750,42 @@ def gateway_command(args):
         service_configured = False
 
         if restart_all:
-            # --all: stop every gateway process across all profiles, then start fresh
-            service_stopped = False
+            # --all: restart every gateway process across all profiles.
             if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+                service_stopped = False
                 try:
                     systemd_stop(system=system)
                     service_stopped = True
                 except subprocess.CalledProcessError:
                     pass
-            elif is_macos() and get_launchd_plist_path().exists():
-                try:
-                    launchd_stop()
-                    service_stopped = True
-                except subprocess.CalledProcessError:
-                    pass
-            killed = kill_gateway_processes(all_profiles=True)
-            total = killed + (1 if service_stopped else 0)
-            if total:
-                print(f"✓ Stopped {total} gateway process(es) across all profiles")
+                killed = kill_gateway_processes(all_profiles=True)
+                total = killed + (1 if service_stopped else 0)
+                if total:
+                    print(f"✓ Stopped {total} gateway process(es) across all profiles")
+                _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+
+                print("Starting gateway...")
+                systemd_start(system=system)
+                return
+
+            if is_macos() and get_launchd_plist_path().exists():
+                restarted_labels = restart_all_launchd_services()
+                if restarted_labels:
+                    print(f"✓ Restarted {len(restarted_labels)} gateway service(s) across all profiles")
+                else:
+                    print("✗ No loaded gateway services found across all profiles")
+                return
+
+            killed = 0
+            if stop_profile_gateway():
+                killed += 1
+            killed += kill_gateway_processes(all_profiles=True)
+            if killed:
+                print(f"✓ Stopped {killed} gateway process(es) across all profiles")
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
-            # Start the current profile's service fresh
             print("Starting gateway...")
-            if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
-                systemd_start(system=system)
-            elif is_macos() and get_launchd_plist_path().exists():
-                launchd_start()
-            else:
-                run_gateway(verbose=0)
+            run_gateway(verbose=0)
             return
         
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):

@@ -374,6 +374,84 @@ class TestLaunchdServiceRecovery:
         assert len(wait_called) == 1
         assert wait_called[0] == {"timeout": 10.0, "force_after": 5.0}
 
+    def test_list_launchd_services_prefers_default_profile_first(self, tmp_path, monkeypatch):
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        default_plist = launch_agents / "ai.hermes.gateway.plist"
+        bolt_plist = launch_agents / "ai.hermes.gateway-bolt.plist"
+        ignored = launch_agents / "com.example.other.plist"
+        default_plist.write_text("default", encoding="utf-8")
+        bolt_plist.write_text("bolt", encoding="utf-8")
+        ignored.write_text("ignored", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+
+        assert gateway_cli._list_hermes_launchd_services() == [
+            ("ai.hermes.gateway", default_plist),
+            ("ai.hermes.gateway-bolt", bolt_plist),
+        ]
+
+    def test_launchd_restart_service_bootstraps_unloaded_job(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway-bolt.plist"
+        plist_path.write_text("plist", encoding="utf-8")
+        label = "ai.hermes.gateway-bolt"
+        target = f"{gateway_cli._launchd_domain()}/{label}"
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchd_restart_service(label, plist_path)
+
+        assert calls == [
+            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
+    def test_restart_all_launchd_services_only_touches_loaded_labels(self, tmp_path, monkeypatch):
+        default_plist = tmp_path / "ai.hermes.gateway.plist"
+        bolt_plist = tmp_path / "ai.hermes.gateway-bolt.plist"
+        idle_plist = tmp_path / "ai.hermes.gateway-idle.plist"
+        for path in (default_plist, bolt_plist, idle_plist):
+            path.write_text("plist", encoding="utf-8")
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_list_hermes_launchd_services",
+            lambda: [
+                ("ai.hermes.gateway", default_plist),
+                ("ai.hermes.gateway-bolt", bolt_plist),
+                ("ai.hermes.gateway-idle", idle_plist),
+            ],
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_service_loaded",
+            lambda label: label != "ai.hermes.gateway-idle",
+        )
+
+        restarted = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_restart_service",
+            lambda label, plist_path: restarted.append((label, plist_path)),
+        )
+
+        assert gateway_cli.restart_all_launchd_services() == [
+            "ai.hermes.gateway",
+            "ai.hermes.gateway-bolt",
+        ]
+        assert restarted == [
+            ("ai.hermes.gateway", default_plist),
+            ("ai.hermes.gateway-bolt", bolt_plist),
+        ]
+
     def test_launchd_status_reports_local_stale_plist_when_unloaded(self, tmp_path, monkeypatch, capsys):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
@@ -626,6 +704,40 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError("Expected gateway_command to exit when service restart fails")
 
         assert run_calls == []
+
+    def test_gateway_restart_all_on_macos_uses_launchd_service_restart_helper(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("plist\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        restarted = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_all_launchd_services",
+            lambda: restarted.extend(["ai.hermes.gateway", "ai.hermes.gateway-bolt"]) or ["ai.hermes.gateway", "ai.hermes.gateway-bolt"],
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "kill_gateway_processes",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("macOS service restart should not kill processes directly")),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_stop",
+            lambda: (_ for _ in ()).throw(AssertionError("macOS --all should not stop only current profile")),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_start",
+            lambda: (_ for _ in ()).throw(AssertionError("macOS --all should not start only current profile")),
+        )
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False, **{"all": True}))
+
+        assert restarted == ["ai.hermes.gateway", "ai.hermes.gateway-bolt"]
 
 
 class TestDetectVenvDir:

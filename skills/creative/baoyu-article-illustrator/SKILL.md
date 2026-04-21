@@ -91,11 +91,11 @@ If the user asks for a different layout (e.g., images alongside the article, or 
 
 ### Step 1: Detect Reference Images
 
-If the user supplies reference images (paths pasted inline, attachments, or a list of files):
+If the user supplies reference images (paths pasted inline, attachments, or a URL):
 
-1. Copy each reference to `{output-dir}/references/NN-ref-{slug}.{ext}` using `write_file`.
-2. Create a sidecar `NN-ref-{slug}.md` describing the reference.
-3. If the user described a reference but can't provide a file path, extract style/palette verbally and record under `references/extracted-style.md` — do NOT add a `references:` field to prompt frontmatter in that case.
+1. For each reference, call `vision_analyze` with the path/URL and a question asking for style, palette, composition, and subject. Record the returned description in `{output-dir}/references/NN-ref-{slug}.md` via `write_file`.
+2. **Do not** try to copy the binary via `write_file` / `read_file` — those are text-only. If you want a local copy for the record, use `terminal` (`cp "$src" "{output-dir}/references/NN-ref-{slug}.{ext}"`). The skill itself never needs to read the binary; it works off the vision description.
+3. Since `image_generate` doesn't take image inputs, the vision description is what gets embedded in prompts during Step 5.
 
 Full procedures: [references/workflow.md](references/workflow.md#step-1-detect-reference-images).
 
@@ -156,11 +156,14 @@ For each illustration:
 
 ### Step 6: Generate Images
 
-Use the `image_generate` tool with the assembled prompt from each prompt file.
+For each prompt file:
 
-- Map aspect ratio to `image_generate` format: `16:9` → `landscape`, `9:16` → `portrait`, `1:1` → `square`. For custom ratios, pick the closest named aspect.
-- Generate sequentially through the outline. On failure, auto-retry once.
-- Save each image to `{output-dir}/NN-{type}-{slug}.png`.
+1. Call `image_generate(prompt=..., aspect_ratio=...)`. `image_generate` returns a JSON result containing an image URL; it does NOT write to disk and does NOT accept an output path.
+2. Map the prompt's `ASPECT` to `image_generate`'s enum: `16:9` → `landscape`, `9:16` → `portrait`, `1:1` → `square`. Custom ratios → nearest named aspect.
+3. Download the returned URL to `{output-dir}/NN-{type}-{slug}.png` via `terminal` (e.g. `curl -sSL -o "{output-dir}/NN-{type}-{slug}.png" "{url}"`).
+4. On generation failure, auto-retry once.
+
+Note: the underlying image-generation backend is user-configured (default: FAL FLUX 2 Klein 9B) and is NOT agent-selectable via `image_generate`. Do not write model names into prompts expecting them to route.
 
 ### Step 7: Finalize
 
@@ -199,3 +202,5 @@ Images: X/N generated
 3. **Don't illustrate metaphors literally** — visualize the underlying concept.
 4. **Prompt files are mandatory** — no image generation without a saved prompt file. The file is what lets you regenerate or switch backends later.
 5. **`image_generate` aspect ratios** — the tool supports `landscape`, `portrait`, and `square`. Custom ratios map to the nearest option.
+6. **`image_generate` returns a URL, not a local file** — always download via `terminal` (`curl`) before inserting local image paths into the article.
+7. **No backend selection from the agent** — `image_generate` uses whatever model the user configured (default: FAL FLUX 2 Klein 9B). Don't write `"use <model> to generate this"` into prompts expecting it to route.

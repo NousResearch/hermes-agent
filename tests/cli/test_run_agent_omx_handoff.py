@@ -1,3 +1,4 @@
+import os
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -92,6 +93,8 @@ def test_run_conversation_hands_off_code_tasks_to_omx_when_enabled(mock_sys, mon
     monkeypatch.setattr("run_agent.AIAgent._persist_session", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._save_trajectory", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._cleanup_task_resources", lambda *args, **kwargs: None)
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_streaming_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
 
     def _unexpected_api(*args, **kwargs):
         raise AssertionError("model API should not be called when OMX handoff is active")
@@ -163,6 +166,8 @@ def test_run_conversation_falls_back_to_normal_path_when_omx_handoff_fails(mock_
     monkeypatch.setattr("run_agent.AIAgent._persist_session", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._save_trajectory", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._cleanup_task_resources", lambda *args, **kwargs: None)
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_streaming_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
     monkeypatch.setattr("gateway.meta_router_executor.run_phase2", lambda *args, **kwargs: _phase2_result(state_dir))
     monkeypatch.setattr(
         "gateway.meta_router_executor.format_routed_response",
@@ -277,6 +282,8 @@ def test_run_conversation_routes_correction_pass_back_through_omx(mock_sys, monk
     monkeypatch.setattr("run_agent.AIAgent._persist_session", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._save_trajectory", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._cleanup_task_resources", lambda *args, **kwargs: None)
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_streaming_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
 
     def _unexpected_api(*args, **kwargs):
         raise AssertionError("LLM correction pass should not use native API when OMX handoff is active")
@@ -332,9 +339,16 @@ def test_run_conversation_keeps_normal_path_when_omx_disabled(mock_sys, monkeypa
             targets_context="[SoM Targets | code]",
         ),
     )
+    run_outcome_calls = []
+    monkeypatch.setattr(
+        "gateway.meta_router_executor.run_outcome_only",
+        lambda *args, **kwargs: run_outcome_calls.append((args, kwargs)),
+    )
     monkeypatch.setattr("run_agent.AIAgent._persist_session", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._save_trajectory", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._cleanup_task_resources", lambda *args, **kwargs: None)
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_streaming_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
 
     class _Choice:
         def __init__(self):
@@ -368,6 +382,9 @@ def test_run_conversation_keeps_normal_path_when_omx_disabled(mock_sys, monkeypa
     )
 
     assert result["final_response"] == "normal response"
+    assert run_outcome_calls
+    _, kwargs = run_outcome_calls[0]
+    assert kwargs["request_id"] == "rid-normal"
 
 
 @patch("run_agent.AIAgent._build_system_prompt", return_value="system prompt")
@@ -406,6 +423,8 @@ def test_run_conversation_logs_outcome_when_routed_response_is_empty(mock_sys, m
     monkeypatch.setattr("run_agent.AIAgent._persist_session", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._save_trajectory", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._cleanup_task_resources", lambda *args, **kwargs: None)
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_streaming_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
 
     class _Choice:
         def __init__(self):
@@ -489,6 +508,8 @@ def test_run_conversation_logs_terminal_outcome_when_phase2_block_raises(mock_sy
     monkeypatch.setattr("run_agent.AIAgent._persist_session", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._save_trajectory", lambda *args, **kwargs: None)
     monkeypatch.setattr("run_agent.AIAgent._cleanup_task_resources", lambda *args, **kwargs: None)
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
+    monkeypatch.setattr("run_agent.AIAgent._interruptible_streaming_api_call", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API path should not be used")))
 
     class _Choice:
         def __init__(self):
@@ -532,3 +553,65 @@ def test_run_conversation_logs_terminal_outcome_when_phase2_block_raises(mock_sy
     assert kwargs["error"] == "phase2-block-exception"
     assert "phase=phase2-exception" in kwargs["notes_extra"]
     assert any(note.startswith("phase2_exception=boom") for note in kwargs["notes_extra"])
+
+
+@patch("run_agent.AIAgent._build_system_prompt", return_value="system prompt")
+def test_run_conversation_omx_handoff_uses_state_dir_when_terminal_cwd_missing(mock_sys, monkeypatch, tmp_path):
+    from run_agent import AIAgent
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    captured = {}
+
+    monkeypatch.setenv("HERMES_ENABLE_OMX_EXECUTOR", "1")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.delenv("MESSAGING_CWD", raising=False)
+
+    def fake_execute_request(request, *, workdir=None, command_override=None):
+        captured['workdir'] = str(workdir)
+        output_path = Path(request['output_path'])
+        output_path.write_text('ok', encoding='utf-8')
+        Path(request['result_path']).write_text(
+            json.dumps({
+                'request_id': request['request_id'],
+                'status': 'completed',
+                'engine': 'omx',
+                'workflow': 'plain',
+                'output_path': request['output_path'],
+            }),
+            encoding='utf-8',
+        )
+        return {
+            'request_id': request['request_id'],
+            'status': 'completed',
+            'engine': 'omx',
+            'workflow': 'plain',
+            'output_path': request['output_path'],
+        }
+
+    monkeypatch.setattr("gateway.omx_executor.execute_request", fake_execute_request)
+
+    agent = AIAgent(
+        model="test/model",
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+        api_mode="chat_completions",
+        quiet_mode=True,
+        skip_memory=True,
+        skip_context_files=True,
+    )
+    agent.session_id = 'rid-omx-cwd'
+    agent._mr_request_id = 'rid-omx-cwd'
+    agent._mr_task_type = 'code'
+    agent._mr_original_task = 'Implement a tiny helper.'
+    agent._mr_directive = '[META-ROUTER | code | execute]'
+    agent._mr_routing_artifact_version = 'candidate-0010'
+    agent._mr_som_state_dir = state_dir
+    agent._mr_targets_context = '[SoM Targets | code]'
+    agent._mr_context_brief_path = None
+
+    response_text, exec_result = agent._run_omx_handoff()
+
+    assert response_text == 'ok'
+    assert exec_result['status'] == 'completed'
+    assert captured['workdir'] == os.getcwd()

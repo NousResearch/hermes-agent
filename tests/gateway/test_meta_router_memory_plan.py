@@ -91,3 +91,16 @@ def test_classify_response_exposes_memory_plan_and_prepend_text(monkeypatch):
     assert data["required_tools"] == ["memory_search", "qmd__query"]
     assert data["prepend_text"].startswith("[META-ROUTER | research | execute]")
     assert "[META-MEMORY]" in data["prepend_text"]
+
+
+def test_make_route_decision_bypasses_internal_reset_flush_prompt(monkeypatch):
+    _capture_events(monkeypatch)
+
+    decision = runtime.make_route_decision(
+        "[System: This session is about to be automatically reset due to inactivity or a scheduled daily reset. The conversation context will be cleared after this turn.]",
+        source="cli",
+        surface="cli",
+    )
+
+    assert decision.bypassed is True
+    assert decision.bypass_reason == "internal-reset-flush"

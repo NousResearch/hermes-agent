@@ -62,6 +62,8 @@ def get_bypass_reason(text: str) -> str:
 
     if not trimmed:
         return "empty"
+    if "This session is about to be automatically reset due to inactivity or a scheduled daily reset" in trimmed:
+        return "internal-reset-flush"
     if re.fullmatch(r"/\S+", trimmed):
         return "command"
     if trimmed[:1] in {"!", "#"}:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -213,6 +214,13 @@ def resolve_omx_command(command_override: str | None = None) -> list[str]:
     if local_omx:
         return [local_omx]
 
+    for candidate in [
+        Path.home() / ".npm-global" / "bin" / "omx",
+        Path.home() / ".local" / "bin" / "omx",
+    ]:
+        if candidate.exists():
+            return [str(candidate)]
+
     return list(DEFAULT_OMX_COMMAND)
 
 
@@ -222,13 +230,18 @@ def build_omx_exec_command(
     *,
     request_path: Path | str | None = None,
     command_override: str | None = None,
+    workdir: Path | str | None = None,
 ) -> list[str]:
     cmd = resolve_omx_command(command_override)
     prompt = render_omx_prompt(request, request_path=request_path)
     state_dir = str(request.get("state_dir") or "")
+    effective_workdir = str(Path(workdir) if workdir is not None else Path(state_dir)) if state_dir or workdir is not None else ""
 
     argv = [*cmd, "exec"]
+    argv.append("--ignore-user-config")
     argv.extend(["--sandbox", "workspace-write"])
+    if effective_workdir:
+        argv.extend(["-C", effective_workdir])
     # State dirs (e.g. /home/.../rql/state/<id>) are not git repos; without this
     # flag codex aborts with "Not inside a trusted directory".
     argv.append("--skip-git-repo-check")
@@ -246,8 +259,8 @@ def execute_request(
     command_override: str | None = None,
 ) -> dict[str, Any]:
     request_path = write_execution_request(request)
-    cmd = build_omx_exec_command(request, request_path=request_path, command_override=command_override)
     cwd = str(Path(workdir) if workdir is not None else Path(str(request["state_dir"])))
+    cmd = build_omx_exec_command(request, request_path=request_path, command_override=command_override, workdir=cwd)
     timeout = int(request.get("executor_policy", {}).get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
 
     workflow = str(request.get("executor_policy", {}).get("workflow", DEFAULT_WORKFLOW))
@@ -273,6 +286,15 @@ def execute_request(
     if codex_version:
         base["codex_version"] = codex_version
 
+    env = dict(os.environ)
+    path_entries = [
+        str(Path.home() / ".npm-global" / "bin"),
+        str(Path.home() / ".local" / "bin"),
+        str(Path.home() / "bin"),
+        env.get("PATH", ""),
+    ]
+    env["PATH"] = os.pathsep.join(entry for entry in path_entries if entry)
+
     try:
         proc = subprocess.run(
             cmd,
@@ -280,6 +302,7 @@ def execute_request(
             text=True,
             timeout=timeout,
             cwd=cwd,
+            env=env,
         )
     except FileNotFoundError as exc:
         result = {
@@ -295,6 +318,42 @@ def execute_request(
         _persist_execution_result(result_path, result)
         return result
     except subprocess.TimeoutExpired as exc:
+        if result_path.exists():
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                result = {}
+            for key, value in base.items():
+                result.setdefault(key, value)
+            if output_path.exists():
+                result["status"] = "completed"
+            else:
+                result.setdefault("status", "failed")
+            result.setdefault("returncode", None)
+            result["timed_out"] = True
+            result["timeout_seconds"] = timeout
+            result.setdefault("stdout", exc.stdout or "")
+            result.setdefault("stderr", exc.stderr or "")
+            if not output_path.exists():
+                result.setdefault("auth_failed", False)
+                result.setdefault("executor_unavailable", False)
+                result.setdefault("error", f"omx execution timed out after {timeout}s")
+            _persist_execution_result(result_path, result)
+            return result
+        if output_path.exists():
+            result = {
+                **base,
+                "status": "completed",
+                "returncode": None,
+                "stdout": exc.stdout or "",
+                "stderr": exc.stderr or "",
+                "auth_failed": False,
+                "executor_unavailable": False,
+                "timed_out": True,
+                "timeout_seconds": timeout,
+            }
+            _persist_execution_result(result_path, result)
+            return result
         result = {
             **base,
             "status": "failed",

@@ -1905,7 +1905,7 @@ def _normalize_custom_provider_entry(
     from urllib.parse import urlparse
 
     base_url = ""
-    for url_key in ("base_url", "url", "api"):
+    for url_key in ("api", "url", "base_url"):
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
             candidate = raw_url.strip()

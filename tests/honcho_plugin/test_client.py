@@ -14,7 +14,7 @@ from plugins.memory.honcho.client import (
     reset_honcho_client,
     resolve_active_host,
     resolve_config_path,
-    GLOBAL_CONFIG_PATH,
+    resolve_global_config_path,
     HOST,
 )
 
@@ -360,7 +360,7 @@ class TestResolveConfigPath:
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
              patch.object(Path, "home", return_value=fake_home):
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
 
     def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
         fake_home = tmp_path / "fakehome"
@@ -370,7 +370,18 @@ class TestResolveConfigPath:
              patch.object(Path, "home", return_value=fake_home):
             os.environ.pop("HERMES_HOME", None)
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
+
+    def test_global_fallback_uses_home_at_call_time(self, tmp_path):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=fake_home):
+            assert resolve_global_config_path() == fake_home / ".honcho" / "config.json"
+            assert resolve_config_path() == fake_home / ".honcho" / "config.json"
 
     def test_from_global_config_uses_local_path(self, tmp_path):
         hermes_home = tmp_path / "hermes"

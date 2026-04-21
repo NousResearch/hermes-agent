@@ -171,6 +171,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
+    "moonshotai/Kimi-K2.6": 262144,
     "MiniMaxAI/MiniMax-M2.5": 204800,
     "XiaomiMiMo/MiMo-V2-Flash": 256000,
     "mimo-v2-pro": 1000000,

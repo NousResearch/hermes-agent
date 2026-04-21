@@ -878,6 +878,10 @@ class InsightsEngine:
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+        cost_note = ""
+        if o.get("models_without_pricing"):
+            cost_note = " _(excludes custom/self-hosted models)_"
+        lines.append(f"**Est. cost:** ${o['estimated_cost']:.2f}{cost_note}")
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")
@@ -886,7 +890,8 @@ class InsightsEngine:
         if report["models"]:
             lines.append("**🤖 Models:**")
             for m in report["models"][:5]:
-                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
+                cost_str = f"${m['cost']:.2f}" if m.get("has_pricing") else "N/A"
+                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens, {cost_str}")
             lines.append("")
 
         # Platforms (if multi-platform)

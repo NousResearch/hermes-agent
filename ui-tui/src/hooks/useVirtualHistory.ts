@@ -124,14 +124,17 @@ export function useVirtualHistory(
   const vp = Math.max(0, scrollRef.current?.getViewportHeight() ?? 0)
   const sticky = scrollRef.current?.isSticky() ?? true
 
-  const frozenRange = freezeRenders.current > 0 ? prevRange.current : null
+  // During a freeze, drop the frozen range if items shrank past its start
+  // (/clear, compaction) — clamping would collapse to an empty mount and
+  // flash blank. Fall through to the normal path in that case.
+  const frozenRange =
+    freezeRenders.current > 0 && prevRange.current && prevRange.current[0] < n ? prevRange.current : null
 
   let start = 0
   let end = n
 
   if (frozenRange) {
-    // Clamp in case items shrank (/clear, compaction) mid-freeze.
-    start = Math.min(frozenRange[0], n)
+    start = frozenRange[0]
     end = Math.min(frozenRange[1], n)
   } else if (n > 0) {
     if (vp <= 0) {

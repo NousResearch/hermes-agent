@@ -80,7 +80,10 @@ export async function captureMemoryDiagnostics(trigger: MemoryTrigger): Promise<
   const smapsRollup = await swallow(() => readFile('/proc/self/smaps_rollup', 'utf8'))
 
   const nativeMemory = usage.rss - usage.heapUsed
-  const bytesPerSecond = uptimeSeconds > 0 ? usage.rss / uptimeSeconds : 0
+  // Real growth rate since STARTED_AT (captured at module load) — NOT a lifetime
+  // average of rss/uptime, which would report phantom "growth" for a stable process.
+  const elapsed = Math.max(0, uptimeSeconds - STARTED_AT.uptime)
+  const bytesPerSecond = elapsed > 0 ? (usage.rss - STARTED_AT.rss) / elapsed : 0
   const mbPerHour = (bytesPerSecond * 3600) / (1024 * 1024)
 
   const potentialLeaks = [
@@ -171,6 +174,8 @@ export function formatBytes(bytes: number): string {
 }
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB']
+
+const STARTED_AT = { rss: process.memoryUsage().rss, uptime: process.uptime() }
 
 // Returns undefined when the probe isn't available (non-Linux paths, sandboxed FS).
 const swallow = async <T>(fn: () => Promise<T>): Promise<T | undefined> => {

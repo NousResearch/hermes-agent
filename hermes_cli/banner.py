@@ -146,7 +146,17 @@ def check_for_updates() -> Optional[int]:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
             if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
-                return cached.get("behind")
+                cached_head = cached.get("head")
+                cached_origin = cached.get("origin")
+                current_head = _git_short_hash(repo_dir, "HEAD")
+                current_origin = _git_short_hash(repo_dir, "origin/main")
+                if (
+                    cached_head
+                    and cached_origin
+                    and current_head == cached_head
+                    and current_origin == cached_origin
+                ):
+                    return cached.get("behind")
     except Exception:
         pass
 
@@ -174,9 +184,21 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         behind = None
 
+    current_head = _git_short_hash(repo_dir, "HEAD")
+    current_origin = _git_short_hash(repo_dir, "origin/main")
+
     # Write cache
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "ts": now,
+                    "behind": behind,
+                    "head": current_head,
+                    "origin": current_origin,
+                }
+            )
+        )
     except Exception:
         pass
 

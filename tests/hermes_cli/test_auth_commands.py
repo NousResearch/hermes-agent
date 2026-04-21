@@ -1011,3 +1011,177 @@ def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):
     # Verify the auth store was NOT modified (no auto-import happened)
     after = json.loads((hermes_home / "auth.json").read_text())
     assert "openai-codex" not in after.get("providers", {})
+
+
+def test_auth_remove_env_seeded_suppresses_shell_exported_var(tmp_path, monkeypatch, capsys):
+    """`hermes auth remove xai 1` must stick even when the env var is exported
+    by the shell (not written into ~/.hermes/.env).  Before PR for #13371 the
+    removal silently restored on next load_pool() because _seed_from_env()
+    re-read os.environ.  Now env:<VAR> is suppressed in auth.json.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Simulate shell export (NOT written to .env)
+    monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
+    (hermes_home / ".env").write_text("")
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "xai": [{
+                    "id": "env-1",
+                    "label": "XAI_API_KEY",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "env:XAI_API_KEY",
+                    "access_token": "sk-xai-shell-export",
+                    "base_url": "https://api.x.ai/v1",
+                }]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+    auth_remove_command(SimpleNamespace(provider="xai", target="1"))
+
+    # Suppression marker written
+    after = json.loads((hermes_home / "auth.json").read_text())
+    assert "env:XAI_API_KEY" in after.get("suppressed_sources", {}).get("xai", [])
+
+    # Diagnostic printed pointing at the shell
+    out = capsys.readouterr().out
+    assert "still set in your shell environment" in out
+    assert "Cleared XAI_API_KEY from .env" not in out  # wasn't in .env
+
+    # Fresh simulation: shell re-exports, reload pool
+    monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
+    from agent.credential_pool import load_pool
+    pool = load_pool("xai")
+    assert not pool.has_credentials(), "pool must stay empty — env:XAI_API_KEY suppressed"
+
+
+def test_auth_remove_env_seeded_dotenv_only_no_shell_hint(tmp_path, monkeypatch, capsys):
+    """When the env var lives only in ~/.hermes/.env (not the shell), the
+    shell-hint should NOT be printed — avoid scaring the user about a
+    non-existent shell export.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Key ONLY in .env, shell must not have it
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    (hermes_home / ".env").write_text("DEEPSEEK_API_KEY=sk-ds-only\n")
+    # Mimic load_env() populating os.environ
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds-only")
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "deepseek": [{
+                    "id": "env-1",
+                    "label": "DEEPSEEK_API_KEY",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "env:DEEPSEEK_API_KEY",
+                    "access_token": "sk-ds-only",
+                }]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+    auth_remove_command(SimpleNamespace(provider="deepseek", target="1"))
+
+    out = capsys.readouterr().out
+    assert "Cleared DEEPSEEK_API_KEY from .env" in out
+    assert "still set in your shell environment" not in out
+    assert (hermes_home / ".env").read_text().strip() == ""
+
+
+def test_auth_add_clears_env_suppression_for_provider(tmp_path, monkeypatch):
+    """Re-adding a credential via `hermes auth add <provider>` clears any
+    env:<VAR> suppression marker — strong signal the user wants auth back.
+    Matches the Codex device_code re-link behaviour.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "suppressed_sources": {"xai": ["env:XAI_API_KEY"]},
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_add_command
+
+    assert is_source_suppressed("xai", "env:XAI_API_KEY") is True
+    auth_add_command(SimpleNamespace(
+        provider="xai", auth_type="api_key",
+        api_key="sk-xai-manual", label="manual",
+    ))
+    assert is_source_suppressed("xai", "env:XAI_API_KEY") is False
+
+
+def test_seed_from_env_respects_env_suppression(tmp_path, monkeypatch):
+    """_seed_from_env() must skip env:<VAR> sources that the user suppressed
+    via `hermes auth remove`.  This is the gate that prevents shell-exported
+    keys from resurrecting removed credentials.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
+
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"xai": ["env:XAI_API_KEY"]},
+    }))
+
+    from agent.credential_pool import _seed_from_env
+
+    entries = []
+    changed, active = _seed_from_env("xai", entries)
+    assert changed is False
+    assert entries == []
+    assert active == set()
+
+
+def test_seed_from_env_respects_openrouter_suppression(tmp_path, monkeypatch):
+    """OpenRouter is the special-case branch in _seed_from_env; verify it
+    honours suppression too.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-shell-export")
+
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"openrouter": ["env:OPENROUTER_API_KEY"]},
+    }))
+
+    from agent.credential_pool import _seed_from_env
+
+    entries = []
+    changed, active = _seed_from_env("openrouter", entries)
+    assert changed is False
+    assert entries == []
+    assert active == set()

@@ -402,7 +402,7 @@ def _browser_cdp_check() -> bool:
 
 registry.register(
     name="browser_cdp",
-    toolset="browser",
+    toolset="browser-cdp",
     schema=BROWSER_CDP_SCHEMA,
     handler=lambda args, **kw: browser_cdp(
         method=args.get("method", ""),

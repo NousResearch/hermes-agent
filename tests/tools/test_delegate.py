@@ -390,7 +390,7 @@ class TestToolNamePreservation(unittest.TestCase):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
 
-            def capture_and_return(user_message):
+            def capture_and_return(user_message, task_id=None):
                 captured["saved"] = list(mock_child._delegate_saved_tool_names)
                 return {"final_response": "ok", "completed": True, "api_calls": 1}
 
@@ -1932,7 +1932,7 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m.thinking_callback = None
                 orch_mock["agent"] = m
 
-                def _orchestrator_run(user_message=None):
+                def _orchestrator_run(user_message=None, task_id=None):
                     # Re-entrant: orchestrator spawns two leaves
                     delegate_task(
                         tasks=[{"goal": "leaf-A"}, {"goal": "leaf-B"}],

@@ -112,6 +112,200 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+# LaTeX-to-Unicode mapping for normalizing mathematical symbols
+_LATEX_TO_UNICODE = {
+    # Arrows
+    r'\\rightarrow': '→',
+    r'\\leftarrow': '←',
+    r'\\Rightarrow': '⇒',
+    r'\\Leftarrow': '⇐',
+    r'\\leftrightarrow': '↔',
+    r'\\longrightarrow': '⟶',
+    r'\\longleftarrow': '⟵',
+    r'\\Longrightarrow': '⟹',
+    r'\\Longleftarrow': '⟸',
+    r'\\longleftrightarrow': '⟷',
+    # Comparison operators
+    r'\\leq': '≤',
+    r'\\le': '≤',
+    r'\\geq': '≥',
+    r'\\ge': '≥',
+    r'\\neq': '≠',
+    r'\\ne': '≠',
+    r'\\approx': '≈',
+    r'\\equiv': '≡',
+    r'\\sim': '∼',
+    r'\\simeq': '≃',
+    r'\\cong': '≅',
+    r'\\propto': '∝',
+    r'\\ll': '≪',
+    r'\\gg': '≫',
+    # Arithmetic
+    r'\\times': '×',
+    r'\\div': '÷',
+    r'\\pm': '±',
+    r'\\mp': '∓',
+    r'\\cdot': '·',
+    r'\\circ': '∘',
+    r'\\bullet': '•',
+    # Sets and logic
+    r'\\in': '∈',
+    r'\\notin': '∉',
+    r'\\ni': '∋',
+    r'\\subset': '⊂',
+    r'\\supset': '⊃',
+    r'\\subseteq': '⊆',
+    r'\\supseteq': '⊇',
+    r'\\cup': '∪',
+    r'\\cap': '∩',
+    r'\\forall': '∀',
+    r'\\exists': '∃',
+    r'\\nexists': '∄',
+    r'\\emptyset': '∅',
+    r'\\varnothing': '∅',
+    r'\\setminus': '∖',
+    r'\\land': '∧',
+    r'\\wedge': '∧',
+    r'\\lor': '∨',
+    r'\\vee': '∨',
+    r'\\neg': '¬',
+    r'\\implies': '⟹',
+    r'\\iff': '⟺',
+    # Calculus and analysis
+    r'\\infty': '∞',
+    r'\\partial': '∂',
+    r'\\nabla': '∇',
+    r'\\sum': '∑',
+    r'\\prod': '∏',
+    r'\\coprod': '∐',
+    r'\\int': '∫',
+    r'\\iint': '∬',
+    r'\\iiint': '∭',
+    r'\\oint': '∮',
+    r'\\sqrt': '√',
+    r'\\surd': '√',
+    # Greek letters (lowercase)
+    r'\\alpha': 'α',
+    r'\\beta': 'β',
+    r'\\gamma': 'γ',
+    r'\\delta': 'δ',
+    r'\\epsilon': 'ε',
+    r'\\varepsilon': 'ε',
+    r'\\zeta': 'ζ',
+    r'\\eta': 'η',
+    r'\\theta': 'θ',
+    r'\\vartheta': 'ϑ',
+    r'\\iota': 'ι',
+    r'\\kappa': 'κ',
+    r'\\lambda': 'λ',
+    r'\\mu': 'μ',
+    r'\\nu': 'ν',
+    r'\\xi': 'ξ',
+    r'\\omicron': 'ο',
+    r'\\pi': 'π',
+    r'\\varpi': 'ϖ',
+    r'\\rho': 'ρ',
+    r'\\varrho': 'ϱ',
+    r'\\sigma': 'σ',
+    r'\\varsigma': 'ς',
+    r'\\tau': 'τ',
+    r'\\upsilon': 'υ',
+    r'\\phi': 'φ',
+    r'\\varphi': 'φ',
+    r'\\chi': 'χ',
+    r'\\psi': 'ψ',
+    r'\\omega': 'ω',
+    # Greek letters (uppercase)
+    r'\\Alpha': 'Α',
+    r'\\Beta': 'Β',
+    r'\\Gamma': 'Γ',
+    r'\\Delta': 'Δ',
+    r'\\Epsilon': 'Ε',
+    r'\\Zeta': 'Ζ',
+    r'\\Eta': 'Η',
+    r'\\Theta': 'Θ',
+    r'\\Iota': 'Ι',
+    r'\\Kappa': 'Κ',
+    r'\\Lambda': 'Λ',
+    r'\\Mu': 'Μ',
+    r'\\Nu': 'Ν',
+    r'\\Xi': 'Ξ',
+    r'\\Omicron': 'Ο',
+    r'\\Pi': 'Π',
+    r'\\Rho': 'Ρ',
+    r'\\Sigma': 'Σ',
+    r'\\Tau': 'Τ',
+    r'\\Upsilon': 'Υ',
+    r'\\Phi': 'Φ',
+    r'\\Chi': 'Χ',
+    r'\\Psi': 'Ψ',
+    r'\\Omega': 'Ω',
+    # Miscellaneous
+    r'\\ldots': '…',
+    r'\\cdots': '⋯',
+    r'\\vdots': '⋮',
+    r'\\ddots': '⋱',
+    r'\\dots': '…',
+    r'\\langle': '⟨',
+    r'\\rangle': '⟩',
+    r'\\lceil': '⌈',
+    r'\\rceil': '⌉',
+    r'\\lfloor': '⌊',
+    r'\\rfloor': '⌋',
+    r'\\degree': '°',
+    r'\\celsius': '℃',
+    r'\\fahrenheit': '℉',
+    r'\\micro': 'µ',
+    r'\\ohm': 'Ω',
+    r'\\angstrom': 'Å',
+    r'\\hbar': 'ℏ',
+    r'\\ell': 'ℓ',
+    r'\\Re': 'ℜ',
+    r'\\Im': 'ℑ',
+    r'\\aleph': 'ℵ',
+    r'\\wp': '℘',
+    r'\\dagger': '†',
+    r'\\ddagger': '‡',
+    r'\\star': '⋆',
+    r'\\circ': '∘',
+    r'\\diamond': '⋄',
+    r'\\triangle': '△',
+    r'\\bigtriangleup': '△',
+    r'\\bigtriangledown': '▽',
+    r'\\angle': '∠',
+    r'\\measuredangle': '∡',
+    r'\\sphericalangle': '∢',
+    r'\\perp': '⊥',
+    r'\\parallel': '∥',
+    r'\\nparallel': '∦',
+}
+
+
+def _normalize_latex(text: str) -> str:
+    """Normalize LaTeX-style sequences to Unicode equivalents.
+    
+    Converts common LaTeX macros (like \\rightarrow, \\alpha, \\sum) to their
+    Unicode counterparts before the text enters MarkdownV2 formatting.
+    This prevents raw LaTeX from leaking into Telegram messages.
+    
+    Args:
+        text: Input text that may contain LaTeX macros
+        
+    Returns:
+        Text with LaTeX macros replaced by Unicode characters
+    """
+    if not text:
+        return text
+    
+    result = text
+    for latex, unicode_char in _LATEX_TO_UNICODE.items():
+        # Use word boundary to avoid partial matches
+        # e.g., \\alpha should not match \\alphabetic
+        result = re.sub(latex + r'(?![a-zA-Z])', unicode_char, result)
+    
+    return result
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -1826,6 +2020,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not content:
             return content
+
+        # Normalize LaTeX-style sequences to Unicode before any formatting
+        # This prevents raw LaTeX like \rightarrow from leaking into messages
+        content = _normalize_latex(content)
 
         placeholders: dict = {}
         counter = [0]

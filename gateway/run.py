@@ -1581,6 +1581,9 @@ class GatewayRunner:
                         status_parts.append(f"{elapsed_min} min elapsed")
                 if max_iter:
                     status_parts.append(f"iteration {iteration}/{max_iter}")
+                task_preview = summary.get("current_task_preview", "")
+                if task_preview:
+                    status_parts.append(f'task: "{task_preview}"')
                 if current_tool:
                     status_parts.append(f"running: {current_tool}")
             except Exception:
@@ -5142,6 +5145,34 @@ class GatewayRunner:
             )
             return "⚡ Stopped. You can continue this session."
         else:
+            # No exact session_key match.  Check if there's a running agent
+            # for the same platform + chat_id (handles session_key drift when
+            # config changes or race conditions cause key mismatch).
+            if self._running_agents:
+                platform_val = source.platform.value if source.platform else None
+                chat_id = source.chat_id
+                fallback_key = None
+                for sk, ag in list(self._running_agents.items()):
+                    # Extract platform and chat_id from the session key
+                    # Format: "platform:chat_id" or "platform:chat_id:user_id"
+                    parts = sk.split(":")
+                    sk_platform = parts[0] if parts else None
+                    sk_chat = parts[1] if len(parts) > 1 else None
+                    if sk_platform == platform_val and sk_chat == str(chat_id):
+                        fallback_key = sk
+                        break
+                if fallback_key:
+                    logger.info(
+                        "STOP fallback: session_key mismatch (expected=%s, found=%s) — stopping fallback match",
+                        session_key[:30], fallback_key[:30],
+                    )
+                    await self._interrupt_and_clear_session(
+                        fallback_key,
+                        source,
+                        interrupt_reason=_INTERRUPT_REASON_STOP,
+                        invalidation_reason="stop_command_fallback",
+                    )
+                    return "⚡ Stopped. You can continue this session."
             return "No active task to stop."
 
     async def _handle_restart_command(self, event: MessageEvent) -> str:
@@ -10203,6 +10234,12 @@ class GatewayRunner:
                     try:
                         _a = _agent_ref.get_activity_summary()
                         _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
+                        
+                        # Add task preview if available
+                        _task_preview = _a.get("current_task_preview", "")
+                        if _task_preview:
+                            _parts.append(f"task: \"{_task_preview}\"")
+                        
                         if _a.get("current_tool"):
                             _parts.append(f"running: {_a['current_tool']}")
                         else:

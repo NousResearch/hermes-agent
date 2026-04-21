@@ -1005,6 +1005,7 @@ class AIAgent:
         # notifications to show progress.
         self._last_activity_ts: float = time.time()
         self._last_activity_desc: str = "initializing"
+        self._current_task_preview: str = ""  # Preview of current task for "still working" notifications
         self._current_tool: str | None = None
         self._api_call_count: int = 0
 
@@ -3728,6 +3729,7 @@ class AIAgent:
         return {
             "last_activity_ts": self._last_activity_ts,
             "last_activity_desc": self._last_activity_desc,
+            "current_task_preview": self._current_task_preview,
             "seconds_since_activity": round(elapsed, 1),
             "current_tool": self._current_tool,
             "api_call_count": self._api_call_count,
@@ -8665,6 +8667,7 @@ class AIAgent:
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
+        self._current_task_preview = user_message[:80] + ("..." if len(user_message) > 80 else "")
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:

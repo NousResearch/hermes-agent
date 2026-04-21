@@ -136,7 +136,7 @@ export function stripJsonComments(content: string): string {
   return result.replace(/,(\s*[}\]])/g, '$1')
 }
 
-function isRemoteShellSession(env: NodeJS.ProcessEnv): boolean {
+export function isRemoteShellSession(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env['SSH_CONNECTION'] || env['SSH_TTY'] || env['SSH_CLIENT'])
 }
 

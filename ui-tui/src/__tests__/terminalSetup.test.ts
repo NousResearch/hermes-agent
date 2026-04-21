@@ -45,6 +45,13 @@ describe('terminalSetup helpers', () => {
     const input = '[{"key":"a","args":{"text":"// not a comment"}}]'
     expect(JSON.parse(stripJsonComments(input))).toEqual([{ key: 'a', args: { text: '// not a comment' } }])
   })
+
+  it('handles unterminated block comments gracefully', () => {
+    const input = '[{"key":"a"} /* never closed'
+    const stripped = stripJsonComments(input)
+    // The unterminated comment is consumed to end-of-file; the remainder is parseable
+    expect(stripped).toBe('[{"key":"a"} ')
+  })
 })
 
 describe('configureTerminalKeybindings', () => {
@@ -112,6 +119,23 @@ describe('configureTerminalKeybindings', () => {
     expect(result.success).toBe(true)
     expect(writeFile).toHaveBeenCalledTimes(1)
     expect(copyFile).toHaveBeenCalledTimes(1) // backup created before writing
+  })
+
+  it('reports error when keybindings.json is not readable (EACCES)', async () => {
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockRejectedValue(Object.assign(new Error('permission denied'), { code: 'EACCES' }))
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('Failed to read')
+    expect(writeFile).not.toHaveBeenCalled()
   })
 
   it('auto-detects the current IDE terminal', async () => {

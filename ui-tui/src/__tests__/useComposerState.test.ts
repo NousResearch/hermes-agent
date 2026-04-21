@@ -40,10 +40,16 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('http://localhost/file.pdf')).toBe(false)
   })
 
-  it('treats leading-slash strings as potential paths (server-side validates)', () => {
-    // The heuristic is intentionally broad — starts with / could be a path.
-    // Server-side image.attach / input.detect_drop does real validation.
-    expect(looksLikeDroppedPath('/help')).toBe(true)
-    expect(looksLikeDroppedPath('/model sonnet')).toBe(true)
+  it('rejects short slash-like strings without path structure', () => {
+    // No second '/' or '.' → not a plausible file path
+    expect(looksLikeDroppedPath('/help')).toBe(false)
+    expect(looksLikeDroppedPath('/model sonnet')).toBe(false)
+    expect(looksLikeDroppedPath('/api')).toBe(false)
+  })
+
+  it('accepts absolute paths with directory separators or extensions', () => {
+    expect(looksLikeDroppedPath('/usr/bin/test')).toBe(true)
+    expect(looksLikeDroppedPath('/tmp/file.txt')).toBe(true)
+    expect(looksLikeDroppedPath('/etc/hosts')).toBe(true) // has second /
   })
 })

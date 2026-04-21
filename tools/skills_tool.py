@@ -509,7 +509,6 @@ def _get_disabled_skill_names() -> Set[str]:
 
 def _is_skill_disabled(name: str, platform: str = None) -> bool:
     """Check if a skill is disabled in config."""
-    import os
     try:
         from hermes_cli.config import load_config
         config = load_config()

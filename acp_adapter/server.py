@@ -613,8 +613,8 @@ class HermesACPAgent(acp.Agent):
             await self._conn.session_update(
                 session_id=session_id,
                 update=AvailableCommandsUpdate(
-                    sessionUpdate="available_commands_update",
-                    availableCommands=self._available_commands(),
+                    session_update="available_commands_update",
+                    available_commands=self._available_commands(),
                 ),
             )
         except Exception:

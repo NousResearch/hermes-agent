@@ -1,4 +1,4 @@
-import { introMsg, toTranscriptMessages, attachedImageNotice } from '../../../domain/messages.js'
+import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import type {
   BackgroundStartResponse,
   BtwStartResponse,

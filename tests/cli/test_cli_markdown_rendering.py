@@ -110,16 +110,6 @@ def test_strip_mode_preserves_table_structure_while_cleaning_cell_markdown():
     assert "`" not in output
 
 
-def test_strip_mode_preserves_intraword_underscores_in_plain_text():
-    renderable = _render_final_assistant_content(
-        "Resume session 20260421_004545_dd18f4",
-        mode="strip",
-    )
-
-    output = _render_to_text(renderable)
-    assert "20260421_004545_dd18f4" in output
-
-
 def test_strip_mode_preserves_intraword_underscores_in_inline_code_examples():
     renderable = _render_final_assistant_content(
         "Use `20260421_041928_0b82f3`",
@@ -140,20 +130,32 @@ def test_strip_mode_preserves_intraword_double_underscores_in_plain_text():
     assert "foo__bar__baz" in output
 
 
-def test_strip_mode_still_strips_underscore_markdown_emphasis():
-    renderable = _render_final_assistant_content(
-        "_italic_ and __bold__",
-        mode="strip",
-    )
-
-    output = _render_to_text(renderable)
-    assert "italic and bold" in output
-    assert "_italic_" not in output
-    assert "__bold__" not in output
-
-
 def test_final_assistant_content_can_leave_markdown_raw():
     renderable = _render_final_assistant_content("***Bold italic***", mode="raw")
 
     output = _render_to_text(renderable)
     assert "***Bold italic***" in output
+
+
+def test_strip_mode_preserves_intraword_underscores_in_snake_case_identifiers():
+    renderable = _render_final_assistant_content(
+        "Let me look at test_case_with_underscores and SOME_CONST "
+        "then /tmp/snake_case_dir/file_with_name.py",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "test_case_with_underscores" in output
+    assert "SOME_CONST" in output
+    assert "snake_case_dir" in output
+    assert "file_with_name" in output
+
+
+def test_strip_mode_still_strips_boundary_underscore_emphasis():
+    renderable = _render_final_assistant_content(
+        "say _hi_ and __bold__ now",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "say hi and bold now" in output

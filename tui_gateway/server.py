@@ -40,13 +40,22 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOU
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
-# session.branch). While they're running, inbound RPCs — notably
-# approval.respond and session.interrupt — sit unread in the stdin pipe.
-# We route only those slow handlers onto a small thread pool; everything
-# else stays on the main thread so ordering stays sane for the fast path.
-# write_json is already _stdout_lock-guarded, so concurrent response
-# writes are safe.
-_LONG_HANDLERS = frozenset({"cli.exec", "session.branch", "session.resume", "shell.exec", "slash.exec"})
+# session.branch, skills.manage).  While they're running, inbound RPCs —
+# notably approval.respond and session.interrupt — sit unread in the
+# stdin pipe.  We route only those slow handlers onto a small thread pool;
+# everything else stays on the main thread so ordering stays sane for the
+# fast path.  write_json is already _stdout_lock-guarded, so concurrent
+# response writes are safe.
+_LONG_HANDLERS = frozenset(
+    {
+        "cli.exec",
+        "session.branch",
+        "session.resume",
+        "shell.exec",
+        "skills.manage",
+        "slash.exec",
+    }
+)
 
 _pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4)),
@@ -529,6 +538,12 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         _emit("session.info", sid, _session_info(agent))
 
     os.environ["HERMES_MODEL"] = result.new_model
+    # Keep the process-level provider env var in sync with the user's explicit
+    # choice so any ambient re-resolution (credential pool refresh, compressor
+    # rebuild, aux clients) resolves to the new provider instead of the
+    # original one persisted in config or env.
+    if result.target_provider:
+        os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
     return {"value": result.new_model, "warning": result.warning_message or ""}
@@ -2417,15 +2432,22 @@ def _(rid, params: dict) -> dict:
             ]
             return _ok(rid, {"items": items})
 
-        if is_context and query.startswith(("file:", "folder:")):
-            prefix_tag = query.split(":", 1)[0]
-            path_part = query.split(":", 1)[1] or "."
+        # Accept both `@folder:path` and the bare `@folder` form so the user
+        # sees directory listings as soon as they finish typing the keyword,
+        # without first accepting the static `@folder:` hint.
+        if is_context and query in ("file", "folder"):
+            prefix_tag, path_part = query, ""
+        elif is_context and query.startswith(("file:", "folder:")):
+            prefix_tag, _, tail = query.partition(":")
+            path_part = tail
         else:
             prefix_tag = ""
-            path_part = query if not is_context else query
+            path_part = query if is_context else query
 
-        expanded = _normalize_completion_path(path_part)
-        if expanded.endswith("/"):
+        expanded = _normalize_completion_path(path_part) if path_part else "."
+        if expanded == "." or not expanded:
+            search_dir, match = ".", ""
+        elif expanded.endswith("/"):
             search_dir, match = expanded, ""
         else:
             search_dir = os.path.dirname(expanded) or "."
@@ -2434,6 +2456,7 @@ def _(rid, params: dict) -> dict:
         if not os.path.isdir(search_dir):
             return _ok(rid, {"items": []})
 
+        want_dir = prefix_tag == "folder"
         match_lower = match.lower()
         for entry in sorted(os.listdir(search_dir)):
             if match and not entry.lower().startswith(match_lower):
@@ -2442,6 +2465,11 @@ def _(rid, params: dict) -> dict:
                 continue
             full = os.path.join(search_dir, entry)
             is_dir = os.path.isdir(full)
+            # Explicit `@folder:` / `@file:` — honour the user's filter.  Skip
+            # the opposite kind instead of auto-rewriting the completion tag,
+            # which used to defeat the prefix and let `@folder:` list files.
+            if prefix_tag and want_dir != is_dir:
+                continue
             rel = os.path.relpath(full)
             suffix = "/" if is_dir else ""
 

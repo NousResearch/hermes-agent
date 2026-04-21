@@ -47,7 +47,7 @@ references:
     traits: "muted earth tones, soft-edged ink wash, low-contrast backgrounds"
 ```
 
-Character consistency is still driven by the **character sheet workflow** (Step 7.1–7.2) below, which relies on detailed text descriptions rather than direct image references.
+Character consistency is driven by **text descriptions** in `characters/characters.md` (written in Step 3) that get embedded inline in every page prompt (Step 5). The optional PNG character sheet generated in Step 7.1 is a human-facing review artifact, not an input to `image_generate`.
 
 ## Options
 
@@ -188,14 +188,9 @@ Use Hermes' built-in `image_generate` tool for all image rendering. Its schema a
 2. Fetch the image bytes (e.g., `curl -fsSL "<url>" -o <target>.png`)
 3. Verify the file exists and is non-empty before proceeding to the next page
 
-**7.1 Character sheet** — generate it (to `characters/characters.png`, aspect `landscape`) when the comic is multi-page with recurring characters. Skip for simple presets (e.g., four-panel minimalist) or single-page comics. The prompt file at `characters/characters.md` must exist before invoking `image_generate`. After download, the character sheet is consumed **for the agent's own reference** when writing each page's prompt text — Hermes' `image_generate` cannot accept it as a visual input.
+**7.1 Character sheet** — generate it (to `characters/characters.png`, aspect `landscape`) when the comic is multi-page with recurring characters. Skip for simple presets (e.g., four-panel minimalist) or single-page comics. The prompt file at `characters/characters.md` must exist before invoking `image_generate`. The rendered PNG is a **human-facing review artifact** (so the user can visually verify character design) and a reference for later regenerations or manual prompt edits — it does **not** drive Step 7.2. Page prompts are already written in Step 5 from the **text descriptions** in `characters/characters.md`; `image_generate` cannot accept images as visual input.
 
-**7.2 Pages** — each page's prompt MUST already be at `prompts/NN-{cover|page}-[slug].md` before invoking `image_generate`. Because `image_generate` is prompt-only, character consistency is enforced by **embedding character descriptions in every prompt**:
-
-| Character sheet | Strategy |
-|-----------------|----------|
-| Exists | Prepend relevant character descriptions (from `characters/characters.md`) to every page prompt |
-| Skipped | Prompt file already contains all descriptions inline |
+**7.2 Pages** — each page's prompt MUST already be at `prompts/NN-{cover|page}-[slug].md` before invoking `image_generate`. Because `image_generate` is prompt-only, character consistency is enforced by **embedding character descriptions (sourced from `characters/characters.md`) inline in every page prompt during Step 5**. The embedding is done uniformly whether or not a PNG sheet is produced in 7.1; the PNG is only a review/regeneration aid.
 
 **Backup rule**: existing `prompts/…md` and `…png` files → rename with `-backup-YYYYMMDD-HHMMSS` suffix before regenerating.
 
@@ -237,5 +232,5 @@ Full step-by-step workflow (analysis, storyboard, review gates, regeneration var
 - Use stylized alternatives for sensitive public figures
 - **Step 2 confirmation required** - do not skip
 - **Steps 4/6 conditional** - only if user requested in Step 2
-- **Step 7.1 character sheet** - recommended for multi-page comics, optional for simple presets. It is an **agent-facing** reference used to write consistent page prompts; `image_generate` does not accept it as a visual input
+- **Step 7.1 character sheet** - recommended for multi-page comics, optional for simple presets. The PNG is a review/regeneration aid; page prompts (written in Step 5) use the text descriptions in `characters/characters.md`, not the PNG. `image_generate` does not accept images as visual input
 - **Strip secrets** — scan source content for API keys, tokens, or credentials before writing any output file

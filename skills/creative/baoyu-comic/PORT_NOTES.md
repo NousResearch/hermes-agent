@@ -32,7 +32,7 @@ Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.56.
 
 `image_generate`'s schema accepts only `prompt` and `aspect_ratio` (`landscape` | `portrait` | `square`). Upstream's reference-image flow (`--ref characters.png` for character consistency, plus user-supplied refs for style/palette/scene) does not map to this tool, so the workflow was restructured:
 
-- **Character sheet** is still generated, but it is an **agent-facing** reference used when writing each page's prompt text. `image_generate` never sees it as a visual input.
+- **Character sheet PNG** is still generated for multi-page comics, but it is repositioned as a **human-facing review artifact** (for visual verification) and a reference for later regenerations / manual prompt edits. Page prompts themselves are built from the **text descriptions** in `characters/characters.md` (embedded inline during Step 5). `image_generate` never sees the PNG as a visual input.
 - **User-supplied reference images** are reduced to `style` / `palette` / `scene` trait extraction — traits are embedded in the prompt body; the image files themselves are kept only for provenance under `refs/`.
 - **Page prompts** now mandate that character descriptions are embedded inline (copied from `characters/characters.md`) — this is the only mechanism left to enforce cross-page character consistency.
 - **Download step** — after every `image_generate` call, the returned URL is fetched to disk (e.g., `curl -fsSL "<url>" -o <target>.png`) and verified before the workflow advances.

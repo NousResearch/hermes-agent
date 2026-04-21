@@ -340,7 +340,7 @@ Character sheet is recommended for multi-page comics with recurring characters, 
 3. Call `image_generate` with `landscape` format
 4. Download the returned URL → save to `characters/characters.png`
 
-**Important**: the downloaded sheet is for the **agent's own reference** when writing each page's prompt text below. `image_generate` cannot accept it as a visual input.
+**Important**: the downloaded sheet is a **human-facing review artifact** (so the user can visually verify character design) and a reference for later regenerations or manual prompt edits. It does **not** drive Step 7.2 — page prompts were already written in Step 5 from the text descriptions in `characters/characters.md`. `image_generate` cannot accept images as visual input, so the text is the sole cross-page consistency mechanism.
 
 ### 7.2 Generate Comic Pages
 
@@ -348,12 +348,7 @@ Character sheet is recommended for multi-page comics with recurring characters, 
 1. Confirm each prompt file exists at `prompts/NN-{cover|page}-[slug].md`
 2. Confirm that each prompt has character descriptions embedded inline (see Step 5). `image_generate` is prompt-only, so the prompt text is the sole consistency mechanism.
 
-**Page Generation Strategy** (embed everything in the prompt text):
-
-| Character sheet | Strategy |
-|-----------------|----------|
-| Exists | Use it as an agent-side reference when composing each prompt; embed the key traits inline in the prompt text |
-| Skipped | Prompt file already contains all descriptions inline |
+**Page Generation Strategy**: every page prompt must embed character descriptions (sourced from `characters/characters.md`) inline. This is done during Step 5, uniformly whether or not the PNG sheet was produced in 7.1 — the PNG is only a review/regeneration aid, never a generation input.
 
 **Example embedded prompt** (`prompts/01-page-xxx.md`):
 

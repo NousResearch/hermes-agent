@@ -135,3 +135,48 @@ class TestNormalizeCustomProviderEntry:
         }
         result = _normalize_custom_provider_entry(entry, provider_key="")
         assert result is None
+
+    def test_models_list_converted_to_dict(self):
+        """List-format models should be preserved as an empty-value dict so
+        /model picks them up instead of showing the provider with (0) models."""
+        entry = {
+            "name": "tencent-coding-plan",
+            "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3",
+            "models": ["glm-5", "kimi-k2.5", "minimax-m2.5"],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"glm-5": {}, "kimi-k2.5": {}, "minimax-m2.5": {}}
+
+    def test_models_dict_preserved(self):
+        """Dict-format models should pass through unchanged."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": {"gpt-foo": {"context_length": 32000}},
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"gpt-foo": {"context_length": 32000}}
+
+    def test_models_list_filters_empty_and_non_string(self):
+        """List entries that are empty strings or non-strings are skipped."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": ["valid", "", None, 42, "  ", "also-valid"],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"valid": {}, "also-valid": {}}
+
+    def test_models_empty_list_omitted(self):
+        """Empty list (falsy) should not produce a models key."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": [],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert "models" not in result

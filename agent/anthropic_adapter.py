@@ -1410,7 +1410,7 @@ def build_anthropic_kwargs(
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower() and "minimax" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):

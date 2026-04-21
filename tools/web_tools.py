@@ -72,6 +72,15 @@ def _has_env(name: str) -> bool:
     val = os.getenv(name)
     return bool(val and val.strip())
 
+
+def _is_ddgs_available() -> bool:
+    """Return True when the ddgs package is importable."""
+    try:
+        import ddgs  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
     try:
@@ -88,7 +97,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "duckduckgo"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -117,6 +126,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "duckduckgo":
+        return _is_ddgs_available()
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -871,6 +882,38 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
+# ─── DuckDuckGo Search ───────────────────────────────────────────────────────
+
+def _duckduckgo_search(query: str, limit: int = 10) -> dict:
+    """Search using DuckDuckGo — free, no API key required."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        raise ValueError(
+            "The 'ddgs' package is not installed. "
+            "Install it with: pip install ddgs"
+        )
+
+    logger.info("DuckDuckGo search: '%s' (limit=%d)", query, limit)
+    with DDGS() as ddgs:
+        raw = list(ddgs.text(query, max_results=limit))
+
+    web_results = []
+    for i, result in enumerate(raw):
+        web_results.append({
+            "url": result.get("href", ""),
+            "title": result.get("title", ""),
+            "description": result.get("body", ""),
+            "position": i + 1,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
 # ─── Exa Client ──────────────────────────────────────────────────────────────
 
 _exa_client = None
@@ -1084,6 +1127,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         # Dispatch to the configured backend
         backend = _get_backend()
+        if backend == "duckduckgo":
+            response_data = _duckduckgo_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
@@ -1240,6 +1292,18 @@ async def web_extract_tool(
             results = []
         else:
             backend = _get_backend()
+
+            if backend == "duckduckgo":
+                return json.dumps({
+                    "results": [{
+                        "url": url, "title": "", "content": "",
+                        "error": (
+                            "DuckDuckGo only supports search, not content extraction. "
+                            "Use web_search to find URLs, then switch to Firecrawl, Exa, "
+                            "Tavily, or Parallel for extraction — or use the browser tool."
+                        ),
+                    } for url in safe_urls]
+                }, ensure_ascii=False)
 
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
@@ -1922,7 +1986,7 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "duckduckgo"):
         return _is_backend_available(configured)
     return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
 

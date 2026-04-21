@@ -195,7 +195,7 @@ TOOL_CATEGORIES = {
     "web": {
         "name": "Web Search & Extract",
         "setup_title": "Select Search Provider",
-        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
+        "setup_note": "DuckDuckGo (free, no API key) is available for basic search. Premium providers add content extraction and crawling.",
         "icon": "🔍",
         "providers": [
             {
@@ -252,6 +252,14 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
+            },
+            {
+                "name": "DuckDuckGo",
+                "badge": "free · no API key",
+                "tag": "Basic web search — no account required. Search only (no extract/crawl).",
+                "web_backend": "duckduckgo",
+                "env_vars": [],
+                "post_setup": "ddgs_install",
             },
         ],
     },
@@ -460,6 +468,24 @@ def _run_post_setup(post_setup_key: str):
         except subprocess.TimeoutExpired:
             _print_warning("    kittentts install timed out (>5min)")
             _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+
+    elif post_setup_key == "ddgs_install":
+        try:
+            import ddgs  # noqa: F401
+            _print_success("    ddgs is already installed")
+            return
+        except ImportError:
+            pass
+        import subprocess
+        _print_info("    Installing ddgs (DuckDuckGo search library)...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "ddgs", "--quiet"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            _print_success("    ddgs installed — DuckDuckGo search is ready")
+        else:
+            _print_warning("    ddgs install failed — run manually: pip install ddgs")
 
     elif post_setup_key == "rl_training":
         try:

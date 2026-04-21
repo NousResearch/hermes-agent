@@ -1,11 +1,11 @@
 import { Box, Text, useInput } from '@hermes/ink'
 import { useState } from 'react'
 
+import { isMac } from '../lib/platform.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
 import { TextInput } from './textInput.js'
-import { isMac } from '../lib/platform.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
@@ -130,7 +130,8 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
         </Box>
 
         <Text color={t.color.dim}>
-          Enter send · Esc {choices.length ? 'back' : 'cancel'} · {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+          Enter send · Esc {choices.length ? 'back' : 'cancel'} ·{' '}
+          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
         </Text>
       </Box>
     )

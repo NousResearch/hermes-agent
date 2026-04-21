@@ -109,9 +109,9 @@ class TestAgentCloseMethod:
             agent._active_children_lock = threading.Lock()
             agent.client = None
 
-            with patch("tools.process_registry.process_registry") as mock_registry, \
-                 patch("tools.terminal_tool.cleanup_vm") as mock_cleanup_vm, \
-                 patch("tools.browser_tool.cleanup_browser") as mock_cleanup_browser:
+            with patch("run_agent.process_registry") as mock_registry, \
+                 patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
+                 patch("run_agent.cleanup_browser") as mock_cleanup_browser:
                 agent.close()
 
                 mock_registry.kill_all.assert_called_once_with(
@@ -170,11 +170,11 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "tools.process_registry.process_registry"
+                "run_agent.process_registry"
             ) as mock_reg, patch(
-                "tools.terminal_tool.cleanup_vm"
+                "run_agent.cleanup_vm"
             ) as mock_vm, patch(
-                "tools.browser_tool.cleanup_browser"
+                "run_agent.cleanup_browser"
             ) as mock_browser:
                 mock_reg.kill_all.side_effect = RuntimeError("boom")
 

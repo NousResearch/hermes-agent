@@ -18,7 +18,8 @@ def _hermes_home_path() -> Path:
 
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
-    hermes_home = _hermes_home_path()
+    from hermes_constants import get_hermes_home  # local import to avoid cycles
+    hermes_home = get_hermes_home()
     return {
         os.path.realpath(p)
         for p in [

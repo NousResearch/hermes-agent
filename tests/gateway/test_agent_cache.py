@@ -971,11 +971,15 @@ class TestAgentCacheIdleResume:
 
         vm_calls: list = []
         original_vm = _tt.cleanup_vm
-        _tt.cleanup_vm = lambda tid: vm_calls.append(tid)
+        # Mock cleanup_vm in run_agent module where it's actually called
+        import run_agent
+        original_run_agent_vm = run_agent.cleanup_vm
+        run_agent.cleanup_vm = lambda tid: vm_calls.append(tid)
         try:
             agent_a.release_clients()   # cache eviction
             agent_b.close()              # session expiry
         finally:
+            run_agent.cleanup_vm = original_run_agent_vm
             _tt.cleanup_vm = original_vm
             try:
                 agent_a.close()

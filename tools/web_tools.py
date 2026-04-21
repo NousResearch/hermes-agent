@@ -47,6 +47,7 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
+import requests
 from firecrawl import Firecrawl
 from agent.auxiliary_client import (
     async_call_llm,
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +100,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("searxng", _has_env("SEARXNG_URL")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "searxng":
+        return _has_env("SEARXNG_URL")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -189,6 +193,7 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "SEARXNG_URL",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -360,6 +365,47 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "metadata": {"sourceURL": url_str},
         })
     return documents
+
+
+ # ─── SearXNG Client ──────────────────────────────────────────────────────────
+
+_SEARXNG_BASE_URL = os.getenv("SEARXNG_URL", "").rstrip("/")
+
+
+def _searxng_search(query: str, limit: int = 5) -> dict:
+    """Search using SearXNG and return results as a dict.
+    
+    SearXNG JSON API: GET /search?q=QUERY&format=json
+    Returns: {success: True, data: {web: [{title, url, description, position}]}}
+    """
+    if not _SEARXNG_BASE_URL:
+        raise ValueError(
+            "SEARXNG_URL environment variable not set. "
+            "Set it to your SearXNG instance URL, e.g. http://localhost:8888"
+        )
+    
+    logger.info("SearXNG search: '%s' (limit=%d)", query, limit)
+    url = f"{_SEARXNG_BASE_URL}/search"
+    params = {
+        "q": query,
+        "format": "json",
+        "engines": "bing,baidu",
+    }
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
+    raw = response.json()
+    
+    # Normalize SearXNG results to standard format
+    web_results = []
+    for i, result in enumerate(raw.get("results", [])):
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("content", ""),
+            "position": i + 1,
+        })
+    
+    return {"success": True, "data": {"web": web_results}}
 
 
 def _to_plain_object(value: Any) -> Any:
@@ -1111,6 +1157,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "include_images": False,
             })
             response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "searxng":
+            response_data = _searxng_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)

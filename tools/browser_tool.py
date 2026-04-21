@@ -65,7 +65,11 @@ import time
 import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-from agent.auxiliary_client import call_llm
+try:
+    from agent.auxiliary_client import call_llm
+except (ImportError, ModuleNotFoundError):
+    call_llm = None  # noqa: E731 — fail-open if auxiliary_client unavailable
+
 from hermes_constants import get_hermes_home
 
 try:

@@ -240,15 +240,20 @@ class TestAutoVoiceReply:
         return _make_runner(tmp_path)
 
     def _call(self, runner, voice_mode, message_type, agent_messages=None,
-              response="Hello!", in_voice_channel=False):
+              response="Hello!", in_voice_channel=False, platform=None):
         """Call real _should_send_voice_reply on a GatewayRunner instance."""
+        from gateway.config import Platform
+
         chat_id = "123"
+        platform = platform or Platform.TELEGRAM
+        voice_key = f"{platform.value}:{chat_id}"
         if voice_mode != "off":
-            runner._voice_mode["telegram:" + chat_id] = voice_mode
+            runner._voice_mode[voice_key] = voice_mode
         else:
-            runner._voice_mode.pop("telegram:" + chat_id, None)
+            runner._voice_mode.pop(voice_key, None)
 
         event = _make_event(message_type=message_type)
+        event.source.platform = platform
 
         if in_voice_channel:
             mock_adapter = MagicMock()
@@ -280,13 +285,13 @@ class TestAutoVoiceReply:
     # | Web UI        | voice | off        | yes  | skip   | 1 audio      |
     # | Web UI        | voice | all        | yes  | skip*  | 1 audio      |
     # | Web UI        | text  | all        | skip | yes    | 1 audio      |
-    # | Slack         | voice | all        | yes  | skip*  | 1 audio      |
+    # | Slack         | voice | all        | yes  | yes    | 1 audio      |
     # | Slack         | text  | all        | skip | yes    | 1 audio      |
     #
-    # * skip_double: voice input → base already handles
+    # * skip_double: voice input → base already handles on Telegram/Discord
     # † Discord play_tts override skips when in VC
 
-    # -- Telegram/Slack/Web: voice input, base handles ---------------------
+    # -- Telegram/Discord: voice input, base handles -----------------------
 
     def test_voice_input_voice_only_skipped(self, runner):
         """voice_only + voice input: base auto-TTS handles it, runner skips."""
@@ -324,6 +329,18 @@ class TestAutoVoiceReply:
     def test_discord_vc_voice_only_base_handles(self, runner):
         """Discord VC + voice_only + voice: base adapter handles."""
         assert self._call(runner, "voice_only", MessageType.VOICE, in_voice_channel=True) is False
+
+    # -- Slack keeps the runner voice-reply path ---------------------------
+
+    def test_slack_voice_input_all_mode_runner_fires(self, runner):
+        """Slack voice input should still produce a voice reply."""
+        from gateway.config import Platform
+        assert self._call(runner, "all", MessageType.VOICE, platform=Platform.SLACK) is True
+
+    def test_slack_voice_input_voice_only_runner_fires(self, runner):
+        """Slack voice_only mode should still produce a voice reply."""
+        from gateway.config import Platform
+        assert self._call(runner, "voice_only", MessageType.VOICE, platform=Platform.SLACK) is True
 
     # -- Edge cases --------------------------------------------------------
 

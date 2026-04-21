@@ -6177,12 +6177,15 @@ class GatewayRunner:
         if has_agent_tts:
             return False
 
-        # Dedup: base adapter auto-TTS already handles voice input
-        # (play_tts plays in VC when connected, so runner can skip).
-        # When streaming already delivered the text (already_sent=True),
-        # the base adapter will receive None and can't run auto-TTS,
-        # so the runner must take over.
-        if is_voice_input and not already_sent:
+        # Dedup: base adapter auto-TTS already handles voice input on
+        # platforms that do native voice playback/reply handling.
+        # Slack still needs the runner path for voice replies, so keep it
+        # out of this skip list.
+        if (
+            is_voice_input
+            and not already_sent
+            and event.source.platform in {Platform.TELEGRAM, Platform.DISCORD}
+        ):
             return False
 
         return True

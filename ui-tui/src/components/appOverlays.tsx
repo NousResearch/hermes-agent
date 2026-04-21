@@ -13,6 +13,8 @@ import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
 
+const COMPLETION_WINDOW = 16
+
 export function PromptZone({
   cols,
   onApprovalChoice,
@@ -106,7 +108,12 @@ export function FloatingOverlays({
     return null
   }
 
-  const start = Math.max(0, compIdx - 8)
+  // Fixed viewport centered on compIdx — previously the slice end was
+  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
+  // down, bouncing the height on every keystroke.
+  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
+
+  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
@@ -168,7 +175,7 @@ export function FloatingOverlays({
       {!!completions.length && (
         <FloatBox color={ui.theme.color.gold}>
           <Box flexDirection="column" width={Math.max(28, cols - 6)}>
-            {completions.slice(start, compIdx + 8).map((item, i) => {
+            {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
 
               return (

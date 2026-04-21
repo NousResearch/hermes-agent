@@ -13,7 +13,7 @@ export const isMac = process.platform === 'darwin'
 
 /** True when the platform action-modifier is pressed (Cmd on macOS, Ctrl elsewhere). */
 export const isActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean =>
-  (isMac ? key.meta || key.super === true : key.ctrl)
+  isMac ? key.meta || key.super === true : key.ctrl
 
 /**
  * Some macOS terminals rewrite Cmd navigation/deletion into readline control keys.

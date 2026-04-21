@@ -1162,6 +1162,23 @@ discord:
 - `free_response_channels` — comma-separated list of channel IDs where the bot responds to every message without requiring a mention.
 - `auto_thread` — when `true` (default), mentions in channels automatically create a thread for the conversation, keeping channels clean (similar to Slack threading).
 
+## Slack
+
+Configure Slack-specific behavior for the messaging gateway:
+
+```yaml
+slack:
+  require_mention: true          # Require @mention in channels by default
+  free_response_channels: []     # Channel IDs that do not require @mention
+  allowed_channels: []           # Optional channel whitelist
+  dm_policy: "open"              # open | disabled
+```
+
+- `require_mention` — when `true` (default), Hermes only responds in Slack channels when mentioned, unless the channel is listed in `free_response_channels`.
+- `free_response_channels` — channel IDs where Hermes responds to every message without needing `@mention`.
+- `allowed_channels` — optional whitelist. When set, Hermes ignores channel messages outside the listed channel IDs.
+- `dm_policy` — controls Slack DM handling. Use `disabled` if you want Hermes to ignore direct messages.
+
 ## Security
 
 Pre-execution security scanning and secret redaction:

@@ -7458,7 +7458,12 @@ class GatewayRunner:
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
             and is_truthy_value(
-                display_config.get("interim_assistant_messages"),
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "interim_assistant_messages",
+                    True,
+                ),
                 default=True,
             )
         )

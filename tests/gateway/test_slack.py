@@ -86,6 +86,16 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+    for key in (
+        "SLACK_ALLOWED_CHANNELS",
+        "SLACK_DM_POLICY",
+        "SLACK_FREE_RESPONSE_CHANNELS",
+        "SLACK_REQUIRE_MENTION",
+        "SLACK_DM_CHANNELS",
+        "SLACK_MENTION_PATTERNS",
+        "SLACK_ALLOW_BOTS",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +503,20 @@ class TestMessageRouting:
         adapter.handle_message.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_dm_ignored_when_dm_policy_disabled(self, adapter):
+        """DMs should be ignored when Slack dm_policy disables them."""
+        adapter.config.extra["dm_policy"] = "disabled"
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_channel_message_requires_mention(self, adapter):
         """Channel messages without a bot mention should be ignored."""
         event = {
@@ -504,6 +528,34 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_channel_message_ignored_when_not_in_allowed_channels(self, adapter):
+        """Channel allowlist should block messages even when they mention the bot."""
+        adapter.config.extra["allowed_channels"] = ["C_ALLOWED"]
+        event = {
+            "text": "<@U_BOT> hello",
+            "user": "U_USER",
+            "channel": "C_BLOCKED",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_channel_message_processed_when_in_allowed_channels(self, adapter):
+        """Channel allowlist should still permit configured channels."""
+        adapter.config.extra["allowed_channels"] = ["C123"]
+        event = {
+            "text": "<@U_BOT> what's the weather?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_channel_mention_strips_bot_id(self, adapter):
@@ -1005,8 +1057,8 @@ class TestReactions:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_reactions_in_message_flow(self, adapter):
-        """Reactions should be added on receipt and swapped on completion."""
+    async def test_reactions_disabled_by_default(self, adapter):
+        """Slack message reactions are opt-in to avoid duplicate visible ACKs."""
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
         adapter._app.client.users_info = AsyncMock(return_value={
@@ -1022,7 +1074,29 @@ class TestReactions:
         }
         await adapter._handle_slack_message(event)
 
-        # Should have added 👀, then removed 👀, then added ✅
+        adapter._app.client.reactions_add.assert_not_called()
+        adapter._app.client.reactions_remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reactions_in_message_flow_when_enabled(self, adapter):
+        """Opt-in reactions should be added on receipt and swapped on completion."""
+        adapter.config.extra["processing_reaction"] = "eyes"
+        adapter.config.extra["success_reaction"] = "white_check_mark"
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
         assert len(add_calls) == 2
@@ -1030,6 +1104,40 @@ class TestReactions:
         assert add_calls[1].kwargs["name"] == "white_check_mark"
         assert len(remove_calls) == 1
         assert remove_calls[0].kwargs["name"] == "eyes"
+
+    @pytest.mark.asyncio
+    async def test_reactions_can_keep_processing_emoji_on_success(self, adapter):
+        """When success_reaction matches processing_reaction, keep only one emoji."""
+        adapter.config.extra["processing_reaction"] = "eyes"
+        adapter.config.extra["success_reaction"] = "eyes"
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        assert len(add_calls) == 1
+        assert add_calls[0].kwargs["name"] == "eyes"
+        assert len(remove_calls) == 0
+
+    def test_reaction_normalization_treats_falsey_aliases_as_disabled(self, adapter):
+        """False/off-style values should disable reactions instead of becoming literal names."""
+        assert adapter._normalize_reaction_name(None) == ""
+        assert adapter._normalize_reaction_name(False) == ""
+        assert adapter._normalize_reaction_name("off") == ""
+        assert adapter._normalize_reaction_name(":disabled:") == ""
+        assert adapter._normalize_reaction_name(" :eyes: ") == "eyes"
 
 
 # ---------------------------------------------------------------------------

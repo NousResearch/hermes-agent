@@ -191,6 +191,17 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say):
                 pass
 
+            # Slack echoes reaction lifecycle events, including the bot's own
+            # reactions. We don't use them, but Bolt warns if they're
+            # unhandled, so register explicit no-op listeners.
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                pass
+
+            @self._app.event("reaction_removed")
+            async def handle_reaction_removed(event, say):
+                pass
+
             @self._app.event("assistant_thread_started")
             async def handle_assistant_thread_started(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
@@ -562,6 +573,32 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
             return False
+
+    def _normalize_reaction_name(self, value: Any) -> str:
+        """Normalize optional Slack reaction config to an emoji name or empty."""
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "" if value is False else ""
+        normalized = str(value).strip().strip(":").lower()
+        if normalized in {"", "off", "none", "false", "disabled", "disable", "no", "0"}:
+            return ""
+        return normalized
+
+    def _slack_processing_reaction(self) -> str:
+        """Return the emoji name used while a Slack message is being processed."""
+        reaction = self.config.extra.get("processing_reaction")
+        return self._normalize_reaction_name(reaction)
+
+    def _slack_success_reaction(self) -> str:
+        """Return the emoji name used after a successful Slack response."""
+        reaction = self.config.extra.get("success_reaction")
+        return self._normalize_reaction_name(reaction)
+
+    def _slack_failure_reaction(self) -> str:
+        """Return the emoji name used after a failed Slack response."""
+        reaction = self.config.extra.get("failure_reaction")
+        return self._normalize_reaction_name(reaction)
 
     # ----- User identity resolution -----
 
@@ -993,6 +1030,15 @@ class SlackAdapter(BasePlatformAdapter):
             channel_type = "im"
         is_dm = channel_type in ("im", "mpim")  # Both 1:1 and group DMs
 
+        if is_dm and self._slack_dm_policy() == "disabled":
+            logger.debug("[Slack] Ignoring DM due to dm_policy=disabled")
+            return
+        if not is_dm:
+            allowed_channels = self._slack_allowed_channels()
+            if allowed_channels and channel_id not in allowed_channels:
+                logger.debug("[Slack] Ignoring message from non-whitelisted channel %s", channel_id)
+                return
+
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).
@@ -1183,14 +1229,26 @@ class SlackAdapter(BasePlatformAdapter):
         # casual message would be noisy.
         _should_react = is_dm or is_mentioned
 
-        if _should_react:
-            await self._add_reaction(channel_id, ts, "eyes")
+        processing_reaction = self._slack_processing_reaction() if _should_react else ""
+        success_reaction = self._slack_success_reaction() if _should_react else ""
+        failure_reaction = self._slack_failure_reaction() if _should_react else ""
 
-        await self.handle_message(msg_event)
+        if processing_reaction:
+            await self._add_reaction(channel_id, ts, processing_reaction)
 
-        if _should_react:
-            await self._remove_reaction(channel_id, ts, "eyes")
-            await self._add_reaction(channel_id, ts, "white_check_mark")
+        try:
+            await self.handle_message(msg_event)
+        except Exception:
+            if processing_reaction and processing_reaction != failure_reaction:
+                await self._remove_reaction(channel_id, ts, processing_reaction)
+            if failure_reaction:
+                await self._add_reaction(channel_id, ts, failure_reaction)
+            raise
+
+        if processing_reaction and processing_reaction != success_reaction:
+            await self._remove_reaction(channel_id, ts, processing_reaction)
+        if success_reaction and success_reaction != processing_reaction:
+            await self._add_reaction(channel_id, ts, success_reaction)
 
     # ----- Approval button support (Block Kit) -----
 
@@ -1668,3 +1726,29 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _slack_allowed_channels(self) -> set:
+        """Return the Slack channel whitelist. Empty means allow all channels."""
+        raw = self.config.extra.get("allowed_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_ALLOWED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
+    def _slack_dm_policy(self) -> str:
+        """Return Slack DM policy. Supported values: open, disabled."""
+        raw = self.config.extra.get("dm_policy")
+        if raw is None:
+            raw = os.getenv("SLACK_DM_POLICY", "")
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if normalized in {"disabled", "off", "deny", "closed"}:
+                return "disabled"
+            if normalized in {"open", "enabled", "on", "allow"}:
+                return "open"
+        if isinstance(raw, bool):
+            return "open" if raw else "disabled"
+        return "open"

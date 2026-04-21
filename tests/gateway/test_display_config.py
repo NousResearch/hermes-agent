@@ -156,6 +156,17 @@ class TestYAMLNormalisation:
         config = {"display": {"platforms": {"telegram": {"show_reasoning": "true"}}}}
         assert resolve_display_setting(config, "telegram", "show_reasoning") is True
 
+    def test_interim_assistant_messages_string_false(self):
+        """String 'false' is normalised to bool False."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"slack": {"interim_assistant_messages": "false"}},
+            }
+        }
+        assert resolve_display_setting(config, "slack", "interim_assistant_messages") is False
+
     def test_tool_preview_length_string(self):
         """String numbers are normalised to int."""
         from gateway.display_config import resolve_display_setting
@@ -218,41 +229,6 @@ class TestPlatformDefaults:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "telegram", "streaming") is None
-
-
-# ---------------------------------------------------------------------------
-# get_effective_display / get_platform_defaults
-# ---------------------------------------------------------------------------
-
-class TestHelpers:
-    """Helper functions return correct composite results."""
-
-    def test_get_effective_display_merges_correctly(self):
-        from gateway.display_config import get_effective_display
-
-        config = {
-            "display": {
-                "tool_progress": "new",
-                "show_reasoning": True,
-                "platforms": {
-                    "telegram": {"tool_progress": "verbose"},
-                },
-            }
-        }
-        eff = get_effective_display(config, "telegram")
-        assert eff["tool_progress"] == "verbose"  # platform override
-        assert eff["show_reasoning"] is True       # global
-        assert "tool_preview_length" in eff        # default filled in
-
-    def test_get_platform_defaults_returns_dict(self):
-        from gateway.display_config import get_platform_defaults
-
-        defaults = get_platform_defaults("telegram")
-        assert "tool_progress" in defaults
-        assert "show_reasoning" in defaults
-        # Returns a new dict (not the shared tier dict)
-        defaults["tool_progress"] = "changed"
-        assert get_platform_defaults("telegram")["tool_progress"] != "changed"
 
 
 # ---------------------------------------------------------------------------

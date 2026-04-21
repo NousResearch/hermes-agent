@@ -546,6 +546,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if "allowed_channels" in platform_cfg:
+                    bridged["allowed_channels"] = platform_cfg["allowed_channels"]
+                if "dm_policy" in platform_cfg:
+                    bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
@@ -574,6 +578,13 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
+                ac = slack_cfg.get("allowed_channels")
+                if ac is not None and not os.getenv("SLACK_ALLOWED_CHANNELS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+                if "dm_policy" in slack_cfg and not os.getenv("SLACK_DM_POLICY"):
+                    os.environ["SLACK_DM_POLICY"] = str(slack_cfg["dm_policy"]).lower()
 
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})

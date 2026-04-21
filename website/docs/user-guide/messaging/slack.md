@@ -209,12 +209,12 @@ Understanding how Hermes behaves in different contexts:
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Bot responds to every message — no @mention needed |
-| **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`). In channels, Hermes replies in a thread attached to that message. |
+| **DMs** | Bot responds to every message by default. You can disable DMs with `slack.dm_policy: disabled`. |
+| **Channels** | Bot responds when @mentioned by default (e.g., `@Hermes Agent what time is it?`). You can relax this with `free_response_channels` or `require_mention: false`, and you can restrict replies with `allowed_channels`. |
 | **Threads** | If you @mention Hermes inside an existing thread, it replies in that same thread. Once the bot has an active session in a thread, **subsequent replies in that thread do not require @mention** — the bot follows the conversation naturally. |
 
 :::tip
-In channels, always @mention the bot to start a conversation. Once the bot is active in a thread, you can reply in that thread without mentioning it. Outside of threads, messages without @mention are ignored to prevent noise in busy channels.
+Default Slack behavior is: DMs are open, channels require `@mention`, and active threads continue without repeated mentions. If the bot responds without an `@mention`, the usual causes are `free_response_channels`, `require_mention: false`, or an existing Slack thread/session the bot is already participating in.
 :::
 
 ---
@@ -268,9 +268,20 @@ Set to `false` if you want a collaborative mode where the entire channel shares 
 ```yaml
 slack:
   # Require @mention in channels (this is the default behavior;
-  # the Slack adapter enforces @mention gating in channels regardless,
-  # but you can set this explicitly for consistency with other platforms)
+  # set false to allow channel messages without mention)
   require_mention: true
+
+  # Channel IDs where Hermes responds without an @mention
+  free_response_channels:
+    - C01234567890
+
+  # If set, Hermes only responds in these channel IDs
+  allowed_channels:
+    - C01234567890
+    - C02345678901
+
+  # DM policy: "open" (default) or "disabled"
+  dm_policy: "open"
 
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
@@ -282,9 +293,28 @@ slack:
   reply_prefix: ""
 ```
 
-:::info
-Unlike Discord and Telegram, Slack does not have a `free_response_channels` equivalent. The Slack adapter requires `@mention` to start a conversation in channels. However, once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs, the bot always responds without needing a mention.
-:::
+| Key | Default | Description |
+|-----|---------|-------------|
+| `slack.require_mention` | `true` | When `true`, channel messages need `@mention` unless another trigger rule applies. |
+| `slack.free_response_channels` | empty | Channel IDs where Hermes responds to every message without an `@mention`. |
+| `slack.allowed_channels` | empty | Channel whitelist. When set, Hermes ignores messages outside these channels. |
+| `slack.dm_policy` | `"open"` | Controls DM handling. Use `"disabled"` to ignore Slack DMs entirely. |
+| `slack.mention_patterns` | empty | Extra text patterns that should trigger Hermes in addition to native Slack mentions. |
+
+### Reactions
+
+Hermes can add Slack reactions as lightweight status indicators while it is processing a message.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      processing_reaction: "eyes"
+      success_reaction: "white_check_mark"
+      failure_reaction: "x"
+```
+
+These reactions are opt-in. If unset, Hermes will not add any reactions.
 
 ### Unauthorized User Handling
 
@@ -324,6 +354,11 @@ stt_enabled: true
 # Slack-specific settings
 slack:
   require_mention: true
+  free_response_channels:
+    - C01234567890
+  allowed_channels:
+    - C01234567890
+  dm_policy: "open"
   unauthorized_dm_behavior: "pair"
 
 # Platform config
@@ -333,6 +368,8 @@ platforms:
     extra:
       reply_in_thread: true
       reply_broadcast: false
+      processing_reaction: "eyes"
+      success_reaction: "white_check_mark"
 ```
 
 ---

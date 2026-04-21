@@ -17,9 +17,11 @@ export function isUsableClipboardText(text: null | string): text is string {
   }
 
   let suspicious = 0
+
   for (const ch of text) {
     const code = ch.charCodeAt(0)
     const isControl = code < 0x20 && ch !== '\n' && ch !== '\r' && ch !== '\t'
+
     if (isControl || ch === '\ufffd') {
       suspicious += 1
     }
@@ -28,7 +30,10 @@ export function isUsableClipboardText(text: null | string): text is string {
   return suspicious <= Math.max(2, Math.floor(text.length * 0.02))
 }
 
-function readClipboardCommands(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Array<{ args: readonly string[]; cmd: string }> {
+function readClipboardCommands(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv
+): Array<{ args: readonly string[]; cmd: string }> {
   if (platform === 'darwin') {
     return [{ cmd: 'pbpaste', args: [] }]
   }

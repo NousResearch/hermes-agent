@@ -5,6 +5,7 @@ const originalPlatform = process.platform
 async function importPlatform(platform: NodeJS.Platform) {
   vi.resetModules()
   Object.defineProperty(process, 'platform', { value: platform })
+
   return import('../lib/platform.js')
 }
 

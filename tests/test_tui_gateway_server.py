@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 import time
@@ -228,6 +229,48 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved["model"]["default"] == "anthropic/claude-sonnet-4.6"
     assert saved["model"]["provider"] == "anthropic"
     assert saved["model"]["base_url"] == "https://api.anthropic.com"
+
+
+def test_config_set_model_syncs_inference_provider_env(monkeypatch):
+    """After an explicit provider switch, HERMES_INFERENCE_PROVIDER must
+    reflect the user's choice so ambient re-resolution (credential pool
+    refresh, aux clients) picks up the new provider instead of the original
+    one persisted in config or shell env.
+
+    Regression: a TUI user switched openrouter → anthropic and the TUI kept
+    trying openrouter because the env-var-backed resolvers still saw the old
+    provider.
+    """
+    class _Agent:
+        provider = "openrouter"
+        model = "old/model"
+        base_url = ""
+        api_key = "sk-or"
+
+        def switch_model(self, **_kwargs):
+            return None
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="claude-sonnet-4.6",
+        target_provider="anthropic",
+        api_key="sk-ant",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+    )
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    server.handle_request(
+        {"id": "1", "method": "config.set", "params": {"session_id": "sid", "key": "model", "value": "claude-sonnet-4.6 --provider anthropic"}}
+    )
+
+    assert os.environ["HERMES_INFERENCE_PROVIDER"] == "anthropic"
 
 
 def test_config_set_personality_rejects_unknown_name(monkeypatch):

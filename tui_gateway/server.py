@@ -529,6 +529,12 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         _emit("session.info", sid, _session_info(agent))
 
     os.environ["HERMES_MODEL"] = result.new_model
+    # Keep the process-level provider env var in sync with the user's explicit
+    # choice so any ambient re-resolution (credential pool refresh, compressor
+    # rebuild, aux clients) resolves to the new provider instead of the
+    # original one persisted in config or env.
+    if result.target_provider:
+        os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
     return {"value": result.new_model, "warning": result.warning_message or ""}

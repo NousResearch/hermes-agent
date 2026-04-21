@@ -174,7 +174,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         </Text>
 
         <Text color={t.color.dim}>Current model: {currentModel || '(unknown)'}</Text>
-        <Text color={t.color.label}>{provider?.warning ? `warning: ${provider.warning}` : ' '}</Text>
+        <Text color={t.color.label} wrap="truncate-end">
+          {provider?.warning ? `warning: ${provider.warning}` : ' '}
+        </Text>
         <Text color={t.color.dim}>{off > 0 ? ` ↑ ${off} more` : ' '}</Text>
 
         {Array.from({ length: VISIBLE }, (_, i) => {
@@ -183,20 +185,22 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
           return row ? (
             <Text
-              color={providerIdx === idx ? t.color.cornsilk : t.color.dim}
+              bold={providerIdx === idx}
+              color={providerIdx === idx ? t.color.amber : t.color.dim}
+              inverse={providerIdx === idx}
               key={providers[idx]?.slug ?? `row-${idx}`}
             >
               {providerIdx === idx ? '▸ ' : '  '}
               {i + 1}. {row}
             </Text>
           ) : (
-            <Text key={`pad-${i}`}> </Text>
+            <Text color={t.color.dim} key={`pad-${i}`}>
+              {' '}
+            </Text>
           )
         })}
 
-        <Text color={t.color.dim}>
-          {off + VISIBLE < rows.length ? ` ↓ ${rows.length - off - VISIBLE} more` : ' '}
-        </Text>
+        <Text color={t.color.dim}>{off + VISIBLE < rows.length ? ` ↓ ${rows.length - off - VISIBLE} more` : ' '}</Text>
 
         <Text color={t.color.dim}>persist: {persistGlobal ? 'global' : 'session'} · g toggle</Text>
         <Text color={t.color.dim}>↑/↓ select · Enter choose · 1-9,0 quick · Esc cancel</Text>
@@ -213,7 +217,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       </Text>
 
       <Text color={t.color.dim}>{names[providerIdx] || '(unknown provider)'}</Text>
-      <Text color={t.color.label}>{provider?.warning ? `warning: ${provider.warning}` : ' '}</Text>
+      <Text color={t.color.label} wrap="truncate-end">
+        {provider?.warning ? `warning: ${provider.warning}` : ' '}
+      </Text>
       <Text color={t.color.dim}>{off > 0 ? ` ↑ ${off} more` : ' '}</Text>
 
       {Array.from({ length: VISIBLE }, (_, i) => {
@@ -226,13 +232,17 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
               no models listed for this provider
             </Text>
           ) : (
-            <Text key={`pad-${i}`}> </Text>
+            <Text color={t.color.dim} key={`pad-${i}`}>
+              {' '}
+            </Text>
           )
         }
 
         return (
           <Text
-            color={modelIdx === idx ? t.color.cornsilk : t.color.dim}
+            bold={modelIdx === idx}
+            color={modelIdx === idx ? t.color.amber : t.color.dim}
+            inverse={modelIdx === idx}
             key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
           >
             {modelIdx === idx ? '▸ ' : '  '}

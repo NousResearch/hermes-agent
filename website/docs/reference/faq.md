@@ -160,6 +160,33 @@ brew install python@3.12      # macOS
 
 The installer handles this automatically — if you see this error during manual installation, upgrade Python first.
 
+#### Terminal commands say `node: command not found` (or `nvm`, `pyenv`, `asdf`, …)
+
+**Cause:** Hermes builds a per-session environment snapshot by running `bash -l` once at startup. A bash login shell reads `/etc/profile`, `~/.bash_profile`, and `~/.profile`, but **does not source `~/.bashrc`** — so tools that install themselves there (`nvm`, `asdf`, `pyenv`, `cargo`, custom `PATH` exports) stay invisible to the snapshot. This most commonly happens when Hermes runs under systemd or in a minimal shell where nothing has pre-loaded the interactive shell profile.
+
+**Solution:** Hermes auto-sources `~/.bashrc` by default. If that's not enough — e.g. you're a zsh user whose PATH lives in `~/.zshrc`, or you init `nvm` from a standalone file — list the extra files to source in `~/.hermes/config.yaml`:
+
+```yaml
+terminal:
+  shell_init_files:
+    - ~/.zshrc                     # zsh users: pulls zsh-managed PATH into the bash snapshot
+    - ~/.nvm/nvm.sh                # direct nvm init (works regardless of shell)
+    - /etc/profile.d/cargo.sh      # system-wide rc files
+  # When this list is set, the default ~/.bashrc auto-source is NOT added —
+  # include it explicitly if you want both:
+  #   - ~/.bashrc
+  #   - ~/.zshrc
+```
+
+Missing files are skipped silently. Sourcing happens in bash, so files that rely on zsh-only syntax may error — if that's a concern, source just the PATH-setting portion (e.g. nvm's `nvm.sh` directly) rather than the whole rc file.
+
+To disable the auto-source behaviour (strict login-shell semantics only):
+
+```yaml
+terminal:
+  auto_source_bashrc: false
+```
+
 #### `uv: command not found`
 
 **Cause:** The `uv` package manager isn't installed or not in PATH.

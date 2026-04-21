@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 
 from hermes_cli import models as models_module
 from hermes_cli.models import (
-    AI_GATEWAY_MODELS,
+    VERCEL_AI_GATEWAY_MODELS,
     _ai_gateway_model_is_free,
     fetch_ai_gateway_models,
     fetch_ai_gateway_pricing,
@@ -89,7 +89,7 @@ def test_ai_gateway_free_detector():
 
 def test_fetch_ai_gateway_models_filters_against_live_catalog():
     _reset_caches()
-    preferred = [mid for mid, _ in AI_GATEWAY_MODELS]
+    preferred = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
     live_ids = preferred[:3]  # only first three exist live
     payload = {
         "data": [
@@ -106,8 +106,8 @@ def test_fetch_ai_gateway_models_filters_against_live_catalog():
 
 def test_fetch_ai_gateway_models_tags_free_models():
     _reset_caches()
-    first_id = AI_GATEWAY_MODELS[0][0]
-    second_id = AI_GATEWAY_MODELS[1][0]
+    first_id = VERCEL_AI_GATEWAY_MODELS[0][0]
+    second_id = VERCEL_AI_GATEWAY_MODELS[1][0]
     payload = {
         "data": [
             {"id": first_id, "pricing": {"input": "0.001", "output": "0.002"}},
@@ -124,7 +124,7 @@ def test_fetch_ai_gateway_models_tags_free_models():
 
 def test_free_moonshot_model_auto_promoted_to_top_even_if_not_curated():
     _reset_caches()
-    first_curated = AI_GATEWAY_MODELS[0][0]
+    first_curated = VERCEL_AI_GATEWAY_MODELS[0][0]
     unlisted_free_moonshot = "moonshotai/kimi-coder-free-preview"
     payload = {
         "data": [
@@ -141,7 +141,7 @@ def test_free_moonshot_model_auto_promoted_to_top_even_if_not_curated():
 
 def test_paid_moonshot_does_not_get_auto_promoted():
     _reset_caches()
-    first_curated = AI_GATEWAY_MODELS[0][0]
+    first_curated = VERCEL_AI_GATEWAY_MODELS[0][0]
     payload = {
         "data": [
             {"id": first_curated, "pricing": {"input": "0.001", "output": "0.002"}},
@@ -158,4 +158,4 @@ def test_fetch_ai_gateway_models_falls_back_on_error():
     _reset_caches()
     with patch("urllib.request.urlopen", side_effect=OSError("network")):
         result = fetch_ai_gateway_models(force_refresh=True)
-    assert result == list(AI_GATEWAY_MODELS)
+    assert result == list(VERCEL_AI_GATEWAY_MODELS)

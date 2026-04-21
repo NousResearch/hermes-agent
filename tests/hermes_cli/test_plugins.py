@@ -330,6 +330,33 @@ class TestPluginHooks:
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
 
+    def test_valid_hooks_include_pre_gateway_dispatch(self):
+        assert "pre_gateway_dispatch" in VALID_HOOKS
+
+    def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
+        """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "predispatch_plugin",
+            register_body=(
+                'ctx.register_hook("pre_gateway_dispatch", '
+                'lambda **kw: {"action": "skip", "reason": "test"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_gateway_dispatch",
+            event=object(),
+            gateway=object(),
+            session_store=object(),
+        )
+        assert len(results) == 1
+        assert results[0] == {"action": "skip", "reason": "test"}
+
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

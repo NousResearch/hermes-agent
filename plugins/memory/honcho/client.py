@@ -142,6 +142,15 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
     return None
 
 
+# Default HTTP timeout (seconds) applied when no explicit timeout is
+# configured via HonchoClientConfig.timeout, honcho.timeout / requestTimeout,
+# or HONCHO_TIMEOUT. Honcho calls happen on the post-response path of
+# run_conversation; without a cap the agent can block indefinitely when
+# the Honcho backend is unreachable, preventing the gateway from
+# delivering the already-generated response.
+_DEFAULT_HTTP_TIMEOUT = 30.0
+
+
 def _resolve_optional_float(*values: Any) -> float | None:
     """Return the first non-empty value coerced to a positive float."""
     for value in values:
@@ -696,6 +705,11 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                     )
         except Exception:
             pass
+
+    # Fall back to the default so an unconfigured install cannot hang
+    # indefinitely on a stalled Honcho request.
+    if resolved_timeout is None:
+        resolved_timeout = _DEFAULT_HTTP_TIMEOUT
 
     if resolved_base_url:
         logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)

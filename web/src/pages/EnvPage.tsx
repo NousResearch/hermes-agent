@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Eye,
   EyeOff,
@@ -16,8 +16,10 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
-import { useToast } from "@/hooks/useToast";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@/components/Toast";
+import { useConfirmDelete } from "@/hooks/useConfirmDelete";
+import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -95,6 +98,7 @@ function EnvVarRow({
   onClear,
   onReveal,
   onCancelEdit,
+  clearDialogOpen = false,
   compact = false,
 }: {
   varKey: string;
@@ -107,6 +111,7 @@ function EnvVarRow({
   onClear: (key: string) => void;
   onReveal: (key: string) => void;
   onCancelEdit: (key: string) => void;
+  clearDialogOpen?: boolean;
   compact?: boolean;
 }) {
   const { t } = useI18n();
@@ -219,7 +224,7 @@ function EnvVarRow({
           {info.is_set && (
             <Button size="sm" variant="ghost"
               className="text-destructive hover:text-destructive hover:bg-destructive/10"
-              onClick={() => onClear(varKey)} disabled={saving === varKey}>
+              onClick={() => onClear(varKey)} disabled={saving === varKey || clearDialogOpen}>
               <Trash2 className="h-3 w-3" />
               {saving === varKey ? "..." : t.common.clear}
             </Button>
@@ -261,6 +266,7 @@ function ProviderGroupCard({
   onClear,
   onReveal,
   onCancelEdit,
+  clearDialogOpen = false,
 }: {
   group: ProviderGroup;
   edits: Record<string, string>;
@@ -271,6 +277,7 @@ function ProviderGroupCard({
   onClear: (key: string) => void;
   onReveal: (key: string) => void;
   onCancelEdit: (key: string) => void;
+  clearDialogOpen?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const { t } = useI18n();
@@ -325,6 +332,7 @@ function ProviderGroupCard({
               key={key} varKey={key} info={info} compact
               edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
               onSave={onSave} onClear={onClear} onReveal={onReveal} onCancelEdit={onCancelEdit}
+              clearDialogOpen={clearDialogOpen}
             />
           ))}
           {/* Base URLs (secondary) */}
@@ -333,6 +341,7 @@ function ProviderGroupCard({
               key={key} varKey={key} info={info} compact
               edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
               onSave={onSave} onClear={onClear} onReveal={onReveal} onCancelEdit={onCancelEdit}
+              clearDialogOpen={clearDialogOpen}
             />
           ))}
           {/* Anything else */}
@@ -341,6 +350,7 @@ function ProviderGroupCard({
               key={key} varKey={key} info={info} compact
               edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
               onSave={onSave} onClear={onClear} onReveal={onReveal} onCancelEdit={onCancelEdit}
+              clearDialogOpen={clearDialogOpen}
             />
           ))}
         </div>
@@ -390,24 +400,30 @@ export default function EnvPage() {
     }
   };
 
-  const handleClear = async (key: string) => {
-    setSaving(key);
-    try {
-      await api.deleteEnvVar(key);
-      setVars((prev) =>
-        prev
-          ? { ...prev, [key]: { ...prev[key], is_set: false, redacted_value: null } }
-          : prev,
-      );
-      setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
-      setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
-      showToast(`${key} ${t.common.removed}`, "success");
-    } catch (e) {
-      showToast(`${t.common.failedToRemove} ${key}: ${e}`, "error");
-    } finally {
-      setSaving(null);
-    }
-  };
+  const keyClear = useConfirmDelete({
+    onDelete: useCallback(
+      async (key: string) => {
+        setSaving(key);
+        try {
+          await api.deleteEnvVar(key);
+          setVars((prev) =>
+            prev
+              ? { ...prev, [key]: { ...prev[key], is_set: false, redacted_value: null } }
+              : prev,
+          );
+          setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
+          setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
+          showToast(`${key} ${t.common.removed}`, "success");
+        } catch (e) {
+          showToast(`${t.common.failedToRemove} ${key}: ${e}`, "error");
+          throw e;
+        } finally {
+          setSaving(null);
+        }
+      },
+      [showToast, t.common.removed, t.common.failedToRemove],
+    ),
+  });
 
   const handleReveal = async (key: string) => {
     if (revealed[key]) {
@@ -488,9 +504,29 @@ export default function EnvPage() {
   const totalProviders = providerGroups.length;
   const configuredProviders = providerGroups.filter((g) => g.hasAnySet).length;
 
+  const pendingClearKey = keyClear.pendingId;
+  const pendingKeyDescription =
+    pendingClearKey && vars
+      ? vars[pendingClearKey]?.description
+      : undefined;
+
   return (
     <div className="flex flex-col gap-6">
+      <PluginSlot name="env:top" />
       <Toast toast={toast} />
+
+      <DeleteConfirmDialog
+        open={keyClear.isOpen}
+        onCancel={keyClear.cancel}
+        onConfirm={keyClear.confirm}
+        title={t.env.confirmClearTitle}
+        description={
+          pendingClearKey
+            ? `${pendingClearKey}${pendingKeyDescription ? ` — ${pendingKeyDescription}` : ""}. ${t.env.confirmClearMessage}`
+            : t.env.confirmClearMessage
+        }
+        loading={keyClear.isDeleting}
+      />
 
       <div className="flex items-center justify-between">
         <div className="flex flex-col gap-1">
@@ -514,7 +550,7 @@ export default function EnvPage() {
 
       {/* ═══════════════ LLM Providers (grouped) ═══════════════ */}
       <Card>
-        <CardHeader className="sticky top-14 z-10 bg-card border-b border-border">
+        <CardHeader className="border-b border-border bg-card">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-muted-foreground" />
             <CardTitle className="text-base">{t.env.llmProviders}</CardTitle>
@@ -530,7 +566,8 @@ export default function EnvPage() {
               key={group.name}
               group={group}
               edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-              onSave={handleSave} onClear={handleClear} onReveal={handleReveal} onCancelEdit={cancelEdit}
+              onSave={handleSave} onClear={keyClear.requestDelete} onReveal={handleReveal} onCancelEdit={cancelEdit}
+              clearDialogOpen={keyClear.isOpen}
             />
           ))}
         </CardContent>
@@ -542,7 +579,7 @@ export default function EnvPage() {
 
         return (
           <Card key={category}>
-            <CardHeader className="sticky top-14 z-10 bg-card border-b border-border">
+            <CardHeader className="border-b border-border bg-card">
               <div className="flex items-center gap-2">
                 <Icon className="h-5 w-5 text-muted-foreground" />
                 <CardTitle className="text-base">{label}</CardTitle>
@@ -557,7 +594,8 @@ export default function EnvPage() {
                 <EnvVarRow
                   key={key} varKey={key} info={info}
                   edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-                  onSave={handleSave} onClear={handleClear} onReveal={handleReveal} onCancelEdit={cancelEdit}
+                  onSave={handleSave} onClear={keyClear.requestDelete} onReveal={handleReveal} onCancelEdit={cancelEdit}
+                  clearDialogOpen={keyClear.isOpen}
                 />
               ))}
 
@@ -566,13 +604,15 @@ export default function EnvPage() {
                   category={category}
                   unsetEntries={unsetEntries}
                   edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-                  onSave={handleSave} onClear={handleClear} onReveal={handleReveal} onCancelEdit={cancelEdit}
+                  onSave={handleSave} onClear={keyClear.requestDelete} onReveal={handleReveal} onCancelEdit={cancelEdit}
+                  clearDialogOpen={keyClear.isOpen}
                 />
               )}
             </CardContent>
           </Card>
         );
       })}
+      <PluginSlot name="env:bottom" />
     </div>
   );
 }
@@ -592,6 +632,7 @@ function CollapsibleUnset({
   onClear,
   onReveal,
   onCancelEdit,
+  clearDialogOpen = false,
 }: {
   category: string;
   unsetEntries: [string, EnvVarInfo][];
@@ -603,6 +644,7 @@ function CollapsibleUnset({
   onClear: (key: string) => void;
   onReveal: (key: string) => void;
   onCancelEdit: (key: string) => void;
+  clearDialogOpen?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(true);
   const { t } = useI18n();
@@ -625,6 +667,7 @@ function CollapsibleUnset({
           key={key} varKey={key} info={info}
           edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
           onSave={onSave} onClear={onClear} onReveal={onReveal} onCancelEdit={onCancelEdit}
+          clearDialogOpen={clearDialogOpen}
         />
       ))}
     </>

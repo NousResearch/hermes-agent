@@ -9,9 +9,12 @@ import { $uiState } from '../app/uiStore.js'
 import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
+import { OverlayHint } from './overlayControls.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
+
+const COMPLETION_WINDOW = 16
 
 export function PromptZone({
   cols,
@@ -106,7 +109,12 @@ export function FloatingOverlays({
     return null
   }
 
-  const start = Math.max(0, compIdx - 8)
+  // Fixed viewport centered on compIdx — previously the slice end was
+  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
+  // down, bouncing the height on every keystroke.
+  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
+
+  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
@@ -155,11 +163,11 @@ export function FloatingOverlays({
             ))}
 
             <Box marginTop={1}>
-              <Text color={ui.theme.color.dim}>
+              <OverlayHint t={ui.theme}>
                 {overlay.pager.offset + pagerPageSize < overlay.pager.lines.length
-                  ? `Enter/Space for more · q to close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
-                  : `end · q to close (${overlay.pager.lines.length} lines)`}
-              </Text>
+                  ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · Esc/q close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
+                  : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${overlay.pager.lines.length} lines)`}
+              </OverlayHint>
             </Box>
           </Box>
         </FloatBox>
@@ -168,7 +176,7 @@ export function FloatingOverlays({
       {!!completions.length && (
         <FloatBox color={ui.theme.color.gold}>
           <Box flexDirection="column" width={Math.max(28, cols - 6)}>
-            {completions.slice(start, compIdx + 8).map((item, i) => {
+            {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
 
               return (

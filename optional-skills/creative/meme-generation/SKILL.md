@@ -1,6 +1,6 @@
 ---
 name: meme-generation
-description: Generate real meme images by picking a template and overlaying text with Pillow. Produces actual .png meme files.
+description: Generate real meme images by finding blank templates, including Imgflip sources, and overlaying text with Pillow. Produces actual .png meme files.
 version: 2.0.0
 author: adanaleycio
 license: MIT
@@ -23,7 +23,12 @@ Generate actual meme images from a topic. Picks a template, writes captions, and
 
 ## Available Templates
 
-The script supports **any of the ~100 popular imgflip templates** by name or ID, plus 10 curated templates with hand-tuned text positioning.
+The skill supports **any of the ~100 popular Imgflip templates** by name or ID, plus 10 curated templates with hand-tuned text positioning.
+
+Use `scripts/imgflip_download.py` when you want a clean blank source image from Imgflip.
+Use `scripts/meme_caption.py` when you already have a local image and only want to add captions.
+
+For matching rules, template examples, and source notes, read `references/meme-generation.md`.
 
 ### Curated Templates (custom text placement)
 
@@ -42,9 +47,9 @@ The script supports **any of the ~100 popular imgflip templates** by name or ID,
 
 ### Dynamic Templates (from imgflip API)
 
-Any template not in the curated list can be used by name or imgflip ID. These get smart default text positioning (top/bottom for 2-field, evenly spaced for 3+). Search with:
+Any template not in the curated list can be used by name or Imgflip ID. These get smart default text positioning (top/bottom for 2-field, evenly spaced for 3+). Search with:
 ```bash
-python "$SKILL_DIR/scripts/generate_meme.py" --search "disaster"
+python "$SKILL_DIR/scripts/imgflip_download.py" --search "disaster"
 ```
 
 ## Procedure
@@ -71,16 +76,16 @@ Use this when no classic template fits, or when the user wants something origina
 1. Write the captions first.
 2. Use `image_generate` to create a scene that matches the meme concept. Do NOT include any text in the image prompt — text will be added by the script. Describe only the visual scene.
 3. Find the generated image path from the image_generate result URL. Download it to a local path if needed.
-4. Run the script with `--image` to overlay text, choosing a mode:
+4. Run the caption script to overlay text, choosing a mode:
    - **Overlay** (text directly on image, white with black outline):
      ```bash
-     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png /tmp/meme.png "top text" "bottom text"
+     python "$SKILL_DIR/scripts/meme_caption.py" /path/to/scene.png /tmp/meme.png "top text" "bottom text"
      ```
    - **Bars** (black bars above/below with white text — cleaner, always readable):
      ```bash
-     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png --bars /tmp/meme.png "top text" "bottom text"
+     python "$SKILL_DIR/scripts/meme_caption.py" --bars /path/to/scene.png /tmp/meme.png "top text" "bottom text"
      ```
-   Use `--bars` when the image is busy/detailed and text would be hard to read on top of it.
+   Use `--trim-padding` when the image has wide white borders that should be removed before captioning.
 5. **Verify with vision** (if `vision_analyze` is available): Check the result looks good:
    ```
    vision_analyze(image_url="/tmp/meme.png", question="Is the text legible and well-positioned? Does the meme work visually?")

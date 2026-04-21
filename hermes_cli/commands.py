@@ -949,8 +949,14 @@ class SlashCommandCompleter(Completer):
                         break
                     full_path = os.path.join(search_dir, entry)
                     is_dir = os.path.isdir(full_path)
-                    display_path = os.path.relpath(full_path)
-                    suffix = "/" if is_dir else ""
+                    try:
+                        display_path = os.path.relpath(full_path)
+                    except ValueError as e:
+                        # relative path does not work for Windows if current folder
+                        # is in a different drive from target folder
+                        display_path = full_path
+                    # use OS-native path separator
+                    suffix = os.sep if is_dir else ""
                     kind = "folder" if is_dir else "file"
                     meta = "dir" if is_dir else _file_size_label(full_path)
                     completion = f"@{kind}:{display_path}{suffix}"

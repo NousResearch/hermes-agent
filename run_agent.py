@@ -7726,25 +7726,35 @@ class AIAgent:
                 self._consecutive_tool_calls.clear()
                 return json.dumps({"error": msg}, ensure_ascii=False)
 
-        # ── Tool dispatch ───────────────────────────────────────────────
+       # ── Tool dispatch ───────────────────────────────────────────────
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
-            return _todo_tool(
+            result = _todo_tool(
                 todos=function_args.get("todos"),
                 merge=function_args.get("merge", False),
                 store=self._todo_store,
             )
+            # Check failure retry counter
+            _cb_retry_msg = self._check_tool_failure(function_name, result)
+            if _cb_retry_msg is not None:
+                return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+            return result
         elif function_name == "session_search":
             if not self._session_db:
                 return json.dumps({"success": False, "error": "Session database not available."})
             from tools.session_search_tool import session_search as _session_search
-            return _session_search(
+            result = _session_search(
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
                 limit=function_args.get("limit", 3),
                 db=self._session_db,
                 current_session_id=self.session_id,
             )
+            # Check failure retry counter
+            _cb_retry_msg = self._check_tool_failure(function_name, result)
+            if _cb_retry_msg is not None:
+                return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+            return result
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
@@ -7753,7 +7763,7 @@ class AIAgent:
                 target=target,
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
-                store=self._memory_store,
+                store=self._todo_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
             if self._memory_manager and function_args.get("action") in ("add", "replace"):
@@ -7765,26 +7775,50 @@ class AIAgent:
                     )
                 except Exception:
                     pass
+            # Check failure retry counter
+            _cb_retry_msg = self._check_tool_failure(function_name, result)
+            if _cb_retry_msg is not None:
+                return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
             return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
+            result = self._memory_manager.handle_tool_call(function_name, function_args)
+            # Check failure retry counter
+            _cb_retry_msg = self._check_tool_failure(function_name, result)
+            if _cb_retry_msg is not None:
+                return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+            return result
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _clarify_tool(
+            result = _clarify_tool(
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
             )
+            # Check failure retry counter
+            _cb_retry_msg = self._check_tool_failure(function_name, result)
+            if _cb_retry_msg is not None:
+                return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+            return result
         elif function_name == "delegate_task":
-            return self._dispatch_delegate_task(function_args)
+            result = self._dispatch_delegate_task(function_args)
+            # Check failure retry counter
+            _cb_retry_msg = self._check_tool_failure(function_name, result)
+            if _cb_retry_msg is not None:
+                return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+            return result
         else:
-            return handle_function_call(
+            result = handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
             )
+            # Check failure retry counter
+            _cb_retry_msg = self._check_tool_failure(function_name, result)
+            if _cb_retry_msg is not None:
+                return json.dumps({"error": _cb_retry_msg}, ensure_ascii=False)
+            return result
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:

@@ -297,20 +297,26 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_commands() else None
 
 
-def build_skill_invocation_message(
+def build_skill_invocation_payload(
     cmd_key: str,
     user_instruction: str = "",
     task_id: str | None = None,
     runtime_note: str = "",
-) -> Optional[str]:
-    """Build the user message content for a skill slash command invocation.
+) -> Optional[Dict[str, Any]]:
+    """Build a structured skill invocation payload.
 
-    Args:
-        cmd_key: The command key including leading slash (e.g., "/gif-search").
-        user_instruction: Optional text the user typed after the command.
+    Returns a dict with:
+        - ``message`` (str): rendered user-facing message, byte-identical to
+          :func:`build_skill_invocation_message`'s output for the same args.
+        - ``skill_name`` (str): canonical skill name.
+        - ``runtime_defaults`` (dict): normalized per-skill runtime defaults
+          from :func:`agent.skill_utils.extract_skill_runtime_defaults`.  This
+          is the **only** channel that carries structured runtime state —
+          never embed it in ``message`` (see Design Rule 8).  ``runtime_note``
+          stays display-only and is appended to the rendered message body.
 
-    Returns:
-        The formatted message string, or None if the skill wasn't found.
+    Returns ``None`` when the skill cannot be resolved, mirroring
+    :func:`build_skill_invocation_message`.
     """
     commands = get_skill_commands()
     skill_info = commands.get(cmd_key)
@@ -319,20 +325,84 @@ def build_skill_invocation_message(
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        return {
+            "message": f"[Failed to load skill: {skill_info['name']}]",
+            "skill_name": skill_info["name"],
+            "runtime_defaults": {},
+        }
 
     loaded_skill, skill_dir, skill_name = loaded
     activation_note = (
         f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
     )
-    return _build_skill_message(
+    message = _build_skill_message(
         loaded_skill,
         skill_dir,
         activation_note,
         user_instruction=user_instruction,
         runtime_note=runtime_note,
     )
+
+    runtime_defaults: Dict[str, Any] = {}
+    try:
+        from agent.skill_utils import (
+            extract_skill_runtime_defaults,
+            is_safe_skill_name,
+            parse_frontmatter,
+        )
+
+        raw_content = str(
+            loaded_skill.get("raw_content") or loaded_skill.get("content") or ""
+        )
+        if raw_content:
+            frontmatter, _ = parse_frontmatter(raw_content)
+            runtime_defaults = extract_skill_runtime_defaults(frontmatter)
+            # Carry the skill_name inside runtime_defaults so downstream
+            # mergers (CLI, gateway) can emit a non-empty
+            # skill_name_sanitized in structured log events.  Names that
+            # fail is_safe_skill_name are dropped to keep logs safe.
+            if runtime_defaults and is_safe_skill_name(skill_name):
+                runtime_defaults["skill_name"] = skill_name
+    except Exception:
+        # Fail soft — a broken extractor never blocks a skill invocation.
+        runtime_defaults = {}
+
+    return {
+        "message": message,
+        "skill_name": skill_name,
+        "runtime_defaults": runtime_defaults,
+    }
+
+
+def build_skill_invocation_message(
+    cmd_key: str,
+    user_instruction: str = "",
+    task_id: str | None = None,
+    runtime_note: str = "",
+) -> Optional[str]:
+    """Build the user message content for a skill slash command invocation.
+
+    Wrapper around :func:`build_skill_invocation_payload` that returns just
+    the rendered message string.  Kept for backward compatibility with the
+    existing CLI/gateway/webhook call sites that only need the string form.
+
+    Args:
+        cmd_key: The command key including leading slash (e.g., "/gif-search").
+        user_instruction: Optional text the user typed after the command.
+
+    Returns:
+        The formatted message string, or None if the skill wasn't found.
+    """
+    payload = build_skill_invocation_payload(
+        cmd_key,
+        user_instruction=user_instruction,
+        task_id=task_id,
+        runtime_note=runtime_note,
+    )
+    if payload is None:
+        return None
+    return payload["message"]
 
 
 def build_preloaded_skills_prompt(

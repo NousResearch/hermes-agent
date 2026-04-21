@@ -147,6 +147,42 @@ When a missing value is encountered, Hermes asks for it securely only when the s
 
 Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
 
+### Skill Runtime Defaults (per-turn reasoning / model overrides)
+
+Skills can nominate per-turn runtime overrides that Hermes applies for the
+turn on which you invoke the skill.  Useful for workflows that should run
+with reduced reasoning (e.g. brainstorming) or a specific model:
+
+```yaml
+metadata:
+  hermes:
+    runtime_defaults:
+      reasoning_effort: low
+```
+
+Key properties:
+
+- **Turn-scoped.** The override affects only the turn that invoked the
+  skill; the next plain turn reverts to your session defaults.
+- **Explicit commands win.** A session-level `/model` or an explicit cron
+  `job.model` always beats a skill-declared value.
+- **Skills can reduce reasoning, not raise it.** Attempts to escalate
+  above your session default are clamped down silently (look for
+  `skill_runtime_defaults.clamped_to_session_default` in logs).
+- **Opt-in via feature flag.**  Set
+  `agent.skill_runtime_defaults_enabled: true` in your `~/.hermes/config.yaml`.
+  The flag is read per-invocation, so you can enable it without
+  restarting Hermes.
+- **Hermes-only extension.**  `metadata.hermes.runtime_defaults` is an
+  extension used by Hermes; skills targeting other runtimes should not
+  rely on it.
+- **Explicit invocation only.**  Preloaded skills (`--skills ...`),
+  `skill_view()` tool calls, and webhook-delivered skills do **not**
+  honor `runtime_defaults` in v1.
+
+See [Creating Skills — Runtime Defaults](/docs/developer-guide/creating-skills#runtime-defaults-per-skill-turn-behavior)
+for the full schema including the `required` escape hatch.
+
 ### Skill Config Settings
 
 Skills can also declare non-secret config settings (paths, preferences) stored in `config.yaml`:

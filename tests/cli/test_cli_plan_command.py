@@ -34,6 +34,14 @@ Save plans under the active workspace's .hermes/plans directory.
     )
 
 
+def _queued_text(cli_obj) -> str:
+    """Extract the rendered message text from whatever the queue holds."""
+    item = cli_obj._pending_input.put.call_args[0][0]
+    if isinstance(item, dict):
+        return item.get("message") or item.get("text") or ""
+    return str(item)
+
+
 class TestCLIPlanCommand:
     def test_plan_command_queues_plan_skill_message(self, tmp_path, monkeypatch):
         cli_obj = _make_cli()
@@ -45,7 +53,7 @@ class TestCLIPlanCommand:
 
         assert result is True
         cli_obj._pending_input.put.assert_called_once()
-        queued = cli_obj._pending_input.put.call_args[0][0]
+        queued = _queued_text(cli_obj)
         assert "Plan mode skill" in queued
         assert "Add OAuth login" in queued
         assert ".hermes/plans" in queued
@@ -61,7 +69,7 @@ class TestCLIPlanCommand:
             scan_skill_commands()
             cli_obj.process_command("/plan")
 
-        queued = cli_obj._pending_input.put.call_args[0][0]
+        queued = _queued_text(cli_obj)
         assert "current conversation context" in queued
         assert ".hermes/plans/" in queued
         assert "conversation-plan.md" in queued

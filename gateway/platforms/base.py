@@ -729,6 +729,14 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+
+    # Per-skill runtime defaults (hermes-only extension) declared via
+    # ``metadata.hermes.runtime_defaults`` in SKILL.md frontmatter.  Carried
+    # alongside the user turn so the gateway run-loop can apply turn-scoped
+    # reasoning / model overrides without touching the rendered message body.
+    # Treated as a sentinel: ``None`` and empty dict are equivalent (no
+    # override).
+    turn_runtime_defaults: Optional[dict] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -773,6 +781,38 @@ class SendResult:
     retryable: bool = False  # True for transient connection errors — base will retry automatically
 
 
+def _merge_turn_runtime_defaults_into_existing(
+    existing: MessageEvent, event: MessageEvent
+) -> None:
+    """Apply the asymmetric merge rule for turn_runtime_defaults.
+
+    - Only ``existing`` has defaults → preserve (photo-burst case).
+    - Only ``event`` has defaults    → copy onto existing (skill attaches).
+    - Both have defaults, equal      → trivial merge.
+    - Both have defaults, differ     → latest wins (``event`` replaces
+      ``existing``).  This is the user-correction case (``/brainstorm`` then
+      ``/plan``) — ``existing``-wins would silently discard the corrected
+      intent.
+
+    Emits ``skill_runtime_defaults.replaced_by_correction`` at DEBUG when
+    replacement occurs.
+    """
+    existing_defaults = existing.turn_runtime_defaults or None
+    incoming_defaults = event.turn_runtime_defaults or None
+
+    if not existing_defaults and incoming_defaults:
+        existing.turn_runtime_defaults = incoming_defaults
+        return
+    if existing_defaults and incoming_defaults and existing_defaults != incoming_defaults:
+        existing.turn_runtime_defaults = incoming_defaults
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "skill_runtime_defaults.replaced_by_correction"
+        )
+        return
+    # Both equal, or only existing has → preserve.
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -790,6 +830,9 @@ def merge_pending_message_event(
     instead of replacing the pending turn. This is used for Telegram bursty
     follow-ups so a multi-part user thought is not silently truncated to only
     the last queued fragment.
+
+    ``turn_runtime_defaults`` carries through each merge branch using an
+    asymmetric rule — see ``_merge_turn_runtime_defaults_into_existing``.
     """
     existing = pending_messages.get(session_key)
     if existing:
@@ -803,6 +846,7 @@ def merge_pending_message_event(
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            _merge_turn_runtime_defaults_into_existing(existing, event)
             return
 
         if existing_has_media or incoming_has_media:
@@ -816,6 +860,7 @@ def merge_pending_message_event(
                     existing.text = event.text
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
+            _merge_turn_runtime_defaults_into_existing(existing, event)
             return
 
         if (
@@ -825,8 +870,14 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            _merge_turn_runtime_defaults_into_existing(existing, event)
             return
 
+    # Replace path: if both events have defaults, the incoming event's defaults
+    # are already on itself so storing it preserves them.  If only the existing
+    # had defaults, they are intentionally lost on replace — the next event is
+    # treated as the user's most recent intent.  Photo-burst preservation is
+    # handled by the earlier media branches above.
     pending_messages[session_key] = event
 
 

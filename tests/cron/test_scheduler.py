@@ -1415,6 +1415,143 @@ class TestBuildJobPromptMissingSkill:
         assert "go" in result
 
 
+# ── Task 9: structured invocation spec ───────────────────────────────────
+#
+# _build_job_invocation returns a dict with prompt + runtime_defaults +
+# warnings so the cron runner can apply per-skill overrides while
+# `_build_job_prompt` stays backward-compatible for the 9 legacy callers.
+
+
+class TestBuildJobInvocation:
+    """Verify the new structured return shape."""
+
+    def _skill_view_with_defaults(self, name: str) -> str:
+        return json.dumps(
+            {
+                "success": True,
+                "content": (
+                    "---\nname: brainstorm\nmetadata:\n  hermes:\n"
+                    "    runtime_defaults:\n      reasoning_effort: low\n"
+                    "---\n\nBrainstorm body.\n"
+                ),
+            }
+        )
+
+    def _skill_view_no_defaults(self, name: str) -> str:
+        return json.dumps({"success": True, "content": "Plain skill body."})
+
+    def test_single_skill_with_runtime_defaults(self):
+        from cron.scheduler import _build_job_invocation
+
+        with (
+            patch(
+                "tools.skills_tool.skill_view",
+                side_effect=self._skill_view_with_defaults,
+            ),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            result = _build_job_invocation(
+                {"skills": ["brainstorm"], "prompt": "go"}
+            )
+        assert result["runtime_defaults"]["reasoning_effort"] == "low"
+        assert "Brainstorm body" in result["prompt"]
+        assert result["warnings"] == []
+
+    def test_skill_without_defaults_returns_empty(self):
+        from cron.scheduler import _build_job_invocation
+
+        with patch(
+            "tools.skills_tool.skill_view",
+            side_effect=self._skill_view_no_defaults,
+        ):
+            result = _build_job_invocation(
+                {"skills": ["plain"], "prompt": "go"}
+            )
+        assert result["runtime_defaults"] == {}
+        assert "Plain skill body" in result["prompt"]
+
+    def test_multi_skill_same_value_merges_cleanly(self):
+        from cron.scheduler import _build_job_invocation
+
+        def _view(name: str) -> str:
+            return self._skill_view_with_defaults(name)
+
+        with (
+            patch("tools.skills_tool.skill_view", side_effect=_view),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            result = _build_job_invocation(
+                {"skills": ["a", "b"], "prompt": "go"}
+            )
+        assert result["runtime_defaults"]["reasoning_effort"] == "low"
+        assert result["warnings"] == []
+
+    def test_conflicting_skills_drop_field_and_prepend_notice(self):
+        from cron.scheduler import _build_job_invocation
+
+        def _view(name: str) -> str:
+            effort = "low" if name == "a" else "high"
+            return json.dumps(
+                {
+                    "success": True,
+                    "content": (
+                        f"---\nname: {name}\nmetadata:\n  hermes:\n"
+                        f"    runtime_defaults:\n      reasoning_effort: {effort}\n"
+                        "---\n\nBody.\n"
+                    ),
+                }
+            )
+
+        with (
+            patch("tools.skills_tool.skill_view", side_effect=_view),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            result = _build_job_invocation(
+                {"skills": ["a", "b"], "prompt": "go"}
+            )
+        assert "reasoning_effort" not in result["runtime_defaults"]
+        assert any(
+            "Conflicting runtime defaults" in w for w in result["warnings"]
+        )
+        assert "Conflicting runtime defaults" in result["prompt"]
+
+    def test_legacy_skill_singular_still_works(self):
+        from cron.scheduler import _build_job_invocation
+
+        with patch(
+            "tools.skills_tool.skill_view",
+            side_effect=self._skill_view_no_defaults,
+        ):
+            result = _build_job_invocation(
+                {"skill": "plain", "prompt": "go"}
+            )
+        assert "Plain skill body" in result["prompt"]
+
+    def test_build_job_prompt_wrapper_returns_only_prompt(self):
+        """9 existing callers expect _build_job_prompt to return the string
+        form — verify the wrapper still does that."""
+        from cron.scheduler import _build_job_prompt
+
+        with patch(
+            "tools.skills_tool.skill_view",
+            side_effect=self._skill_view_no_defaults,
+        ):
+            prompt = _build_job_prompt(
+                {"skills": ["plain"], "prompt": "go"}
+            )
+        assert isinstance(prompt, str)
+        assert "Plain skill body" in prompt
+
+
 class TestSendMediaViaAdapter:
     """Unit tests for _send_media_via_adapter — routes files to typed adapter methods."""
 

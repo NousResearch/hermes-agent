@@ -231,6 +231,53 @@ Each entry supports:
 Use `required_environment_variables` for API keys, tokens, and other **secrets** (stored in `~/.hermes/.env`, never shown to the model). Use `config` for **paths, preferences, and non-sensitive settings** (stored in `config.yaml`, visible in config show).
 :::
 
+### Runtime Defaults (per-skill turn behavior)
+
+Skills can declare optional runtime defaults that Hermes applies only for the
+turn on which the skill is explicitly invoked.  Use this to reduce overthinking
+on lightweight workflows:
+
+```yaml
+metadata:
+  hermes:
+    runtime_defaults:
+      reasoning_effort: low
+```
+
+Supported fields:
+
+- `reasoning_effort` — one of `minimal`, `low`, `medium`, `high`, `xhigh`, or
+  `none`.  Only applies for the turn that explicitly invokes the skill.
+- `model` *(v2 — planned)* — nominates a specific model for the active turn.
+- `required` *(optional)* — list of field names that **must** apply for the
+  skill to work.  If any listed field cannot be applied (clamp, denial,
+  invalid), the turn fails with a user-visible error instead of silently
+  falling back.
+
+**Scope and precedence**
+
+- **Turn-scoped only.** The override applies exclusively to the turn that ran
+  `/skill-name`; the next plain turn reverts to your normal session defaults.
+- **Explicit-invocation only.** Preloaded skills, model-autoloaded
+  `skill_view()` calls, and webhook-delivered skills do **not** honor
+  `runtime_defaults` in v1.
+- **Explicit overrides win.** A session-level `/model` command or a cron job
+  with an explicit `job.model` beats any skill-declared default.
+- **Reasoning is clamped.** A skill cannot *raise* `reasoning_effort` above
+  your session default — attempts to escalate are silently clamped down.
+
+**Feature flag**
+
+Runtime defaults are opt-in.  Set `agent.skill_runtime_defaults_enabled: true`
+in `~/.hermes/config.yaml` to activate.  The flag is re-read on every skill
+invocation, so you can flip it without restarting Hermes.
+
+**Namespace note**
+
+`metadata.hermes.runtime_defaults` is a hermes-only extension of the
+`metadata.hermes.*` namespace.  It is **not** part of the agentskills.io
+convention — skills that target other runtimes should not rely on it.
+
 ### Credential File Requirements (OAuth tokens, etc.)
 
 Skills that use OAuth or file-based credentials can declare files that need to be mounted into remote sandboxes. This is for credentials stored as **files** (not env vars) — typically OAuth token files produced by a setup script.

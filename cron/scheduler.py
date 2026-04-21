@@ -590,8 +590,14 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
-def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
-    """Build the effective prompt for a cron job, optionally loading one or more skills first.
+def _build_job_invocation(job: dict, prerun_script: Optional[tuple] = None) -> dict:
+    """Build the effective prompt and runtime defaults for a cron job.
+
+    Returns a dict with:
+        - ``prompt`` (str): same content as the legacy ``_build_job_prompt``
+        - ``runtime_defaults`` (dict): merged runtime defaults across attached
+          skills, or ``{}`` when no skill declares any
+        - ``warnings`` (list[str]): notices already prepended into ``prompt``
 
     Args:
         job: The cron job dict.
@@ -653,17 +659,27 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
-        return prompt
+        return {"prompt": prompt, "runtime_defaults": {}, "warnings": []}
 
     from tools.skills_tool import skill_view
+    from agent.skill_utils import (
+        extract_skill_runtime_defaults,
+        parse_frontmatter,
+    )
+    from agent.turn_runtime_overrides import merge_multi_skill_runtime_defaults
 
     parts = []
     skipped: list[str] = []
+    per_skill_defaults: list[dict] = []
     for skill_name in skill_names:
         loaded = json.loads(skill_view(skill_name))
         if not loaded.get("success"):
             error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
+            logger.warning(
+                "Cron job '%s': skill not found, skipping — %s",
+                job.get("name", job.get("id")),
+                error,
+            )
             skipped.append(skill_name)
             continue
 
@@ -678,18 +694,61 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             ]
         )
 
+        # Extract per-skill runtime_defaults so we can merge them for the
+        # job turn. Re-parse the SKILL.md frontmatter because skill_view's
+        # content field is the whole file; reuse the same fail-soft pattern.
+        try:
+            frontmatter, _ = parse_frontmatter(
+                str(loaded.get("raw_content") or loaded.get("content") or "")
+            )
+            defaults = extract_skill_runtime_defaults(frontmatter)
+            if defaults:
+                per_skill_defaults.append(defaults)
+        except Exception:
+            logger.debug(
+                "Cron job '%s': failed to extract runtime_defaults for skill '%s'",
+                job.get("name", job.get("id")),
+                skill_name,
+                exc_info=True,
+            )
+
+    merged_defaults, conflict_warnings = merge_multi_skill_runtime_defaults(
+        per_skill_defaults
+    )
+
+    notices: list[str] = []
     if skipped:
-        notice = (
+        notices.append(
             f"[SYSTEM: The following skill(s) were listed for this job but could not be found "
             f"and were skipped: {', '.join(skipped)}. "
             f"Start your response with a brief notice so the user is aware, e.g.: "
             f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
         )
+    for warning in conflict_warnings:
+        notices.append(f"[SYSTEM: {warning}]")
+
+    # Prepend notices in stable order: skipped-skills first (existing
+    # behavior), then any conflict warnings.
+    for notice in reversed(notices):
         parts.insert(0, notice)
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
-    return "\n".join(parts)
+    return {
+        "prompt": "\n".join(parts),
+        "runtime_defaults": merged_defaults,
+        "warnings": notices,
+    }
+
+
+def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
+    """Build the effective prompt string for a cron job (legacy wrapper).
+
+    Kept as a thin wrapper around :func:`_build_job_invocation` so existing
+    callers continue to work unchanged. New call sites should use
+    ``_build_job_invocation`` and honor ``runtime_defaults``.
+    """
+    return _build_job_invocation(job, prerun_script=prerun_script)["prompt"]
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
@@ -715,7 +774,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
-    # the whole agent run. We pass the result into _build_job_prompt so
+    # the whole agent run. We pass the result into _build_job_invocation so
     # the script is only executed once.
     prerun_script = None
     script_path = job.get("script")
@@ -735,7 +794,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
             return True, silent_doc, SILENT_MARKER, None
 
-    prompt = _build_job_prompt(job, prerun_script=prerun_script)
+    invocation = _build_job_invocation(job, prerun_script=prerun_script)
+    prompt = invocation["prompt"]
+    job_skill_runtime_defaults = invocation.get("runtime_defaults") or {}
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -844,6 +905,45 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        # Apply per-skill runtime defaults to this job's turn. Explicit
+        # ``job.model`` still wins: when the operator pinned a model in the
+        # cron spec, the skill's model cannot override it.
+        if job_skill_runtime_defaults:
+            try:
+                from agent.turn_runtime_overrides import (
+                    merge_turn_runtime_defaults,
+                    emit_events,
+                )
+
+                explicit_lock = {}
+                if job.get("model"):
+                    explicit_lock["model"] = job.get("model")
+                session_default_reasoning = reasoning_config
+                merge_res = merge_turn_runtime_defaults(
+                    {},
+                    job_skill_runtime_defaults,
+                    skill_name=str(job.get("name") or job.get("id") or ""),
+                    explicit_lock=explicit_lock,
+                    session_default_reasoning=session_default_reasoning,
+                )
+                emit_events(merge_res.events)
+                if merge_res.hard_fail is not None:
+                    hf = merge_res.hard_fail
+                    raise RuntimeError(
+                        f"Cron job '{job_name}' requires {hf.failing_field} "
+                        f"but it could not be applied ({hf.reason})."
+                    )
+                if "reasoning_config" in merge_res.merged:
+                    reasoning_config = merge_res.merged["reasoning_config"]
+            except RuntimeError:
+                raise
+            except Exception:
+                logger.debug(
+                    "Cron job '%s': skill_runtime_defaults merge failed",
+                    job_id,
+                    exc_info=True,
+                )
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None

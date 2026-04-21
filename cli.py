@@ -192,6 +192,73 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     return result
 
 
+def _normalize_pending_turn(item) -> dict:
+    """Normalize any ``_pending_input`` queue entry to a structured turn dict.
+
+    Queue entries can arrive in several shapes (preserved for backward
+    compatibility with existing enqueue sites):
+
+      - ``str``                    — plain user text
+      - ``(text, images_list)``    — text with attached images (Enter keybind)
+      - ``{"message": str, ...}``  — structured skill invocation payload
+      - ``{"text": str, ...}``     — already-normalized turn
+
+    Unknown shapes are coerced to plain text via ``str()`` with a WARNING.
+    The returned dict is the canonical shape for downstream dispatch:
+    ``{"text": str, "images": list, "runtime_defaults": dict, "skill_name": str}``.
+
+    This is the **only** consumer of ``_pending_input.get()``.  Runtime
+    defaults are consumed in the same iteration they arrive — never stashed
+    on ``self.*`` where a later turn could read them back.
+    """
+    if isinstance(item, dict):
+        text = item.get("message")
+        if text is None:
+            text = item.get("text", "")
+        runtime_defaults = item.get("runtime_defaults") or {}
+        if not isinstance(runtime_defaults, dict):
+            runtime_defaults = {}
+        images = item.get("images") or []
+        if not isinstance(images, list):
+            images = []
+        return {
+            "text": text if isinstance(text, str) else str(text or ""),
+            "images": list(images),
+            "runtime_defaults": runtime_defaults,
+            "skill_name": str(item.get("skill_name") or ""),
+        }
+
+    if isinstance(item, tuple) and len(item) == 2:
+        text, images = item
+        if not isinstance(images, list):
+            images = list(images) if images else []
+        return {
+            "text": text if isinstance(text, str) else str(text or ""),
+            "images": images,
+            "runtime_defaults": {},
+            "skill_name": "",
+        }
+
+    if isinstance(item, str):
+        return {
+            "text": item,
+            "images": [],
+            "runtime_defaults": {},
+            "skill_name": "",
+        }
+
+    logger.warning(
+        "Unexpected _pending_input shape %s; coercing to text",
+        type(item).__name__,
+    )
+    return {
+        "text": str(item) if item is not None else "",
+        "images": [],
+        "runtime_defaults": {},
+        "skill_name": "",
+    }
+
+
 def _parse_service_tier_config(raw: str) -> str | None:
     """Parse a persisted service-tier preference into a Responses API value."""
     value = str(raw or "").strip().lower()
@@ -1593,6 +1660,7 @@ def _looks_like_slash_command(text: str) -> bool:
 from agent.skill_commands import (
     scan_skill_commands,
     build_skill_invocation_message,
+    build_skill_invocation_payload,
     build_plan_path,
     build_preloaded_skills_prompt,
 )
@@ -3080,13 +3148,25 @@ class HermesCLI:
 
         return True
 
-    def _resolve_turn_agent_config(self, user_message: str) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        *,
+        skill_runtime_defaults: dict | None = None,
+    ) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
+        Always uses the session's primary model/provider. If the user has
         toggled `/fast` on and the current model supports Priority
         Processing / Anthropic fast mode, attach `request_overrides` so the
         API call is marked accordingly.
+
+        When ``skill_runtime_defaults`` is populated (from a ``/skill-name``
+        invocation), its fields are merged after trust-cap enforcement.
+        Skills can reduce reasoning but not raise it above the session
+        default. If a required field cannot be applied,
+        ``route["hard_fail"]`` is set so the caller aborts the turn with a
+        user-visible error.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -3112,6 +3192,40 @@ class HermesCLI:
             ),
         }
 
+        # Apply per-skill runtime defaults (reasoning_effort in v1; model in v2).
+        # Hard-fails propagate to the caller via route["hard_fail"].
+        route["hard_fail"] = None
+        route["skill_reasoning_config"] = None
+        if skill_runtime_defaults:
+            try:
+                from agent.turn_runtime_overrides import (
+                    merge_turn_runtime_defaults,
+                    emit_events,
+                )
+
+                session_default_reasoning = getattr(self, "reasoning_config", None)
+                merge_res = merge_turn_runtime_defaults(
+                    {},  # CLI's primary reasoning is held on self.reasoning_config;
+                         # we apply it through the per-turn mutation instead.
+                    skill_runtime_defaults,
+                    skill_name=skill_runtime_defaults.get("skill_name", ""),
+                    session_default_reasoning=session_default_reasoning,
+                )
+                emit_events(merge_res.events)
+                if merge_res.hard_fail is not None:
+                    route["hard_fail"] = merge_res.hard_fail
+                    return route
+                # Reasoning override is applied post-cache via attribute mutation.
+                if "reasoning_config" in merge_res.merged:
+                    route["skill_reasoning_config"] = merge_res.merged[
+                        "reasoning_config"
+                    ]
+            except Exception:
+                # Fail soft — misbehaving merge helper never blocks a turn.
+                logger.debug(
+                    "skill_runtime_defaults merge failed", exc_info=True
+                )
+
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
             route["request_overrides"] = None
@@ -3123,6 +3237,40 @@ class HermesCLI:
             overrides = None
         route["request_overrides"] = overrides
         return route
+
+    def _apply_per_turn_agent_mutation(self, turn_route: dict) -> None:
+        """Apply turn-scoped runtime state to the reused agent.
+
+        Mirrors ``gateway/run.py:8885-8894``: after cached-agent lookup,
+        assign ``reasoning_config``, ``service_tier``, and
+        ``request_overrides`` unconditionally so per-turn overrides take
+        effect without rebuilding the agent.  Reasoning is deliberately
+        excluded from the route signature by ``_active_agent_route_signature``
+        — this mutation is what makes that exclusion safe.
+
+        The manual ``/reasoning`` command still rebuilds the agent
+        (cli.py:_handle_reasoning_command) — that path is out of v1 scope.
+        """
+        if self.agent is None:
+            return
+        skill_reasoning = turn_route.get("skill_reasoning_config")
+        # If a skill set reasoning, use that for this turn only.
+        # Otherwise, re-apply the session default so the next plain turn
+        # reverts from any prior skill turn.
+        effective = (
+            skill_reasoning
+            if skill_reasoning is not None
+            else getattr(self, "reasoning_config", None)
+        )
+        try:
+            self.agent.reasoning_config = effective
+            self.agent.service_tier = getattr(self, "service_tier", None)
+            self.agent.request_overrides = turn_route.get("request_overrides")
+        except AttributeError:
+            logger.debug(
+                "per-turn agent mutation skipped (missing attribute)",
+                exc_info=True,
+            )
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """
@@ -6094,14 +6242,14 @@ class HermesCLI:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
-                msg = build_skill_invocation_message(
+                payload = build_skill_invocation_payload(
                     base_cmd, user_instruction, task_id=self.session_id
                 )
-                if msg:
+                if payload and payload.get("message"):
                     skill_name = _skill_commands[base_cmd]["name"]
                     print(f"\n⚡ Loading skill: {skill_name}")
                     if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
+                        self._pending_input.put(payload)
                 else:
                     ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
@@ -6153,7 +6301,7 @@ class HermesCLI:
         user_instruction = parts[1].strip() if len(parts) > 1 else ""
 
         plan_path = build_plan_path(user_instruction)
-        msg = build_skill_invocation_message(
+        payload = build_skill_invocation_payload(
             "/plan",
             user_instruction,
             task_id=self.session_id,
@@ -6163,13 +6311,13 @@ class HermesCLI:
             ),
         )
 
-        if not msg:
+        if not payload or not payload.get("message"):
             ChatConsole().print("[bold red]Failed to load the bundled /plan skill[/]")
             return
 
         _cprint(f"  📝 Plan mode queued via skill. Markdown plan target: {plan_path}")
         if hasattr(self, '_pending_input'):
-            self._pending_input.put(msg)
+            self._pending_input.put(payload)
         else:
             ChatConsole().print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     
@@ -8124,22 +8272,31 @@ class HermesCLI:
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(
+        self,
+        message,
+        images: list = None,
+        *,
+        skill_runtime_defaults: dict | None = None,
+    ) -> Optional[str]:
         """
         Send a message to the agent and get a response.
-        
+
         Handles streaming output, interrupt detection (user typing while agent
         is working), and re-queueing of interrupted messages.
-        
+
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
         race conditions between the process_loop and interrupt monitoring. Messages
         typed while the agent is running go to _interrupt_queue; messages typed while
         idle go to _pending_input.
-        
+
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
-            
+            skill_runtime_defaults: Optional per-skill turn runtime overrides
+                normalized by :func:`agent.skill_utils.extract_skill_runtime_defaults`.
+                Applied for this turn only.
+
         Returns:
             The agent's response, or None on error
         """
@@ -8151,7 +8308,18 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return None
 
-        turn_route = self._resolve_turn_agent_config(message)
+        turn_route = self._resolve_turn_agent_config(
+            message, skill_runtime_defaults=skill_runtime_defaults
+        )
+        if turn_route.get("hard_fail"):
+            hf = turn_route["hard_fail"]
+            err = (
+                f"Skill '{hf.skill_name}' requires {hf.failing_field} "
+                f"but it could not be applied ({hf.reason})."
+            )
+            ChatConsole().print(f"[bold red]{err}[/]")
+            return None
+
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
@@ -8164,6 +8332,13 @@ class HermesCLI:
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
+
+        # Per-turn mutation: mirror gateway/run.py:8885-8894 so skill-declared
+        # reasoning defaults take effect on the reused agent.  Reasoning is
+        # excluded from the route signature by design; this mutation happens
+        # post-lookup and reverts on the next plain turn (whose turn_route
+        # has no reasoning_config override).
+        self._apply_per_turn_agent_mutation(turn_route)
         
         # Pre-process images through the vision tool (Gemini Flash) so the
         # main model receives text descriptions instead of raw base64 image
@@ -10259,7 +10434,7 @@ class HermesCLI:
                 try:
                     # Check for pending input with timeout
                     try:
-                        user_input = self._pending_input.get(timeout=0.1)
+                        raw_input = self._pending_input.get(timeout=0.1)
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
@@ -10281,14 +10456,18 @@ class HermesCLI:
                             except Exception:
                                 pass
                         continue
-                    
-                    if not user_input:
+
+                    if not raw_input:
                         continue
 
-                    # Unpack image payload: (text, [Path, ...]) or plain str
-                    submit_images = []
-                    if isinstance(user_input, tuple):
-                        user_input, submit_images = user_input
+                    # Normalize any queue shape (str | (text, images) tuple |
+                    # structured skill payload dict) into a single turn dict.
+                    # runtime_defaults is consumed in this iteration only; next
+                    # turn starts fresh (see _normalize_pending_turn docstring).
+                    _turn = _normalize_pending_turn(raw_input)
+                    user_input = _turn["text"]
+                    submit_images = list(_turn["images"])
+                    skill_runtime_defaults = _turn["runtime_defaults"]
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.
@@ -10335,7 +10514,11 @@ class HermesCLI:
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            skill_runtime_defaults=skill_runtime_defaults or None,
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
@@ -10777,6 +10960,14 @@ def main(
                         announce=False,
                     )
                 turn_route = cli._resolve_turn_agent_config(effective_query)
+                if turn_route.get("hard_fail"):
+                    hf = turn_route["hard_fail"]
+                    print(
+                        f"Skill '{hf.skill_name}' requires {hf.failing_field} "
+                        f"but it could not be applied ({hf.reason}).",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None
                 if cli._init_agent(
@@ -10784,6 +10975,10 @@ def main(
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
                 ):
+                    # Per-turn mutation: mirror the main chat() path so the
+                    # single-query dispatch applies any turn-scoped reasoning
+                    # from skill_runtime_defaults consistently.
+                    cli._apply_per_turn_agent_mutation(turn_route)
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True
                     # Suppress streaming display callbacks so stdout stays

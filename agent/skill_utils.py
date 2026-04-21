@@ -255,6 +255,146 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     }
 
 
+# ── Runtime defaults extraction ──────────────────────────────────────────
+
+_RUNTIME_DEFAULT_FIELDS = frozenset({"reasoning_effort", "model"})
+_SKILL_NAME_SAFE_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
+
+
+def _runtime_defaults_flag_enabled() -> bool:
+    """Read ``agent.skill_runtime_defaults_enabled`` from config.yaml on each call.
+
+    Per-call (not cached) so an operator can flip the switch live without
+    restarting.  Matches the direct-read pattern used by
+    ``get_disabled_skill_names`` elsewhere in this module.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return False
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    agent_cfg = parsed.get("agent")
+    if not isinstance(agent_cfg, dict):
+        return False
+    return bool(agent_cfg.get("skill_runtime_defaults_enabled", False))
+
+
+def is_safe_skill_name(skill_name: str) -> bool:
+    """Return True when *skill_name* is safe to emit in structured logs.
+
+    Allowed characters: ``[a-zA-Z0-9_-]``.  This guards the Design Rule 10
+    observability path — a skill with newlines or control characters in its
+    name would corrupt structured log output.
+    """
+    if not skill_name or not isinstance(skill_name, str):
+        return False
+    return bool(_SKILL_NAME_SAFE_RE.match(skill_name))
+
+
+def extract_skill_runtime_defaults(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract per-skill runtime defaults from parsed frontmatter.
+
+    Skills declare runtime defaults under ``metadata.hermes.runtime_defaults``::
+
+        metadata:
+          hermes:
+            runtime_defaults:
+              reasoning_effort: low
+              model: gpt-5.4-mini
+              required:
+                - reasoning_effort
+
+    Returns a dict with optional keys:
+        - ``reasoning_effort`` (str): human-readable level for inspection.
+        - ``reasoning_config`` (dict): ready-to-apply output of
+          :func:`parse_reasoning_effort` (``{"enabled": bool, "effort": str}``).
+        - ``model`` (str): model name the skill nominates for the active turn.
+        - ``required`` (list[str]): field names that must be applied or the
+          turn hard-fails.  Always present (empty list when unspecified).
+
+    Returns ``{}`` when:
+        - the feature flag ``agent.skill_runtime_defaults_enabled`` is false;
+        - ``metadata.hermes.runtime_defaults`` is absent or malformed;
+        - every declared value is invalid.
+
+    Follows the same defensive ``isinstance`` guarding and silent-skip pattern
+    as :func:`extract_skill_config_vars`.
+    """
+    if not _runtime_defaults_flag_enabled():
+        return {}
+
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    hermes = metadata.get("hermes")
+    if not isinstance(hermes, dict):
+        return {}
+    raw = hermes.get("runtime_defaults")
+    if not isinstance(raw, dict):
+        return {}
+
+    from hermes_constants import parse_reasoning_effort
+
+    result: Dict[str, Any] = {}
+
+    effort_raw = raw.get("reasoning_effort")
+    if effort_raw is not None:
+        effort_str = str(effort_raw).strip()
+        parsed_effort = parse_reasoning_effort(effort_str)
+        if parsed_effort is not None:
+            result["reasoning_effort"] = effort_str.lower()
+            result["reasoning_config"] = parsed_effort
+        else:
+            logger.warning(
+                "Skill runtime_defaults: invalid reasoning_effort %r ignored",
+                effort_raw,
+            )
+
+    model_raw = raw.get("model")
+    if model_raw is not None:
+        if isinstance(model_raw, str) and model_raw.strip():
+            result["model"] = model_raw.strip()
+        else:
+            logger.warning(
+                "Skill runtime_defaults: invalid model %r ignored",
+                model_raw,
+            )
+
+    required_raw = raw.get("required")
+    required: List[str] = []
+    if isinstance(required_raw, list):
+        for item in required_raw:
+            if not isinstance(item, str):
+                continue
+            name = item.strip()
+            if name in _RUNTIME_DEFAULT_FIELDS:
+                required.append(name)
+            else:
+                logger.debug(
+                    "Skill runtime_defaults: unknown required field %r dropped",
+                    item,
+                )
+    elif required_raw is not None:
+        logger.debug(
+            "Skill runtime_defaults: 'required' must be a list, got %r",
+            type(required_raw).__name__,
+        )
+
+    # Always include `required` so downstream code doesn't need a guard.
+    result["required"] = required
+
+    # Known but malformed => only required remains.  Treat as "no usable
+    # defaults" by returning {} so callers can use a simple truthy check.
+    if not any(key in result for key in ("reasoning_effort", "model")):
+        return {}
+
+    return result
+
+
 # ── Skill config extraction ───────────────────────────────────────────────
 
 

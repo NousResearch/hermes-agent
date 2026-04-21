@@ -389,6 +389,110 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
 
+    def test_view_surfaces_runtime_defaults_when_flag_on(self, tmp_path):
+        """skill_view JSON should carry normalized runtime_defaults when
+        extract_skill_runtime_defaults returns something truthy.
+
+        The extractor itself gates on the feature flag — we patch it directly
+        here to keep the assertion focused on the JSON surface.
+        """
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "brainstorm",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    runtime_defaults:\n"
+                    "      reasoning_effort: low\n"
+                ),
+            )
+            raw = skill_view("brainstorm")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["runtime_defaults"]["reasoning_effort"] == "low"
+        assert result["runtime_defaults"]["reasoning_config"] == {
+            "enabled": True,
+            "effort": "low",
+        }
+        # Existing JSON surface fields unchanged.
+        assert "content" in result
+        assert "linked_files" in result
+
+    def test_view_omits_runtime_defaults_when_flag_off(self, tmp_path):
+        """With the flag off, runtime_defaults key is omitted, not empty."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=False,
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "brainstorm",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    runtime_defaults:\n"
+                    "      reasoning_effort: low\n"
+                ),
+            )
+            raw = skill_view("brainstorm")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "runtime_defaults" not in result
+
+    def test_view_omits_runtime_defaults_for_skills_without_declaration(
+        self, tmp_path
+    ):
+        """A skill without runtime_defaults leaves the JSON surface unchanged."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            _make_skill(tmp_path, "plain-skill")
+            raw = skill_view("plain-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "runtime_defaults" not in result
+
+    def test_view_handles_invalid_runtime_defaults_without_breaking(
+        self, tmp_path, caplog
+    ):
+        """Invalid reasoning_effort → runtime_defaults omitted, content still returned."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils._runtime_defaults_flag_enabled",
+                return_value=True,
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "bad-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    runtime_defaults:\n"
+                    "      reasoning_effort: bogus\n"
+                ),
+            )
+            raw = skill_view("bad-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "runtime_defaults" not in result
+        assert "content" in result
+
 
 class TestSkillViewSecureSetupOnLoad:
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):

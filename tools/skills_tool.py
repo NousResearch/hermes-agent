@@ -1309,6 +1309,18 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
+        # Surface normalized runtime defaults (hermes-only extension).
+        # Gated behind agent.skill_runtime_defaults_enabled; extractor
+        # returns {} when the flag is off, so callers only see the field
+        # when operators have opted in.
+        try:
+            from agent.skill_utils import extract_skill_runtime_defaults
+            runtime_defaults = extract_skill_runtime_defaults(frontmatter)
+        except Exception:
+            runtime_defaults = {}
+        if runtime_defaults:
+            result["runtime_defaults"] = runtime_defaults
+
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:

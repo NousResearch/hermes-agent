@@ -23,8 +23,10 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
+import { execSync } from 'child_process';
+import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
@@ -505,8 +507,31 @@ app.post('/send-media', async (req, res) => {
         msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
         break;
       case 'audio': {
-        const audioMime = (ext === 'ogg' || ext === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
-        msgPayload = { audio: buffer, mimetype: audioMime, ptt: ext === 'ogg' || ext === 'opus' };
+        // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
+        // If the caller passes mp3, wav, m4a etc. (e.g. from Edge TTS / NeuTTS),
+        // silently convert to ogg/opus via ffmpeg so ptt is always honoured.
+        let audioBuffer = buffer;
+        let audioExt = ext;
+        const needsConversion = !['ogg', 'opus'].includes(ext);
+        let tmpPath = null;
+        if (needsConversion) {
+          tmpPath = path.join(tmpdir(), `hermes_voice_${randomBytes(6).toString('hex')}.ogg`);
+          try {
+            execSync(
+              `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus ${JSON.stringify(tmpPath)}`,
+              { timeout: 30000, stdio: 'pipe' }
+            );
+            audioBuffer = readFileSync(tmpPath);
+            audioExt = 'ogg';
+          } catch (convErr) {
+            // ffmpeg not available or conversion failed — fall back to original format
+            console.warn('[bridge] ffmpeg conversion failed, sending as file attachment:', convErr.message);
+          } finally {
+            try { if (tmpPath && existsSync(tmpPath)) unlinkSync(tmpPath); } catch (_) {}
+          }
+        }
+        const audioMime = (audioExt === 'ogg' || audioExt === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
+        msgPayload = { audio: audioBuffer, mimetype: audioMime, ptt: audioExt === 'ogg' || audioExt === 'opus' };
         break;
       }
       case 'document':

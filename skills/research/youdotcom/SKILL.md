@@ -25,7 +25,7 @@ synthesizes everything into a Markdown answer with inline citations.
 
 - User just needs a quick lookup — use `web_search` instead
 - User wants to extract content from a known URL — use `web_extract` instead
-- User needs raw search results for custom processing — use `web_search` instead
+- User needs raw search results for custom processing — use `web_search` instead (with `YDC_API_KEY`, search also returns full page content via livecrawl)
 
 ## API Access
 

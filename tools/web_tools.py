@@ -971,10 +971,10 @@ def _ydc_headers() -> Dict[str, str]:
     """Return headers for You.com API requests.
 
     The Search API allows 100 free searches/day without an API key.
-    The Research and Contents APIs always require a key.
+    The Contents API always requires a key.
     """
     api_key = os.getenv("YDC_API_KEY", "").strip()
-    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    headers: Dict[str, str] = {}
     if api_key:
         headers["X-API-Key"] = api_key
     return headers
@@ -984,16 +984,24 @@ def _ydc_search(query: str, limit: int = 10) -> dict:
     """Search using the You.com Search API and return results as a dict.
 
     The Search API returns raw web and news results. Supports 100 free
-    searches/day without an API key.
+    searches/day without an API key.  When YDC_API_KEY is set, enables
+    livecrawl to retrieve full page content inline (markdown) with search
+    results — combining search and extract in a single call.
     """
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return {"error": "Interrupted", "success": False}
 
-    logger.info("You.com search: '%s' (limit=%d)", query, limit)
-    params = {"query": query}
-    if limit != 10:
-        params["count"] = str(limit)
+    has_api_key = bool(os.getenv("YDC_API_KEY", "").strip())
+
+    logger.info("You.com search: '%s' (limit=%d, livecrawl=%s)", query, limit, has_api_key)
+    params: Dict[str, Any] = {"query": query, "count": limit}
+
+    # Livecrawl returns full page content inline with search results.
+    # Requires an API key; not available on the free tier.
+    if has_api_key:
+        params["livecrawl"] = "web"
+        params["livecrawl_formats"] = ["markdown"]
 
     resp = httpx.get(
         f"{_YDC_SEARCH_BASE_URL}/v1/agents/search",
@@ -1011,21 +1019,48 @@ def _ydc_search(query: str, limit: int = 10) -> dict:
 
     web_results = []
     for i, item in enumerate(web_items[:limit]):
-        web_results.append({
+        result: Dict[str, Any] = {
             "url": item.get("url", ""),
             "title": item.get("title", ""),
             "description": item.get("description", ""),
             "position": i + 1,
-        })
+        }
+        snippets = item.get("snippets")
+        if snippets:
+            result["snippets"] = snippets
+        page_age = item.get("page_age")
+        if page_age:
+            result["page_age"] = page_age
+        authors = item.get("authors")
+        if authors:
+            result["authors"] = authors
+
+        # Include livecrawl content when available
+        contents = item.get("contents")
+        if isinstance(contents, dict):
+            md = contents.get("markdown")
+            if md:
+                result["contents"] = {"markdown": md}
+
+        web_results.append(result)
 
     if news_items:
         for j, item in enumerate(news_items[:max(0, limit - len(web_results))]):
-            web_results.append({
+            news_result: Dict[str, Any] = {
                 "url": item.get("url", ""),
                 "title": item.get("title", ""),
                 "description": item.get("description", ""),
                 "position": len(web_results) + 1,
-            })
+            }
+            page_age = item.get("page_age")
+            if page_age:
+                news_result["page_age"] = page_age
+            contents = item.get("contents")
+            if isinstance(contents, dict):
+                md = contents.get("markdown")
+                if md:
+                    news_result["contents"] = {"markdown": md}
+            web_results.append(news_result)
 
     return {"success": True, "data": {"web": web_results}}
 
@@ -1049,10 +1084,24 @@ def _ydc_extract(urls: List[str]) -> List[Dict[str, Any]]:
         )
 
     logger.info("You.com extract: %d URL(s)", len(urls))
+
+    payload: Dict[str, Any] = {
+        "urls": urls,
+        "formats": ["markdown", "metadata"],
+    }
+    crawl_timeout = os.getenv("YDC_CRAWL_TIMEOUT", "").strip()
+    if crawl_timeout:
+        try:
+            timeout_val = int(crawl_timeout)
+            if 1 <= timeout_val <= 60:
+                payload["crawl_timeout"] = timeout_val
+        except ValueError:
+            pass
+
     resp = httpx.post(
         f"{_YDC_CONTENTS_BASE_URL}/v1/contents",
         headers=_ydc_headers(),
-        json={"urls": urls, "formats": ["markdown", "metadata"]},
+        json=payload,
         timeout=60,
     )
     if not resp.is_success:

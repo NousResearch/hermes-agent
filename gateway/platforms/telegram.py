@@ -794,8 +794,28 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Telegram pushes updates to our HTTP endpoint.  This
                 # enables cloud platforms (Fly.io, Railway) to auto-wake
                 # suspended machines on inbound HTTP traffic.
+                #
+                # SECURITY: TELEGRAM_WEBHOOK_SECRET is REQUIRED. Without it,
+                # python-telegram-bot passes secret_token=None and the
+                # webhook endpoint accepts any HTTP POST — attackers can
+                # inject forged updates as if from Telegram. Refuse to
+                # start rather than silently run in fail-open mode.
+                # See GHSA-3vpc-7q5r-276h.
                 webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
-                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None
+                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+                if not webhook_secret:
+                    raise RuntimeError(
+                        "TELEGRAM_WEBHOOK_SECRET is required when "
+                        "TELEGRAM_WEBHOOK_URL is set. Without it, the "
+                        "webhook endpoint accepts forged updates from "
+                        "anyone who can reach it — see "
+                        "https://github.com/NousResearch/hermes-agent/"
+                        "security/advisories/GHSA-3vpc-7q5r-276h.\n\n"
+                        "Generate a secret and set it in your .env:\n"
+                        "  export TELEGRAM_WEBHOOK_SECRET=\"$(openssl rand -hex 32)\"\n\n"
+                        "Then register it with Telegram when setting the "
+                        "webhook via setWebhook's secret_token parameter."
+                    )
                 from urllib.parse import urlparse
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 

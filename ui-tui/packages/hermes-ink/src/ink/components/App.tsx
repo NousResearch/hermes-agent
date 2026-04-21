@@ -616,6 +616,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
+      app.props.onMouseDownAt(col, row, baseButton)
 
       return
     }

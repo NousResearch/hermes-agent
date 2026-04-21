@@ -5,6 +5,7 @@ import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
 import { TextInput } from './textInput.js'
+import { isMac } from '../lib/platform.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
@@ -128,7 +129,9 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
           <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
         </Box>
 
-        <Text color={t.color.dim}>Enter send · Esc {choices.length ? 'back' : 'cancel'} · Ctrl+C cancel</Text>
+        <Text color={t.color.dim}>
+          Enter send · Esc {choices.length ? 'back' : 'cancel'} · {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+        </Text>
       </Box>
     )
   }
@@ -155,31 +158,21 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   const [sel, setSel] = useState(0)
 
   useInput((ch, key) => {
-    if (key.escape || (key.ctrl && ch.toLowerCase() === 'c')) {
-      onCancel()
-
-      return
-    }
-
     const lower = ch.toLowerCase()
 
+    if (key.escape || (key.ctrl && lower === 'c') || lower === 'n') {
+      return onCancel()
+    }
+
     if (lower === 'y') {
-      onConfirm()
-
-      return
+      return onConfirm()
     }
 
-    if (lower === 'n') {
-      onCancel()
-
-      return
-    }
-
-    if (key.upArrow && sel > 0) {
+    if (key.upArrow) {
       setSel(0)
     }
 
-    if (key.downArrow && sel < 1) {
+    if (key.downArrow) {
       setSel(1)
     }
 
@@ -189,12 +182,10 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   })
 
   const accent = req.danger ? t.color.error : t.color.warn
-  const confirmLabel = req.confirmLabel ?? 'Yes'
-  const cancelLabel = req.cancelLabel ?? 'No'
 
   const rows = [
-    { color: t.color.cornsilk, label: cancelLabel },
-    { color: req.danger ? t.color.error : t.color.cornsilk, label: confirmLabel }
+    { color: t.color.cornsilk, label: req.cancelLabel ?? 'No' },
+    { color: req.danger ? t.color.error : t.color.cornsilk, label: req.confirmLabel ?? 'Yes' }
   ]
 
   return (

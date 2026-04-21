@@ -652,6 +652,42 @@ class TestBuildGeminiRequest:
         assert decls[0]["description"] == "foo"
         assert decls[0]["parameters"] == {"type": "object"}
 
+    def test_tools_strip_json_schema_only_fields_from_parameters(self):
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                {"type": "function", "function": {
+                    "name": "fn1",
+                    "description": "foo",
+                    "parameters": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "city": {
+                                "type": "string",
+                                "$schema": "ignored",
+                                "description": "City name",
+                                "additionalProperties": False,
+                            }
+                        },
+                        "required": ["city"],
+                    },
+                }},
+            ],
+        )
+        params = req["tools"][0]["functionDeclarations"][0]["parameters"]
+        assert "$schema" not in params
+        assert "additionalProperties" not in params
+        assert params["type"] == "object"
+        assert params["required"] == ["city"]
+        assert params["properties"]["city"] == {
+            "type": "string",
+            "description": "City name",
+        }
+
     def test_tool_choice_auto(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 
@@ -812,6 +848,69 @@ class TestTranslateGeminiResponse:
         assert _map_gemini_finish_reason("MAX_TOKENS") == "length"
         assert _map_gemini_finish_reason("SAFETY") == "content_filter"
         assert _map_gemini_finish_reason("RECITATION") == "content_filter"
+
+
+class TestTranslateStreamEvent:
+    def test_parallel_calls_to_same_tool_get_unique_indices(self):
+        """Gemini may emit several functionCall parts with the same name in a
+        single turn (e.g. parallel file reads). Each must get its own OpenAI
+        ``index`` — otherwise downstream aggregators collapse them into one.
+        """
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        event = {
+            "response": {
+                "candidates": [{
+                    "content": {"parts": [
+                        {"functionCall": {"name": "read_file", "args": {"path": "a"}}},
+                        {"functionCall": {"name": "read_file", "args": {"path": "b"}}},
+                        {"functionCall": {"name": "read_file", "args": {"path": "c"}}},
+                    ]},
+                }],
+            }
+        }
+        counter = [0]
+        chunks = _translate_stream_event(event, model="gemini-2.5-flash",
+                                         tool_call_counter=counter)
+        indices = [c.choices[0].delta.tool_calls[0].index for c in chunks]
+        assert indices == [0, 1, 2]
+        assert counter[0] == 3
+
+    def test_counter_persists_across_events(self):
+        """Index assignment must continue across SSE events in the same stream."""
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        def _event(name):
+            return {"response": {"candidates": [{
+                "content": {"parts": [{"functionCall": {"name": name, "args": {}}}]},
+            }]}}
+
+        counter = [0]
+        chunks_a = _translate_stream_event(_event("foo"), model="m", tool_call_counter=counter)
+        chunks_b = _translate_stream_event(_event("bar"), model="m", tool_call_counter=counter)
+        chunks_c = _translate_stream_event(_event("foo"), model="m", tool_call_counter=counter)
+
+        assert chunks_a[0].choices[0].delta.tool_calls[0].index == 0
+        assert chunks_b[0].choices[0].delta.tool_calls[0].index == 1
+        assert chunks_c[0].choices[0].delta.tool_calls[0].index == 2
+
+    def test_finish_reason_switches_to_tool_calls_when_any_seen(self):
+        from agent.gemini_cloudcode_adapter import _translate_stream_event
+
+        counter = [0]
+        # First event emits one tool call.
+        _translate_stream_event(
+            {"response": {"candidates": [{
+                "content": {"parts": [{"functionCall": {"name": "x", "args": {}}}]},
+            }]}},
+            model="m", tool_call_counter=counter,
+        )
+        # Second event carries only the terminal finishReason.
+        chunks = _translate_stream_event(
+            {"response": {"candidates": [{"finishReason": "STOP"}]}},
+            model="m", tool_call_counter=counter,
+        )
+        assert chunks[-1].choices[0].finish_reason == "tool_calls"
 
 
 class TestGeminiCloudCodeClient:

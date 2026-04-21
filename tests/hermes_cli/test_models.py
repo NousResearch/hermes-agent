@@ -88,6 +88,131 @@ class TestFetchOpenRouterModels:
 
         assert models == OPENROUTER_MODELS
 
+    def test_filters_out_models_without_tool_support(self, monkeypatch):
+        """Models whose supported_parameters omits 'tools' must not appear in the picker.
+
+        hermes-agent is tool-calling-first — surfacing a non-tool model leads to
+        immediate runtime failures when the user selects it. Ported from
+        Kilo-Org/kilocode#9068.
+        """
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                # opus-4.6 advertises tools → kept
+                # nano-image has explicit supported_parameters that OMITS tools → dropped
+                # qwen3.6-plus advertises tools → kept
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},'
+                    b'"supported_parameters":["temperature","tools","tool_choice"]},'
+                    b'{"id":"google/gemini-3-pro-image-preview","pricing":{"prompt":"0.00001","completion":"0.00003"},'
+                    b'"supported_parameters":["temperature","response_format"]},'
+                    b'{"id":"qwen/qwen3.6-plus","pricing":{"prompt":"0.000000325","completion":"0.00000195"},'
+                    b'"supported_parameters":["tools","temperature"]}'
+                    b']}'
+                )
+
+        # Include the image-only id in the curated list so it has a chance to be surfaced.
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [
+                ("anthropic/claude-opus-4.6", ""),
+                ("google/gemini-3-pro-image-preview", ""),
+                ("qwen/qwen3.6-plus", ""),
+            ],
+        )
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "anthropic/claude-opus-4.6" in ids
+        assert "qwen/qwen3.6-plus" in ids
+        # Image-only model advertised supported_parameters WITHOUT tools → must be dropped.
+        assert "google/gemini-3-pro-image-preview" not in ids
+
+    def test_permissive_when_supported_parameters_missing(self, monkeypatch):
+        """Models missing the supported_parameters field keep appearing in the picker.
+
+        Some OpenRouter-compatible gateways (Nous Portal, private mirrors, older
+        catalog snapshots) don't populate supported_parameters. Treating missing
+        as 'unknown → allow' prevents the picker from silently emptying on
+        those gateways.
+        """
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                # No supported_parameters field at all on either entry.
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"}},'
+                    b'{"id":"qwen/qwen3.6-plus","pricing":{"prompt":"0.000000325","completion":"0.00000195"}}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "anthropic/claude-opus-4.6" in ids
+        assert "qwen/qwen3.6-plus" in ids
+
+
+class TestOpenRouterToolSupportHelper:
+    """Unit tests for _openrouter_model_supports_tools (Kilo port #9068)."""
+
+    def test_tools_in_supported_parameters(self):
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(
+            {"id": "x", "supported_parameters": ["temperature", "tools"]}
+        ) is True
+
+    def test_tools_missing_from_supported_parameters(self):
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(
+            {"id": "x", "supported_parameters": ["temperature", "response_format"]}
+        ) is False
+
+    def test_supported_parameters_absent_is_permissive(self):
+        """Missing field → allow (so older / non-OR gateways still work)."""
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools({"id": "x"}) is True
+
+    def test_supported_parameters_none_is_permissive(self):
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools({"id": "x", "supported_parameters": None}) is True
+
+    def test_supported_parameters_malformed_is_permissive(self):
+        """Malformed (non-list) value → allow rather than silently drop."""
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(
+            {"id": "x", "supported_parameters": "tools,temperature"}
+        ) is True
+
+    def test_non_dict_item_is_permissive(self):
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(None) is True
+        assert _openrouter_model_supports_tools("anthropic/claude-opus-4.6") is True
+
+    def test_empty_supported_parameters_list_drops_model(self):
+        """Explicit empty list → no tools → drop."""
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(
+            {"id": "x", "supported_parameters": []}
+        ) is False
+
 
 class TestFindOpenrouterSlug:
     def test_exact_match(self):

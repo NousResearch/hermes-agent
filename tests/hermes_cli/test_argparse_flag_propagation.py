@@ -91,3 +91,42 @@ class TestYoloEnvVar:
         args = parser.parse_args(["chat"])
         self._simulate_cmd_chat_yolo_check(args)
         assert os.environ.get("HERMES_YOLO_MODE") is None
+
+
+class TestAcceptHooksOnAgentSubparsers:
+    """Verify --accept-hooks is accepted at every agent-subcommand
+    position (before the subcommand, between group/subcommand, and
+    after the leaf subcommand) for gateway/cron/mcp/acp.  Regression
+    against prior behaviour where the flag only worked on the root
+    parser and `chat`, so `hermes gateway run --accept-hooks` failed
+    with `unrecognized arguments`."""
+
+    @pytest.mark.parametrize("argv", [
+        ["--accept-hooks", "gateway", "run", "--help"],
+        ["gateway", "--accept-hooks", "run", "--help"],
+        ["gateway", "run", "--accept-hooks", "--help"],
+        ["--accept-hooks", "cron", "tick", "--help"],
+        ["cron", "--accept-hooks", "tick", "--help"],
+        ["cron", "tick", "--accept-hooks", "--help"],
+        ["cron", "run", "--accept-hooks", "dummy-id", "--help"],
+        ["--accept-hooks", "mcp", "serve", "--help"],
+        ["mcp", "--accept-hooks", "serve", "--help"],
+        ["mcp", "serve", "--accept-hooks", "--help"],
+        ["acp", "--accept-hooks", "--help"],
+    ])
+    def test_accepted_at_every_position(self, argv):
+        """Invoking `hermes <argv>` must exit 0 (help) rather than
+        failing with `unrecognized arguments`."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", *argv],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, (
+            f"argv={argv!r} returned {result.returncode}\n"
+            f"stdout: {result.stdout[:300]}\n"
+            f"stderr: {result.stderr[:300]}"
+        )
+        assert "unrecognized arguments" not in result.stderr

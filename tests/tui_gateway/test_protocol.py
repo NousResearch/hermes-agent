@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -120,7 +121,9 @@ def test_block_and_respond(capture):
 
     rid = next(iter(server._pending))
     server._answers[rid] = "my_answer"
-    server._pending[rid].set()
+    # _pending values are (sid, Event) tuples — unpack to set the Event
+    _, ev = server._pending[rid]
+    ev.set()
 
     threading.Event().wait(0.1)
     assert result[0] == "my_answer"
@@ -128,7 +131,8 @@ def test_block_and_respond(capture):
 
 def test_clear_pending(server):
     ev = threading.Event()
-    server._pending["r1"] = ev
+    # _pending values are (sid, Event) tuples
+    server._pending["r1"] = ("sid-x", ev)
     server._clear_pending()
 
     assert ev.is_set()
@@ -429,3 +433,81 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["type"] == "skill"
     assert result["message"] == fake_msg
     assert result["name"] == "hermes-agent-dev"
+
+
+# ── dispatch(): pool routing for long handlers (#12546) ──────────────
+
+
+def test_dispatch_runs_short_handlers_inline(server):
+    """Non-long handlers return their response synchronously from dispatch()."""
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    resp = server.dispatch({"id": "r1", "method": "fast.ping", "params": {}})
+
+    assert resp == {"jsonrpc": "2.0", "id": "r1", "result": {"pong": True}}
+
+
+def test_dispatch_offloads_long_handlers_and_emits_via_stdout(capture):
+    """Long handlers run on the pool and write their response via write_json."""
+    server, buf = capture
+    server._methods["slash.exec"] = lambda rid, params: server._ok(rid, {"output": "hi"})
+
+    resp = server.dispatch({"id": "r2", "method": "slash.exec", "params": {}})
+    assert resp is None
+
+    for _ in range(50):
+        if buf.getvalue():
+            break
+        time.sleep(0.01)
+
+    written = json.loads(buf.getvalue())
+    assert written == {"jsonrpc": "2.0", "id": "r2", "result": {"output": "hi"}}
+
+
+def test_dispatch_long_handler_does_not_block_fast_handler(server):
+    """A slow long handler must not prevent a concurrent fast handler from completing."""
+    released = threading.Event()
+    server._methods["slash.exec"] = lambda rid, params: (released.wait(timeout=5), server._ok(rid, {"done": True}))[1]
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": "slash.exec", "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind slow handler"
+
+    released.set()
+
+
+def test_dispatch_long_handler_exception_produces_error_response(capture):
+    """An exception inside a pool-dispatched handler still yields a JSON-RPC error."""
+    server, buf = capture
+
+    def boom(rid, params):
+        raise RuntimeError("kaboom")
+
+    server._methods["slash.exec"] = boom
+
+    server.dispatch({"id": "r3", "method": "slash.exec", "params": {}})
+
+    for _ in range(50):
+        if buf.getvalue():
+            break
+        time.sleep(0.01)
+
+    written = json.loads(buf.getvalue())
+    assert written["id"] == "r3"
+    assert written["error"]["code"] == -32000
+    assert "kaboom" in written["error"]["message"]
+
+
+def test_dispatch_unknown_long_method_still_goes_inline(server):
+    """Method name not in _LONG_HANDLERS takes the sync path even if handler is slow."""
+    server._methods["some.method"] = lambda rid, params: server._ok(rid, {"ok": True})
+
+    resp = server.dispatch({"id": "r4", "method": "some.method", "params": {}})
+
+    assert resp["result"] == {"ok": True}

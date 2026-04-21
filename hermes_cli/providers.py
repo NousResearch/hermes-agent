@@ -23,6 +23,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from utils import base_url_host_matches, base_url_hostname
+
 logger = logging.getLogger(__name__)
 
 
@@ -322,12 +324,16 @@ def normalize_provider(name: str) -> str:
 
 
 def get_provider(name: str) -> Optional[ProviderDef]:
-    """Look up a provider by id or alias, merging all data sources.
+    """Look up a built-in provider by id or alias.
 
     Resolution order:
       1. Hermes overlays (for providers not in models.dev: nous, openai-codex, etc.)
       2. models.dev catalog + Hermes overlay
-      3. User-defined providers from config (TODO: Phase 4)
+
+    User-defined providers from config.yaml (``providers:`` / ``custom_providers:``)
+    are resolved by :func:`resolve_provider_full`, which layers ``resolve_user_provider``
+    and ``resolve_custom_provider`` on top of this function. Callers that need
+    user-config support should use ``resolve_provider_full`` instead.
 
     Returns a fully-resolved ProviderDef or None.
     """
@@ -430,11 +436,12 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     # URL-based heuristics for custom / unknown providers
     if base_url:
         url_lower = base_url.rstrip("/").lower()
-        if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
+        hostname = base_url_hostname(base_url)
+        if url_lower.endswith("/anthropic") or hostname == "api.anthropic.com":
             return "anthropic_messages"
-        if "api.openai.com" in url_lower:
+        if hostname == "api.openai.com":
             return "codex_responses"
-        if "bedrock-runtime" in url_lower and "amazonaws.com" in url_lower:
+        if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
             return "bedrock_converse"
 
     return "chat_completions"

@@ -193,11 +193,6 @@ export interface InputHandlerResult {
 }
 
 export interface GatewayEventHandlerContext {
-  composer: {
-    dequeue: () => string | undefined
-    queueEditRef: MutableRefObject<null | number>
-    sendQueued: (text: string) => void
-  }
   gateway: GatewayServices
   session: {
     STARTUP_RESUME_ID: string
@@ -308,6 +303,7 @@ export interface AppLayoutStatusProps {
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string
+  turnStartedAt: null | number
   voiceLabel: string
 }
 

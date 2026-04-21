@@ -67,6 +67,7 @@ export const en: Translations = {
     },
     nav: {
       analytics: "Analytics",
+      chat: "Chat",
       config: "Config",
       cron: "Cron",
       documentation: "Documentation",
@@ -131,6 +132,7 @@ export const en: Translations = {
       "This permanently removes the conversation and all of its messages. This cannot be undone.",
     sessionDeleted: "Session deleted",
     failedToDelete: "Failed to delete session",
+    resumeInChat: "Resume in Chat",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {

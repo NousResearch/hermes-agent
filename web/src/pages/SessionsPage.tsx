@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useCallback,
+  useRef,
+} from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -16,6 +23,7 @@ import {
   MessageCircle,
   Hash,
   X,
+  Play,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -262,6 +270,7 @@ function SessionRow({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { t } = useI18n();
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (isExpanded && messages === null && !loading) {
@@ -341,6 +350,19 @@ function SessionRow({
           <Badge variant="outline" className="text-[10px]">
             {session.source ?? "local"}
           </Badge>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-success"
+            aria-label={t.sessions.resumeInChat}
+            title={t.sessions.resumeInChat}
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+            }}
+          >
+            <Play className="h-3.5 w-3.5" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"

@@ -56,6 +56,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
+    "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
 })
@@ -906,6 +907,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    12: ["BRAVE_SEARCH_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1320,6 +1322,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
         "tools": ["web_search", "web_extract", "web_crawl"],
+        "password": True,
+        "category": "tool",
+    },
+    "BRAVE_SEARCH_API_KEY": {
+        "description": "Brave Search API key for native web search, suggestions, and answers",
+        "prompt": "Brave Search API key",
+        "url": "https://api-dashboard.search.brave.com/",
+        "tools": ["web_search", "brave_search", "brave_suggest", "brave_answers"],
         "password": True,
         "category": "tool",
     },
@@ -3520,6 +3530,7 @@ def show_config():
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
+        ("BRAVE_SEARCH_API_KEY", "Brave Search"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),

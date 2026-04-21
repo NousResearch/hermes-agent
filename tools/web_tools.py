@@ -13,6 +13,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
+- Brave: https://brave.com/search/api/ (search only)
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -71,6 +72,14 @@ logger = logging.getLogger(__name__)
 def _has_env(name: str) -> bool:
     val = os.getenv(name)
     return bool(val and val.strip())
+
+_SEARCH_BACKENDS = ("brave", "firecrawl", "parallel", "tavily", "exa")
+_CONTENT_BACKENDS = ("firecrawl", "parallel", "tavily", "exa")
+
+
+def _brave_api_key() -> str:
+    return os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or os.getenv("BRAVE_API_KEY", "").strip()
+
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""

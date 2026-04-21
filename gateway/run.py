@@ -8750,7 +8750,43 @@ class GatewayRunner:
             if not progress_queue:
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            # Handle tool.completed: update last matching progress line
+            if event_type == "tool.completed" and tool_name:
+                def _collapse(text):
+                    return " ".join(text.split())
+
+                is_error = kwargs.get("is_error", False)
+                duration = kwargs.get("duration")
+                result_preview = preview  # result snippet passed from run_agent
+
+                # Build a short completion suffix for the progress line
+                _status = "✗" if is_error else "✓"
+                _dur = f" {duration:.1f}s" if duration else ""
+                _suffix = f" {_status}{_dur}"
+
+                # If we have a short result, append it for context
+                _result_snippet = ""
+                if result_preview and not is_error:
+                    # Try to extract a meaningful one-liner from JSON results
+                    try:
+                        import json as _json_mod
+                        _data = _json_mod.loads(result_preview)
+                        if isinstance(_data, dict):
+                            if _data.get("success") is False and _data.get("error"):
+                                _result_snippet = f": {_collapse(str(_data['error']))[:50]}"
+                            elif _data.get("output"):
+                                _output = _collapse(str(_data["output"]))
+                                _result_snippet = f": {_output[:50]}" if len(_output) <= 50 else f": {_output[:47]}..."
+                    except (ValueError, TypeError):
+                        # Non-JSON result — use first line if short
+                        _first = _collapse(result_preview)
+                        if len(_first) <= 60:
+                            _result_snippet = f": {_first}"
+
+                progress_queue.put(("__completed__", tool_name, _suffix + _result_snippet))
+                return
+
+            # Only act on tool.started events (ignore reasoning.available, etc.)
             if event_type not in ("tool.started",):
                 return
 
@@ -8860,6 +8896,23 @@ class GatewayRunner:
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__completed__":
+                        # Handle tool.completed: find and update last line for this tool
+                        _, completed_tool, completion_suffix = raw
+                        _updated = False
+                        for _idx in range(len(progress_lines) - 1, -1, -1):
+                            _line = progress_lines[_idx]
+                            # Match line containing the tool name (emoji + tool_name pattern)
+                            if completed_tool in _line and "✓" not in _line and "✗" not in _line:
+                                progress_lines[_idx] = _line + completion_suffix
+                                _updated = True
+                                break
+                        if not _updated:
+                            # No matching started line; append a standalone completion
+                            from agent.display import get_tool_emoji
+                            _emoji = get_tool_emoji(completed_tool, default="⚙️")
+                            progress_lines.append(f"{_emoji} {completed_tool}{completion_suffix}")
+                        msg = progress_lines[-1] if progress_lines else str(raw)
                     else:
                         msg = raw
                         progress_lines.append(msg)
@@ -8925,6 +8978,17 @@ class GatewayRunner:
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__completed__":
+                                _, completed_tool, completion_suffix = raw
+                                _updated = False
+                                for _idx in range(len(progress_lines) - 1, -1, -1):
+                                    _line = progress_lines[_idx]
+                                    if completed_tool in _line and "✓" not in _line and "✗" not in _line:
+                                        progress_lines[_idx] = _line + completion_suffix
+                                        _updated = True
+                                        break
+                                if not _updated:
+                                    progress_lines.append(f"⚙️ {completed_tool}{completion_suffix}")
                             else:
                                 progress_lines.append(raw)
                         except Exception:

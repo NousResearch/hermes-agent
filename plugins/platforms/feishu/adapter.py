@@ -87,6 +87,7 @@ except ImportError:
 
 try:
     import lark_oapi as lark
+    from lark_oapi import AESCipher
     from lark_oapi.api.application.v6 import GetApplicationRequest
     from lark_oapi.api.im.v1 import (
         CreateFileRequest,
@@ -1541,7 +1542,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
-            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
+            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip(),
             connection_mode=str(
                 extra.get("connection_mode") or os.getenv("FEISHU_CONNECTION_MODE", "websocket")
             ).strip().lower(),
@@ -3504,6 +3505,35 @@ class FeishuAdapter(BasePlatformAdapter):
             self._record_webhook_anomaly(remote_ip, "400")
             return web.json_response({"code": 400, "msg": "invalid json"}, status=400)
 
+        # Timing-safe signature verification (only enforced when encrypt_key is set,
+        # performed on the raw body before any decryption).
+        if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
+            logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
+            self._record_webhook_anomaly(remote_ip, "401-sig")
+            return web.Response(status=401, text="Invalid signature")
+
+        # Decrypt encrypted payload if needed (before token/challenge checks).
+        if payload.get("encrypt"):
+            if not self._encrypt_key:
+                logger.error("[Feishu] Received encrypted payload but FEISHU_ENCRYPT_KEY not set")
+                self._record_webhook_anomaly(remote_ip, "400-encrypted-no-key")
+                return web.json_response({"code": 400, "msg": "encrypt key not configured"}, status=400)
+
+            try:
+                cipher = AESCipher(self._encrypt_key)
+                decrypted_str = cipher.decrypt_str(payload["encrypt"])
+                payload = json.loads(decrypted_str)
+                logger.debug("[Feishu] Successfully decrypted webhook payload")
+            except Exception as e:
+                logger.error("[Feishu] Failed to decrypt webhook payload: %s", e)
+                self._record_webhook_anomaly(remote_ip, "400-decrypt-failed")
+                return web.json_response({"code": 400, "msg": "decryption failed"}, status=400)
+
+        # URL verification challenge — Feishu includes the verification token in
+        # challenge requests. Validate the token (below) before reflecting the
+        # challenge so an unauthenticated remote request cannot prove endpoint
+        # control by getting attacker-supplied challenge data echoed back.
+
         # Verification token check — second layer of defence beyond signature (matches openclaw).
         if self._verification_token:
             header = payload.get("header") or {}
@@ -3513,24 +3543,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._record_webhook_anomaly(remote_ip, "401-token")
                 return web.Response(status=401, text="Invalid verification token")
 
-        # URL verification challenge — Feishu includes the verification token in
-        # challenge requests. Validate the token (above) before reflecting the
-        # challenge so an unauthenticated remote request cannot prove endpoint
-        # control by getting attacker-supplied challenge data echoed back.
         if payload.get("type") == "url_verification":
             return web.json_response({"challenge": payload.get("challenge", "")})
-
-        # Timing-safe signature verification (only enforced when encrypt_key is set).
-        if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
-            logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
-            self._record_webhook_anomaly(remote_ip, "401-sig")
-            return web.Response(status=401, text="Invalid signature")
-
-        if payload.get("encrypt"):
-            logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
-            self._record_webhook_anomaly(remote_ip, "400-encrypted")
-            return web.json_response({"code": 400, "msg": "encrypted webhook payloads are not supported"}, status=400)
-
         self._clear_webhook_anomaly(remote_ip)
 
         event_type = str((payload.get("header") or {}).get("event_type") or "")
@@ -4712,10 +4726,15 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
                 await asyncio.sleep(wait_seconds)
 
+    def _resolve_domain(self) -> Any:
+        if self._domain_name.startswith("http"):
+            return self._domain_name
+        return LARK_DOMAIN if self._domain_name == "lark" else FEISHU_DOMAIN
+
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        domain = self._resolve_domain()
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
@@ -4747,7 +4766,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        domain = self._resolve_domain()
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:

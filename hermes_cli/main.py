@@ -51,6 +51,19 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+def _add_accept_hooks_flag(parser) -> None:
+    """Attach the ``--accept-hooks`` flag.  Shared across every agent
+    subparser so the flag works regardless of CLI position."""
+    parser.add_argument(
+        "--accept-hooks",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Auto-approve unseen shell hooks without a TTY prompt "
+            "(equivalent to HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true)."
+        ),
+    )
+
 
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
@@ -4092,6 +4105,12 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_hooks(args):
+    """Shell-hook inspection and management."""
+    from hermes_cli.hooks import hooks_command
+    hooks_command(args)
+
+
 def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
@@ -6372,6 +6391,17 @@ For more help on a command:
         help="Run in an isolated git worktree (for parallel agents)",
     )
     parser.add_argument(
+        "--accept-hooks",
+        action="store_true",
+        default=False,
+        help=(
+            "Auto-approve any unseen shell hooks declared in config.yaml "
+            "without a TTY prompt.  Equivalent to HERMES_ACCEPT_HOOKS=1 or "
+            "hooks_auto_accept: true in config.yaml.  Use on CI / headless "
+            "runs that can't prompt."
+        ),
+    )
+    parser.add_argument(
         "--skills",
         "-s",
         action="append",
@@ -6494,6 +6524,16 @@ For more help on a command:
         help="Run in an isolated git worktree (for parallel agents on the same repo)",
     )
     chat_parser.add_argument(
+        "--accept-hooks",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Auto-approve any unseen shell hooks declared in config.yaml "
+            "without a TTY prompt (see also HERMES_ACCEPT_HOOKS env var and "
+            "hooks_auto_accept: in config.yaml)."
+        ),
+    )
+    chat_parser.add_argument(
         "--checkpoints",
         action="store_true",
         default=False,
@@ -6612,6 +6652,8 @@ For more help on a command:
         action="store_true",
         help="Replace any existing gateway instance (useful for systemd)",
     )
+    _add_accept_hooks_flag(gateway_run)
+    _add_accept_hooks_flag(gateway_parser)
 
     # gateway start
     gateway_start = gateway_subparsers.add_parser(
@@ -6976,6 +7018,7 @@ For more help on a command:
         "run", help="Run a job on the next scheduler tick"
     )
     cron_run.add_argument("job_id", help="Job ID to trigger")
+    _add_accept_hooks_flag(cron_run)
 
     cron_remove = cron_subparsers.add_parser(
         "remove", aliases=["rm", "delete"], help="Remove a scheduled job"
@@ -6986,8 +7029,9 @@ For more help on a command:
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
 
     # cron tick (mostly for debugging)
-    cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
-
+    cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
+    _add_accept_hooks_flag(cron_tick)
+    _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
 
     # =========================================================================
@@ -7053,6 +7097,67 @@ For more help on a command:
     )
 
     webhook_parser.set_defaults(func=cmd_webhook)
+
+    # =========================================================================
+    # hooks command — shell-hook inspection and management
+    # =========================================================================
+    hooks_parser = subparsers.add_parser(
+        "hooks",
+        help="Inspect and manage shell-script hooks",
+        description=(
+            "Inspect shell-script hooks declared in ~/.hermes/config.yaml, "
+            "test them against synthetic payloads, and manage the first-use "
+            "consent allowlist at ~/.hermes/shell-hooks-allowlist.json."
+        ),
+    )
+    hooks_subparsers = hooks_parser.add_subparsers(dest="hooks_action")
+
+    hooks_subparsers.add_parser(
+        "list", aliases=["ls"],
+        help="List configured hooks with matcher, timeout, and consent status",
+    )
+
+    _hk_test = hooks_subparsers.add_parser(
+        "test",
+        help="Fire every hook matching <event> against a synthetic payload",
+    )
+    _hk_test.add_argument(
+        "event",
+        help="Hook event name (e.g. pre_tool_call, pre_llm_call, subagent_stop)",
+    )
+    _hk_test.add_argument(
+        "--for-tool", dest="for_tool", default=None,
+        help=(
+            "Only fire hooks whose matcher matches this tool name "
+            "(used for pre_tool_call / post_tool_call)"
+        ),
+    )
+    _hk_test.add_argument(
+        "--payload-file", dest="payload_file", default=None,
+        help=(
+            "Path to a JSON file whose contents are merged into the "
+            "synthetic payload before execution"
+        ),
+    )
+
+    _hk_revoke = hooks_subparsers.add_parser(
+        "revoke", aliases=["remove", "rm"],
+        help="Remove a command's allowlist entries (takes effect on next restart)",
+    )
+    _hk_revoke.add_argument(
+        "command",
+        help="The exact command string to revoke (as declared in config.yaml)",
+    )
+
+    hooks_subparsers.add_parser(
+        "doctor",
+        help=(
+            "Check each configured hook: exec bit, allowlist, mtime drift, "
+            "JSON validity, and synthetic run timing"
+        ),
+    )
+
+    hooks_parser.set_defaults(func=cmd_hooks)
 
     # =========================================================================
     # doctor command
@@ -7727,6 +7832,7 @@ Examples:
         action="store_true",
         help="Enable verbose logging on stderr",
     )
+    _add_accept_hooks_flag(mcp_serve_p)
 
     mcp_add_p = mcp_sub.add_parser(
         "add", help="Add an MCP server (discovery-first install)"
@@ -7764,6 +7870,8 @@ Examples:
         help="Force re-authentication for an OAuth-based MCP server",
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+
+    _add_accept_hooks_flag(mcp_parser)
 
     def cmd_mcp(args):
         from hermes_cli.mcp_config import mcp_command
@@ -8176,6 +8284,7 @@ Examples:
         help="Run Hermes Agent as an ACP (Agent Client Protocol) server",
         description="Start Hermes Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
     )
+    _add_accept_hooks_flag(acp_parser)
 
     def cmd_acp(args):
         """Launch Hermes Agent as an ACP server."""
@@ -8448,6 +8557,42 @@ Examples:
     if args.version:
         cmd_version(args)
         return
+
+    # Discover Python plugins and register shell hooks once, before any
+    # command that can fire lifecycle hooks.  Both are idempotent; gated
+    # so introspection/management commands (hermes hooks list, cron
+    # list, gateway status, mcp add, ...) don't pay discovery cost or
+    # trigger consent prompts for hooks the user is still inspecting.
+    # Groups with mixed admin/CRUD vs. agent-running entries narrow via
+    # the nested subcommand (dest varies by parser).
+    _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+    _AGENT_SUBCOMMANDS = {
+        "cron":    ("cron_command",    {"run", "tick"}),
+        "gateway": ("gateway_command", {"run"}),
+        "mcp":     ("mcp_action",      {"serve"}),
+    }
+    _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
+    if (
+        args.command in _AGENT_COMMANDS
+        or (_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
+    ):
+        _accept_hooks = bool(getattr(args, "accept_hooks", False))
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception:
+            logger.debug(
+                "plugin discovery failed at CLI startup", exc_info=True,
+            )
+        try:
+            from hermes_cli.config import load_config
+            from agent.shell_hooks import register_from_config
+            register_from_config(load_config(), accept_hooks=_accept_hooks)
+        except Exception:
+            logger.debug(
+                "shell-hook registration failed at CLI startup",
+                exc_info=True,
+            )
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

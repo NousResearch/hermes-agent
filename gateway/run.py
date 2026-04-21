@@ -1960,6 +1960,39 @@ class GatewayRunner:
                 "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
             )
         
+        # Discover Python plugins before shell hooks so plugin block
+        # decisions take precedence in tie cases.  The CLI startup path
+        # does this via an explicit call in hermes_cli/main.py; the
+        # gateway lazily imports run_agent inside per-request handlers,
+        # so the discover_plugins() side-effect in model_tools.py is NOT
+        # guaranteed to have run by the time we reach this point.
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception:
+            logger.debug(
+                "plugin discovery failed at gateway startup", exc_info=True,
+            )
+
+        # Register declarative shell hooks from cli-config.yaml.  Gateway
+        # has no TTY, so consent has to come from one of the three opt-in
+        # channels (--accept-hooks on launch, HERMES_ACCEPT_HOOKS env var,
+        # or hooks_auto_accept: true in config.yaml).  We pass
+        # accept_hooks=False here and let register_from_config resolve
+        # the effective value from env + config itself — the CLI-side
+        # registration already honored --accept-hooks, and re-reading
+        # hooks_auto_accept here would just duplicate that lookup.
+        # Failures are logged but must never block gateway startup.
+        try:
+            from hermes_cli.config import load_config
+            from agent.shell_hooks import register_from_config
+            register_from_config(load_config(), accept_hooks=False)
+        except Exception:
+            logger.debug(
+                "shell-hook registration failed at gateway startup",
+                exc_info=True,
+            )
+
         # Discover and load event hooks
         self.hooks.discover_and_load()
         

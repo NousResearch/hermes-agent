@@ -172,28 +172,60 @@ class TestTerminalIntegration:
         assert blocked_var not in result
         assert "PATH" in result
 
-    def test_passthrough_allows_blocklisted_var(self):
-        from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_BLOCKLIST
+    def test_passthrough_cannot_override_provider_blocklist(self):
+        """GHSA-rhgp-j443-p4rf: register_env_passthrough must NOT accept
+        Hermes provider credentials — that was the bypass where a skill
+        could declare ANTHROPIC_TOKEN / OPENAI_API_KEY as passthrough and
+        defeat the execute_code sandbox scrubbing."""
+        from tools.environments.local import (
+            _sanitize_subprocess_env,
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+        )
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        # Attempt to register — must be silently refused (logged warning).
         register_env_passthrough([blocked_var])
 
+        # is_env_passthrough must NOT report it as allowed
+        assert not is_env_passthrough(blocked_var)
+
+        # Sanitizer still strips the var from subprocess env
         env = {blocked_var: "secret_value", "PATH": "/usr/bin"}
         result = _sanitize_subprocess_env(env)
-        assert blocked_var in result
-        assert result[blocked_var] == "secret_value"
+        assert blocked_var not in result
+        assert "PATH" in result
 
-    def test_make_run_env_passthrough(self, monkeypatch):
-        from tools.environments.local import _make_run_env, _HERMES_PROVIDER_ENV_BLOCKLIST
+    def test_make_run_env_blocklist_override_rejected(self):
+        """_make_run_env must NOT expose a blocklisted var to subprocess env
+        even after a skill attempts to register it via passthrough."""
+        import os
+        from tools.environments.local import (
+            _make_run_env,
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+        )
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
-        monkeypatch.setenv(blocked_var, "secret_value")
+        os.environ[blocked_var] = "secret_value"
+        try:
+            # Without passthrough — blocked
+            result_before = _make_run_env({})
+            assert blocked_var not in result_before
 
-        # Without passthrough — blocked
-        result_before = _make_run_env({})
-        assert blocked_var not in result_before
+            # Skill tries to register it — must be refused, so still blocked
+            register_env_passthrough([blocked_var])
+            result_after = _make_run_env({})
+            assert blocked_var not in result_after
+        finally:
+            os.environ.pop(blocked_var, None)
 
-        # With passthrough — allowed
-        register_env_passthrough([blocked_var])
-        result_after = _make_run_env({})
-        assert blocked_var in result_after
+    def test_non_hermes_api_key_still_registerable(self):
+        """Third-party API keys (TENOR_API_KEY, NOTION_TOKEN, etc.) are NOT
+        Hermes provider credentials and must still pass through — skills
+        that legitimately wrap third-party APIs must keep working."""
+        # TENOR_API_KEY is a real example — used by the gif-search skill
+        register_env_passthrough(["TENOR_API_KEY"])
+        assert is_env_passthrough("TENOR_API_KEY")
+
+        # Arbitrary skill-specific var
+        register_env_passthrough(["MY_SKILL_CUSTOM_CONFIG"])
+        assert is_env_passthrough("MY_SKILL_CUSTOM_CONFIG")

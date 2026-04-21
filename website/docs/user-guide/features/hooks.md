@@ -247,6 +247,7 @@ def register(ctx):
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
+| [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 
 ---
 
@@ -705,6 +706,68 @@ def register(ctx):
 :::info
 With heavy delegation (e.g. orchestrator roles × 5 leaves × nested depth), `subagent_stop` fires many times per turn. Keep your callback fast; push expensive work to a background queue.
 :::
+
+---
+
+### `pre_gateway_dispatch`
+
+Fires **once per incoming `MessageEvent`** in the gateway, after the internal-event guard but **before** auth/pairing and agent dispatch. This is the interception point for gateway-level message-flow policies (listen-only windows, human handover, per-chat routing, etc.) that don't fit cleanly into any single platform adapter.
+
+**Callback signature:**
+
+```python
+def my_callback(event, gateway, session_store, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `event` | `MessageEvent` | The normalized inbound message (has `.text`, `.source`, `.message_id`, `.internal`, etc.). |
+| `gateway` | `GatewayRunner` | The active gateway runner, so plugins can call `gateway.adapters[platform].send(...)` for side-channel replies (owner notifications, etc.). |
+| `session_store` | `SessionStore` | For silent transcript ingestion via `session_store.append_to_transcript(...)`. |
+
+**Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
+
+**Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
+
+| Return | Effect |
+|--------|--------|
+| `{"action": "skip", "reason": "..."}` | Drop the message — no agent reply, no pairing flow, no auth. Plugin is assumed to have handled it (e.g. silent-ingested into the transcript). |
+| `{"action": "rewrite", "text": "new text"}` | Replace `event.text`, then continue normal dispatch with the modified event. Useful for collapsing buffered ambient messages into a single prompt. |
+| `{"action": "allow"}` / `None` | Normal dispatch — runs the full auth / pairing / agent-loop chain. |
+
+**Use cases:** Listen-only group chats (only respond when tagged; buffer ambient messages into context); human handover (silent-ingest customer messages while owner handles the chat manually); per-profile rate limiting; policy-driven routing.
+
+**Example — drop unauthorized DMs silently without triggering the pairing code:**
+
+```python
+def deny_unauthorized_dms(event, **kwargs):
+    src = event.source
+    if src.chat_type == "dm" and not _is_approved_user(src.user_id):
+        return {"action": "skip", "reason": "unauthorized-dm"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", deny_unauthorized_dms)
+```
+
+**Example — rewrite an ambient-message buffer into a single prompt on mention:**
+
+```python
+_buffers = {}
+
+def buffer_or_rewrite(event, **kwargs):
+    key = (event.source.platform, event.source.chat_id)
+    buf = _buffers.setdefault(key, [])
+    if _bot_mentioned(event.text):
+        combined = "\n".join(buf + [event.text])
+        buf.clear()
+        return {"action": "rewrite", "text": combined}
+    buf.append(event.text)
+    return {"action": "skip", "reason": "ambient-buffered"}
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
+```
 
 ---
 

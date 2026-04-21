@@ -88,6 +88,29 @@ def _mock_request(headers=None, body=b"", content_length=None, match_info=None):
     return req
 
 
+class _ChunkedBody:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    async def iter_chunked(self, _chunk_size):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _ChunkedRequest:
+    def __init__(self, *, chunks, headers=None, match_info=None):
+        self.headers = headers or {}
+        self.content_length = None
+        self.match_info = match_info or {}
+        self.method = "POST"
+        self.content = _ChunkedBody(chunks)
+        self.read_called = False
+
+    async def read(self):
+        self.read_called = True
+        return b"".join(self.content._chunks)
+
+
 def _github_signature(body: bytes, secret: str) -> str:
     """Compute X-Hub-Signature-256 for *body* using *secret*."""
     return "sha256=" + hmac.new(
@@ -515,6 +538,24 @@ class TestBodySize:
                 headers={"Content-Length": "999999"},
             )
             assert resp.status == 413
+
+    @pytest.mark.asyncio
+    async def test_chunked_payload_without_content_length_rejected(self):
+        """Chunked/no-length bodies are capped while streaming."""
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=100)
+        adapter.handle_message = AsyncMock()
+        request = _ChunkedRequest(
+            chunks=[b'{"data":"', b"x" * 128, b'"}'],
+            headers={"Content-Type": "application/json"},
+            match_info={"route_name": "big"},
+        )
+
+        resp = await adapter._handle_webhook(request)
+
+        assert resp.status == 413
+        assert request.read_called is False
+        adapter.handle_message.assert_not_called()
 
 
 # ===================================================================

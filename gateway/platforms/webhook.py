@@ -60,6 +60,10 @@ _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
 
+class _PayloadTooLarge(ValueError):
+    """Raised when an inbound webhook body exceeds the configured limit."""
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -259,6 +263,31 @@ class WebhookAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
 
+    async def _read_body_with_limit(self, request: "web.Request") -> bytes:
+        """Read a webhook body while enforcing max_body_bytes for chunked uploads."""
+        content_length = request.content_length
+        if content_length is not None and content_length > self._max_body_bytes:
+            raise _PayloadTooLarge
+
+        if content_length is None:
+            content = getattr(request, "content", None)
+            iter_chunked = getattr(content, "iter_chunked", None)
+            if iter_chunked is not None:
+                chunks: list[bytes] = []
+                total = 0
+                chunk_size = min(64 * 1024, self._max_body_bytes + 1)
+                async for chunk in iter_chunked(chunk_size):
+                    total += len(chunk)
+                    if total > self._max_body_bytes:
+                        raise _PayloadTooLarge
+                    chunks.append(bytes(chunk))
+                return b"".join(chunks)
+
+        raw_body = await request.read()
+        if len(raw_body) > self._max_body_bytes:
+            raise _PayloadTooLarge
+        return raw_body
+
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
         from hermes_constants import get_hermes_home
@@ -306,16 +335,14 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         # ── Auth-before-body ─────────────────────────────────────
-        # Check Content-Length before reading the full payload.
-        content_length = request.content_length or 0
-        if content_length > self._max_body_bytes:
+        # Enforce max size before reading known-length bodies and while
+        # streaming chunked/no-length bodies.
+        try:
+            raw_body = await self._read_body_with_limit(request)
+        except _PayloadTooLarge:
             return web.json_response(
                 {"error": "Payload too large"}, status=413
             )
-
-        # Read body (must be done before any validation)
-        try:
-            raw_body = await request.read()
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)

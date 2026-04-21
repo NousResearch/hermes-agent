@@ -1,11 +1,156 @@
 """Tests for the Hermes Codex-style computer-use MCP adapter."""
 
 import json
+import subprocess
 import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import computer_use_mcp_server as adapter
+
+
+_REAL_RESOLVE_APPROVAL_TARGET = adapter._resolve_approval_target
+
+
+@pytest.fixture(autouse=True)
+def _stub_approval_resolution(monkeypatch):
+    known = {
+        "safari": ("com.apple.Safari", "/Applications/Safari.app"),
+        "textedit": ("com.apple.TextEdit", "/System/Applications/TextEdit.app"),
+        "finder": ("com.apple.finder", "/System/Library/CoreServices/Finder.app"),
+        "wechat": ("com.tencent.xinWeChat", "/Applications/WeChat.app"),
+    }
+
+    def fake_resolve(app_name: str):
+        normalized = adapter._normalize_app_name(app_name)
+        if not normalized:
+            return None
+        bundle_id, bundle_path = known.get(
+            normalized.casefold(),
+            (f"com.example.{normalized.casefold().replace(' ', '-')}", f"/Applications/{normalized}.app"),
+        )
+        return {
+            "approval_name": normalized,
+            "bundle_id": bundle_id,
+            "bundle_path": bundle_path,
+        }
+
+    monkeypatch.setattr(adapter, "_resolve_approval_target", fake_resolve, raising=False)
+
+
+class TestApprovalResolution:
+    def test_resolve_approval_target_falls_back_to_spotlight_path_when_path_lookup_hangs(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=False, capture_output=False, text=False, timeout=None):
+            calls.append((tuple(cmd), timeout))
+            if cmd[0] == "osascript" and any("id of application appRef" in part for part in cmd):
+                return subprocess.CompletedProcess(cmd, 0, stdout="com.apple.TextEdit\n", stderr="")
+            if cmd[0] == "mdfind":
+                return subprocess.CompletedProcess(cmd, 0, stdout="/System/Applications/TextEdit.app\n", stderr="")
+            if cmd[0] == "mdls":
+                return subprocess.CompletedProcess(cmd, 0, stdout='kMDItemCFBundleIdentifier = "com.apple.TextEdit"\n', stderr="")
+            if cmd[0] == "osascript" and any("path to application" in part for part in cmd):
+                raise subprocess.TimeoutExpired(cmd, timeout or 5)
+            raise AssertionError(cmd)
+
+        monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+        resolved = _REAL_RESOLVE_APPROVAL_TARGET("TextEdit")
+
+        assert resolved == {
+            "approval_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_path": adapter._normalize_bundle_path("/System/Applications/TextEdit.app"),
+        }
+        assert not any(cmd[0] == "osascript" and any("path to application" in part for part in cmd) for cmd, _ in calls)
+
+    def test_resolve_approval_target_prefers_later_verified_spotlight_candidate(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=False, capture_output=False, text=False, timeout=None):
+            calls.append(tuple(cmd))
+            if cmd[0] == "osascript" and any("id of application appRef" in part for part in cmd):
+                return subprocess.CompletedProcess(cmd, 0, stdout="com.apple.TextEdit\n", stderr="")
+            if cmd[0] == "mdfind":
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="/Applications/FakeTextEdit.app\n/System/Applications/TextEdit.app\n",
+                    stderr="",
+                )
+            if cmd[0] == "mdls" and cmd[-1] == "/Applications/FakeTextEdit.app":
+                raise subprocess.TimeoutExpired(cmd, timeout or 5)
+            if cmd[0] == "mdls" and cmd[-1] == "/System/Applications/TextEdit.app":
+                return subprocess.CompletedProcess(cmd, 0, stdout='kMDItemCFBundleIdentifier = "com.apple.TextEdit"\n', stderr="")
+            if cmd[0] == "osascript" and any("path to application" in part for part in cmd):
+                raise AssertionError("should not need AppleScript path fallback when a later Spotlight candidate verifies")
+            raise AssertionError(cmd)
+
+        monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+        resolved = _REAL_RESOLVE_APPROVAL_TARGET("TextEdit")
+
+        assert resolved == {
+            "approval_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_path": adapter._normalize_bundle_path("/System/Applications/TextEdit.app"),
+        }
+        assert any(cmd[0] == "mdls" and cmd[-1] == "/System/Applications/TextEdit.app" for cmd in calls)
+
+    def test_resolve_approval_target_falls_back_to_applescript_path_when_spotlight_candidates_mismatch(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=False, capture_output=False, text=False, timeout=None):
+            calls.append(tuple(cmd))
+            if cmd[0] == "osascript" and any("id of application appRef" in part for part in cmd):
+                return subprocess.CompletedProcess(cmd, 0, stdout="com.apple.TextEdit\n", stderr="")
+            if cmd[0] == "mdfind":
+                return subprocess.CompletedProcess(cmd, 0, stdout="/Applications/FakeTextEdit.app\n", stderr="")
+            if cmd[0] == "mdls":
+                return subprocess.CompletedProcess(cmd, 0, stdout='kMDItemCFBundleIdentifier = "com.example.fake"\n', stderr="")
+            if cmd[0] == "osascript" and any("path to application" in part for part in cmd):
+                return subprocess.CompletedProcess(cmd, 0, stdout="/System/Applications/TextEdit.app\n", stderr="")
+            raise AssertionError(cmd)
+
+        monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+        resolved = _REAL_RESOLVE_APPROVAL_TARGET("TextEdit")
+
+        assert resolved == {
+            "approval_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_path": adapter._normalize_bundle_path("/System/Applications/TextEdit.app"),
+        }
+        assert any(cmd[0] == "osascript" and any("path to application" in part for part in cmd) for cmd in calls)
+
+    def test_resolve_approval_target_backfills_bundle_id_from_path_when_id_lookup_fails(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=False, capture_output=False, text=False, timeout=None):
+            calls.append(tuple(cmd))
+            if cmd[0] == "osascript" and any("id of application appRef" in part for part in cmd):
+                raise subprocess.CalledProcessError(1, cmd, stderr="can't get id")
+            if cmd[0] == "osascript" and any("path to application" in part for part in cmd):
+                return subprocess.CompletedProcess(cmd, 0, stdout="/System/Applications/TextEdit.app\n", stderr="")
+            if cmd[0] == "mdls":
+                return subprocess.CompletedProcess(cmd, 0, stdout='kMDItemCFBundleIdentifier = "com.apple.TextEdit"\n', stderr="")
+            if cmd[0] == "mdfind":
+                raise AssertionError("should not try Spotlight path resolution without a bundle id")
+            raise AssertionError(cmd)
+
+        monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+        resolved = _REAL_RESOLVE_APPROVAL_TARGET("TextEdit")
+
+        assert resolved == {
+            "approval_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_path": adapter._normalize_bundle_path("/System/Applications/TextEdit.app"),
+        }
+        assert any(cmd[0] == "mdls" and cmd[-1] == "/System/Applications/TextEdit.app" for cmd in calls)
 
 
 class TestListApps:
@@ -33,7 +178,7 @@ class TestGetAppState:
             if action == "activate_app":
                 return '{"success": true}'
             if action == "frontmost_app":
-                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "process_id": 999, "window_title": "Docs", "window_id": 123, "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480}}'
+                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "bundle_path": "/Applications/Safari.app", "process_id": 999, "window_title": "Docs", "window_id": 123, "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480}}'
             if action == "screenshot":
                 assert kwargs["window_id"] == 123
                 return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 123}'
@@ -56,6 +201,352 @@ class TestGetAppState:
         assert result["accessibility_tree"] == []
         assert result["virtual_cursor"] == {"x": None, "y": None, "detached": True, "visible": True}
         assert [c["action"] for c in calls] == ["activate_app", "frontmost_app", "screenshot"]
+
+    def test_get_app_state_accepts_temporary_session_approval(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        adapter.grant_temporary_app_approval_impl("TextEdit", scope="session")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "TextEdit",
+                    "bundle_id": "com.apple.TextEdit",
+                    "bundle_name": "TextEdit",
+                    "bundle_path": "/System/Applications/TextEdit.app",
+                    "process_id": 999,
+                    "window_title": "Scratch",
+                    "window_id": 123,
+                    "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 123}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        monkeypatch.setattr(adapter, "frontmost_window_state", lambda include_accessibility=True, require_helper_success=False: {
+            "app_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "bundle_path": "/System/Applications/TextEdit.app",
+            "process_id": 999,
+            "window_title": "Scratch",
+            "window_id": 123,
+            "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+            "accessibility_tree": [],
+        })
+
+        result = adapter.get_app_state_impl(app_name="TextEdit")
+
+        assert result["success"] is True
+        assert result["approved"] is True
+        assert result["approval_scope"] == "session"
+        assert result["app_name"] == "TextEdit"
+
+    def test_get_app_state_consumes_once_temporary_approval_after_success(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        adapter.grant_temporary_app_approval_impl("TextEdit", scope="once")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "TextEdit",
+                    "bundle_id": "com.apple.TextEdit",
+                    "bundle_name": "TextEdit",
+                    "bundle_path": "/System/Applications/TextEdit.app",
+                    "process_id": 999,
+                    "window_title": "Scratch",
+                    "window_id": 123,
+                    "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 123}'
+            if action == "keystroke":
+                return '{"success": true}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        monkeypatch.setattr(adapter, "frontmost_window_state", lambda include_accessibility=True, require_helper_success=False: {
+            "app_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "bundle_path": "/System/Applications/TextEdit.app",
+            "process_id": 999,
+            "window_title": "Scratch",
+            "window_id": 123,
+            "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+            "accessibility_tree": [],
+        })
+
+        first = adapter.get_app_state_impl(app_name="TextEdit")
+        second = adapter.type_text_impl("uwu", app_session_id=first["app_session_id"])
+
+        assert first["success"] is True
+        assert first["approved"] is True
+        assert first["approval_scope"] == "once"
+        assert second["success"] is False
+        assert second["approval_required"] is True
+
+    def test_get_app_state_includes_accessibility_tree_and_persists_it_in_session_state(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        adapter.approve_app_impl("Safari")
+        accessibility_tree = [
+            {
+                "index": 0,
+                "role": "AXWindow",
+                "title": "Docs",
+                "children": [
+                    {"index": 1, "role": "AXTextArea", "value": "dragon", "children": []},
+                ],
+            },
+        ]
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "Safari",
+                    "bundle_id": "com.apple.Safari",
+                    "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+                    "bundle_path": "/Applications/Safari.app",
+                    "process_id": 999,
+                    "window_title": "Docs",
+                    "window_id": 123,
+                    "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 123}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        monkeypatch.setattr(adapter, "frontmost_window_state", lambda include_accessibility=True, require_helper_success=False: {
+            "app_name": "Safari",
+            "bundle_id": "com.apple.Safari",
+            "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+            "process_id": 999,
+            "window_title": "Docs",
+            "window_id": 123,
+            "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+            "accessibility_tree": accessibility_tree,
+        })
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        assert result["success"] is True
+        assert result["accessibility_tree"] == accessibility_tree
+        state_path = Path(result["session_state_path"])
+        payload = json.loads(state_path.read_text())
+        assert payload["accessibility_tree"] == accessibility_tree
+        listed = adapter.list_active_sessions_impl()
+        assert listed["active_sessions"][0]["accessibility_tree"] == accessibility_tree
+
+    def test_get_app_state_discards_accessibility_tree_when_second_snapshot_does_not_match(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "Safari",
+                    "bundle_id": "com.apple.Safari",
+                    "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+                    "process_id": 999,
+                    "window_title": "Docs",
+                    "window_id": 123,
+                    "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 123}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        monkeypatch.setattr(adapter, "frontmost_window_state", lambda include_accessibility=True, require_helper_success=False: {
+            "app_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "bundle_path": "/System/Applications/TextEdit.app",
+            "window_title": "Secrets",
+            "window_id": 777,
+            "window_bounds": {"x": 40, "y": 50, "width": 500, "height": 300},
+            "accessibility_tree": [
+                {"index": 0, "role": "AXWindow", "title": "Secrets", "children": []},
+            ],
+        })
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        assert result["success"] is True
+        assert result["approved"] is True
+        assert result["accessibility_tree"] == []
+        state_path = Path(result["session_state_path"])
+        payload = json.loads(state_path.read_text())
+        assert payload["accessibility_tree"] == []
+
+    def test_get_app_state_discards_accessibility_tree_for_same_title_different_bounds_without_window_id(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "Safari",
+                    "bundle_id": "com.apple.Safari",
+                    "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+                    "process_id": 999,
+                    "window_title": "Docs",
+                    "window_id": None,
+                    "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        monkeypatch.setattr(adapter, "frontmost_window_state", lambda include_accessibility=True, require_helper_success=False: {
+            "app_name": "Safari",
+            "bundle_id": "com.apple.Safari",
+            "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+            "process_id": 999,
+            "window_title": "Docs",
+            "window_id": None,
+            "window_bounds": {"x": 120, "y": 140, "width": 500, "height": 300},
+            "accessibility_tree": [
+                {"index": 0, "role": "AXWindow", "title": "Docs", "children": []},
+            ],
+        })
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        assert result["success"] is True
+        assert result["accessibility_tree"] == []
+
+    def test_get_app_state_discards_accessibility_tree_for_same_bounds_different_title(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "Safari",
+                    "bundle_id": "com.apple.Safari",
+                    "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+                    "process_id": 999,
+                    "window_title": "Public Doc",
+                    "window_id": None,
+                    "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png"}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        monkeypatch.setattr(adapter, "frontmost_window_state", lambda include_accessibility=True, require_helper_success=False: {
+            "app_name": "Safari",
+            "bundle_id": "com.apple.Safari",
+            "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+            "process_id": 999,
+            "window_title": "Secret Doc",
+            "window_id": None,
+            "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+            "accessibility_tree": [
+                {"index": 0, "role": "AXWindow", "title": "Secret Doc", "children": []},
+            ],
+        })
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        assert result["success"] is True
+        assert result["accessibility_tree"] == []
+
+    def test_get_app_state_returns_structured_error_when_accessibility_snapshot_fails(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "Safari",
+                    "bundle_id": "com.apple.Safari",
+                    "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+                    "process_id": 999,
+                    "window_title": "Docs",
+                    "window_id": 123,
+                    "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 123}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        def boom(include_accessibility=True, require_helper_success=False):
+            raise RuntimeError("accessibility helper failed")
+
+        monkeypatch.setattr(adapter, "frontmost_window_state", boom)
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        assert result["success"] is False
+        assert "accessibility helper failed" in result["error"]
 
     def test_get_app_state_propagates_capture_error(self, monkeypatch):
         def fake_cc(**kwargs):
@@ -81,7 +572,7 @@ class TestGetAppState:
             if action == "activate_app":
                 return '{"success": true}'
             if action == "frontmost_app":
-                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
+                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "bundle_path": "/System/Applications/TextEdit.app", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
             if action == "screenshot":
                 return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 777}'
             raise AssertionError(action)
@@ -106,7 +597,7 @@ class TestGetAppState:
             if action == "activate_app":
                 return '{"success": true}'
             if action == "frontmost_app":
-                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
+                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "bundle_path": "/System/Applications/TextEdit.app", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
             if action == "screenshot":
                 return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 777}'
             raise AssertionError(action)
@@ -134,7 +625,7 @@ class TestGetAppState:
             if action == "activate_app":
                 return '{"success": true}'
             if action == "frontmost_app":
-                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
+                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "bundle_path": "/System/Applications/TextEdit.app", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
             if action == "screenshot":
                 return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 777}'
             raise AssertionError(action)
@@ -167,7 +658,7 @@ class TestGetAppState:
             if action == "activate_app":
                 return '{"success": true}'
             if action == "frontmost_app":
-                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
+                return '{"success": true, "app_name": "文本编辑", "bundle_id": "com.apple.TextEdit", "bundle_name": "TextEdit", "bundle_path": "/System/Applications/TextEdit.app", "process_id": 321, "window_title": "Notes", "window_id": 777, "window_bounds": {"x": 3, "y": 4, "width": 500, "height": 300}}'
             if action == "screenshot":
                 return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 777}'
             raise AssertionError(action)
@@ -194,7 +685,7 @@ class TestGetAppState:
             if action == "activate_app":
                 return '{"success": true}'
             if action == "frontmost_app":
-                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "process_id": 222, "window_title": "Other", "window_id": 888, "window_bounds": {"x": 5, "y": 6, "width": 700, "height": 400}}'
+                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "bundle_path": "/Applications/Safari.app", "process_id": 222, "window_title": "Other", "window_id": 888, "window_bounds": {"x": 5, "y": 6, "width": 700, "height": 400}}'
             if action == "screenshot":
                 return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 888}'
             raise AssertionError(action)
@@ -207,6 +698,102 @@ class TestGetAppState:
         assert result["approved"] is False
         assert result["app_name"] == "Safari"
         assert result["bundle_id"] == "com.apple.Safari"
+
+    def test_get_app_state_redacts_accessibility_tree_for_unapproved_frontmost_app(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        adapter.approve_app_impl("TextEdit")
+        leaked_tree = [
+            {
+                "index": 0,
+                "role": "AXWindow",
+                "title": "Safari Secrets",
+                "children": [
+                    {"index": 1, "role": "AXTextArea", "value": "top secret", "children": []},
+                ],
+            },
+        ]
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "Safari",
+                    "bundle_id": "com.apple.Safari",
+                    "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+                    "process_id": 222,
+                    "window_title": "Other",
+                    "window_id": 888,
+                    "window_bounds": {"x": 5, "y": 6, "width": 700, "height": 400},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/shot.png", "media_tag": "MEDIA:/tmp/shot.png", "window_id": 888}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        monkeypatch.setattr(adapter, "frontmost_window_state", lambda include_accessibility=True, require_helper_success=False: {
+            "app_name": "Safari",
+            "bundle_id": "com.apple.Safari",
+            "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+            "process_id": 222,
+            "window_title": "Other",
+            "window_id": 888,
+            "window_bounds": {"x": 5, "y": 6, "width": 700, "height": 400},
+            "accessibility_tree": leaked_tree,
+        })
+
+        result = adapter.get_app_state_impl(app_name="TextEdit")
+
+        assert result["success"] is True
+        assert result["approved"] is False
+        assert result["accessibility_tree"] == []
+        state_path = Path(result["session_state_path"])
+        payload = json.loads(state_path.read_text())
+        assert payload["accessibility_tree"] == []
+        listed = adapter.list_active_sessions_impl()
+        assert listed["active_sessions"][0]["accessibility_tree"] == []
+
+    def test_get_app_state_does_not_approve_same_display_name_with_different_bundle_id(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
+
+        def fake_cc(**kwargs):
+            action = kwargs["action"]
+            if action == "activate_app":
+                return '{"success": true}'
+            if action == "frontmost_app":
+                return json.dumps({
+                    "success": True,
+                    "app_name": "Safari",
+                    "bundle_id": "com.evil.Safari",
+                    "bundle_name": "Safari",
+            "bundle_path": "/Applications/Safari.app",
+                    "process_id": 999,
+                    "window_title": "Trap",
+                    "window_id": 456,
+                    "window_bounds": {"x": 10, "y": 20, "width": 640, "height": 480},
+                })
+            if action == "screenshot":
+                return '{"success": true, "path": "/tmp/evil-shot.png", "media_tag": "MEDIA:/tmp/evil-shot.png", "window_id": 456}'
+            raise AssertionError(action)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+
+        result = adapter.get_app_state_impl(app_name="Safari")
+
+        assert result["success"] is True
+        assert result["approved"] is False
+        assert result["bundle_id"] == "com.evil.Safari"
 
     def test_get_app_state_does_not_trust_bundle_id_suffix_alone_for_approval(self, monkeypatch, tmp_path):
         store_path = tmp_path / "ComputerUseAppApprovals.json"
@@ -244,7 +831,7 @@ class TestGetAppState:
             if action == "activate_app":
                 return '{"success": true}'
             if action == "frontmost_app":
-                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "process_id": 999, "window_title": "Docs", "window_id": 123, "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480}}'
+                return '{"success": true, "app_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_name": "Safari", "bundle_path": "/Applications/Safari.app", "process_id": 999, "window_title": "Docs", "window_id": 123, "window_bounds": {"x": 1, "y": 2, "width": 640, "height": 480}}'
             if action == "screenshot" and kwargs.get("window_id") == 123:
                 return '{"error": "window capture blocked"}'
             if action == "screenshot":
@@ -281,6 +868,173 @@ class TestApprovalAndSessions:
         revoked = adapter.revoke_app_impl("Safari")
         assert revoked["success"] is True
         assert revoked["approved_apps"] == []
+        payload = json.loads(store_path.read_text())
+        assert payload["approved_apps"] == []
+        assert payload["approved_app_entries"] == []
+
+    def test_approve_app_persists_resolved_bundle_identity(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+
+        approved = adapter.approve_app_impl("Safari")
+
+        assert approved["success"] is True
+        assert approved["approved_apps"] == ["Safari"]
+        payload = json.loads(store_path.read_text())
+        assert payload["approved_apps"] == ["Safari"]
+        assert payload["approved_app_entries"] == [
+            {
+                "approval_name": "Safari",
+                "bundle_id": "com.apple.Safari",
+                "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"),
+            }
+        ]
+
+    def test_load_approval_entries_backfills_missing_bundle_path_for_legacy_entry(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        store_path.write_text(json.dumps({
+            "approved_apps": ["Safari"],
+            "approved_app_entries": [
+                {"approval_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_path": ""},
+            ],
+        }))
+
+        entries = adapter._load_approval_entries()
+
+        assert entries == [
+            {
+                "approval_name": "Safari",
+                "bundle_id": "com.apple.Safari",
+                "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"),
+            }
+        ]
+
+    def test_approve_app_invalidates_stale_same_label_session_when_identity_changes(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        state_root.mkdir()
+        state_path = state_root / "app-1.json"
+        state_path.write_text("{}")
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: state_path.write_text(json.dumps(adapter._session_payload(session))) or str(state_path), raising=False)
+        monkeypatch.setattr(adapter, "_resolve_approval_target", lambda app_name: {
+            "approval_name": "Safari",
+            "bundle_id": "com.apple.Safari",
+            "bundle_path": "/Applications/Safari.app",
+        }, raising=False)
+        adapter.approve_app_impl("Safari")
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "approval_name": "Safari",
+                "approval_bundle_id": "com.apple.Safari",
+                "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"),
+                "bundle_id": "com.apple.Safari",
+                "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"),
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "accessibility_tree": [{"index": 0, "role": "AXWindow", "title": "Docs", "children": []}],
+                "session_state_path": str(state_path),
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            }
+        })
+        monkeypatch.setattr(adapter, "_resolve_approval_target", lambda app_name: {
+            "approval_name": "Safari",
+            "bundle_id": "com.example.alt-safari",
+            "bundle_path": "/Applications/AltSafari.app",
+        }, raising=False)
+
+        approved = adapter.approve_app_impl("Safari")
+
+        assert approved["success"] is True
+        assert adapter._APP_SESSIONS["safari"]["approved"] is False
+        assert adapter._APP_SESSIONS["safari"]["accessibility_tree"] == []
+        payload = json.loads(state_path.read_text())
+        assert payload["approved"] is False
+        assert payload["accessibility_tree"] == []
+
+    def test_revoke_app_clears_accessibility_tree_from_existing_sessions(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        state_root.mkdir()
+        state_path = state_root / "app-1.json"
+        state_path.write_text("{}")
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+        adapter.approve_app_impl("TextEdit")
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "textedit": {
+                "app_name": "TextEdit",
+                "approval_name": "TextEdit",
+                "approval_bundle_id": "com.apple.TextEdit",
+                "approval_bundle_path": adapter._normalize_bundle_path("/System/Applications/TextEdit.app"),
+                "bundle_id": "com.apple.TextEdit",
+                "bundle_path": adapter._normalize_bundle_path("/System/Applications/TextEdit.app"),
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "window_title": "Notes",
+                "screenshot_path": "/tmp/shot.png",
+                "accessibility_tree": [
+                    {"index": 0, "role": "AXWindow", "title": "Notes", "children": []},
+                ],
+                "session_state_path": str(state_path),
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            }
+        })
+
+        revoked = adapter.revoke_app_impl("TextEdit")
+
+        assert revoked["success"] is True
+        listed = adapter.list_active_sessions_impl()
+        assert listed["active_sessions"][0]["approved"] is False
+        assert listed["active_sessions"][0]["accessibility_tree"] == []
+        payload = json.loads(state_path.read_text())
+        assert payload["accessibility_tree"] == []
+
+    def test_revoke_app_clears_session_for_legacy_entry_missing_path(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        state_root = tmp_path / "session-state"
+        state_root.mkdir()
+        state_path = state_root / "app-1.json"
+        state_path.write_text("{}")
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        monkeypatch.setattr(adapter, "_session_state_root", lambda: state_root, raising=False)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: state_path.write_text(json.dumps(adapter._session_payload(session))) or str(state_path), raising=False)
+        store_path.write_text(json.dumps({
+            "approved_apps": ["Safari"],
+            "approved_app_entries": [
+                {"approval_name": "Safari", "bundle_id": "com.apple.Safari", "bundle_path": ""},
+            ],
+        }))
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "approval_name": "Safari",
+                "approval_bundle_id": "com.apple.Safari",
+                "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"),
+                "bundle_id": "com.apple.Safari",
+                "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"),
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "accessibility_tree": [{"index": 0, "role": "AXWindow", "title": "Docs", "children": []}],
+                "session_state_path": str(state_path),
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            }
+        })
+
+        revoked = adapter.revoke_app_impl("Safari")
+
+        assert revoked["success"] is True
+        assert adapter._APP_SESSIONS["safari"]["approved"] is False
+        payload = json.loads(state_path.read_text())
+        assert payload["approved"] is False
+        assert payload["accessibility_tree"] == []
 
     def test_get_app_state_requires_explicit_approval_for_requested_app(self, monkeypatch, tmp_path):
         store_path = tmp_path / "ComputerUseAppApprovals.json"
@@ -804,9 +1558,12 @@ class TestKeyboardTools:
         assert result["success"] is False
         assert result["session_required"] is True
 
-    def test_type_text_impl_maps_to_computer_control(self, monkeypatch):
+    def test_type_text_impl_maps_to_computer_control(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
-            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
+            "safari": {"app_name": "Safari", "approval_name": "Safari", "approval_bundle_id": "com.apple.Safari", "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"), "bundle_id": "com.apple.Safari", "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"), "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
         })
         seen = {}
 
@@ -852,10 +1609,14 @@ class TestKeyboardTools:
         assert result["active_sessions"][1]["app_session_id"] == "app-1"
         assert "app_session_id" in result["error"]
 
-    def test_type_text_impl_can_target_specific_app_session(self, monkeypatch):
+    def test_type_text_impl_can_target_specific_app_session(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
+        adapter.approve_app_impl("Notes")
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
-            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
-            "notes": {"app_name": "Notes", "app_session_id": "app-2", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+            "safari": {"app_name": "Safari", "approval_name": "Safari", "approval_bundle_id": "com.apple.Safari", "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"), "bundle_id": "com.apple.Safari", "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"), "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+            "notes": {"app_name": "Notes", "approval_name": "Notes", "approval_bundle_id": "com.example.notes", "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Notes.app"), "bundle_id": "com.example.notes", "bundle_path": adapter._normalize_bundle_path("/Applications/Notes.app"), "app_session_id": "app-2", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
         })
 
         monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: '{"success": true}')
@@ -866,6 +1627,62 @@ class TestKeyboardTools:
         assert result["app_name"] == "Notes"
         assert result["app_session_id"] == "app-2"
 
+    def test_type_text_impl_blocks_revoke_until_keystroke_dispatch_finishes(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "safari": {
+                "app_name": "Safari",
+                "approval_name": "Safari",
+                "approval_bundle_id": "com.apple.Safari",
+                "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"),
+                "bundle_id": "com.apple.Safari",
+                "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"),
+                "app_session_id": "app-1",
+                "active": True,
+                "approved": True,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            }
+        })
+        dispatch_started = threading.Event()
+        allow_dispatch_finish = threading.Event()
+        revoke_finished = threading.Event()
+        calls = []
+
+        def fake_cc(**kwargs):
+            if kwargs.get("action") == "keystroke":
+                dispatch_started.set()
+                allow_dispatch_finish.wait(timeout=2)
+                calls.append(kwargs)
+                return '{"success": true}'
+            raise AssertionError(kwargs)
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        typed_result: dict[str, object] = {}
+
+        def run_type_text():
+            typed_result["result"] = adapter.type_text_impl("uwu", app_session_id="app-1")
+
+        def run_revoke():
+            adapter.revoke_app_impl("Safari")
+            revoke_finished.set()
+
+        type_thread = threading.Thread(target=run_type_text)
+        revoke_thread = threading.Thread(target=run_revoke)
+        type_thread.start()
+        assert dispatch_started.wait(timeout=1) is True
+        revoke_thread.start()
+        assert revoke_finished.wait(timeout=0.2) is False
+        allow_dispatch_finish.set()
+        type_thread.join(timeout=2)
+        revoke_thread.join(timeout=2)
+
+        assert typed_result["result"]["success"] is True
+        assert calls == [{"action": "keystroke", "text": "uwu"}]
+        assert revoke_finished.is_set() is True
+        assert adapter._APP_SESSIONS["safari"]["approved"] is False
+
     def test_press_key_impl_requires_active_session(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {})
 
@@ -874,9 +1691,12 @@ class TestKeyboardTools:
         assert result["success"] is False
         assert result["session_required"] is True
 
-    def test_press_key_impl_maps_modifiers(self, monkeypatch):
+    def test_press_key_impl_maps_modifiers(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
-            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
+            "safari": {"app_name": "Safari", "approval_name": "Safari", "approval_bundle_id": "com.apple.Safari", "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"), "bundle_id": "com.apple.Safari", "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"), "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}}
         })
         seen = {}
 
@@ -917,10 +1737,14 @@ class TestKeyboardTools:
         assert result["success"] is False
         assert result["session_required"] is True
 
-    def test_press_key_impl_can_target_specific_app_session(self, monkeypatch):
+    def test_press_key_impl_can_target_specific_app_session(self, monkeypatch, tmp_path):
+        store_path = tmp_path / "ComputerUseAppApprovals.json"
+        monkeypatch.setattr(adapter, "_approval_store_path", lambda: store_path)
+        adapter.approve_app_impl("Safari")
+        adapter.approve_app_impl("Notes")
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
-            "safari": {"app_name": "Safari", "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
-            "notes": {"app_name": "Notes", "app_session_id": "app-2", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+            "safari": {"app_name": "Safari", "approval_name": "Safari", "approval_bundle_id": "com.apple.Safari", "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"), "bundle_id": "com.apple.Safari", "bundle_path": adapter._normalize_bundle_path("/Applications/Safari.app"), "app_session_id": "app-1", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
+            "notes": {"app_name": "Notes", "approval_name": "Notes", "approval_bundle_id": "com.example.notes", "approval_bundle_path": adapter._normalize_bundle_path("/Applications/Notes.app"), "bundle_id": "com.example.notes", "bundle_path": adapter._normalize_bundle_path("/Applications/Notes.app"), "app_session_id": "app-2", "active": True, "approved": True, "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True}},
         })
         monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: '{"success": true}')
 
@@ -940,7 +1764,7 @@ class TestUnsupportedActions:
         assert result["success"] is False
         assert result["session_required"] is True
 
-    def test_click_updates_virtual_cursor_preview_for_active_session(self, monkeypatch):
+    def test_click_executes_real_pointer_backend_for_active_session(self, monkeypatch):
         monkeypatch.setattr(adapter, "_APP_SESSIONS", {
             "safari": {
                 "app_name": "Safari",
@@ -950,14 +1774,27 @@ class TestUnsupportedActions:
                 "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
             }
         })
+        calls = []
+
+        def fake_cc(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"success": True, "action": "click", "x": 10, "y": 20, "button": "left", "click_count": 1})
+
+        monkeypatch.setattr(adapter, "computer_control", fake_cc)
+        monkeypatch.setattr(adapter, "_find_approval_entry", lambda _name: {"approval_name": "Safari"})
+        monkeypatch.setattr(adapter, "_session_matches_approval_entry", lambda _session, _entry: True)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
 
         result = adapter.click_impl(x=10, y=20)
 
-        assert result["success"] is False
-        assert result["supported"] is False
-        assert result["preview_only"] is True
+        assert result["success"] is True
+        assert result["clicked"] is True
         assert result["app_session_id"] == "app-1"
         assert result["virtual_cursor"] == {"x": 10, "y": 20, "detached": True, "visible": True}
+        assert result["pending_pointer_action"] is None
+        assert result["last_pointer_action_result"]["action_type"] == "click"
+        assert result["last_pointer_action_result"]["status"] == "completed"
+        assert calls == [{"action": "click", "x": 10, "y": 20, "button": "left", "click_count": 1}]
 
     def test_click_rechecks_session_activity_before_queueing_pending_pointer_action(self, monkeypatch):
         session = {
@@ -998,6 +1835,10 @@ class TestUnsupportedActions:
                 "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
             },
         })
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: json.dumps({"success": True, **kwargs}))
+        monkeypatch.setattr(adapter, "_find_approval_entry", lambda _name: {"approval_name": "Notes"})
+        monkeypatch.setattr(adapter, "_session_matches_approval_entry", lambda _session, _entry: True)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
 
         result = adapter.click_impl(x=50, y=60, app_session_id="app-2")
 
@@ -1018,6 +1859,9 @@ class TestUnsupportedActions:
                 "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
             },
         })
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: json.dumps({"success": True, **kwargs}))
+        monkeypatch.setattr(adapter, "_find_approval_entry", lambda _name: {"approval_name": "Notes"})
+        monkeypatch.setattr(adapter, "_session_matches_approval_entry", lambda _session, _entry: True)
         monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
 
         result = adapter.click_impl(x=50, y=60, app_session_id="app-2")
@@ -1027,11 +1871,28 @@ class TestUnsupportedActions:
         payload = json.loads(state_path.read_text())
         assert payload["app_session_id"] == "app-2"
         assert payload["virtual_cursor"] == {"x": 50, "y": 60, "detached": True, "visible": True}
-        assert payload["pending_pointer_action"]["action_type"] == "click"
-        assert payload["pending_pointer_action"]["x"] == 50
-        assert payload["pending_pointer_action"]["y"] == 60
-        assert payload["pending_pointer_action"]["button"] == "left"
-        assert payload["pending_pointer_action"]["click_count"] == 1
+        assert payload["pending_pointer_action"] is None
+        assert payload["last_pointer_action_result"]["action_type"] == "click"
+        assert payload["last_pointer_action_result"]["status"] == "completed"
+        assert payload["last_pointer_action_result"]["x"] == 50
+        assert payload["last_pointer_action_result"]["y"] == 60
+
+    def test_click_requires_approved_session(self, monkeypatch):
+        monkeypatch.setattr(adapter, "_APP_SESSIONS", {
+            "notes": {
+                "app_name": "Notes",
+                "app_session_id": "app-2",
+                "active": True,
+                "approved": False,
+                "virtual_cursor": {"x": None, "y": None, "detached": True, "visible": True},
+            }
+        })
+
+        result = adapter.click_impl(x=12, y=34, app_session_id="app-2")
+
+        assert result["success"] is False
+        assert result["approval_required"] is True
+        assert result["approved"] is False
 
     def test_scroll_updates_pending_pointer_action_in_session_state(self, monkeypatch, tmp_path):
         state_root = tmp_path / "session-state"
@@ -1073,6 +1934,8 @@ class TestUnsupportedActions:
                 },
             },
         })
+        monkeypatch.setattr(adapter, "_find_approval_entry", lambda _name: {"approval_name": "Notes"})
+        monkeypatch.setattr(adapter, "_session_matches_approval_entry", lambda _session, _entry: True)
 
         result = adapter.click_impl(x=50, y=60, app_session_id="app-2")
 
@@ -1099,6 +1962,9 @@ class TestUnsupportedActions:
                 },
             },
         })
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: json.dumps({"success": True, **kwargs}))
+        monkeypatch.setattr(adapter, "_find_approval_entry", lambda _name: {"approval_name": "Notes"})
+        monkeypatch.setattr(adapter, "_session_matches_approval_entry", lambda _session, _entry: True)
         monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
 
         cleared = adapter.report_pointer_action_result_impl(
@@ -1111,11 +1977,12 @@ class TestUnsupportedActions:
         result = adapter.click_impl(x=50, y=60, app_session_id="app-2")
 
         assert cleared["success"] is True
-        assert result["success"] is False
-        assert result["preview_only"] is True
-        assert result["pending_pointer_action"]["action_id"] != "ptr-123"
-        assert result["pending_pointer_action"]["x"] == 50
-        assert result["pending_pointer_action"]["y"] == 60
+        assert result["success"] is True
+        assert result["clicked"] is True
+        assert result["pending_pointer_action"] is None
+        assert result["last_pointer_action_result"]["action_type"] == "click"
+        assert result["last_pointer_action_result"]["x"] == 50
+        assert result["last_pointer_action_result"]["y"] == 60
 
     def test_drag_updates_virtual_cursor_to_end_position(self, monkeypatch, tmp_path):
         state_root = tmp_path / "session-state"
@@ -1680,10 +2547,15 @@ class TestUnsupportedActions:
             }
         })
 
+        monkeypatch.setattr(adapter, "computer_control", lambda **kwargs: json.dumps({"success": True, **kwargs}))
+        monkeypatch.setattr(adapter, "_find_approval_entry", lambda _name: {"approval_name": "Safari"})
+        monkeypatch.setattr(adapter, "_session_matches_approval_entry", lambda _session, _entry: True)
+        monkeypatch.setattr(adapter, "_sync_virtual_cursor_overlay", lambda session: "", raising=False)
+
         result = adapter.click_impl(x=10, y=20)
-        assert result["success"] is False
-        assert result["supported"] is False
-        assert "not implemented" in result["error"].lower()
+        assert result["success"] is True
+        assert result["clicked"] is True
+        assert result["virtual_cursor"] == {"x": 10, "y": 20, "detached": True, "visible": True}
 
     def test_set_value_stub_is_explicit(self):
         result = adapter.set_value_impl(index=1, value="hello")

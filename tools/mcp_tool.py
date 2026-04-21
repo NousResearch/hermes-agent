@@ -166,6 +166,13 @@ _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
+_COMPUTER_USE_APPROVAL_KIND = "computer_use_app_access"
+_COMPUTER_USE_SESSION_APPROVALS: dict[str, set[str]] = {}
+
+
+def _normalize_computer_use_app(value: Any) -> str:
+    return str(value or "").strip()
+
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
@@ -1633,8 +1640,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
 
-        async def _call():
-            result = await server.session.call_tool(tool_name, arguments=args)
+        async def _call(call_name: str, call_args: dict):
+            result = await server.session.call_tool(call_name, arguments=call_args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
@@ -1655,9 +1662,6 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.
-            # MCP spec: content is model-oriented (text), structuredContent
-            # is machine-oriented (JSON metadata).  For an AI agent, content
-            # is the primary payload; structuredContent supplements it.
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
@@ -1671,18 +1675,103 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
 
-        try:
-            result = _call_once()
-            # Check if the MCP tool itself returned an error
+        def _call_sync(call_name: str, call_args: dict) -> str:
+            return _run_on_mcp_loop(_call(call_name, call_args), timeout=tool_timeout)
+
+        def _extract_payload(raw_result: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
             try:
-                parsed = json.loads(result)
+                parsed = json.loads(raw_result)
+            except Exception:
+                return None, None
+            if not isinstance(parsed, dict):
+                return None, None
+            structured = parsed.get("structuredContent")
+            if isinstance(structured, dict):
+                return structured, parsed
+            result_payload = parsed.get("result")
+            if isinstance(result_payload, dict):
+                return result_payload, parsed
+            return None, parsed
+
+        def _computer_use_detail(action_name: str, app_name: str) -> str:
+            pretty_action = {
+                "get_app_state": "inspect this app window",
+                "type_text": "type into this app",
+                "press_key": "send key presses to this app",
+                "click": "click inside this app",
+                "scroll": "scroll inside this app",
+                "drag": "drag inside this app",
+            }.get(action_name, "control this app")
+            return f"{app_name} requested Hermes computer-use access so it can {pretty_action}."
+
+        from tools.approval import get_current_session_key, request_gateway_choice
+
+        session_key = get_current_session_key(default="")
+
+        try:
+            if server_name == "hermes-computer-use" and tool_name == "get_app_state" and session_key:
+                requested_app = _normalize_computer_use_app(args.get("app_name"))
+                if requested_app and requested_app in _COMPUTER_USE_SESSION_APPROVALS.get(session_key, set()):
+                    _call_sync(
+                        "grant_temporary_app_approval",
+                        {"app_name": requested_app, "scope": "session"},
+                    )
+
+            raw_result = _call_sync(tool_name, args)
+
+            if server_name == "hermes-computer-use" and session_key:
+                payload, wrapper = _extract_payload(raw_result)
+                if isinstance(payload, dict) and payload.get("approval_required"):
+                    app_name = _normalize_computer_use_app(
+                        payload.get("app_name") or args.get("app_name") or payload.get("approval_name")
+                    ) or "this app"
+                    approval = request_gateway_choice(
+                        session_key,
+                        _COMPUTER_USE_APPROVAL_KIND,
+                        {
+                            "title": f"{app_name} 请求 computer-use 访问",
+                            "detail": _computer_use_detail(tool_name, app_name),
+                            "tool_name": tool_name,
+                            "app_name": app_name,
+                            "app_session_id": str(payload.get("app_session_id") or args.get("app_session_id") or "").strip(),
+                        },
+                        timeout_seconds=300,
+                    )
+                    choice = str(approval.get("choice") or "").strip().lower()
+                    if not approval.get("resolved") or choice == "deny":
+                        blocked = dict(payload)
+                        blocked["success"] = False
+                        blocked["approval_required"] = False
+                        blocked["approved"] = False
+                        blocked["blocked_by_user"] = True
+                        blocked["error"] = f"{app_name} computer-use access was denied or timed out."
+                        raw_result = json.dumps({"result": blocked})
+                    else:
+                        grant_args = {
+                            "app_name": app_name,
+                            "scope": "session" if choice == "session" else "once",
+                        }
+                        app_session_id = str(payload.get("app_session_id") or args.get("app_session_id") or "").strip()
+                        if app_session_id:
+                            grant_args["app_session_id"] = app_session_id
+                        if choice == "always":
+                            _call_sync("approve_app", {"app_name": app_name})
+                        else:
+                            _call_sync("grant_temporary_app_approval", grant_args)
+                        if choice == "session":
+                            _COMPUTER_USE_SESSION_APPROVALS.setdefault(session_key, set()).add(app_name)
+
+                        raw_result = _call_sync(tool_name, args)
+
+            try:
+                parsed = json.loads(raw_result)
                 if "error" in parsed:
                     _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
                 else:
-                    _server_error_counts[server_name] = 0  # success — reset
+                    _server_error_counts[server_name] = 0
             except (json.JSONDecodeError, TypeError):
-                _server_error_counts[server_name] = 0  # non-JSON = success
-            return result
+                _server_error_counts[server_name] = 0
+            return raw_result
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:

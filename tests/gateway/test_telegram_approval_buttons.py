@@ -167,6 +167,24 @@ class TestTelegramExecApproval:
         assert "..." in kwargs["text"]
         assert len(kwargs["text"]) < 5000
 
+    @pytest.mark.asyncio
+    async def test_send_choice_approval_stores_request_mapping(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 43
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_choice_approval(
+            chat_id="12345",
+            request_id="gar_test123",
+            title="TextEdit 请求访问",
+            detail="TextEdit 请求 Hermes computer-use 访问。",
+        )
+
+        assert result.success is True
+        assert len(adapter._choice_approval_state) == 1
+        approval_id = list(adapter._choice_approval_state.keys())[0]
+        assert adapter._choice_approval_state[approval_id] == "gar_test123"
 
 # ===========================================================================
 # _handle_callback_query — approval button clicks
@@ -229,6 +247,30 @@ class TestTelegramApprovalCallback:
         mock_resolve.assert_called_once_with("some-session", "deny")
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "Denied" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_resolves_generic_choice_request_on_click(self):
+        adapter = _make_adapter()
+        adapter._choice_approval_state[7] = "gar_test123"
+
+        query = AsyncMock()
+        query.data = "ga:session:7"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("tools.approval.resolve_gateway_choice_request", return_value=True) as mock_resolve:
+            await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once_with("gar_test123", "session")
+        assert 7 not in adapter._choice_approval_state
 
     @pytest.mark.asyncio
     async def test_already_resolved(self):

@@ -25,6 +25,27 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 <tr><td><b>Research-ready</b></td><td>Batch trajectory generation, Atropos RL environments, trajectory compression for training the next generation of tool-calling models.</td></tr>
 </table>
 
+## Preview: macOS computer-use for Hermes
+
+Hermes now has a real macOS computer-use stack taking shape — not just browser automation and not just a fake cursor demo.
+
+Current grounded receipts in this branch:
+- Telegram-approvable app access for `hermes-computer-use` sessions (`Allow Once`, `Session`, `Always`, `Deny`)
+- Window-scoped `get_app_state(...)` with screenshot + frontmost metadata + approval-gated accessibility capture
+- A proven local unlock path from `loginwindow` into the desktop, with the password kept inside local process env / file reads instead of tool arguments or transcript text
+- A grounded local click smoke on TextEdit: the adapter clicked the real AX close button coordinates and the target window disappeared, leaving another TextEdit document frontmost
+
+This is best described today as a Codex-style / official-computer-use-inspired Hermes implementation with real local control already working and live runtime cleanup still underway.
+
+📎 See the branch write-up: [docs/computer-use-macos-preview.md](docs/computer-use-macos-preview.md)
+
+| Proof | Artifact |
+|------|----------|
+| Lock UI reached | [lockscreen-password-ui.png](docs/media/computer-use/lockscreen-password-ui.png) |
+| Desktop unlocked | [unlocked-terminal-after-input.png](docs/media/computer-use/unlocked-terminal-after-input.png) |
+| Window-scoped TextEdit state | [textedit-window-state.png](docs/media/computer-use/textedit-window-state.png) |
+| Detached cursor / click overlay | [textedit-click-overlay.png](docs/media/computer-use/textedit-click-overlay.png) |
+
 ---
 
 ## Quick Install

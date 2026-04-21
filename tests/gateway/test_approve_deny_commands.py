@@ -72,6 +72,8 @@ def _clear_approval_state():
     from tools import approval as mod
     mod._gateway_queues.clear()
     mod._gateway_notify_cbs.clear()
+    mod._gateway_choice_requests.clear()
+    mod._gateway_choice_order.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
     mod._pending.clear()
@@ -174,6 +176,58 @@ class TestBlockingGatewayApproval:
         assert e2.event.is_set()
 
 
+class TestBlockingGatewayChoiceApproval:
+    def setup_method(self):
+        _clear_approval_state()
+
+    def test_request_gateway_choice_waits_for_request_id_resolution(self):
+        from tools.approval import request_gateway_choice, resolve_gateway_choice_request
+
+        captured = {}
+
+        def notify(data):
+            captured.update(data)
+            threading.Thread(
+                target=lambda: resolve_gateway_choice_request(data["request_id"], "session"),
+                daemon=True,
+            ).start()
+
+        from tools.approval import register_gateway_notify, unregister_gateway_notify
+        register_gateway_notify("test-session", notify)
+        try:
+            result = request_gateway_choice(
+                "test-session",
+                "computer_use_app_access",
+                {"title": "TextEdit 请求访问", "detail": "uwu"},
+                timeout_seconds=2,
+            )
+        finally:
+            unregister_gateway_notify("test-session")
+
+        assert captured["kind"] == "computer_use_app_access"
+        assert result["resolved"] is True
+        assert result["choice"] == "session"
+
+    def test_request_gateway_choice_returns_unresolved_when_session_clears(self):
+        from tools.approval import register_gateway_notify, unregister_gateway_notify, request_gateway_choice, clear_session
+
+        def notify(data):
+            threading.Thread(target=lambda: clear_session("test-session"), daemon=True).start()
+
+        register_gateway_notify("test-session", notify)
+        try:
+            result = request_gateway_choice(
+                "test-session",
+                "computer_use_app_access",
+                {"title": "TextEdit 请求访问", "detail": "uwu"},
+                timeout_seconds=2,
+            )
+        finally:
+            unregister_gateway_notify("test-session")
+
+        assert result["resolved"] is False
+        assert result["choice"] is None
+
 # ------------------------------------------------------------------
 # /approve command
 # ------------------------------------------------------------------
@@ -245,6 +299,35 @@ class TestApproveCommand:
         assert "No pending command" in result
 
     @pytest.mark.asyncio
+    async def test_approve_app_access_request(self):
+        from tools.approval import request_gateway_choice
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+
+        def worker():
+            request_gateway_choice(
+                session_key,
+                "computer_use_app_access",
+                {"title": "TextEdit 请求访问", "detail": "uwu"},
+                timeout_seconds=5,
+            )
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 2
+        from tools.approval import has_pending_gateway_choice_request
+        while time.monotonic() < deadline and not has_pending_gateway_choice_request(session_key, kind="computer_use_app_access"):
+            time.sleep(0.05)
+
+        result = await runner._handle_approve_command(_make_event("/approve session"))
+        thread.join(timeout=5)
+
+        assert "App access approval" in result
+        assert "chat session" in result
+
+    @pytest.mark.asyncio
     async def test_approve_stale_old_style_pending(self):
         """Old-style _pending_approvals without blocking event reports expired."""
         runner = _make_runner()
@@ -307,6 +390,36 @@ class TestDenyCommand:
         runner = _make_runner()
         result = await runner._handle_deny_command(_make_event("/deny"))
         assert "No pending command" in result
+
+    @pytest.mark.asyncio
+    async def test_deny_app_access_request(self):
+        from tools.approval import request_gateway_choice
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        outcome = {}
+
+        def worker():
+            outcome.update(request_gateway_choice(
+                session_key,
+                "computer_use_app_access",
+                {"title": "TextEdit 请求访问", "detail": "uwu"},
+                timeout_seconds=5,
+            ))
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 2
+        from tools.approval import has_pending_gateway_choice_request
+        while time.monotonic() < deadline and not has_pending_gateway_choice_request(session_key, kind="computer_use_app_access"):
+            time.sleep(0.05)
+
+        result = await runner._handle_deny_command(_make_event("/deny"))
+        thread.join(timeout=5)
+
+        assert "App access approval" in result
+        assert outcome.get("choice") == "deny"
 
 
 # ------------------------------------------------------------------
@@ -582,18 +695,22 @@ class TestBlockingApprovalE2E:
         # relying on a fixed sleep.  The approval module stores entries in
         # _gateway_queues[session_key] — poll until we see 2 entries.
         from tools.approval import _gateway_queues
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if len(_gateway_queues.get(session_key, [])) >= 2:
                 break
             time.sleep(0.05)
+        assert len(_gateway_queues.get(session_key, [])) >= 2
 
         # Approve first, deny second
         resolve_gateway_approval(session_key, "once")   # oldest
         resolve_gateway_approval(session_key, "deny")   # next
 
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not all(r is not None for r in results):
+            time.sleep(0.05)
         for t in threads:
-            t.join(timeout=5)
+            t.join(timeout=1)
 
         assert all(r is not None for r in results)
         assert sorted(r["approved"] for r in results) == [False, True]

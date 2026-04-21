@@ -251,6 +251,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Generic choice-approval button state: approval_id → request_id
+        self._choice_approval_state: Dict[int, str] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -1284,6 +1286,52 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_choice_approval(
+        self,
+        chat_id: str,
+        request_id: str,
+        title: str,
+        detail: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a generic inline-keyboard approval prompt keyed by request_id."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            thread_id = None
+            if metadata:
+                thread_id = metadata.get("thread_id") or metadata.get("message_thread_id")
+            import itertools
+            if not hasattr(self, "_approval_counter"):
+                self._approval_counter = itertools.count(1)
+            approval_id = next(self._approval_counter)
+            text = f"⚠️ *{title}*\n\n{detail[:3500]}"
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ga:once:{approval_id}"),
+                    InlineKeyboardButton("✅ Session", callback_data=f"ga:session:{approval_id}"),
+                ],
+                [
+                    InlineKeyboardButton("✅ Always", callback_data=f"ga:always:{approval_id}"),
+                    InlineKeyboardButton("❌ Deny", callback_data=f"ga:deny:{approval_id}"),
+                ],
+            ])
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.MARKDOWN,
+                "reply_markup": keyboard,
+            }
+            if thread_id:
+                kwargs["message_thread_id"] = int(thread_id)
+            msg = await self._bot.send_message(**kwargs)
+            self._choice_approval_state[approval_id] = request_id
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_choice_approval failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -1650,6 +1698,58 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+            return
+
+        # --- Generic choice approval callbacks (ga:choice:id) ---
+        if data.startswith("ga:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]
+                try:
+                    approval_id = int(parts[2])
+                except (ValueError, IndexError):
+                    await query.answer(text="Invalid approval data.")
+                    return
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+                if allowed_csv:
+                    allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+                    if "*" not in allowed_ids and caller_id not in allowed_ids:
+                        await query.answer(text="⛔ You are not authorized to approve requests.")
+                        return
+
+                request_id = self._choice_approval_state.pop(approval_id, None)
+                if not request_id:
+                    await query.answer(text="This approval has already been resolved.")
+                    return
+
+                label_map = {
+                    "once": "✅ Approved once",
+                    "session": "✅ Approved for session",
+                    "always": "✅ Approved permanently",
+                    "deny": "❌ Denied",
+                }
+                user_display = getattr(query.from_user, "first_name", "User")
+                label = label_map.get(choice, "Resolved")
+                await query.answer(text=label)
+                try:
+                    await query.edit_message_text(
+                        text=f"{label} by {user_display}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                try:
+                    from tools.approval import resolve_gateway_choice_request
+                    resolved = resolve_gateway_choice_request(request_id, choice)
+                    logger.info(
+                        "Telegram button resolved generic approval request %s (choice=%s, user=%s, resolved=%s)",
+                        request_id, choice, user_display, resolved,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to resolve gateway choice approval from Telegram button: %s", exc)
             return
 
         # --- Update prompt callbacks ---

@@ -3502,6 +3502,9 @@ class GatewayRunner:
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
+        if canonical == "today":
+            return await self._handle_today_command(event)
+
         if canonical == "restart":
             return await self._handle_restart_command(event)
         
@@ -4979,6 +4982,25 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    def _queue_pending_agent_note(self, session_key: str, note: str) -> None:
+        """Queue a session note to prepend to the next real user turn."""
+        clean = str(note or "").strip()
+        if not clean or not session_key:
+            return
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        existing = self._pending_model_notes.get(session_key)
+        self._pending_model_notes[session_key] = f"{existing}\n\n{clean}" if existing else clean
+
+    async def _handle_today_command(self, event: MessageEvent) -> str:
+        """Handle /today — show today's synced todo snapshot and queue it for next turn context."""
+        from today_todo import build_today_todo_note, load_today_todo_snapshot, render_today_todo_text
+
+        session_entry = self.session_store.get_or_create_session(event.source)
+        snapshot = load_today_todo_snapshot()
+        self._queue_pending_agent_note(session_entry.session_key, build_today_todo_note(snapshot))
+        return render_today_todo_text(snapshot)
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -5476,12 +5498,11 @@ class GatewayRunner:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
 
                         # Store model note + session override
-                        if not hasattr(_self, "_pending_model_notes"):
-                            _self._pending_model_notes = {}
-                        _self._pending_model_notes[_session_key] = (
+                        _self._queue_pending_agent_note(
+                            _session_key,
                             f"[Note: model was just switched from {_cur_model} to {result.new_model} "
                             f"via {result.provider_label or result.target_provider}. "
-                            f"Adjust your self-identification accordingly.]"
+                            f"Adjust your self-identification accordingly.]",
                         )
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
@@ -5592,12 +5613,11 @@ class GatewayRunner:
 
         # Store a note to prepend to the next user message so the model
         # knows about the switch (avoids system messages mid-history).
-        if not hasattr(self, "_pending_model_notes"):
-            self._pending_model_notes = {}
-        self._pending_model_notes[session_key] = (
+        self._queue_pending_agent_note(
+            session_key,
             f"[Note: model was just switched from {current_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
-            f"Adjust your self-identification accordingly.]"
+            f"Adjust your self-identification accordingly.]",
         )
 
         # Store session override so next agent creation uses the new model
@@ -7500,9 +7520,35 @@ class GatewayRunner:
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
+            has_pending_gateway_choice_request, resolve_oldest_gateway_choice_request,
         )
 
         if not has_blocking_approval(session_key):
+            if has_pending_gateway_choice_request(session_key, kind="computer_use_app_access"):
+                args = event.get_command_args().strip().lower().split()
+                resolve_all = "all" in args
+                remaining = [a for a in args if a != "all"]
+                if any(a in ("always", "permanent", "permanently") for a in remaining):
+                    choice = "always"
+                    scope_msg = " (app approved permanently)"
+                elif any(a in ("session", "ses") for a in remaining):
+                    choice = "session"
+                    scope_msg = " (app approved for this chat session)"
+                else:
+                    choice = "once"
+                    scope_msg = ""
+                count = resolve_oldest_gateway_choice_request(
+                    session_key,
+                    choice,
+                    kind="computer_use_app_access",
+                    resolve_all=resolve_all,
+                )
+                if count:
+                    _adapter = self.adapters.get(source.platform)
+                    if _adapter:
+                        _adapter.resume_typing_for_chat(source.chat_id)
+                    count_msg = f" ({count} requests)" if count > 1 else ""
+                    return f"✅ App access approval{'s' if count > 1 else ''} recorded{scope_msg}{count_msg}. The agent is resuming..."
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
@@ -7549,9 +7595,25 @@ class GatewayRunner:
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
+            has_pending_gateway_choice_request, resolve_oldest_gateway_choice_request,
         )
 
         if not has_blocking_approval(session_key):
+            if has_pending_gateway_choice_request(session_key, kind="computer_use_app_access"):
+                args = event.get_command_args().strip().lower()
+                resolve_all = "all" in args
+                count = resolve_oldest_gateway_choice_request(
+                    session_key,
+                    "deny",
+                    kind="computer_use_app_access",
+                    resolve_all=resolve_all,
+                )
+                if count:
+                    _adapter = self.adapters.get(source.platform)
+                    if _adapter:
+                        _adapter.resume_typing_for_chat(source.chat_id)
+                    count_msg = f" ({count} requests)" if count > 1 else ""
+                    return f"❌ App access approval{'s' if count > 1 else ''} denied{count_msg}."
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return "❌ Command denied (approval was stale)."
@@ -9859,8 +9921,50 @@ class GatewayRunner:
                 # Typing resumes in _handle_approve_command/_handle_deny_command.
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
 
+                approval_kind = str(approval_data.get("kind") or "command").strip() or "command"
+                request_id = str(approval_data.get("request_id") or "").strip()
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+
+                if approval_kind == "computer_use_app_access":
+                    title = approval_data.get("title") or "Computer-use app access approval required"
+                    detail = approval_data.get("detail") or desc
+                    if getattr(type(_status_adapter), "send_choice_approval", None) is not None:
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.send_choice_approval(
+                                    chat_id=_status_chat_id,
+                                    request_id=request_id,
+                                    title=str(title),
+                                    detail=str(detail),
+                                    metadata=_status_thread_metadata,
+                                ),
+                                _loop_for_step,
+                            ).result(timeout=15)
+                            return
+                        except Exception as _e:
+                            logger.warning(
+                                "Choice-based approval failed, falling back to text: %s", _e
+                            )
+
+                    msg = (
+                        f"⚠️ {title}\n\n"
+                        f"{detail}\n\n"
+                        f"Reply `/approve` for this app session, `/approve session` to remember it for this chat session, "
+                        f"`/approve always` to persist it, or `/deny` to cancel."
+                    )
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.send(
+                                _status_chat_id,
+                                msg,
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=15)
+                    except Exception as _e:
+                        logger.error("Failed to send app access approval request: %s", _e)
+                    return
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids

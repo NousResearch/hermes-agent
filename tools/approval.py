@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -231,6 +232,30 @@ _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, 
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
+class _GatewayChoiceRequest:
+    """One pending non-command approval request inside a gateway session."""
+
+    __slots__ = ("request_id", "session_key", "kind", "event", "data", "result")
+
+    def __init__(self, session_key: str, kind: str, data: dict):
+        self.request_id = f"gar_{uuid.uuid4().hex[:12]}"
+        self.session_key = session_key
+        self.kind = str(kind or "generic").strip() or "generic"
+        self.event = threading.Event()
+        self.data = {
+            **data,
+            "request_id": self.request_id,
+            "session_key": session_key,
+            "kind": self.kind,
+            "created_at": time.time(),
+        }
+        self.result: Optional[str] = None
+
+
+_gateway_choice_requests: dict[str, _GatewayChoiceRequest] = {}
+_gateway_choice_order: dict[str, list[str]] = {}
+
+
 def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
@@ -254,6 +279,115 @@ def unregister_gateway_notify(session_key: str) -> None:
         entries = _gateway_queues.pop(session_key, [])
         for entry in entries:
             entry.event.set()
+        request_ids = _gateway_choice_order.pop(session_key, [])
+        for request_id in request_ids:
+            request = _gateway_choice_requests.pop(request_id, None)
+            if request is not None:
+                request.event.set()
+
+
+def request_gateway_choice(
+    session_key: str,
+    kind: str,
+    data: dict,
+    *,
+    timeout_seconds: int = 300,
+) -> dict:
+    """Create a non-command approval request, notify the user, and wait."""
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+        request = _GatewayChoiceRequest(session_key, kind, dict(data or {}))
+        _gateway_choice_requests[request.request_id] = request
+        _gateway_choice_order.setdefault(session_key, []).append(request.request_id)
+
+    if notify_cb is not None:
+        try:
+            notify_cb(dict(request.data))
+        except Exception:
+            with _lock:
+                order = _gateway_choice_order.get(session_key, [])
+                if request.request_id in order:
+                    order.remove(request.request_id)
+                if not order:
+                    _gateway_choice_order.pop(session_key, None)
+                _gateway_choice_requests.pop(request.request_id, None)
+            raise
+
+    resolved = request.event.wait(timeout=timeout_seconds)
+    choice = request.result
+    if choice is None:
+        resolved = False
+    with _lock:
+        order = _gateway_choice_order.get(session_key, [])
+        if request.request_id in order:
+            order.remove(request.request_id)
+        if not order:
+            _gateway_choice_order.pop(session_key, None)
+        _gateway_choice_requests.pop(request.request_id, None)
+
+    return {
+        "request_id": request.request_id,
+        "resolved": resolved,
+        "choice": choice,
+        "kind": request.kind,
+        "data": dict(request.data),
+    }
+
+
+def resolve_gateway_choice_request(request_id: str, choice: str) -> bool:
+    """Resolve a pending non-command approval request by request id."""
+    with _lock:
+        request = _gateway_choice_requests.get(str(request_id or "").strip())
+        if request is None:
+            return False
+    request.result = choice
+    request.event.set()
+    return True
+
+
+def has_pending_gateway_choice_request(session_key: str, kind: str | None = None) -> bool:
+    """Return True when a session has a pending non-command approval request."""
+    with _lock:
+        request_ids = list(_gateway_choice_order.get(session_key, []))
+        if not request_ids:
+            return False
+        if not kind:
+            return True
+        target_kind = str(kind).strip()
+        return any(
+            (request := _gateway_choice_requests.get(request_id)) is not None and request.kind == target_kind
+            for request_id in request_ids
+        )
+
+
+def resolve_oldest_gateway_choice_request(
+    session_key: str,
+    choice: str,
+    *,
+    kind: str | None = None,
+    resolve_all: bool = False,
+) -> int:
+    """Resolve the oldest pending non-command request for a session."""
+    with _lock:
+        request_ids = list(_gateway_choice_order.get(session_key, []))
+        if not request_ids:
+            return 0
+        targets: list[_GatewayChoiceRequest] = []
+        for request_id in request_ids:
+            request = _gateway_choice_requests.get(request_id)
+            if request is None:
+                continue
+            if kind and request.kind != kind:
+                continue
+            targets.append(request)
+            if not resolve_all:
+                break
+    if not targets:
+        return 0
+    for request in targets:
+        request.result = choice
+        request.event.set()
+    return len(targets)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -320,14 +454,22 @@ def disable_session_yolo(session_key: str) -> None:
 
 
 def clear_session(session_key: str) -> None:
-    """Remove all approval and yolo state for a given session."""
+    """Clear approvals, pending requests, and waiters for a session."""
     if not session_key:
         return
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        _gateway_queues.pop(session_key, None)
+        _gateway_notify_cbs.pop(session_key, None)
+        entries = _gateway_queues.pop(session_key, [])
+        for entry in entries:
+            entry.event.set()
+        request_ids = _gateway_choice_order.pop(session_key, [])
+        for request_id in request_ids:
+            request = _gateway_choice_requests.pop(request_id, None)
+            if request is not None:
+                request.event.set()
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:

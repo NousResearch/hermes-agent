@@ -74,6 +74,29 @@ class TestHandlers:
         assert result["success"] is True
         assert seen["cmd"] == ["open", "https://example.com"]
 
+    def test_click_uses_pointer_command(self, monkeypatch):
+        seen = {}
+
+        def fake_pointer(cmd):
+            seen["cmd"] = cmd
+            return {"x": 10, "y": 20}
+
+        monkeypatch.setattr(cct, "_run_pointer_command", fake_pointer)
+
+        result = json.loads(cct._handle_computer_control({"action": "click", "x": 10, "y": 20, "button": "left", "click_count": 2}))
+
+        assert result["success"] is True
+        assert result["x"] == 10
+        assert result["y"] == 20
+        assert result["button"] == "left"
+        assert result["click_count"] == 2
+        assert seen["cmd"] == ["click", "--x", "10", "--y", "20", "--button", "left", "--count", "2"]
+
+    def test_click_requires_coordinates(self):
+        result = json.loads(cct._handle_computer_control({"action": "click", "x": 10}))
+        assert "error" in result
+        assert "x and y" in result["error"]
+
     def test_keystroke_special_key_with_modifiers(self, monkeypatch):
         scripts = []
         monkeypatch.setattr(cct, "_run_osascript", lambda script: scripts.append(script) or "")
@@ -88,14 +111,18 @@ class TestHandlers:
         assert "key code 36 using {command down, shift down}" in scripts[0]
 
     def test_frontmost_app_parses_result(self, monkeypatch):
-        monkeypatch.setattr(cct, "_frontmost_window_info", lambda: {
+        monkeypatch.setattr(cct, "_frontmost_window_info", lambda require_helper_success=False: {
             "app_name": "Finder",
             "bundle_id": "com.apple.finder",
             "bundle_name": "Finder",
+            "bundle_path": "/System/Library/CoreServices/Finder.app",
             "process_id": 111,
             "window_title": "Downloads",
             "window_id": 222,
             "window_bounds": {"x": 10, "y": 20, "width": 300, "height": 200},
+            "accessibility_tree": [
+                {"index": 0, "role": "AXWindow", "title": "Downloads", "children": []},
+            ],
         })
 
         result = json.loads(cct._handle_computer_control({"action": "frontmost_app"}))
@@ -104,10 +131,163 @@ class TestHandlers:
         assert result["app_name"] == "Finder"
         assert result["bundle_id"] == "com.apple.finder"
         assert result["bundle_name"] == "Finder"
+        assert result["bundle_path"] == "/System/Library/CoreServices/Finder.app"
         assert result["process_id"] == 111
         assert result["window_title"] == "Downloads"
         assert result["window_id"] == 222
         assert result["window_bounds"] == {"x": 10, "y": 20, "width": 300, "height": 200}
+        assert result["accessibility_tree"] == []
+
+    def test_frontmost_window_info_normalizes_accessibility_tree_from_helper(self, monkeypatch):
+        helper_payload = {
+            "app_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "process_id": 111,
+            "windows": [
+                {"window_title": "Notes", "window_id": 226062, "window_bounds": {"x": 834, "y": 40, "width": 673, "height": 439}},
+            ],
+            "accessibility_tree": {
+                "role": "AXWindow",
+                "title": "Notes",
+                "frame": {"x": 834, "y": 40, "width": 673, "height": 439},
+                "children": [
+                    {"role": "AXButton", "title": "Close", "enabled": True},
+                    {
+                        "role": "AXTextArea",
+                        "value": "dragon",
+                        "actions": ["AXConfirm", 123],
+                        "children": [
+                            {"role": "AXStaticText", "value": "hint"},
+                        ],
+                    },
+                ],
+            },
+        }
+
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: json.dumps(helper_payload, ensure_ascii=False))
+
+        result = cct._frontmost_window_info()
+
+        assert result["accessibility_tree"] == [
+            {
+                "index": 0,
+                "role": "AXWindow",
+                "title": "Notes",
+                "frame": {"x": 834, "y": 40, "width": 673, "height": 439},
+                "children": [
+                    {"index": 1, "role": "AXButton", "title": "Close", "enabled": True, "children": []},
+                    {
+                        "index": 2,
+                        "role": "AXTextArea",
+                        "value": "dragon",
+                        "actions": ["AXConfirm"],
+                        "children": [
+                            {"index": 3, "role": "AXStaticText", "value": "hint", "children": []},
+                        ],
+                    },
+                ],
+            },
+        ]
+
+    def test_frontmost_window_info_drops_accessibility_tree_when_selected_window_does_not_match(self, monkeypatch):
+        helper_payload = {
+            "app_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "process_id": 111,
+            "windows": [
+                {"window_title": "", "window_id": 226068, "window_bounds": {"x": 769, "y": 183, "width": 79, "height": 22}},
+                {"window_title": "Notes", "window_id": 226062, "window_bounds": {"x": 834, "y": 40, "width": 673, "height": 439}},
+            ],
+            "accessibility_tree": {
+                "role": "AXWindow",
+                "title": "Other",
+                "frame": {"x": 769, "y": 183, "width": 79, "height": 22},
+                "children": [
+                    {"role": "AXButton", "title": "Close"},
+                ],
+            },
+        }
+
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: json.dumps(helper_payload, ensure_ascii=False))
+
+        result = cct._frontmost_window_info()
+
+        assert result["window_title"] == "Notes"
+        assert result["window_id"] == 226062
+        assert result["accessibility_tree"] == []
+
+    def test_frontmost_window_info_drops_accessibility_tree_for_same_title_different_window(self, monkeypatch):
+        helper_payload = {
+            "app_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "process_id": 111,
+            "windows": [
+                {"window_title": "Notes", "window_id": 226062, "window_bounds": {"x": 834, "y": 40, "width": 673, "height": 439}},
+            ],
+            "accessibility_tree": {
+                "role": "AXWindow",
+                "title": "Notes",
+                "frame": {"x": 120, "y": 140, "width": 400, "height": 260},
+                "children": [
+                    {"role": "AXButton", "title": "Close"},
+                ],
+            },
+        }
+
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: json.dumps(helper_payload, ensure_ascii=False))
+
+        result = cct._frontmost_window_info()
+
+        assert result["window_title"] == "Notes"
+        assert result["window_id"] == 226062
+        assert result["accessibility_tree"] == []
+
+    def test_frontmost_window_info_drops_accessibility_tree_for_same_bounds_different_title(self, monkeypatch):
+        helper_payload = {
+            "app_name": "TextEdit",
+            "bundle_id": "com.apple.TextEdit",
+            "bundle_name": "TextEdit",
+            "process_id": 111,
+            "windows": [
+                {"window_title": "Public Doc", "window_id": 226062, "window_bounds": {"x": 834, "y": 40, "width": 673, "height": 439}},
+            ],
+            "accessibility_tree": {
+                "role": "AXWindow",
+                "title": "Secret Doc",
+                "frame": {"x": 834, "y": 40, "width": 673, "height": 439},
+                "children": [
+                    {"role": "AXButton", "title": "Close"},
+                ],
+            },
+        }
+
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: json.dumps(helper_payload, ensure_ascii=False))
+
+        result = cct._frontmost_window_info()
+
+        assert result["window_title"] == "Public Doc"
+        assert result["window_id"] == 226062
+        assert result["accessibility_tree"] == []
+
+    def test_frontmost_window_state_raises_when_accessibility_helper_fails_in_strict_mode(self, monkeypatch):
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: (_ for _ in ()).throw(RuntimeError("helper boom")))
+
+        with pytest.raises(RuntimeError, match="helper boom"):
+            cct.frontmost_window_state(include_accessibility=True, require_helper_success=True)
+
+    def test_frontmost_window_state_raises_when_helper_returns_non_dict_payload_in_strict_mode(self, monkeypatch):
+        monkeypatch.setattr(cct, "_ensure_window_helper_binary", lambda: Path("/tmp/mac-window-info"))
+        monkeypatch.setattr(cct, "_run_command", lambda cmd: "[]")
+
+        with pytest.raises(RuntimeError, match="invalid payload"):
+            cct.frontmost_window_state(include_accessibility=True, require_helper_success=True)
 
     def test_frontmost_window_info_prefers_large_titled_window_from_helper(self, monkeypatch):
         helper_payload = {

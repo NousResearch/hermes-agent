@@ -1041,3 +1041,75 @@ class TestImapConnectionCleanup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSendImapId(unittest.TestCase):
+    """Test the _send_imap_id function for RFC 2971 IMAP ID extension."""
+
+    def test_send_imap_id_when_supported(self):
+        """Should send ID command when server advertises ID capability."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 ID"])
+        mock_imap._new_tag.return_value = b"A1"
+        mock_imap.readline.return_value = b"A1 OK ID completed"
+
+        _send_imap_id(mock_imap)
+
+        mock_imap.capability.assert_called_once()
+        mock_imap.send.assert_called_once()
+        sent_cmd = mock_imap.send.call_args[0][0]
+        self.assertIn(b"ID", sent_cmd)
+
+    def test_send_imap_id_skips_when_not_supported(self):
+        """Should skip ID command when server doesn't advertise ID capability."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1"])
+
+        _send_imap_id(mock_imap)
+
+        mock_imap.send.assert_not_called()
+
+    def test_send_imap_id_handles_exception(self):
+        """Should not raise on errors (ID is optional per RFC)."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.capability.side_effect = Exception("Network error")
+
+        # Should not raise
+        _send_imap_id(mock_imap)
+
+
+class TestCreateSmtpConnection(unittest.TestCase):
+    """Test the _create_smtp_connection function for SMTP port handling."""
+
+    @patch("smtplib.SMTP_SSL")
+    def test_port_465_uses_implicit_tls(self, mock_smtp_ssl):
+        """Port 465 should use SMTP_SSL (implicit TLS)."""
+        from gateway.platforms.email import _create_smtp_connection
+
+        mock_server = MagicMock()
+        mock_smtp_ssl.return_value = mock_server
+
+        result = _create_smtp_connection("smtp.example.com", 465)
+
+        mock_smtp_ssl.assert_called_once()
+        self.assertEqual(result, mock_server)
+
+    @patch("smtplib.SMTP")
+    def test_port_587_uses_starttls(self, mock_smtp):
+        """Port 587 should use SMTP with STARTTLS."""
+        from gateway.platforms.email import _create_smtp_connection
+
+        mock_server = MagicMock()
+        mock_smtp.return_value = mock_server
+
+        result = _create_smtp_connection("smtp.example.com", 587)
+
+        mock_smtp.assert_called_once()
+        mock_server.starttls.assert_called_once()
+        self.assertEqual(result, mock_server)

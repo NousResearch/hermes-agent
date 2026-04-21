@@ -32,6 +32,77 @@ from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# RFC 2971 — IMAP ID extension
+# Some mail servers (notably 163.com) require client identity info or they
+# reject the connection as "Unsafe Login". We send a minimal ID command after
+# login so the server can identify this client as a legitimate IMAP agent.
+_IMAP_ID_INFO = {
+    "name": "Hermes-Agent",
+    "version": "1.0",
+    "vendor": "Hermes-Agent",
+    "support-email": "support@hermes-agent.local",
+}
+
+
+def _send_imap_id(imap: imaplib.IMAP4) -> None:
+    """Send RFC 2971 ID command if the server advertises it.
+
+    163.com requires this or SELECT INBOX fails with "Unsafe Login".
+    We silently skip if the server doesn't support ID — it's optional per RFC.
+    """
+    try:
+        # Check capabilities first — ID extension must be advertised
+        cap_response = imap.capability()
+        if cap_response[0] != "OK":
+            return
+        # capability() returns bytes in the data list, decode them all
+        caps = " ".join(c.decode() if isinstance(c, bytes) else c for c in cap_response[1]).upper()
+        if "ID" not in caps:
+            return
+
+        # Build ID command per RFC 2971 §3.2
+        # ID args are: ("key1" "val1" "key2" "val2" ...)
+        args = []
+        for key, val in _IMAP_ID_INFO.items():
+            args.append(f'"{key}" "{val}"')
+        id_line = "ID (" + " ".join(args) + ")"
+
+        # Send ID command and read response directly over the socket.
+        # We bypass imaplib's _command/_get_response machinery because the ID
+        # command's parenthesized list argument conflicts with how _command()
+        # tokenises and validates arguments against the Commands table.
+        tag = imap._new_tag()
+        cmd = tag + b' ' + id_line.encode() + b'\r\n'
+        imap.send(cmd)
+
+        # Read lines until we get our tagged response (starts with our tag)
+        while True:
+            line = imap.readline()
+            if line.startswith(tag):
+                # This is our tagged OK/NO/BAD — we're done
+                break
+            # Otherwise it's an untagged or continuation response; keep reading
+        logger.debug("[Email] IMAP ID sent, server responded: %s", line)
+    except Exception:
+        # ID is optional — never fail the connection because of it
+        logger.exception("[Email] IMAP ID command failed (non-fatal)")
+
+
+def _create_smtp_connection(host: str, port: int) -> smtplib.SMTP:
+    """Create an SMTP connection configured for the current mail server.
+
+    Per RFC 8314: port 465 uses implicit TLS (SMTP_SSL), port 587 uses STARTTLS.
+    """
+    if port == 465:
+        # Implicit TLS — use SMTP_SSL right away
+        return smtplib.SMTP_SSL(host, port, timeout=30, context=ssl.create_default_context())
+    else:
+        # Explicit TLS — upgrade plain connection with STARTTLS
+        smtp = smtplib.SMTP(host, port, timeout=30)
+        smtp.starttls(context=ssl.create_default_context())
+        return smtp
+
+
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -275,6 +346,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
+            _send_imap_id(imap)  # RFC 2971 — required by 163.com, harmless for others
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
             status, data = imap.uid("search", None, "ALL")
@@ -291,13 +363,12 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test SMTP connection
-            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-            smtp.starttls(context=ssl.create_default_context())
+            smtp = _create_smtp_connection(self._smtp_host, self._smtp_port)
             smtp.login(self._address, self._password)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
-            logger.error("[Email] SMTP connection failed: %s", e)
+            logger.exception("[Email] SMTP connection failed")
             return False
 
         self._running = True
@@ -343,6 +414,7 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
                 imap.login(self._address, self._password)
+                _send_imap_id(imap)  # RFC 2971 — required by 163.com, harmless for others
                 imap.select("INBOX")
 
                 status, data = imap.uid("search", None, "UNSEEN")
@@ -509,9 +581,8 @@ class EmailAdapter(BasePlatformAdapter):
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = _create_smtp_connection(self._smtp_host, self._smtp_port)
         try:
-            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
@@ -601,9 +672,8 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = _create_smtp_connection(self._smtp_host, self._smtp_port)
         try:
-            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:

@@ -1446,7 +1446,7 @@ def select_provider_and_model(args=None):
 
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
-    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
+    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list (xai-grok added in CANONICAL_PROVIDERS)
     active_label = provider_labels.get(active, active) if active else "none"
 
     print()
@@ -1570,6 +1570,8 @@ def select_provider_and_model(args=None):
         _model_flow_stepfun(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "xai-grok":
+        _model_flow_grok(config)
     elif selected_provider in (
         "gemini",
         "deepseek",
@@ -3353,7 +3355,73 @@ def _model_flow_copilot_acp(config, current_model=""):
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 
-def _model_flow_kimi(config, current_model=""):
+def _model_flow_grok(config):
+    """Grok (X Premium+) provider setup.
+
+    No API key needed — uses browser-based authentication via Patchright.
+    On first use, a Chrome window opens for X login. Session persists after.
+    """
+    from hermes_cli.config import save_config
+
+    print("\n  Grok (X Premium+) — Browser-based provider")
+    print("  No API key required. Uses your X Premium+ subscription.")
+    print("  On first use, a Chrome window will open for you to log in.\n")
+
+    # Mode selection — grok.com web UI exposes MODES (not separate models).
+    # All modes route to grok-4 underneath. Apr 20 2026: grok-3 retired from UI.
+    # The picker mirrors grok.com's dropdown (Auto/Fast/Expert/Grok 4.3 beta/Heavy).
+    # The selected mode plumbs through to _BrowserThread._set_mode() which
+    # actually clicks the grok.com dropdown on every _send_message, and to
+    # _PatchrightCompletionsAdapter._TIMEOUT_BY_MODEL which sets per-mode wait
+    # budgets (Fast/Auto ~90s, Expert/4.3 ~300s, Heavy ~600s).
+    # All names prefixed `grok-` so Hermes' TOOL_USE_ENFORCEMENT_MODELS detection
+    # (keyed off "grok" substring) fires for every mode — without the prefix,
+    # modes like "expert"/"heavy" would miss the enforcement guidance and tool
+    # calls would degrade. See agent/prompt_builder.py:190.
+    modes = [
+        ("grok-auto",   "router (Fast or Expert, default)"),
+        ("grok-fast",   "quick responses, light compute"),
+        ("grok-expert", "deep reasoning, longer think time"),
+        ("grok-4.3",    "early access beta variant"),
+        ("grok-heavy",  "team of experts (multi-agent swarm)"),
+    ]
+    print("  Available modes (mirrors grok.com dropdown, all use grok-4):")
+    for i, (name, desc) in enumerate(modes, 1):
+        print(f"    {i}. {name:<12} — {desc}")
+    print()
+
+    while True:
+        try:
+            val = input(f"  Select mode [1-{len(modes)}] (1): ").strip()
+            if not val:
+                idx = 0
+                break
+            idx = int(val) - 1
+            if 0 <= idx < len(modes):
+                break
+            print(f"  Please enter 1-{len(modes)}")
+        except ValueError:
+            print("  Please enter a number")
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Cancelled.")
+            return
+
+    selected_mode = modes[idx][0]
+
+    # Save to config
+    config.setdefault("model", {})
+    config["model"]["provider"] = "xai-grok"
+    config["model"]["default"] = selected_mode
+    config["model"]["base_url"] = "https://grok.com"
+    config["model"]["api_mode"] = "chat_completions"
+    save_config(config)
+
+    print(f"\n  Default mode set to: {selected_mode} (via Grok X Premium+)")
+    print("  Run 'hermes' to start. Chrome will open on first use for login.\n")
+    return
+
+
+
     """Kimi / Moonshot model selection with automatic endpoint routing.
 
     - sk-kimi-* keys   → api.kimi.com/coding/v1  (Kimi Coding Plan)

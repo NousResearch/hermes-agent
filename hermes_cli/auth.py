@@ -323,6 +323,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "xai-grok": ProviderConfig(
+        id="xai-grok",
+        name="Grok (X Premium+)",
+        auth_type="browser_session",
+        inference_base_url="https://grok.com",
+        api_key_env_vars=(),
+    ),
 }
 
 
@@ -1017,6 +1024,7 @@ def resolve_provider(
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "grok": "xai-grok", "grok-premium": "xai-grok", "grok-web": "xai-grok",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "ollama_cloud": "ollama-cloud",

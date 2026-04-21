@@ -556,6 +556,18 @@ def _resolve_explicit_runtime(
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
+
+    # Browser-session providers don't need API keys or base URLs.
+    if provider == "xai-grok":
+        return {
+            "provider": "xai-grok",
+            "api_mode": "chat_completions",
+            "base_url": "https://grok.com",
+            "api_key": "grok-premium-browser-session",
+            "source": "browser_session",
+            "requested_provider": requested_provider,
+        }
+
     if not explicit_api_key and not explicit_base_url:
         return None
 

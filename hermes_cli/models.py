@@ -713,6 +713,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("xai-grok",       "Grok (X Premium+)",        "Grok via X Premium+ subscription (browser bridge, zero API keys)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -776,6 +777,9 @@ _PROVIDER_ALIASES = {
     "grok": "xai",
     "x-ai": "xai",
     "x.ai": "xai",
+    "grok-premium": "xai-grok",
+    "grok-web": "xai-grok",
+    "grok-sub": "xai-grok",
     "nim": "nvidia",
     "nvidia-nim": "nvidia",
     "build-nvidia": "nvidia",

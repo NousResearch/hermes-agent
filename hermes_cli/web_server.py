@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -473,6 +474,138 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Gateway + update actions (invoked from the Status page).
+#
+# Both commands are spawned as detached subprocesses so the HTTP request
+# returns immediately.  stdin is closed (``DEVNULL``) so any stray ``input()``
+# calls fail fast with EOF rather than hanging forever.  stdout/stderr are
+# streamed to a per-action log file under ``~/.hermes/logs/<action>.log`` so
+# the dashboard can tail them back to the user.
+# ---------------------------------------------------------------------------
+
+_ACTION_LOG_DIR: Path = get_hermes_home() / "logs"
+
+# Short ``name`` (from the URL) → absolute log file path.
+_ACTION_LOG_FILES: Dict[str, str] = {
+    "gateway-restart": "gateway-restart.log",
+    "hermes-update": "hermes-update.log",
+}
+
+# ``name`` → most recently spawned Popen handle.  Used so ``status`` can
+# report liveness and exit code without shelling out to ``ps``.
+_ACTION_PROCS: Dict[str, subprocess.Popen] = {}
+
+
+def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
+    """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
+
+    Uses the running interpreter's ``hermes_cli.main`` module so the action
+    inherits the same venv/PYTHONPATH the web server is using.
+    """
+    log_file_name = _ACTION_LOG_FILES[name]
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _ACTION_LOG_DIR / log_file_name
+    log_file = open(log_path, "ab", buffering=0)
+    log_file.write(
+        f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+    )
+
+    cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
+
+    popen_kwargs: Dict[str, Any] = {
+        "cwd": str(PROJECT_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    _ACTION_PROCS[name] = proc
+    return proc
+
+
+def _tail_lines(path: Path, n: int) -> List[str]:
+    """Return the last ``n`` lines of ``path``.  Reads the whole file — fine
+    for our small per-action logs.  Binary-decoded with ``errors='replace'``
+    so log corruption doesn't 500 the endpoint."""
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return []
+    lines = text.splitlines()
+    return lines[-n:] if n > 0 else lines
+
+
+@app.post("/api/gateway/restart")
+async def restart_gateway():
+    """Kick off a ``hermes gateway restart`` in the background."""
+    try:
+        proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+    except Exception as exc:
+        _log.exception("Failed to spawn gateway restart")
+        raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "name": "gateway-restart",
+    }
+
+
+@app.post("/api/hermes/update")
+async def update_hermes():
+    """Kick off ``hermes update`` in the background."""
+    try:
+        proc = _spawn_hermes_action(["update"], "hermes-update")
+    except Exception as exc:
+        _log.exception("Failed to spawn hermes update")
+        raise HTTPException(status_code=500, detail=f"Failed to start update: {exc}")
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "name": "hermes-update",
+    }
+
+
+@app.get("/api/actions/{name}/status")
+async def get_action_status(name: str, lines: int = 200):
+    """Tail an action log and report whether the process is still running."""
+    log_file_name = _ACTION_LOG_FILES.get(name)
+    if log_file_name is None:
+        raise HTTPException(status_code=404, detail=f"Unknown action: {name}")
+
+    log_path = _ACTION_LOG_DIR / log_file_name
+    tail = _tail_lines(log_path, min(max(lines, 1), 2000))
+
+    proc = _ACTION_PROCS.get(name)
+    if proc is None:
+        running = False
+        exit_code: Optional[int] = None
+        pid: Optional[int] = None
+    else:
+        exit_code = proc.poll()
+        running = exit_code is None
+        pid = proc.pid
+
+    return {
+        "name": name,
+        "running": running,
+        "exit_code": exit_code,
+        "pid": pid,
+        "lines": tail,
     }
 
 

@@ -1,7 +1,7 @@
 ---
 name: xurl
 description: Interact with X/Twitter via xurl, the official X API CLI. Use for posting, replying, quoting, searching, timelines, mentions, likes, reposts, bookmarks, follows, DMs, media upload, and raw v2 endpoint access.
-version: 1.1.0
+version: 1.1.1
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -95,6 +95,12 @@ These steps must be performed by the user directly, NOT by the agent, because th
    xurl auth oauth2 --app my-app
    ```
    (This opens a browser for the OAuth 2.0 PKCE flow.)
+
+   If X returns a `UsernameNotFound` error or 403 on the post-OAuth `/2/users/me` lookup, pass your handle explicitly (xurl v1.1.0+):
+   ```bash
+   xurl auth oauth2 --app my-app YOUR_USERNAME
+   ```
+   This binds the token to your handle and skips the broken `/2/users/me` call.
 6. Set the app as default so all commands use it:
    ```bash
    xurl auth default my-app
@@ -380,6 +386,7 @@ xurl --app staging /2/users/me             # one-off against staging
 | --- | --- | --- |
 | Auth errors after successful OAuth flow | Token saved to `default` app (no client-id/secret) instead of your named app | `xurl auth oauth2 --app my-app` then `xurl auth default my-app` |
 | `unauthorized_client` during OAuth | App type set to "Native App" in X dashboard | Change to "Web app, automated app or bot" in User Authentication Settings |
+| `UsernameNotFound` or 403 on `/2/users/me` right after OAuth | X not returning username reliably from `/2/users/me` | Re-run `xurl auth oauth2 --app my-app YOUR_USERNAME` (xurl v1.1.0+) to pass the handle explicitly |
 | 401 on every request | Token expired or wrong default app | Check `xurl auth status` — verify `▸` points to an app with oauth2 tokens |
 | `client-forbidden` / `client-not-enrolled` | X platform enrollment issue | Dashboard → Apps → Manage → Move to "Pay-per-use" package → Production environment |
 | `CreditsDepleted` | $0 balance on X API | Buy credits (min $5) in Developer Console → Billing |

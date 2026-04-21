@@ -741,10 +741,8 @@ class ShellFileOperations(FileOperations):
         if error or match_count == 0:
             err_msg = error or f"Could not find match for old_string in {path}"
             try:
-                from tools.fuzzy_match import find_closest_lines
-                hint = find_closest_lines(old_string, content)
-                if hint:
-                    err_msg += "\n\nDid you mean one of these sections?\n" + hint
+                from tools.fuzzy_match import format_no_match_hint
+                err_msg += format_no_match_hint(err_msg, match_count, old_string, content)
             except Exception:
                 pass
             return PatchResult(error=err_msg)

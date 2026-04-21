@@ -670,8 +670,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
+        # Suppressed when patch_replace already attached a rich "Did you mean?"
+        # snippet (which is strictly more useful than the generic hint).
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
+            if "Did you mean one of these sections?" not in str(result_dict["error"]):
+                result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
         return result_json
     except Exception as e:
         return tool_error(str(e))

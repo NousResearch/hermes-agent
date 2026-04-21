@@ -45,6 +45,7 @@ def _make_runner(hermes_home=None):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._failed_platforms = {}
+    runner._pending_update_confirmations = {}
     return runner
 
 
@@ -206,7 +207,7 @@ class TestUpdateCommandGatewayFlag:
     async def test_spawns_with_gateway_flag(self, tmp_path):
         """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event(text="/update --yes")
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -228,6 +229,7 @@ class TestUpdateCommandGatewayFlag:
         call_args = mock_popen.call_args[0][0]
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
+        assert "--yes" in cmd_string
         assert "PYTHONUNBUFFERED" in cmd_string
         assert "stream progress" in result
 

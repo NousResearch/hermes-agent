@@ -689,6 +689,8 @@ class GatewayRunner:
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
+        # Track sessions that have seen an update preview and can confirm it.
+        self._pending_update_confirmations: Dict[str, Dict[str, Any]] = {}
 
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
@@ -7652,42 +7654,45 @@ class GatewayRunner:
 
         return await loop.run_in_executor(None, _collect_and_upload)
 
-    async def _handle_update_command(self, event: MessageEvent) -> str:
-        """Handle /update command — update Hermes Agent to the latest version.
+    def _parse_update_command_args(self, event: MessageEvent) -> set[str]:
+        raw_args = re.sub(r"[\u2012\u2013\u2014\u2015]", "-", event.get_command_args().strip())
+        if not raw_args:
+            return set()
+        try:
+            parts = shlex.split(raw_args)
+        except ValueError:
+            parts = raw_args.split()
+        return {part.lower() for part in parts if part}
 
-        Spawns ``hermes update`` in a detached session (via ``setsid``) so it
-        survives the gateway restart that ``hermes update`` may trigger. Marker
-        files are written so either the current gateway process or the next one
-        can notify the user when the update finishes.
-        """
+    def _get_update_confirmation_store(self) -> Dict[str, Dict[str, Any]]:
+        store = getattr(self, "_pending_update_confirmations", None)
+        if store is None:
+            store = {}
+            self._pending_update_confirmations = store
+        return store
+
+    def _build_update_preview_message(self, project_root: Path) -> str:
+        from hermes_cli.update_preview import format_update_preview, get_update_preview
+
+        preview = get_update_preview(project_root)
+        if preview is None:
+            return (
+                "⚕ Hermes update preview is unavailable right now.\n\n"
+                "Reply `/update --yes` to continue immediately."
+            )
+        if preview.commit_count == 0:
+            return "✓ Already up to date!"
+        return format_update_preview(
+            preview,
+            confirm_command="`/update confirm`",
+            yes_command="`/update --yes`",
+        )
+
+    def _start_gateway_update(self, event: MessageEvent, hermes_cmd: list[str]) -> str:
         import json
         import shutil
         import subprocess
         from datetime import datetime
-        from hermes_cli.config import is_managed, format_managed_message
-
-        # Block non-messaging platforms (API server, webhooks, ACP)
-        platform = event.source.platform
-        if platform not in self._UPDATE_ALLOWED_PLATFORMS:
-            return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
-
-        if is_managed():
-            return f"✗ {format_managed_message('update Hermes Agent')}"
-
-        project_root = Path(__file__).parent.parent.resolve()
-        git_dir = project_root / '.git'
-
-        if not git_dir.exists():
-            return "✗ Not a git repository — cannot update."
-
-        hermes_cmd = _resolve_hermes_bin()
-        if not hermes_cmd:
-            return (
-                "✗ Could not locate the `hermes` command. "
-                "Hermes is running, but the update command could not find the "
-                "executable on PATH or via the current Python interpreter. "
-                "Try running `hermes update` manually in your terminal."
-            )
 
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
@@ -7705,24 +7710,15 @@ class GatewayRunner:
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 
-        # Spawn `hermes update --gateway` detached so it survives gateway restart.
-        # --gateway enables file-based IPC for interactive prompts (stash
-        # restore, config migration) so the gateway can forward them to the
-        # user instead of silently skipping them.
-        # Use setsid for portable session detach (works under system services
-        # where systemd-run --user fails due to missing D-Bus session).
-        # PYTHONUNBUFFERED ensures output is flushed line-by-line so the
-        # gateway can stream it to the messenger in near-real-time.
         hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
         update_cmd = (
-            f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
+            f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway --yes"
             f" > {shlex.quote(str(output_path))} 2>&1; "
             f"status=$?; printf '%s' \"$status\" > {shlex.quote(str(exit_code_path))}"
         )
         try:
             setsid_bin = shutil.which("setsid")
             if setsid_bin:
-                # Preferred: setsid creates a new session, fully detached
                 subprocess.Popen(
                     [setsid_bin, "bash", "-c", update_cmd],
                     stdout=subprocess.DEVNULL,
@@ -7730,7 +7726,6 @@ class GatewayRunner:
                     start_new_session=True,
                 )
             else:
-                # Fallback: start_new_session=True calls os.setsid() in child
                 subprocess.Popen(
                     ["bash", "-c", update_cmd],
                     stdout=subprocess.DEVNULL,
@@ -7744,6 +7739,67 @@ class GatewayRunner:
 
         self._schedule_update_notification_watch()
         return "⚕ Starting Hermes update… I'll stream progress here."
+
+    async def _handle_update_command(self, event: MessageEvent) -> str:
+        """Handle /update command — preview changes, then update on confirmation."""
+        from hermes_cli.config import format_managed_message, is_managed
+
+        platform = event.source.platform
+        if platform not in self._UPDATE_ALLOWED_PLATFORMS:
+            return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
+
+        if is_managed():
+            return f"✗ {format_managed_message('update Hermes Agent')}"
+
+        project_root = Path(__file__).parent.parent.resolve()
+        git_dir = project_root / ".git"
+        if not git_dir.exists():
+            return "✗ Not a git repository — cannot update."
+
+        hermes_cmd = _resolve_hermes_bin()
+        if not hermes_cmd:
+            return (
+                "✗ Could not locate the `hermes` command. "
+                "Hermes is running, but the update command could not find the "
+                "executable on PATH or via the current Python interpreter. "
+                "Try running `hermes update` manually in your terminal."
+            )
+
+        session_key = self._session_key_for_source(event.source)
+        confirmation_store = self._get_update_confirmation_store()
+        arg_parts = self._parse_update_command_args(event)
+
+        if "confirm" in arg_parts:
+            if session_key not in confirmation_store:
+                return "No update preview is waiting for confirmation. Run `/update` first."
+            confirmation_store.pop(session_key, None)
+            return self._start_gateway_update(event, hermes_cmd)
+
+        if "--yes" in arg_parts or "-y" in arg_parts:
+            confirmation_store.pop(session_key, None)
+            return self._start_gateway_update(event, hermes_cmd)
+
+        fetch_result = subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            stderr = (fetch_result.stderr or "").strip()
+            if "Could not resolve host" in stderr or "unable to access" in stderr:
+                return "✗ Network error — cannot reach the remote repository."
+            if "Authentication failed" in stderr or "could not read Username" in stderr:
+                return "✗ Authentication failed — check your git credentials or SSH key."
+            return "✗ Failed to fetch updates from origin."
+
+        preview_message = self._build_update_preview_message(project_root)
+        if preview_message.startswith("✓ Already up to date!"):
+            confirmation_store.pop(session_key, None)
+            return preview_message
+
+        confirmation_store[session_key] = {"timestamp": datetime.now().isoformat()}
+        return preview_message
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""

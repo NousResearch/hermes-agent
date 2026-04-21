@@ -5391,6 +5391,71 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Always update against main
         branch = "main"
 
+        from hermes_cli.update_preview import (
+            format_update_preview,
+            get_update_preview,
+            resolve_update_base_ref,
+        )
+
+        preview_base_ref = resolve_update_base_ref(PROJECT_ROOT, git_cmd, branch=branch)
+
+        # Check if there are updates
+        result = subprocess.run(
+            git_cmd + ["rev-list", f"{preview_base_ref}..origin/{branch}", "--count"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_count = int(result.stdout.strip())
+
+        if commit_count == 0:
+            _invalidate_update_cache()
+            print("✓ Already up to date!")
+            return
+
+        print(f"→ Found {commit_count} new commit(s)")
+
+        update_preview = None
+        try:
+            update_preview = get_update_preview(
+                PROJECT_ROOT,
+                git_cmd=git_cmd,
+                base_ref=preview_base_ref,
+            )
+        except Exception:
+            update_preview = None
+
+        preview_confirmation_required = (
+            not getattr(args, "yes", False)
+            and (
+                gateway_mode
+                or (sys.stdin.isatty() and sys.stdout.isatty())
+            )
+        )
+        if preview_confirmation_required:
+            print()
+            if update_preview is not None:
+                print(
+                    format_update_preview(
+                        update_preview,
+                        yes_command="`hermes update --yes`",
+                    )
+                )
+            else:
+                print("⚕ Update preview unavailable, but new commits are ready to install.")
+            print()
+            if gateway_mode:
+                response = (gw_input_fn("Proceed with update? [y/N]", "n") or "").strip().lower()
+            else:
+                try:
+                    response = input("Proceed with update? [y/N]: ").strip().lower()
+                except EOFError:
+                    response = "n"
+            if response not in ("y", "yes"):
+                print("Update cancelled.")
+                return
+
         # If user is on a non-main branch or detached HEAD, switch to main
         if current_branch != "main":
             label = (
@@ -5414,40 +5479,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         prompt_for_restore = auto_stash_ref is not None and (
             gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
         )
-
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        commit_count = int(result.stdout.strip())
-
-        if commit_count == 0:
-            _invalidate_update_cache()
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd,
-                    PROJECT_ROOT,
-                    auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
-            if current_branch not in ("main", "HEAD"):
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            print("✓ Already up to date!")
-            return
-
-        print(f"→ Found {commit_count} new commit(s)")
 
         print("→ Pulling updates...")
         update_succeeded = False
@@ -8302,6 +8333,12 @@ Examples:
         action="store_true",
         default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
+    )
+    update_parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="Skip the update preview/confirmation prompt and apply updates immediately",
     )
     update_parser.set_defaults(func=cmd_update)
 

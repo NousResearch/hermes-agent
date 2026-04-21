@@ -34,6 +34,7 @@ def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._pending_update_confirmations = {}
     return runner
 
 
@@ -124,7 +125,7 @@ class TestHandleUpdateCommand:
     async def test_fallback_to_sys_executable(self, tmp_path):
         """Falls back to sys.executable -m hermes_cli.main when hermes not on PATH."""
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event(text="/update --yes")
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -189,7 +190,7 @@ class TestHandleUpdateCommand:
     async def test_writes_pending_marker(self, tmp_path):
         """Writes .update_pending.json with correct platform and chat info."""
         runner = _make_runner()
-        event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
+        event = _make_event(text="/update --yes", platform=Platform.TELEGRAM, chat_id="99999")
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -218,7 +219,7 @@ class TestHandleUpdateCommand:
     async def test_spawns_setsid(self, tmp_path):
         """Uses setsid when available."""
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event(text="/update --yes")
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -247,7 +248,7 @@ class TestHandleUpdateCommand:
     async def test_fallback_when_no_setsid(self, tmp_path):
         """Falls back to start_new_session=True when setsid is not available."""
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event(text="/update --yes")
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -287,7 +288,7 @@ class TestHandleUpdateCommand:
     async def test_popen_failure_cleans_up(self, tmp_path):
         """Cleans up pending file and returns error on Popen failure."""
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event(text="/update --yes")
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -313,7 +314,7 @@ class TestHandleUpdateCommand:
     async def test_returns_user_friendly_message(self, tmp_path):
         """The success response is user-friendly."""
         runner = _make_runner()
-        event = _make_event()
+        event = _make_event(text="/update --yes")
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -331,6 +332,62 @@ class TestHandleUpdateCommand:
             result = await runner._handle_update_command(event)
 
         assert "stream progress" in result
+
+    @pytest.mark.asyncio
+    async def test_default_update_shows_preview_and_waits_for_confirm(self, tmp_path):
+        """Plain /update should preview changes instead of spawning immediately."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+
+        with patch("gateway.run.__file__", fake_file), \
+             patch("gateway.run.subprocess.run", return_value=MagicMock(returncode=0, stderr="")), \
+             patch("gateway.run._resolve_hermes_bin", return_value=["/usr/bin/hermes"]), \
+             patch.object(type(runner), "_build_update_preview_message", return_value="⚕ preview\nProceed with `/update confirm`.") as mock_preview, \
+             patch("subprocess.Popen") as mock_popen:
+            result = await runner._handle_update_command(event)
+
+        assert "preview" in result.lower()
+        assert "/update confirm" in result
+        mock_preview.assert_called_once()
+        mock_popen.assert_not_called()
+        assert runner._pending_update_confirmations
+
+    @pytest.mark.asyncio
+    async def test_update_confirm_starts_after_preview(self, tmp_path):
+        """`/update confirm` should start the detached updater after preview."""
+        runner = _make_runner()
+        event = _make_event(text="/update confirm")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        session_key = "agent:main:telegram:dm:67890"
+        runner._pending_update_confirmations[session_key] = {"timestamp": "2026-01-01T00:00:00"}
+        runner._session_key_for_source = MagicMock(return_value=session_key)
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen") as mock_popen:
+            result = await runner._handle_update_command(event)
+
+        assert "Starting Hermes update" in result
+        call_args = mock_popen.call_args[0][0]
+        assert "--gateway --yes" in call_args[-1]
+        assert session_key not in runner._pending_update_confirmations
 
 
 # ---------------------------------------------------------------------------

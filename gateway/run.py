@@ -2181,6 +2181,14 @@ class GatewayRunner:
         self._running = True
         self._update_runtime_status("running")
         
+        # Initialize plugin system (discover and load all enabled plugins)
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+            logger.info("Plugin system initialized")
+        except Exception as e:
+            logger.warning("Plugin system initialization failed: %s", e)
+        
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:

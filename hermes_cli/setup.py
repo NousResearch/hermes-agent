@@ -441,6 +441,16 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "kittentts":
+        try:
+            import importlib.util
+            kittentts_ok = importlib.util.find_spec("kittentts") is not None
+        except Exception:
+            kittentts_ok = False
+        if kittentts_ok:
+            tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -901,6 +911,31 @@ def _install_neutts_deps() -> bool:
         return False
 
 
+def _install_kittentts_deps() -> bool:
+    """Install KittenTTS dependencies with user approval. Returns True on success."""
+    import subprocess
+    import sys
+
+    wheel_url = (
+        "https://github.com/KittenML/KittenTTS/releases/download/"
+        "0.8.1/kittentts-0.8.1-py3-none-any.whl"
+    )
+    print()
+    print_info("Installing kittentts Python package (~25-80MB model downloaded on first use)...")
+    print()
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
+            check=True, timeout=300,
+        )
+        print_success("kittentts installed successfully")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print_error(f"Failed to install kittentts: {e}")
+        print_info(f"Try manually: python -m pip install -U '{wheel_url}' soundfile")
+        return False
+
+
 def _setup_tts_provider(config: dict):
     """Interactive TTS provider selection with install flow for NeuTTS."""
     tts_config = config.get("tts", {})
@@ -916,6 +951,7 @@ def _setup_tts_provider(config: dict):
         "mistral": "Mistral Voxtral TTS",
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
+        "kittentts": "KittenTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -939,9 +975,10 @@ def _setup_tts_provider(config: dict):
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
+            "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1058,6 +1095,29 @@ def _setup_tts_provider(config: dict):
                 print_success("Gemini TTS API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "kittentts":
+        # Check if already installed
+        try:
+            import importlib.util
+            already_installed = importlib.util.find_spec("kittentts") is not None
+        except Exception:
+            already_installed = False
+
+        if already_installed:
+            print_success("KittenTTS is already installed")
+        else:
+            print()
+            print_info("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).")
+            print_info("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
+            print()
+            if prompt_yes_no("Install KittenTTS now?", True):
+                if not _install_kittentts_deps():
+                    print_warning("KittenTTS installation incomplete. Falling back to Edge TTS.")
+                    selected = "edge"
+            else:
+                print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
                 selected = "edge"
 
     # Save the selection

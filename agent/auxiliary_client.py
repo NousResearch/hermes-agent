@@ -2021,24 +2021,35 @@ def resolve_vision_provider_client(
         #      _PROVIDER_VISION_MODELS provides per-provider vision model
         #      overrides when the provider has a dedicated multimodal model
         #      that differs from the chat model (e.g. xiaomi → mimo-v2-omni,
-        #      zai → glm-5v-turbo).
+        #      zai → glm-5v-turbo). Nous is the exception: it has a dedicated
+        #      strict vision backend with tier-aware defaults, so it must not
+        #      fall through to the user's text chat model here.
         #   2. OpenRouter  (vision-capable aggregator fallback)
         #   3. Nous Portal (vision-capable aggregator fallback)
         #   4. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
-            vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
-            rpc_client, rpc_model = resolve_provider_client(
-                main_provider, vision_model,
-                api_mode=resolved_api_mode)
-            if rpc_client is not None:
-                logger.info(
-                    "Vision auto-detect: using main provider %s (%s)",
-                    main_provider, rpc_model or vision_model,
-                )
-                return _finalize(
-                    main_provider, rpc_client, rpc_model or vision_model)
+            if main_provider == "nous":
+                sync_client, default_model = _resolve_strict_vision_backend(main_provider)
+                if sync_client is not None:
+                    logger.info(
+                        "Vision auto-detect: using main provider %s (%s)",
+                        main_provider, default_model or resolved_model or main_model,
+                    )
+                    return _finalize(main_provider, sync_client, default_model)
+            else:
+                vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+                rpc_client, rpc_model = resolve_provider_client(
+                    main_provider, vision_model,
+                    api_mode=resolved_api_mode)
+                if rpc_client is not None:
+                    logger.info(
+                        "Vision auto-detect: using main provider %s (%s)",
+                        main_provider, rpc_model or vision_model,
+                    )
+                    return _finalize(
+                        main_provider, rpc_client, rpc_model or vision_model)
 
         # Fall back through aggregators (uses their dedicated vision model,
         # not the user's main model) when main provider has no client.

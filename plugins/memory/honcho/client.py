@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
 
 
@@ -53,6 +52,11 @@ def resolve_active_host() -> str:
     return HOST
 
 
+def resolve_global_config_path() -> Path:
+    """Return the shared Honcho config path for the current HOME."""
+    return Path.home() / ".honcho" / "config.json"
+
+
 def resolve_config_path() -> Path:
     """Return the active Honcho config path.
 
@@ -72,7 +76,7 @@ def resolve_config_path() -> Path:
     if default_path != local_path and default_path.exists():
         return default_path
 
-    return GLOBAL_CONFIG_PATH
+    return resolve_global_config_path()
 
 
 _RECALL_MODE_ALIASES = {"auto": "hybrid"}

@@ -119,15 +119,16 @@ def test_final_assistant_content_can_leave_markdown_raw():
 
 def test_strip_mode_preserves_intraword_underscores_in_snake_case_identifiers():
     renderable = _render_final_assistant_content(
-        "Let me look at recover_with_credential_pool and MY_CONST "
-        "then /home/user/path_with_stuff/file.py",
+        "Let me look at test_case_with_underscores and SOME_CONST "
+        "then /tmp/snake_case_dir/file_with_name.py",
         mode="strip",
     )
 
     output = _render_to_text(renderable)
-    assert "recover_with_credential_pool" in output
-    assert "MY_CONST" in output
-    assert "path_with_stuff" in output
+    assert "test_case_with_underscores" in output
+    assert "SOME_CONST" in output
+    assert "snake_case_dir" in output
+    assert "file_with_name" in output
 
 
 def test_strip_mode_still_strips_boundary_underscore_emphasis():

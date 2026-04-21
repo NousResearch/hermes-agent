@@ -100,8 +100,8 @@ describe('estimateRows', () => {
 
   it('keeps intraword underscores when sizing snake_case identifiers', () => {
     const w = 80
-    const snake = 'look at recover_with_credential_pool now'
-    const plain = 'look at recover with credential pool now'
+    const snake = 'look at test_case_with_underscores now'
+    const plain = 'look at test case with underscores now'
 
     expect(estimateRows(snake, w)).toBe(estimateRows(plain, w))
   })

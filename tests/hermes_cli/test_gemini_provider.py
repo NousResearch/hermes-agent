@@ -138,6 +138,13 @@ class TestGeminiModelCatalog:
         assert "gemini-3-flash-preview" in models
         assert "gemini-3.1-flash-lite-preview" in models
 
+    def test_google_gemini_cli_catalog_has_free_oauth_workhorses(self):
+        models = _PROVIDER_MODELS["google-gemini-cli"]
+        assert "gemini-2.5-flash" in models
+        assert "gemini-2.5-flash-lite" in models
+        assert "gemini-3-flash-preview" in models
+        assert "gemini-3.1-flash-lite-preview" in models
+
     def test_provider_label(self):
         assert "gemini" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["gemini"] == "Google AI Studio"

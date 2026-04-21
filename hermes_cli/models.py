@@ -158,15 +158,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "grok-code-fast-1",
     ],
     "gemini": [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite-preview",
     ],
     "google-gemini-cli": [
-        "gemini-3.1-pro-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.1-pro-preview",
     ],
     "zai": [
         "glm-5.1",
@@ -1197,6 +1204,38 @@ def curated_models_for_provider(
     return [(m, "") for m in models]
 
 
+def _provider_has_any_credentials(provider_id: str) -> bool:
+    """Return whether a provider has usable credentials in env/auth store/pool."""
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        if pconfig:
+            import os
+            for env_var in pconfig.api_key_env_vars:
+                if os.getenv(env_var, "").strip():
+                    return True
+    except Exception:
+        pass
+
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider_id)
+        if pool.has_credentials():
+            return True
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import _load_auth_store
+        store = _load_auth_store()
+        if provider_id in store.get("providers", {}) or provider_id in store.get("credential_pool", {}):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 def detect_provider_for_model(
     model_name: str,
     current_provider: str,
@@ -1242,52 +1281,30 @@ def detect_provider_for_model(
     if any(name_lower == m.lower() for m in current_models):
         return None
 
-    # --- Step 1: check static provider catalogs for a direct match ---
-    direct_match: Optional[str] = None
+    # --- Step 1: check static provider catalogs for direct matches ---
+    direct_matches: list[str] = []
     for pid, models in _PROVIDER_MODELS.items():
         if pid == current_provider or pid in _AGGREGATORS:
             continue
         if any(name_lower == m.lower() for m in models):
-            direct_match = pid
-            break
+            direct_matches.append(pid)
 
-    if direct_match:
-        # Check if we have credentials for this provider — env vars,
-        # credential pool, or auth store entries.
-        has_creds = False
-        try:
-            from hermes_cli.auth import PROVIDER_REGISTRY
-            pconfig = PROVIDER_REGISTRY.get(direct_match)
-            if pconfig:
-                import os
-                for env_var in pconfig.api_key_env_vars:
-                    if os.getenv(env_var, "").strip():
-                        has_creds = True
-                        break
-        except Exception:
-            pass
-        # Also check credential pool and auth store — covers OAuth,
-        # Claude Code tokens, and other non-env-var credentials (#10300).
-        if not has_creds:
-            try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(direct_match)
-                if pool.has_credentials():
-                    has_creds = True
-            except Exception:
-                pass
-        if not has_creds:
-            try:
-                from hermes_cli.auth import _load_auth_store
-                store = _load_auth_store()
-                if direct_match in store.get("providers", {}) or direct_match in store.get("credential_pool", {}):
-                    has_creds = True
-            except Exception:
-                pass
+    if direct_matches:
+        # Prefer providers that actually have credentials configured.
+        direct_with_creds = [pid for pid in direct_matches if _provider_has_any_credentials(pid)]
+        preferred_matches = direct_with_creds or direct_matches
 
-        # Always return the direct provider match.  If credentials are
-        # missing, the client init will give a clear error rather than
-        # silently routing through the wrong provider (#10300).
+        # If both Google AI Studio and Google Gemini OAuth match, prefer the
+        # provider with credentials. Otherwise fall back to a stable ordering
+        # that keeps the dedicated OAuth/Code Assist provider available.
+        if "google-gemini-cli" in preferred_matches and "gemini" in preferred_matches:
+            direct_match = "google-gemini-cli" if direct_with_creds else "gemini"
+        else:
+            direct_match = preferred_matches[0]
+
+        # Always return the direct provider match. If credentials are missing,
+        # the client init will give a clear error rather than silently routing
+        # through the wrong provider (#10300).
         return (direct_match, name)
 
     # --- Step 2: check OpenRouter catalog ---
@@ -2269,9 +2286,9 @@ def validate_requested_model(
                 ),
             }
 
-    # MiniMax providers don't expose a /models endpoint — validate against
-    # the static catalog instead, similar to openai-codex.
-    if normalized in ("minimax", "minimax-cn"):
+    # MiniMax and Google Gemini OAuth don't expose a normal /models endpoint
+    # on their runtime base URLs — validate against the curated catalog instead.
+    if normalized in ("minimax", "minimax-cn", "google-gemini-cli"):
         try:
             catalog_models = provider_model_ids(normalized)
         except Exception:
@@ -2279,7 +2296,8 @@ def validate_requested_model(
         if catalog_models:
             # Case-insensitive lookup (catalog uses mixed case like MiniMax-M2.7)
             catalog_lower = {m.lower(): m for m in catalog_models}
-            if requested_for_lookup.lower() in catalog_lower:
+            lookup_key = requested_for_lookup.lower()
+            if lookup_key in catalog_lower:
                 return {
                     "accepted": True,
                     "persist": True,
@@ -2288,7 +2306,7 @@ def validate_requested_model(
                 }
             # Auto-correct close matches (case-insensitive)
             catalog_lower_list = list(catalog_lower.keys())
-            auto = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9)
+            auto = get_close_matches(lookup_key, catalog_lower_list, n=1, cutoff=0.9)
             if auto:
                 corrected = catalog_lower[auto[0]]
                 return {
@@ -2298,10 +2316,22 @@ def validate_requested_model(
                     "corrected_model": corrected,
                     "message": f"Auto-corrected `{requested}` → `{corrected}`",
                 }
-            suggestions = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=3, cutoff=0.5)
+            suggestions = get_close_matches(lookup_key, catalog_lower_list, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{catalog_lower[s]}`" for s in suggestions)
+            if normalized == "google-gemini-cli":
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": (
+                        f"Note: `{requested}` was not found in the Google Gemini (OAuth) curated catalog."
+                        f"{suggestion_text}"
+                        "\n  Google Gemini (OAuth) does not expose a /models endpoint on the Code Assist runtime, so Hermes cannot verify the model name live."
+                        "\n  The model may still work if your account has access to it."
+                    ),
+                }
             return {
                 "accepted": True,
                 "persist": True,

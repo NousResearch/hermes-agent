@@ -9,7 +9,7 @@ Covers: #5223, #6492
 
 import json
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -68,6 +68,20 @@ def test_kimi_for_coding_overlay_uses_hermes_slug():
     # Must NOT appear under the models.dev key
     kimi_mdev = next((p for p in providers if p["slug"] == "kimi-for-coding"), None)
     assert kimi_mdev is None, "kimi-for-coding slug should not appear (resolved to kimi-coding)"
+
+
+@patch.dict(os.environ, {}, clear=False)
+def test_google_gemini_oauth_uses_human_label():
+    """google-gemini-cli should display a friendly label in the /model picker."""
+    with patch("agent.credential_pool.load_pool") as mock_load_pool:
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+        mock_load_pool.return_value = mock_pool
+        providers = list_authenticated_providers(current_provider="openai-codex")
+
+    gemini = next((p for p in providers if p["slug"] == "google-gemini-cli"), None)
+    assert gemini is not None, "google-gemini-cli should appear when OAuth creds exist"
+    assert gemini["name"] == "Google Gemini (OAuth)"
 
 
 @patch.dict(os.environ, {"KILOCODE_API_KEY": "fake-key"}, clear=False)

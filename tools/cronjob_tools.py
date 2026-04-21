@@ -150,6 +150,41 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     return text or None
 
 
+def _resolve_create_runtime_defaults(
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Fill in missing runtime fields from the active provider config.
+
+    Gateway/Weixin cron creation can arrive without an explicit model object.
+    In that case we still want to persist the same runtime provider settings
+    the gateway is actively using, rather than falling back to a stale or
+    invalid default.
+    """
+    normalized_provider = _normalize_optional_job_value(provider)
+    normalized_base_url = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+
+    if normalized_provider and normalized_base_url:
+        return normalized_provider, normalized_base_url
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=normalized_provider,
+            explicit_base_url=normalized_base_url,
+        )
+    except Exception:
+        runtime = {}
+
+    if not normalized_provider:
+        normalized_provider = _normalize_optional_job_value(runtime.get("provider"))
+    if not normalized_base_url:
+        normalized_base_url = _normalize_optional_job_value(runtime.get("base_url"), strip_trailing_slash=True)
+
+    return normalized_provider, normalized_base_url
+
+
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
@@ -259,6 +294,7 @@ def cronjob(
                 if script_error:
                     return tool_error(script_error, success=False)
 
+            resolved_provider, resolved_base_url = _resolve_create_runtime_defaults(provider, base_url)
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
@@ -268,8 +304,8 @@ def cronjob(
                 origin=_origin_from_env(),
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
-                provider=_normalize_optional_job_value(provider),
-                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                provider=resolved_provider,
+                base_url=resolved_base_url,
                 script=_normalize_optional_job_value(script),
             )
             return json.dumps(

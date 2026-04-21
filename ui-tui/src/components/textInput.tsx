@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
-import { isActionMod, isMac } from '../lib/platform.js'
+import { isActionMod, isMac, isMacActionFallback } from '../lib/platform.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -275,6 +275,11 @@ function useFwdDelete(active: boolean) {
   return ref
 }
 
+type PasteResult = { cursor: number; value: string } | null
+
+const isPasteResultPromise = (value: PasteResult | Promise<PasteResult> | null | undefined): value is Promise<PasteResult> =>
+  !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
+
 export function TextInput({
   columns = 80,
   value,
@@ -298,6 +303,7 @@ export function TextInput({
   const pasteEnd = useRef<null | number>(null)
   const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pastePos = useRef(0)
+  const editVersionRef = useRef(0)
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
 
@@ -389,6 +395,7 @@ export function TextInput({
   const commit = (next: string, nextCur: number, track = true) => {
     const prev = vRef.current
     const c = snapPos(next, nextCur)
+    editVersionRef.current += 1
 
     if (selRef.current) {
       selRef.current = null
@@ -427,7 +434,20 @@ export function TextInput({
   }
 
   const emitPaste = (e: PasteEvent) => {
+    const startVersion = editVersionRef.current
     const h = cbPaste.current?.(e)
+
+    if (isPasteResultPromise(h)) {
+      void h
+        .then(result => {
+          if (result && editVersionRef.current === startVersion) {
+            commit(result.value, result.cursor)
+          }
+        })
+        .catch(() => {})
+
+      return true
+    }
 
     if (h) {
       commit(h.value, h.cursor)
@@ -506,7 +526,12 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
-      if (eventRaw === '\x1bv' || eventRaw === '\x1bV' || eventRaw === '\x16' || (isMac && k.meta && inp.toLowerCase() === 'v')) {
+      if (
+        eventRaw === '\x1bv' ||
+        eventRaw === '\x1bV' ||
+        eventRaw === '\x16' ||
+        (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
+      ) {
         if (cbPaste.current) {
           return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
         }
@@ -522,7 +547,7 @@ export function TextInput({
         return
       }
 
-      if (isMac && k.meta && inp.toLowerCase() === 'c') {
+      if (isMac && isActionMod(k) && inp.toLowerCase() === 'c') {
         const range = selRange()
 
         if (range) {
@@ -548,7 +573,7 @@ export function TextInput({
       }
 
       if (k.return) {
-        k.shift || k.meta
+        k.shift || (isMac && isActionMod(k))
           ? commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
           : cbSubmit.current?.(vRef.current)
 
@@ -558,6 +583,9 @@ export function TextInput({
       let c = curRef.current
       let v = vRef.current
       const mod = isActionMod(k)
+      const actionHome = k.home || isMacActionFallback(k, inp, 'a')
+      const actionEnd = k.end || (mod && inp === 'e') || isMacActionFallback(k, inp, 'e')
+      const actionDeleteToStart = (mod && inp === 'u') || isMacActionFallback(k, inp, 'u')
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
 
@@ -573,10 +601,10 @@ export function TextInput({
         return selectAll()
       }
 
-      if (k.home) {
+      if (actionHome) {
         clearSel()
         c = 0
-      } else if (k.end || (mod && inp === 'e')) {
+      } else if (actionEnd) {
         clearSel()
         c = v.length
       } else if (k.leftArrow) {
@@ -633,7 +661,7 @@ export function TextInput({
         } else {
           return
         }
-      } else if (mod && inp === 'u') {
+      } else if (actionDeleteToStart) {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
@@ -742,7 +770,7 @@ interface TextInputProps {
   focus?: boolean
   mask?: string
   onChange: (v: string) => void
-  onPaste?: (e: PasteEvent) => { cursor: number; value: string } | null
+  onPaste?: (e: PasteEvent) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
   onSubmit?: (v: string) => void
   placeholder?: string
   value: string

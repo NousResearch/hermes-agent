@@ -350,6 +350,11 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
 def test_image_attach_appends_local_image(monkeypatch):
     fake_cli = types.ModuleType("cli")
     fake_cli._IMAGE_EXTENSIONS = {".png"}
+    fake_cli._detect_file_drop = lambda raw: {
+        "path": Path("/tmp/cat.png"),
+        "is_image": True,
+        "remainder": "",
+    }
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: Path("/tmp/cat.png")
 
@@ -360,6 +365,31 @@ def test_image_attach_appends_local_image(monkeypatch):
 
     assert resp["result"]["attached"] is True
     assert resp["result"]["name"] == "cat.png"
+    assert len(server._sessions["sid"]["attached_images"]) == 1
+
+
+def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
+    screenshot = Path("/tmp/Screenshot 2026-04-21 at 1.04.43 PM.png")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png"}
+    fake_cli._detect_file_drop = lambda raw: {
+        "path": screenshot,
+        "is_image": True,
+        "remainder": "",
+    }
+    fake_cli._split_path_input = lambda raw: ("/tmp/Screenshot", "2026-04-21 at 1.04.43 PM.png")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "image.attach", "params": {"session_id": "sid", "path": str(screenshot)}}
+    )
+
+    assert resp["result"]["attached"] is True
+    assert resp["result"]["path"] == str(screenshot)
+    assert resp["result"]["remainder"] == ""
     assert len(server._sessions["sid"]["attached_images"]) == 1
 
 

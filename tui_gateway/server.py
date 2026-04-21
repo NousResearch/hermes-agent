@@ -1644,12 +1644,17 @@ def _(rid, params: dict) -> dict:
     if not raw:
         return _err(rid, 4015, "path required")
     try:
-        from cli import _IMAGE_EXTENSIONS, _resolve_attachment_path, _split_path_input
+        from cli import _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path, _split_path_input
 
-        path_token, remainder = _split_path_input(raw)
-        image_path = _resolve_attachment_path(path_token)
-        if image_path is None:
-            return _err(rid, 4016, f"image not found: {path_token}")
+        dropped = _detect_file_drop(raw)
+        if dropped:
+            image_path = dropped["path"]
+            remainder = dropped["remainder"]
+        else:
+            path_token, remainder = _split_path_input(raw)
+            image_path = _resolve_attachment_path(path_token)
+            if image_path is None:
+                return _err(rid, 4016, f"image not found: {path_token}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
         session.setdefault("attached_images", []).append(str(image_path))

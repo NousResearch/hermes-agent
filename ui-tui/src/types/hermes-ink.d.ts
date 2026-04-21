@@ -4,6 +4,7 @@ declare module '@hermes/ink' {
   export type Key = {
     readonly ctrl: boolean
     readonly meta: boolean
+    readonly super: boolean
     readonly shift: boolean
     readonly alt: boolean
     readonly upArrow: boolean

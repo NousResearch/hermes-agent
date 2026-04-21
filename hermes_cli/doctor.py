@@ -951,7 +951,16 @@ def run_doctor(args):
                 if _base and _base.rstrip("/").endswith("/anthropic"):
                     from agent.auxiliary_client import _to_openai_base_url
                     _base = _to_openai_base_url(_base)
-                _url = (_base.rstrip("/") + "/models") if _base else _default_url
+                if _base:
+                    _stripped = _base.rstrip("/")
+                    # If the base_url already ends with /models, use it as-is.
+                    # Some providers configure the full endpoint URL.
+                    if _stripped.endswith("/models"):
+                        _url = _stripped
+                    else:
+                        _url = _stripped + "/models"
+                else:
+                    _url = _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "KimiCLI/1.30.0"

@@ -28,8 +28,7 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
 
   return (
     <Text color={color}>
-      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…
-      {startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
+      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…{startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
     </Text>
   )
 }
@@ -127,7 +126,11 @@ export function StatusRule({
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
-          {busy ? <FaceTicker color={statusColor} startedAt={turnStartedAt} /> : <Text color={statusColor}>{status}</Text>}
+          {busy ? (
+            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+          ) : (
+            <Text color={statusColor}>{status}</Text>
+          )}
           <Text color={t.color.dim}> │ {model}</Text>
           {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
           {bar ? (

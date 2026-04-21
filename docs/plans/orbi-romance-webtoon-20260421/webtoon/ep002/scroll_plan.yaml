@@ -1,0 +1,62 @@
+episode: ep002
+source_title: 2화. 난 내려갈 사람 안 만나
+adaptation_mode: vertical_scroll_webtoon
+scene_id: ep002_orbi_romance_pressure
+core_hook: 2화. 난 내려갈 사람 안 만나
+blocks:
+- block_id: b01
+  purpose: opening
+  emotion: 초조
+  visual: 과외 중 멍하니 있는 시윤과 휴대폰 답장 화면
+  dialogue:
+  - caption: '"반은. 반은 진심."'
+  spacing: medium
+- block_id: b02
+  purpose: duel
+  emotion: 탐색
+  visual: 비 오는 밤 스터디실에서 마주 앉은 두 사람
+  dialogue:
+  - caption: '"현재를 임시거처처럼 대하는 거."'
+  spacing: medium
+- block_id: b03
+  purpose: ego_hit
+  emotion: 도발
+  visual: 서하의 정면 클로즈업
+  dialogue:
+  - caption: '"난 내려갈 사람 안 만나."'
+  spacing: medium
+- block_id: b04
+  purpose: counter
+  emotion: 분노
+  visual: 서하에게 쏘아붙이는 시윤
+  dialogue:
+  - caption: '"누가 널 좋아해."'
+  spacing: tall_drop
+- block_id: b05
+  purpose: third_party
+  emotion: 긴장
+  visual: 조민우가 끼어들며 반수 느낌 나는 애라고 비웃는 장면
+  dialogue:
+  - caption: '"선 넘지 마."'
+  spacing: medium
+- block_id: b06
+  purpose: umbrella
+  emotion: 정전
+  visual: 빗속 우산 아래 가까워진 거리
+  dialogue:
+  - caption: '"계속 보게 돼."'
+  spacing: medium
+- block_id: b07
+  purpose: touch
+  emotion: 흔들림
+  visual: 서하가 시윤 손목을 잡는 장면
+  dialogue:
+  - caption: '"아직 모르겠어, 넌."'
+  spacing: medium
+- block_id: b08
+  purpose: cliff
+  emotion: 감시
+  visual: 건너편에서 휴대폰 카메라가 둘을 잡는 실루엣
+  dialogue:
+  - caption: '"한소라가 먼저 봤다."'
+  spacing: tall_drop

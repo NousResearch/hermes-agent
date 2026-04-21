@@ -1,0 +1,62 @@
+episode: ep003
+source_title: 3화. 사귀는 척
+adaptation_mode: vertical_scroll_webtoon
+scene_id: ep003_orbi_romance_pressure
+core_hook: 3화. 사귀는 척
+blocks:
+- block_id: b01
+  purpose: opening
+  emotion: 확산
+  visual: 단톡방으로 퍼진 우산 사진 캡처
+  dialogue:
+  - caption: '"민우 쪽 단톡에 돌기 시작함."'
+  spacing: medium
+- block_id: b02
+  purpose: proposal
+  emotion: 거래
+  visual: 카페 구석에서 계약하듯 마주 앉은 두 사람
+  dialogue:
+  - caption: '"사귀는 척하자."'
+  spacing: medium
+- block_id: b03
+  purpose: terms
+  emotion: 계산
+  visual: 서로 조건을 교환하는 손과 노트북 메모
+  dialogue:
+  - caption: '"반수 얘기 누구한테도 꺼내지 마."'
+  spacing: medium
+- block_id: b04
+  purpose: routine
+  emotion: 중독
+  visual: 도서관과 카페를 오가며 자연스러워지는 페이크 연애 몽타주
+  dialogue:
+  - caption: '"거짓말이 더 정교해졌다."'
+  spacing: tall_drop
+- block_id: b05
+  purpose: public_scene
+  emotion: 과시
+  visual: 사람들 앞에서 팔을 잡고 데리러 와달라 말하는 서하
+  dialogue:
+  - caption: '"늦지 마."'
+  spacing: medium
+- block_id: b06
+  purpose: witness
+  emotion: 균열
+  visual: 복도 끝에서 장면을 목격한 소라
+  dialogue:
+  - caption: '"네 표정이 제일 아니거든."'
+  spacing: medium
+- block_id: b07
+  purpose: message
+  emotion: 잔향
+  visual: 밤에 오가는 메시지와 허리 감각 회상
+  dialogue:
+  - caption: '"네가 먼저 허리 잡았잖아."'
+  spacing: medium
+- block_id: b08
+  purpose: cliff
+  emotion: 삼각
+  visual: 소라의 음성메시지 파형
+  dialogue:
+  - caption: '"나 너 좋아해도 되냐."'
+  spacing: tall_drop

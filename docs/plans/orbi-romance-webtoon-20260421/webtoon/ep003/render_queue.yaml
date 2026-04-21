@@ -1,0 +1,38 @@
+episode: ep003
+render_mode: storyboard_fallback
+output:
+  panels_dir: docs/plans/orbi-romance-webtoon-20260421/renders/ep003/panels
+  longscroll: docs/plans/orbi-romance-webtoon-20260421/renders/ep003/ep003_longscroll.png
+jobs:
+- panel_id: p01
+  mode: storyboard_card
+  prompt: 단톡방으로 퍼진 우산 사진 캡처, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p02
+  mode: storyboard_card
+  prompt: 카페 구석에서 계약하듯 마주 앉은 두 사람, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p03
+  mode: storyboard_card
+  prompt: 서로 조건을 교환하는 손과 노트북 메모, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p04
+  mode: storyboard_card
+  prompt: 도서관과 카페를 오가며 자연스러워지는 페이크 연애 몽타주, clean Korean webtoon storyboard, emotional
+    readability, dramatic lighting, no visible letters or UI text
+- panel_id: p05
+  mode: storyboard_card
+  prompt: 사람들 앞에서 팔을 잡고 데리러 와달라 말하는 서하, clean Korean webtoon storyboard, emotional
+    readability, dramatic lighting, no visible letters or UI text
+- panel_id: p06
+  mode: storyboard_card
+  prompt: 복도 끝에서 장면을 목격한 소라, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p07
+  mode: storyboard_card
+  prompt: 밤에 오가는 메시지와 허리 감각 회상, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p08
+  mode: storyboard_card
+  prompt: 소라의 음성메시지 파형, clean Korean webtoon storyboard, emotional readability, dramatic
+    lighting, no visible letters or UI text

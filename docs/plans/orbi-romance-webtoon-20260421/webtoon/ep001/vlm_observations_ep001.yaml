@@ -1,0 +1,328 @@
+episode: ep001
+observation_version: 1
+observation_mode: codex_vision_hand_authored_mvp
+source_images:
+  inspected_rendered_dir: /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001
+  base_panel_dir: /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw
+  manifest: /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_manifest.json
+notes_path: /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/vlm_observations_ep001_notes.md
+panels:
+  - panel_id: p01
+    summary: Tight frontal portrait with bookshelf background and laptop occupying the lower third.
+    candidate_zones:
+      - zone_id: p01_caption_top_band
+        kind: caption
+        x: 0.04
+        y: 0.03
+        w: 0.92
+        h: 0.11
+        confidence: 0.95
+        rationale: Broad negative space over the subject hairline preserves the face and laptop screen.
+    anchor_points: []
+    avoid_regions:
+      - region_id: p01_face
+        kind: face
+        x: 0.26
+        y: 0.14
+        w: 0.48
+        h: 0.35
+        confidence: 0.98
+      - region_id: p01_laptop_screen
+        kind: screen_region
+        x: 0.17
+        y: 0.54
+        w: 0.67
+        h: 0.29
+        confidence: 0.98
+    item_targets:
+      - item_id: p01_caption
+        item_kind: caption
+        zone_id: p01_caption_top_band
+        confidence: 0.95
+        rationale: Narration should read immediately before the eye drops to the protagonist face.
+  - panel_id: p02
+    summary: Two-shot in the study room with large empty wall in the upper-left and the heroine entering on the right.
+    candidate_zones:
+      - zone_id: p02_speech_upper_left
+        kind: speech
+        x: 0.06
+        y: 0.08
+        w: 0.46
+        h: 0.13
+        confidence: 0.93
+        rationale: Clean wall space above the seated protagonist avoids both faces and the desk edge.
+      - zone_id: p02_speech_upper_mid
+        kind: speech
+        x: 0.22
+        y: 0.05
+        w: 0.42
+        h: 0.13
+        confidence: 0.74
+        rationale: Secondary option if the left wall placement is unavailable.
+    anchor_points:
+      - anchor_id: p02_heroine_face
+        speaker: dialogue
+        role: speaker_face
+        x: 0.82
+        y: 0.30
+        confidence: 0.91
+        rationale: The question is delivered by the heroine at frame right.
+    avoid_regions:
+      - region_id: p02_protagonist_body
+        kind: figure
+        x: 0.04
+        y: 0.32
+        w: 0.58
+        h: 0.66
+        confidence: 0.97
+      - region_id: p02_heroine_body
+        kind: figure
+        x: 0.56
+        y: 0.18
+        w: 0.35
+        h: 0.74
+        confidence: 0.97
+      - region_id: p02_laptop
+        kind: prop
+        x: 0.49
+        y: 0.54
+        w: 0.31
+        h: 0.18
+        confidence: 0.94
+    item_targets:
+      - item_id: l02
+        item_kind: speech
+        zone_id: p02_speech_upper_left
+        anchor_id: p02_heroine_face
+        confidence: 0.93
+        rationale: The left wall keeps the question legible without covering the entrance beat.
+  - panel_id: p03
+    summary: Confrontational face-to-face profile shot with a narrow but readable top band.
+    candidate_zones:
+      - zone_id: p03_caption_top_band
+        kind: caption
+        x: 0.04
+        y: 0.03
+        w: 0.92
+        h: 0.11
+        confidence: 0.94
+        rationale: Caption can sit above both profiles and preserve the eye-line clash.
+    anchor_points: []
+    avoid_regions:
+      - region_id: p03_left_face
+        kind: face
+        x: 0.02
+        y: 0.10
+        w: 0.48
+        h: 0.53
+        confidence: 0.98
+      - region_id: p03_right_face
+        kind: face
+        x: 0.63
+        y: 0.18
+        w: 0.31
+        h: 0.38
+        confidence: 0.97
+    item_targets:
+      - item_id: p03_caption
+        item_kind: caption
+        zone_id: p03_caption_top_band
+        confidence: 0.94
+        rationale: The narration should hover over the emotional collision rather than interrupt it.
+  - panel_id: p04
+    summary: Two-shot with intentionally blank gutters above and below the classroom confrontation.
+    candidate_zones:
+      - zone_id: p04_speech_bottom_band
+        kind: speech
+        x: 0.11
+        y: 0.81
+        w: 0.74
+        h: 0.13
+        confidence: 0.96
+        rationale: Clean lower gutter can hold the full line without covering either character.
+      - zone_id: p04_speech_top_band
+        kind: speech
+        x: 0.09
+        y: 0.04
+        w: 0.76
+        h: 0.12
+        confidence: 0.71
+        rationale: Backup zone in the upper gutter.
+    anchor_points:
+      - anchor_id: p04_heroine_face
+        speaker: dialogue
+        role: speaker_face
+        x: 0.77
+        y: 0.40
+        confidence: 0.90
+        rationale: The heroine delivers the provocation from frame right.
+    avoid_regions:
+      - region_id: p04_characters
+        kind: figure_cluster
+        x: 0.00
+        y: 0.16
+        w: 1.00
+        h: 0.61
+        confidence: 0.99
+    item_targets:
+      - item_id: l04
+        item_kind: speech
+        zone_id: p04_speech_bottom_band
+        anchor_id: p04_heroine_face
+        confidence: 0.96
+        rationale: The lower gutter preserves the confrontational eye-line and still gives the line weight.
+  - panel_id: p05
+    summary: Elevator mirror composition with large negative space in the ceiling panel above both figures.
+    candidate_zones:
+      - zone_id: p05_caption_top_band
+        kind: caption
+        x: 0.04
+        y: 0.03
+        w: 0.92
+        h: 0.11
+        confidence: 0.95
+        rationale: The ceiling area is bright and blank while the mirror scene below should remain unobstructed.
+    anchor_points: []
+    avoid_regions:
+      - region_id: p05_figures
+        kind: figure_cluster
+        x: 0.08
+        y: 0.23
+        w: 0.83
+        h: 0.73
+        confidence: 0.97
+      - region_id: p05_mirror_core
+        kind: reflective_focus
+        x: 0.14
+        y: 0.14
+        w: 0.70
+        h: 0.58
+        confidence: 0.95
+    item_targets:
+      - item_id: p05_caption
+        item_kind: caption
+        zone_id: p05_caption_top_band
+        confidence: 0.95
+        rationale: The line reads as internal narration and belongs in the clean ceiling band.
+  - panel_id: p06
+    summary: Dark room close-up with phone glow centered low and a stable band of darkness overhead.
+    candidate_zones:
+      - zone_id: p06_caption_top_band
+        kind: caption
+        x: 0.05
+        y: 0.04
+        w: 0.90
+        h: 0.10
+        confidence: 0.95
+        rationale: The dark negative space above the window frame supports a caption without touching the phone glow.
+    anchor_points: []
+    avoid_regions:
+      - region_id: p06_face
+        kind: face
+        x: 0.28
+        y: 0.33
+        w: 0.30
+        h: 0.22
+        confidence: 0.97
+      - region_id: p06_phone_glow
+        kind: screen_region
+        x: 0.20
+        y: 0.58
+        w: 0.52
+        h: 0.20
+        confidence: 0.99
+    item_targets:
+      - item_id: p06_caption
+        item_kind: caption
+        zone_id: p06_caption_top_band
+        confidence: 0.95
+        rationale: Keeping narration in the overhead darkness leaves the phone message reveal untouched.
+  - panel_id: p07
+    summary: Split emotional two-shot with the phone centered and wide blank top gutter available.
+    candidate_zones:
+      - zone_id: p07_speech_top_band
+        kind: speech
+        x: 0.08
+        y: 0.04
+        w: 0.84
+        h: 0.12
+        confidence: 0.94
+        rationale: The top gutter is the cleanest available speech slot and avoids the phone UI.
+      - zone_id: p07_speech_bottom_band
+        kind: speech
+        x: 0.11
+        y: 0.81
+        w: 0.74
+        h: 0.13
+        confidence: 0.69
+        rationale: Lower gutter works as fallback if a bottom-heavy version is preferred.
+    anchor_points:
+      - anchor_id: p07_mother_face
+        speaker: dialogue
+        role: speaker_face
+        x: 0.79
+        y: 0.40
+        confidence: 0.88
+        rationale: The pressure line maps most clearly to the mother's presence at frame right.
+      - anchor_id: p07_phone_chat
+        speaker: dialogue
+        role: message_source
+        x: 0.50
+        y: 0.67
+        confidence: 0.74
+        rationale: Secondary anchor if the line should visually tie to the exposed phone chat.
+    avoid_regions:
+      - region_id: p07_phone
+        kind: phone_ui
+        x: 0.35
+        y: 0.55
+        w: 0.31
+        h: 0.39
+        confidence: 0.99
+      - region_id: p07_faces
+        kind: face_pair
+        x: 0.12
+        y: 0.18
+        w: 0.77
+        h: 0.34
+        confidence: 0.97
+    item_targets:
+      - item_id: l07
+        item_kind: speech
+        zone_id: p07_speech_top_band
+        anchor_id: p07_mother_face
+        confidence: 0.94
+        rationale: Top placement keeps the phone reveal unobstructed while the tail can still bias toward the mother.
+  - panel_id: p08
+    summary: Night profile silhouette with almost the entire upper sky available for narration.
+    candidate_zones:
+      - zone_id: p08_caption_top_band
+        kind: caption
+        x: 0.04
+        y: 0.03
+        w: 0.92
+        h: 0.11
+        confidence: 0.96
+        rationale: The dark upper field is clean negative space and supports a final cliff caption.
+    anchor_points: []
+    avoid_regions:
+      - region_id: p08_profile
+        kind: figure
+        x: 0.16
+        y: 0.18
+        w: 0.56
+        h: 0.64
+        confidence: 0.98
+      - region_id: p08_phone_glow
+        kind: screen_region
+        x: 0.57
+        y: 0.54
+        w: 0.21
+        h: 0.14
+        confidence: 0.95
+    item_targets:
+      - item_id: p08_caption
+        item_kind: caption
+        zone_id: p08_caption_top_band
+        confidence: 0.96
+        rationale: Final narration belongs in the night sky rather than near the bed silhouette.

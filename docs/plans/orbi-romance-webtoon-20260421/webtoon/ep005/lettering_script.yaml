@@ -1,0 +1,33 @@
+episode: ep005
+language: ko
+rules:
+- 긴 독백은 캡션으로 분리
+- 대사는 짧고 독하게 유지
+- 말풍선 텍스트는 후처리 전제
+balloons:
+- id: l02
+  panel_id: p02
+  speaker: dialogue
+  text: 이제 똑똑해지고 싶거든.
+  tone: 상실
+- id: l04
+  panel_id: p04
+  speaker: dialogue
+  text: 약대 갈 바엔 너랑 안 사귄다.
+  tone: 폭발
+- id: l07
+  panel_id: p07
+  speaker: dialogue
+  text: 한 번만 더 올라와.
+  tone: 계약
+captions:
+- panel_id: p01
+  text: 망쳤네.
+- panel_id: p03
+  text: 반수도, 너도 접는 게 맞나.
+- panel_id: p05
+  text: 난 네가 좋아질까 봐 무서웠다고.
+- panel_id: p06
+  text: 내 간판.
+- panel_id: p08
+  text: 도망치지 마. 이번엔 진짜로 올라와.

@@ -1,0 +1,62 @@
+episode: ep005
+source_title: 5화. 약대 갈 바엔 너랑 안 사귄다
+adaptation_mode: vertical_scroll_webtoon
+scene_id: ep005_orbi_romance_pressure
+core_hook: 5화. 약대 갈 바엔 너랑 안 사귄다
+blocks:
+- block_id: b01
+  purpose: opening
+  emotion: 붕괴
+  visual: 모의고사 시험지와 떨리는 손
+  dialogue:
+  - caption: '"망쳤네."'
+  spacing: medium
+- block_id: b02
+  purpose: fallout
+  emotion: 상실
+  visual: 복도에서 시윤을 보는 소라
+  dialogue:
+  - caption: '"이제 똑똑해지고 싶거든."'
+  spacing: medium
+- block_id: b03
+  purpose: bench_scene
+  emotion: 정면충돌
+  visual: 계약학과 건물 뒤 벤치에서 마주 앉은 둘
+  dialogue:
+  - caption: '"반수도, 너도 접는 게 맞나."'
+  spacing: medium
+- block_id: b04
+  purpose: line
+  emotion: 폭발
+  visual: 서하를 향해 뱉는 시윤의 말
+  dialogue:
+  - caption: '"약대 갈 바엔 너랑 안 사귄다."'
+  spacing: tall_drop
+- block_id: b05
+  purpose: counter_reveal
+  emotion: 고백
+  visual: 처음 흔들린 서하 표정
+  dialogue:
+  - caption: '"난 네가 좋아질까 봐 무서웠다고."'
+  spacing: medium
+- block_id: b06
+  purpose: symbol
+  emotion: 간판
+  visual: 성적표 위에 학생증을 내려놓는 손
+  dialogue:
+  - caption: '"내 간판."'
+  spacing: medium
+- block_id: b07
+  purpose: challenge
+  emotion: 계약
+  visual: 학생증과 성적표를 동시에 잡는 시윤
+  dialogue:
+  - caption: '"한 번만 더 올라와."'
+  spacing: medium
+- block_id: b08
+  purpose: cliff
+  emotion: 중독
+  visual: 벤치에 남겨진 학생증 자국과 마지막 메시지
+  dialogue:
+  - caption: '"도망치지 마. 이번엔 진짜로 올라와."'
+  spacing: tall_drop

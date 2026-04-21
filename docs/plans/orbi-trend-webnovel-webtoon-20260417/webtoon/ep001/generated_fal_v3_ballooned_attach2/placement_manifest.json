@@ -1,0 +1,2608 @@
+{
+  "episode": "ep001",
+  "analysis_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/balloon_analysis_ep001.yaml",
+  "analysis_source_manifest": "docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_manifest_v3.json",
+  "input_dir": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3",
+  "output_dir": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2",
+  "lettering": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/lettering_script.yaml",
+  "scroll_plan": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/scroll_plan.yaml",
+  "font_path": "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+  "forbidden_overlap_threshold": 0.08,
+  "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/ep001_ballooned_longscroll.png",
+  "panels": [
+    {
+      "panel_id": "p01",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p01.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/p01.png",
+      "size": [
+        720,
+        1072
+      ],
+      "panel_mode": "caption",
+      "overlay_tracks": [
+        "caption"
+      ],
+      "analysis_safe_zones": [
+        {
+          "id": "chat_top_right",
+          "kind": "chat_ui",
+          "x": 0.67,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.882,
+          "rationale": "compact edge-aligned chat slot; busy=19.7; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 45.0,
+            "stddev_luma": 29.02,
+            "edge_mean": 6.21
+          }
+        },
+        {
+          "id": "chat_top_left",
+          "kind": "chat_ui",
+          "x": 0.05,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.869,
+          "rationale": "compact edge-aligned chat slot; busy=21.4; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 43.71,
+            "stddev_luma": 36.03,
+            "edge_mean": 4.75
+          }
+        },
+        {
+          "id": "speech_top_right",
+          "kind": "speech",
+          "x": 0.61,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.848,
+          "rationale": "top-right negative space; busy=19.0; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 42.85,
+            "stddev_luma": 27.29,
+            "edge_mean": 5.84
+          }
+        },
+        {
+          "id": "caption_upper_mid",
+          "kind": "caption",
+          "x": 0.28,
+          "y": 0.05,
+          "w": 0.44,
+          "h": 0.14,
+          "confidence": 0.838,
+          "rationale": "score-sheet opener caption; busy=22.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 58.05,
+            "stddev_luma": 40.71,
+            "edge_mean": 5.53
+          }
+        },
+        {
+          "id": "note_top_right",
+          "kind": "screen_note",
+          "x": 0.6,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.812,
+          "rationale": "screen note callout; busy=17.3; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 40.72,
+            "stddev_luma": 22.31,
+            "edge_mean": 5.63
+          }
+        },
+        {
+          "id": "caption_top_right",
+          "kind": "caption",
+          "x": 0.55,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.768,
+          "rationale": "right caption shelf; busy=16.5; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 39.75,
+            "stddev_luma": 20.51,
+            "edge_mean": 5.25
+          }
+        },
+        {
+          "id": "speech_top_left",
+          "kind": "speech",
+          "x": 0.05,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.756,
+          "rationale": "top-left negative space; busy=30.5; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 76.0,
+            "stddev_luma": 65.54,
+            "edge_mean": 5.32
+          }
+        },
+        {
+          "id": "caption_top_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.745,
+          "rationale": "compact caption banner; busy=29.4; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 76.88,
+            "stddev_luma": 62.71,
+            "edge_mean": 5.31
+          }
+        },
+        {
+          "id": "speech_upper_mid",
+          "kind": "speech",
+          "x": 0.32,
+          "y": 0.05,
+          "w": 0.36,
+          "h": 0.17,
+          "confidence": 0.738,
+          "rationale": "upper-mid negative space; busy=22.7; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 62.68,
+            "stddev_luma": 39.61,
+            "edge_mean": 6.58
+          }
+        },
+        {
+          "id": "note_top_left",
+          "kind": "screen_note",
+          "x": 0.07,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.724,
+          "rationale": "screen note callout; busy=28.2; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 66.07,
+            "stddev_luma": 57.54,
+            "edge_mean": 5.37
+          }
+        },
+        {
+          "id": "chat_mid_right",
+          "kind": "chat_ui",
+          "x": 0.67,
+          "y": 0.26,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.581,
+          "rationale": "secondary chat slot; busy=34.9; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 101.2,
+            "stddev_luma": 53.64,
+            "edge_mean": 23.26
+          }
+        },
+        {
+          "id": "caption_bottom_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.8,
+          "w": 0.42,
+          "h": 0.14,
+          "confidence": 0.513,
+          "rationale": "bottom caption fallback; busy=33.4; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 128.14,
+            "stddev_luma": 67.98,
+            "edge_mean": 13.8
+          }
+        },
+        {
+          "id": "speech_mid_left",
+          "kind": "speech",
+          "x": 0.04,
+          "y": 0.24,
+          "w": 0.3,
+          "h": 0.17,
+          "confidence": 0.488,
+          "rationale": "mid-left fallback; busy=34.1; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 183.74,
+            "stddev_luma": 62.4,
+            "edge_mean": 20.77
+          }
+        },
+        {
+          "id": "speech_mid_right",
+          "kind": "speech",
+          "x": 0.66,
+          "y": 0.24,
+          "w": 0.28,
+          "h": 0.17,
+          "confidence": 0.481,
+          "rationale": "mid-right fallback; busy=34.9; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 105.91,
+            "stddev_luma": 53.79,
+            "edge_mean": 23.53
+          }
+        }
+      ],
+      "analysis_forbidden_zones": [
+        {
+          "id": "score_sheet",
+          "kind": "key_prop",
+          "box": [
+            130,
+            600,
+            547,
+            858
+          ],
+          "confidence": 0.9
+        },
+        {
+          "id": "writing_hand",
+          "kind": "hand",
+          "box": [
+            374,
+            665,
+            518,
+            858
+          ],
+          "confidence": 0.84
+        }
+      ],
+      "manual_review_required": false,
+      "manual_review_reasons": [],
+      "placements": [
+        {
+          "id": "p01_caption_01",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "지구과학 39. 세 번 그어도 숫자는 바뀌지 않았다.",
+          "template": "caption",
+          "bubble_kind": "caption",
+          "zone_id": "caption_upper_mid",
+          "zone_kind": "caption",
+          "zone_confidence": 0.838,
+          "score": 18.345,
+          "candidate_class": "generic",
+          "resolved_anchor_id": null,
+          "resolved_anchor_role": null,
+          "selected_zone_score": 18.345,
+          "score_breakdown": {
+            "zone_confidence": 83.8,
+            "preferred_zone_bonus": 0.0,
+            "speaker_local_bonus": 0.0,
+            "local_priority_bonus": 0.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": -14.0,
+            "anchor_distance_penalty": 35.0,
+            "overlap_penalty": 0.0,
+            "line_count_penalty": 15.0,
+            "line_balance_penalty": 1.455,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 0.0
+          },
+          "font_size": 28,
+          "box": [
+            239.0,
+            55,
+            480.0,
+            203
+          ],
+          "inner_box": [
+            263.0,
+            73,
+            456.0,
+            185
+          ],
+          "tail_points": null,
+          "tail_entry_edge": null,
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "score_sheet",
+              "kind": "key_prop",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "writing_hand",
+              "kind": "hand",
+              "ratio": 0.0,
+              "intersection_area": 0
+            }
+          ],
+          "max_forbidden_overlap": 0.0,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "caption_top_right",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 11.345
+            },
+            {
+              "zone_id": "caption_top_left",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 9.045
+            },
+            {
+              "zone_id": "caption_bottom_left",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": -26.155
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "panel_id": "p02",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p02.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/p02.png",
+      "size": [
+        720,
+        1072
+      ],
+      "panel_mode": "dialogue",
+      "overlay_tracks": [
+        "dialogue"
+      ],
+      "analysis_safe_zones": [
+        {
+          "id": "chat_top_right",
+          "kind": "chat_ui",
+          "x": 0.67,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.657,
+          "rationale": "compact edge-aligned chat slot; busy=47.9; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 99.07,
+            "stddev_luma": 109.16,
+            "edge_mean": 11.39
+          }
+        },
+        {
+          "id": "chat_top_left",
+          "kind": "chat_ui",
+          "x": 0.05,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.649,
+          "rationale": "compact edge-aligned chat slot; busy=48.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 121.48,
+            "stddev_luma": 93.58,
+            "edge_mean": 24.99
+          }
+        },
+        {
+          "id": "speech_top_left",
+          "kind": "speech",
+          "x": 0.05,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.644,
+          "rationale": "top-left negative space; busy=44.5; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 154.23,
+            "stddev_luma": 96.59,
+            "edge_mean": 18.16
+          }
+        },
+        {
+          "id": "caption_top_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.634,
+          "rationale": "compact caption banner; busy=43.3; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 164.26,
+            "stddev_luma": 97.7,
+            "edge_mean": 16.23
+          }
+        },
+        {
+          "id": "speech_top_left_wide",
+          "kind": "speech",
+          "x": 0.04,
+          "y": 0.03,
+          "w": 0.38,
+          "h": 0.2,
+          "confidence": 0.634,
+          "rationale": "dialogue-first widened corner; busy=44.1; overlap=0.02",
+          "background_metrics": {
+            "mean_luma": 155.47,
+            "stddev_luma": 95.66,
+            "edge_mean": 18.17
+          }
+        },
+        {
+          "id": "speech_top_right",
+          "kind": "speech",
+          "x": 0.61,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.621,
+          "rationale": "top-right negative space; busy=47.4; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 132.78,
+            "stddev_luma": 116.33,
+            "edge_mean": 8.93
+          }
+        },
+        {
+          "id": "note_top_left",
+          "kind": "screen_note",
+          "x": 0.07,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.584,
+          "rationale": "screen note callout; busy=45.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 148.98,
+            "stddev_luma": 98.96,
+            "edge_mean": 18.53
+          }
+        },
+        {
+          "id": "speech_upper_mid",
+          "kind": "speech",
+          "x": 0.32,
+          "y": 0.05,
+          "w": 0.36,
+          "h": 0.17,
+          "confidence": 0.569,
+          "rationale": "upper-mid negative space; busy=43.9; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 143.9,
+            "stddev_luma": 101.14,
+            "edge_mean": 13.22
+          }
+        },
+        {
+          "id": "note_top_right",
+          "kind": "screen_note",
+          "x": 0.6,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.562,
+          "rationale": "screen note callout; busy=48.4; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 130.67,
+            "stddev_luma": 115.83,
+            "edge_mean": 10.98
+          }
+        },
+        {
+          "id": "caption_bottom_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.8,
+          "w": 0.42,
+          "h": 0.14,
+          "confidence": 0.436,
+          "rationale": "bottom caption fallback; busy=43.0; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 162.16,
+            "stddev_luma": 108.74,
+            "edge_mean": 8.5
+          }
+        },
+        {
+          "id": "speech_mid_left",
+          "kind": "speech",
+          "x": 0.04,
+          "y": 0.24,
+          "w": 0.3,
+          "h": 0.17,
+          "confidence": 0.15,
+          "rationale": "mid-left fallback; busy=41.2; overlap=0.20",
+          "background_metrics": {
+            "mean_luma": 79.26,
+            "stddev_luma": 39.72,
+            "edge_mean": 41.49
+          }
+        }
+      ],
+      "analysis_forbidden_zones": [
+        {
+          "id": "focal_center",
+          "kind": "focal_center",
+          "box": [
+            202,
+            236,
+            518,
+            600
+          ],
+          "confidence": 0.78
+        },
+        {
+          "id": "mother_face",
+          "kind": "face",
+          "box": [
+            446,
+            343,
+            562,
+            493
+          ],
+          "confidence": 0.88
+        },
+        {
+          "id": "son_head",
+          "kind": "face",
+          "box": [
+            173,
+            482,
+            331,
+            654
+          ],
+          "confidence": 0.74
+        },
+        {
+          "id": "desk_focus",
+          "kind": "key_prop",
+          "box": [
+            230,
+            622,
+            547,
+            858
+          ],
+          "confidence": 0.66
+        }
+      ],
+      "manual_review_required": false,
+      "manual_review_reasons": [],
+      "placements": [
+        {
+          "id": "l01",
+          "kind": "balloon",
+          "speaker": "mother",
+          "text": "국어가 살아났네. 이러면 다시 해볼 만하잖아.",
+          "template": "speech",
+          "bubble_kind": "speech",
+          "zone_id": "p02_mother_upper_right",
+          "zone_kind": "speech",
+          "zone_confidence": 0.94,
+          "score": 137.514,
+          "candidate_class": "speaker_local",
+          "resolved_anchor_id": "mother_mouth_primary",
+          "resolved_anchor_role": "mouth",
+          "selected_zone_score": 137.514,
+          "score_breakdown": {
+            "zone_confidence": 94.0,
+            "preferred_zone_bonus": 18.0,
+            "speaker_local_bonus": 22.0,
+            "local_priority_bonus": 30.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": 12.0,
+            "anchor_distance_penalty": 7.725,
+            "overlap_penalty": 5.868,
+            "line_count_penalty": 20.0,
+            "line_balance_penalty": 4.893,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 0.0
+          },
+          "font_size": 25,
+          "box": [
+            403,
+            63,
+            614.0,
+            247
+          ],
+          "inner_box": [
+            433,
+            87,
+            584.0,
+            223
+          ],
+          "tail_points": [
+            [
+              479,
+              243
+            ],
+            [
+              529,
+              243
+            ],
+            [
+              504,
+              440
+            ]
+          ],
+          "tail_entry_edge": "bottom",
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0326,
+              "intersection_area": 1265
+            },
+            {
+              "id": "mother_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "son_head",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "desk_focus",
+              "kind": "key_prop",
+              "ratio": 0.0,
+              "intersection_area": 0
+            }
+          ],
+          "max_forbidden_overlap": 0.0326,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "speech_top_right",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 36.577
+            },
+            {
+              "zone_id": "speech_upper_mid",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 30.747
+            },
+            {
+              "zone_id": "p02_mother_upper_mid",
+              "candidate_class": "speaker_local",
+              "reason": "ranked_below_selected_candidate",
+              "score": 95.444
+            },
+            {
+              "zone_id": "speech_top_left_wide",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 10.302
+            },
+            {
+              "zone_id": "speech_mid_left",
+              "candidate_class": "generic",
+              "reason": "exceeds_forbidden_overlap_threshold",
+              "max_overlap": 0.1707,
+              "score": -68.731
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "panel_id": "p03",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p03.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/p03.png",
+      "size": [
+        720,
+        1072
+      ],
+      "panel_mode": "screen_ui",
+      "overlay_tracks": [
+        "caption",
+        "screen_ui"
+      ],
+      "analysis_safe_zones": [
+        {
+          "id": "caption_top_band",
+          "kind": "caption",
+          "x": 0.08,
+          "y": 0.01,
+          "w": 0.42,
+          "h": 0.11,
+          "confidence": 0.487,
+          "rationale": "top border shelf above screen triptych; busy=33.3; overlap=0.18",
+          "background_metrics": {
+            "mean_luma": 133.95,
+            "stddev_luma": 66.45,
+            "edge_mean": 15.09
+          }
+        }
+      ],
+      "analysis_forbidden_zones": [
+        {
+          "id": "focal_center",
+          "kind": "focal_center",
+          "box": [
+            202,
+            236,
+            518,
+            600
+          ],
+          "confidence": 0.78
+        },
+        {
+          "id": "screen_triptych",
+          "kind": "screen_region",
+          "box": [
+            43,
+            107,
+            677,
+            922
+          ],
+          "confidence": 0.95
+        }
+      ],
+      "manual_review_required": true,
+      "manual_review_reasons": [
+        "insufficient_high_confidence_safe_zones",
+        "p03_caption_02:forbidden_overlap_threshold_exceeded"
+      ],
+      "placements": [
+        {
+          "id": "p03_caption_02",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "파일 이름은 영어 오답노트 최종.xlsx였다.",
+          "template": "caption",
+          "bubble_kind": "caption",
+          "zone_id": "caption_top_band",
+          "zone_kind": "caption",
+          "zone_confidence": 0.487,
+          "score": -48.833,
+          "candidate_class": "generic",
+          "resolved_anchor_id": null,
+          "resolved_anchor_role": null,
+          "selected_zone_score": -48.833,
+          "score_breakdown": {
+            "zone_confidence": 48.7,
+            "preferred_zone_bonus": 0.0,
+            "speaker_local_bonus": 0.0,
+            "local_priority_bonus": 0.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": -14.0,
+            "anchor_distance_penalty": 35.0,
+            "overlap_penalty": 22.032,
+            "line_count_penalty": 10.0,
+            "line_balance_penalty": 4.501,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 12.0
+          },
+          "font_size": 25,
+          "box": [
+            61.0,
+            21,
+            356.0,
+            119
+          ],
+          "inner_box": [
+            85.0,
+            39,
+            332.0,
+            101
+          ],
+          "tail_points": null,
+          "tail_entry_edge": null,
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "screen_triptych",
+              "kind": "screen_region",
+              "ratio": 0.1224,
+              "intersection_area": 3540.0
+            }
+          ],
+          "max_forbidden_overlap": 0.1224,
+          "selected_with_warning": true,
+          "warning_reason": "forbidden_overlap_threshold_exceeded",
+          "fallback_reason": null,
+          "review_reasons": [
+            "forbidden_overlap_threshold_exceeded"
+          ],
+          "rejected_candidates": []
+        }
+      ]
+    },
+    {
+      "panel_id": "p04",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p04.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/p04.png",
+      "size": [
+        720,
+        1072
+      ],
+      "panel_mode": "chat_ui",
+      "overlay_tracks": [
+        "chat_ui",
+        "screen_ui"
+      ],
+      "analysis_safe_zones": [
+        {
+          "id": "chat_top_band",
+          "kind": "chat_ui",
+          "x": 0.56,
+          "y": 0.01,
+          "w": 0.32,
+          "h": 0.11,
+          "confidence": 0.411,
+          "rationale": "top border shelf above split-focus triptych; busy=42.7; overlap=0.18",
+          "background_metrics": {
+            "mean_luma": 106.52,
+            "stddev_luma": 76.46,
+            "edge_mean": 23.33
+          }
+        },
+        {
+          "id": "chat_left_band",
+          "kind": "chat_ui",
+          "x": 0.12,
+          "y": 0.01,
+          "w": 0.32,
+          "h": 0.11,
+          "confidence": 0.401,
+          "rationale": "alternate top border shelf above split-focus triptych; busy=33.9; overlap=0.18",
+          "background_metrics": {
+            "mean_luma": 137.81,
+            "stddev_luma": 66.52,
+            "edge_mean": 16.6
+          }
+        }
+      ],
+      "analysis_forbidden_zones": [
+        {
+          "id": "focal_center",
+          "kind": "focal_center",
+          "box": [
+            202,
+            236,
+            518,
+            600
+          ],
+          "confidence": 0.78
+        },
+        {
+          "id": "screen_triptych",
+          "kind": "screen_region",
+          "box": [
+            58,
+            107,
+            662,
+            922
+          ],
+          "confidence": 0.95
+        }
+      ],
+      "manual_review_required": true,
+      "manual_review_reasons": [
+        "insufficient_high_confidence_safe_zones"
+      ],
+      "placements": [
+        {
+          "id": "l02",
+          "kind": "balloon",
+          "speaker": "friend_chat",
+          "text": "근데 넌 어차피 메디컬 라인 아니냐 ㅋㅋ",
+          "template": "chat_ui",
+          "bubble_kind": "chat",
+          "zone_id": "chat_top_band",
+          "zone_kind": "chat_ui",
+          "zone_confidence": 0.411,
+          "score": -46.419,
+          "candidate_class": "generic",
+          "resolved_anchor_id": null,
+          "resolved_anchor_role": null,
+          "selected_zone_score": -46.419,
+          "score_breakdown": {
+            "zone_confidence": 41.1,
+            "preferred_zone_bonus": 0.0,
+            "speaker_local_bonus": 0.0,
+            "local_priority_bonus": 0.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": -14.0,
+            "anchor_distance_penalty": 35.0,
+            "overlap_penalty": 14.166,
+            "line_count_penalty": 10.0,
+            "line_balance_penalty": 2.353,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 12.0
+          },
+          "font_size": 19,
+          "box": [
+            409.0,
+            25,
+            627.0,
+            114
+          ],
+          "inner_box": [
+            433.0,
+            45,
+            603.0,
+            94
+          ],
+          "tail_points": null,
+          "tail_entry_edge": null,
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "screen_triptych",
+              "kind": "screen_region",
+              "ratio": 0.0787,
+              "intersection_area": 1526.0
+            }
+          ],
+          "max_forbidden_overlap": 0.0787,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "chat_left_band",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": -47.419
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "panel_id": "p05",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p05.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/p05.png",
+      "size": [
+        720,
+        1072
+      ],
+      "panel_mode": "screen_ui",
+      "overlay_tracks": [
+        "screen_ui"
+      ],
+      "analysis_safe_zones": [
+        {
+          "id": "chat_top_right",
+          "kind": "chat_ui",
+          "x": 0.67,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.754,
+          "rationale": "compact edge-aligned chat slot; busy=35.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 69.67,
+            "stddev_luma": 41.22,
+            "edge_mean": 29.89
+          }
+        },
+        {
+          "id": "speech_top_right",
+          "kind": "speech",
+          "x": 0.61,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.735,
+          "rationale": "top-right negative space; busy=33.1; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 73.1,
+            "stddev_luma": 43.16,
+            "edge_mean": 24.06
+          }
+        },
+        {
+          "id": "chat_top_left",
+          "kind": "chat_ui",
+          "x": 0.05,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.718,
+          "rationale": "compact edge-aligned chat slot; busy=40.2; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 133.83,
+            "stddev_luma": 49.57,
+            "edge_mean": 38.45
+          }
+        },
+        {
+          "id": "note_top_right",
+          "kind": "screen_note",
+          "x": 0.6,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.716,
+          "rationale": "screen note callout; busy=29.2; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 77.82,
+            "stddev_luma": 36.03,
+            "edge_mean": 21.97
+          }
+        },
+        {
+          "id": "speech_upper_mid",
+          "kind": "speech",
+          "x": 0.32,
+          "y": 0.05,
+          "w": 0.36,
+          "h": 0.17,
+          "confidence": 0.689,
+          "rationale": "upper-mid negative space; busy=28.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 79.21,
+            "stddev_luma": 46.65,
+            "edge_mean": 14.68
+          }
+        },
+        {
+          "id": "speech_top_left",
+          "kind": "speech",
+          "x": 0.05,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.688,
+          "rationale": "top-left negative space; busy=39.0; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 117.64,
+            "stddev_luma": 50.45,
+            "edge_mean": 34.27
+          }
+        },
+        {
+          "id": "caption_top_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.661,
+          "rationale": "compact caption banner; busy=39.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 110.71,
+            "stddev_luma": 48.47,
+            "edge_mean": 36.35
+          }
+        },
+        {
+          "id": "note_top_left",
+          "kind": "screen_note",
+          "x": 0.07,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.655,
+          "rationale": "screen note callout; busy=36.9; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 121.47,
+            "stddev_luma": 41.19,
+            "edge_mean": 36.6
+          }
+        },
+        {
+          "id": "caption_bottom_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.8,
+          "w": 0.42,
+          "h": 0.14,
+          "confidence": 0.475,
+          "rationale": "bottom caption fallback; busy=38.1; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 99.05,
+            "stddev_luma": 68.3,
+            "edge_mean": 19.48
+          }
+        }
+      ],
+      "analysis_forbidden_zones": [
+        {
+          "id": "focal_center",
+          "kind": "focal_center",
+          "box": [
+            202,
+            236,
+            518,
+            600
+          ],
+          "confidence": 0.78
+        },
+        {
+          "id": "screen_region",
+          "kind": "screen_region",
+          "box": [
+            158,
+            300,
+            576,
+            708
+          ],
+          "confidence": 0.92
+        },
+        {
+          "id": "mouse_hand",
+          "kind": "hand",
+          "box": [
+            346,
+            515,
+            504,
+            708
+          ],
+          "confidence": 0.82
+        }
+      ],
+      "manual_review_required": false,
+      "manual_review_reasons": [],
+      "placements": []
+    },
+    {
+      "panel_id": "p06",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p06.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/p06.png",
+      "size": [
+        720,
+        1072
+      ],
+      "panel_mode": "dialogue",
+      "overlay_tracks": [
+        "dialogue"
+      ],
+      "analysis_safe_zones": [
+        {
+          "id": "chat_top_left",
+          "kind": "chat_ui",
+          "x": 0.05,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.866,
+          "rationale": "compact edge-aligned chat slot; busy=21.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 59.53,
+            "stddev_luma": 33.31,
+            "edge_mean": 8.49
+          }
+        },
+        {
+          "id": "note_top_left",
+          "kind": "screen_note",
+          "x": 0.07,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.845,
+          "rationale": "screen note callout; busy=13.1; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 57.72,
+            "stddev_luma": 12.6,
+            "edge_mean": 5.77
+          }
+        },
+        {
+          "id": "caption_top_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.816,
+          "rationale": "compact caption banner; busy=20.5; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 61.87,
+            "stddev_luma": 30.18,
+            "edge_mean": 8.4
+          }
+        },
+        {
+          "id": "speech_top_left",
+          "kind": "speech",
+          "x": 0.05,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.789,
+          "rationale": "top-left negative space; busy=26.4; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 62.24,
+            "stddev_luma": 40.37,
+            "edge_mean": 12.7
+          }
+        },
+        {
+          "id": "chat_top_right",
+          "kind": "chat_ui",
+          "x": 0.67,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.739,
+          "rationale": "compact edge-aligned chat slot; busy=37.6; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 132.94,
+            "stddev_luma": 78.9,
+            "edge_mean": 14.96
+          }
+        },
+        {
+          "id": "speech_top_left_wide",
+          "kind": "speech",
+          "x": 0.04,
+          "y": 0.03,
+          "w": 0.38,
+          "h": 0.2,
+          "confidence": 0.723,
+          "rationale": "dialogue-first widened corner; busy=33.0; overlap=0.02",
+          "background_metrics": {
+            "mean_luma": 76.81,
+            "stddev_luma": 62.85,
+            "edge_mean": 11.64
+          }
+        },
+        {
+          "id": "speech_upper_mid",
+          "kind": "speech",
+          "x": 0.32,
+          "y": 0.05,
+          "w": 0.36,
+          "h": 0.17,
+          "confidence": 0.707,
+          "rationale": "upper-mid negative space; busy=26.6; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 84.57,
+            "stddev_luma": 46.7,
+            "edge_mean": 11.14
+          }
+        },
+        {
+          "id": "note_top_right",
+          "kind": "screen_note",
+          "x": 0.6,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.681,
+          "rationale": "screen note callout; busy=33.6; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 115.55,
+            "stddev_luma": 67.42,
+            "edge_mean": 13.44
+          }
+        },
+        {
+          "id": "speech_top_right",
+          "kind": "speech",
+          "x": 0.61,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.675,
+          "rationale": "top-right negative space; busy=40.6; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 118.45,
+            "stddev_luma": 80.09,
+            "edge_mean": 18.32
+          }
+        },
+        {
+          "id": "caption_bottom_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.8,
+          "w": 0.42,
+          "h": 0.14,
+          "confidence": 0.516,
+          "rationale": "bottom caption fallback; busy=33.0; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 57.9,
+            "stddev_luma": 47.25,
+            "edge_mean": 19.84
+          }
+        },
+        {
+          "id": "speech_mid_left",
+          "kind": "speech",
+          "x": 0.04,
+          "y": 0.24,
+          "w": 0.3,
+          "h": 0.17,
+          "confidence": 0.15,
+          "rationale": "mid-left fallback; busy=36.8; overlap=0.20",
+          "background_metrics": {
+            "mean_luma": 60.52,
+            "stddev_luma": 55.97,
+            "edge_mean": 21.54
+          }
+        }
+      ],
+      "analysis_forbidden_zones": [
+        {
+          "id": "focal_center",
+          "kind": "focal_center",
+          "box": [
+            202,
+            236,
+            518,
+            600
+          ],
+          "confidence": 0.78
+        },
+        {
+          "id": "mother_face",
+          "kind": "face",
+          "box": [
+            461,
+            268,
+            576,
+            461
+          ],
+          "confidence": 0.9
+        },
+        {
+          "id": "son_face",
+          "kind": "face",
+          "box": [
+            144,
+            364,
+            274,
+            536
+          ],
+          "confidence": 0.86
+        },
+        {
+          "id": "laptop_glow",
+          "kind": "screen_region",
+          "box": [
+            475,
+            493,
+            634,
+            772
+          ],
+          "confidence": 0.8
+        },
+        {
+          "id": "typing_hands",
+          "kind": "hand",
+          "box": [
+            331,
+            622,
+            576,
+            793
+          ],
+          "confidence": 0.8
+        }
+      ],
+      "manual_review_required": false,
+      "manual_review_reasons": [],
+      "placements": [
+        {
+          "id": "l03",
+          "kind": "balloon",
+          "speaker": "mother",
+          "text": "이게 뭐야?",
+          "template": "speech",
+          "bubble_kind": "speech",
+          "zone_id": "p06_mother_upper_right",
+          "zone_kind": "speech",
+          "zone_confidence": 0.93,
+          "score": 164.591,
+          "candidate_class": "speaker_local",
+          "resolved_anchor_id": "mother_mouth_primary",
+          "resolved_anchor_role": "mouth",
+          "selected_zone_score": 164.591,
+          "score_breakdown": {
+            "zone_confidence": 93.0,
+            "preferred_zone_bonus": 18.0,
+            "speaker_local_bonus": 22.0,
+            "local_priority_bonus": 30.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": 12.0,
+            "anchor_distance_penalty": 5.409,
+            "overlap_penalty": 0.0,
+            "line_count_penalty": 5.0,
+            "line_balance_penalty": 0.0,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 0.0
+          },
+          "font_size": 30,
+          "box": [
+            411,
+            148,
+            602,
+            225
+          ],
+          "inner_box": [
+            441,
+            172,
+            572,
+            201
+          ],
+          "tail_points": [
+            [
+              493,
+              221
+            ],
+            [
+              529,
+              221
+            ],
+            [
+              511,
+              386
+            ]
+          ],
+          "tail_entry_edge": "bottom",
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "mother_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "son_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "laptop_glow",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "typing_hands",
+              "kind": "hand",
+              "ratio": 0.0,
+              "intersection_area": 0
+            }
+          ],
+          "max_forbidden_overlap": 0.0,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "speech_top_right",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 57.073
+            },
+            {
+              "zone_id": "p06_mother_upper_mid",
+              "candidate_class": "speaker_local",
+              "reason": "ranked_below_selected_candidate",
+              "score": 125.87
+            },
+            {
+              "zone_id": "speech_top_left_wide",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 39.398
+            },
+            {
+              "zone_id": "speech_upper_mid",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 53.547
+            },
+            {
+              "zone_id": "speech_mid_left",
+              "candidate_class": "generic",
+              "reason": "exceeds_forbidden_overlap_threshold",
+              "max_overlap": 0.4703,
+              "score": -119.1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "panel_id": "p07",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p07.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/p07.png",
+      "size": [
+        720,
+        1072
+      ],
+      "panel_mode": "screen_ui",
+      "overlay_tracks": [
+        "caption",
+        "screen_ui"
+      ],
+      "analysis_safe_zones": [
+        {
+          "id": "note_top_center",
+          "kind": "screen_note",
+          "x": 0.34,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.914,
+          "rationale": "screen note above glow band; busy=12.7; overlap=0.02",
+          "background_metrics": {
+            "mean_luma": 145.25,
+            "stddev_luma": 25.71,
+            "edge_mean": 4.73
+          }
+        },
+        {
+          "id": "note_top_left",
+          "kind": "screen_note",
+          "x": 0.07,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.884,
+          "rationale": "screen note callout; busy=8.2; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 136.87,
+            "stddev_luma": 13.11,
+            "edge_mean": 3.75
+          }
+        },
+        {
+          "id": "caption_top_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.857,
+          "rationale": "compact caption banner; busy=15.4; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 136.72,
+            "stddev_luma": 29.89,
+            "edge_mean": 6.15
+          }
+        },
+        {
+          "id": "chat_top_left",
+          "kind": "chat_ui",
+          "x": 0.05,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.835,
+          "rationale": "compact edge-aligned chat slot; busy=16.4; overlap=0.04",
+          "background_metrics": {
+            "mean_luma": 137.45,
+            "stddev_luma": 31.08,
+            "edge_mean": 7.32
+          }
+        },
+        {
+          "id": "speech_top_left",
+          "kind": "speech",
+          "x": 0.05,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.786,
+          "rationale": "top-left negative space; busy=16.5; overlap=0.05",
+          "background_metrics": {
+            "mean_luma": 135.12,
+            "stddev_luma": 32.32,
+            "edge_mean": 6.4
+          }
+        },
+        {
+          "id": "speech_upper_mid",
+          "kind": "speech",
+          "x": 0.32,
+          "y": 0.05,
+          "w": 0.36,
+          "h": 0.17,
+          "confidence": 0.697,
+          "rationale": "upper-mid negative space; busy=14.7; overlap=0.06",
+          "background_metrics": {
+            "mean_luma": 146.74,
+            "stddev_luma": 32.4,
+            "edge_mean": 4.13
+          }
+        },
+        {
+          "id": "caption_top_right",
+          "kind": "caption",
+          "x": 0.55,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.594,
+          "rationale": "right caption shelf; busy=17.9; overlap=0.09",
+          "background_metrics": {
+            "mean_luma": 160.85,
+            "stddev_luma": 41.9,
+            "edge_mean": 5.21
+          }
+        },
+        {
+          "id": "chat_top_right",
+          "kind": "chat_ui",
+          "x": 0.67,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.53,
+          "rationale": "compact edge-aligned chat slot; busy=25.8; overlap=0.17",
+          "background_metrics": {
+            "mean_luma": 183.48,
+            "stddev_luma": 57.42,
+            "edge_mean": 9.03
+          }
+        },
+        {
+          "id": "speech_top_right",
+          "kind": "speech",
+          "x": 0.61,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.525,
+          "rationale": "top-right negative space; busy=24.1; overlap=0.16",
+          "background_metrics": {
+            "mean_luma": 171.92,
+            "stddev_luma": 56.95,
+            "edge_mean": 7.22
+          }
+        },
+        {
+          "id": "note_top_right",
+          "kind": "screen_note",
+          "x": 0.6,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.519,
+          "rationale": "screen note callout; busy=19.6; overlap=0.15",
+          "background_metrics": {
+            "mean_luma": 172.4,
+            "stddev_luma": 46.2,
+            "edge_mean": 5.92
+          }
+        },
+        {
+          "id": "caption_bottom_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.8,
+          "w": 0.42,
+          "h": 0.14,
+          "confidence": 0.48,
+          "rationale": "bottom caption fallback; busy=37.5; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 73.67,
+            "stddev_luma": 54.57,
+            "edge_mean": 24.81
+          }
+        },
+        {
+          "id": "chat_mid_right",
+          "kind": "chat_ui",
+          "x": 0.67,
+          "y": 0.26,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.323,
+          "rationale": "secondary chat slot; busy=26.9; overlap=0.18",
+          "background_metrics": {
+            "mean_luma": 202.46,
+            "stddev_luma": 57.83,
+            "edge_mean": 9.06
+          }
+        },
+        {
+          "id": "speech_mid_right",
+          "kind": "speech",
+          "x": 0.66,
+          "y": 0.24,
+          "w": 0.28,
+          "h": 0.17,
+          "confidence": 0.171,
+          "rationale": "mid-right fallback; busy=25.4; overlap=0.21",
+          "background_metrics": {
+            "mean_luma": 198.47,
+            "stddev_luma": 58.74,
+            "edge_mean": 6.12
+          }
+        },
+        {
+          "id": "speech_mid_left",
+          "kind": "speech",
+          "x": 0.04,
+          "y": 0.24,
+          "w": 0.3,
+          "h": 0.17,
+          "confidence": 0.164,
+          "rationale": "mid-left fallback; busy=26.9; overlap=0.21",
+          "background_metrics": {
+            "mean_luma": 114.56,
+            "stddev_luma": 55.62,
+            "edge_mean": 8.58
+          }
+        }
+      ],
+      "analysis_forbidden_zones": [
+        {
+          "id": "focal_center",
+          "kind": "focal_center",
+          "box": [
+            202,
+            236,
+            518,
+            600
+          ],
+          "confidence": 0.78
+        },
+        {
+          "id": "protagonist_face",
+          "kind": "face",
+          "box": [
+            180,
+            214,
+            324,
+            386
+          ],
+          "confidence": 0.86
+        },
+        {
+          "id": "mother_face",
+          "kind": "face",
+          "box": [
+            446,
+            172,
+            562,
+            343
+          ],
+          "confidence": 0.6
+        },
+        {
+          "id": "screen_glow_band",
+          "kind": "screen_region",
+          "box": [
+            29,
+            461,
+            691,
+            622
+          ],
+          "confidence": 0.94
+        }
+      ],
+      "manual_review_required": false,
+      "manual_review_reasons": [],
+      "placements": [
+        {
+          "id": "l04",
+          "kind": "balloon",
+          "speaker": "internal_note",
+          "text": "의대 실패하면 여기라도 살아남는다.",
+          "template": "screen_note",
+          "bubble_kind": "note",
+          "zone_id": "note_top_center",
+          "zone_kind": "screen_note",
+          "zone_confidence": 0.914,
+          "score": 21.304,
+          "candidate_class": "generic",
+          "resolved_anchor_id": null,
+          "resolved_anchor_role": null,
+          "selected_zone_score": 21.304,
+          "score_breakdown": {
+            "zone_confidence": 91.4,
+            "preferred_zone_bonus": 0.0,
+            "speaker_local_bonus": 0.0,
+            "local_priority_bonus": 0.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": -14.0,
+            "anchor_distance_penalty": 35.0,
+            "overlap_penalty": 2.628,
+            "line_count_penalty": 15.0,
+            "line_balance_penalty": 3.468,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 0.0
+          },
+          "font_size": 28,
+          "box": [
+            248.0,
+            65,
+            457.0,
+            213
+          ],
+          "inner_box": [
+            272.0,
+            83,
+            433.0,
+            195
+          ],
+          "tail_points": null,
+          "tail_entry_edge": null,
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "protagonist_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "mother_face",
+              "kind": "face",
+              "ratio": 0.0146,
+              "intersection_area": 451.0
+            },
+            {
+              "id": "screen_glow_band",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            }
+          ],
+          "max_forbidden_overlap": 0.0146,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "note_top_left",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 20.932
+            },
+            {
+              "zone_id": "note_top_right",
+              "candidate_class": "generic",
+              "reason": "exceeds_forbidden_overlap_threshold",
+              "max_overlap": 0.1538,
+              "score": -55.252
+            }
+          ]
+        },
+        {
+          "id": "p07_caption_03",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "이제 끝났다는 안도감이 먼저 왔다.",
+          "template": "caption",
+          "bubble_kind": "caption",
+          "zone_id": "caption_bottom_left",
+          "zone_kind": "caption",
+          "zone_confidence": 0.48,
+          "score": -26.935,
+          "candidate_class": "generic",
+          "resolved_anchor_id": null,
+          "resolved_anchor_role": null,
+          "selected_zone_score": -26.935,
+          "score_breakdown": {
+            "zone_confidence": 48.0,
+            "preferred_zone_bonus": 0.0,
+            "speaker_local_bonus": 0.0,
+            "local_priority_bonus": 0.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": -14.0,
+            "anchor_distance_penalty": 35.0,
+            "overlap_penalty": 0.0,
+            "line_count_penalty": 10.0,
+            "line_balance_penalty": 3.935,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 12.0
+          },
+          "font_size": 28,
+          "box": [
+            50.0,
+            880,
+            324.0,
+            985
+          ],
+          "inner_box": [
+            74.0,
+            898,
+            300.0,
+            967
+          ],
+          "tail_points": null,
+          "tail_entry_edge": null,
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "protagonist_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "mother_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "screen_glow_band",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            }
+          ],
+          "max_forbidden_overlap": 0.0,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "caption_top_left",
+              "candidate_class": "generic",
+              "reason": "collides_with_previous_placement"
+            },
+            {
+              "zone_id": "caption_top_right",
+              "candidate_class": "generic",
+              "reason": "collides_with_previous_placement"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "panel_id": "p08",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3/p08.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_ballooned_attach2/p08.png",
+      "size": [
+        720,
+        1072
+      ],
+      "panel_mode": "dialogue",
+      "overlay_tracks": [
+        "caption",
+        "dialogue",
+        "chat_ui",
+        "screen_ui"
+      ],
+      "analysis_safe_zones": [
+        {
+          "id": "note_top_left",
+          "kind": "screen_note",
+          "x": 0.07,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.872,
+          "rationale": "screen note callout; busy=9.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 35.67,
+            "stddev_luma": 5.3,
+            "edge_mean": 2.35
+          }
+        },
+        {
+          "id": "note_top_right",
+          "kind": "screen_note",
+          "x": 0.6,
+          "y": 0.06,
+          "w": 0.3,
+          "h": 0.14,
+          "confidence": 0.836,
+          "rationale": "screen note callout; busy=14.3; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 30.93,
+            "stddev_luma": 11.91,
+            "edge_mean": 5.93
+          }
+        },
+        {
+          "id": "chat_top_left",
+          "kind": "chat_ui",
+          "x": 0.05,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.834,
+          "rationale": "compact edge-aligned chat slot; busy=25.7; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 44.1,
+            "stddev_luma": 46.07,
+            "edge_mean": 6.13
+          }
+        },
+        {
+          "id": "speech_upper_mid",
+          "kind": "speech",
+          "x": 0.32,
+          "y": 0.05,
+          "w": 0.36,
+          "h": 0.17,
+          "confidence": 0.829,
+          "rationale": "upper-mid negative space; busy=11.4; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 36.48,
+            "stddev_luma": 7.88,
+            "edge_mean": 3.77
+          }
+        },
+        {
+          "id": "chat_top_right",
+          "kind": "chat_ui",
+          "x": 0.67,
+          "y": 0.08,
+          "w": 0.28,
+          "h": 0.14,
+          "confidence": 0.817,
+          "rationale": "compact edge-aligned chat slot; busy=27.8; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 37.17,
+            "stddev_luma": 45.12,
+            "edge_mean": 9.99
+          }
+        },
+        {
+          "id": "speech_top_left",
+          "kind": "speech",
+          "x": 0.05,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.812,
+          "rationale": "top-left negative space; busy=23.5; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 43.44,
+            "stddev_luma": 41.69,
+            "edge_mean": 4.83
+          }
+        },
+        {
+          "id": "caption_top_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.803,
+          "rationale": "compact caption banner; busy=22.2; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 43.22,
+            "stddev_luma": 39.21,
+            "edge_mean": 4.04
+          }
+        },
+        {
+          "id": "speech_top_right",
+          "kind": "speech",
+          "x": 0.61,
+          "y": 0.04,
+          "w": 0.34,
+          "h": 0.18,
+          "confidence": 0.799,
+          "rationale": "top-right negative space; busy=25.2; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 37.95,
+            "stddev_luma": 40.67,
+            "edge_mean": 8.03
+          }
+        },
+        {
+          "id": "caption_top_left_wide",
+          "kind": "caption",
+          "x": 0.04,
+          "y": 0.05,
+          "w": 0.42,
+          "h": 0.14,
+          "confidence": 0.794,
+          "rationale": "cliffhanger caption shelf; busy=25.7; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 48.41,
+            "stddev_luma": 50.35,
+            "edge_mean": 3.81
+          }
+        },
+        {
+          "id": "caption_top_right",
+          "kind": "caption",
+          "x": 0.55,
+          "y": 0.05,
+          "w": 0.38,
+          "h": 0.14,
+          "confidence": 0.787,
+          "rationale": "right caption shelf; busy=14.2; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 31.41,
+            "stddev_luma": 11.75,
+            "edge_mean": 5.87
+          }
+        },
+        {
+          "id": "speech_top_left_wide",
+          "kind": "speech",
+          "x": 0.04,
+          "y": 0.03,
+          "w": 0.38,
+          "h": 0.2,
+          "confidence": 0.738,
+          "rationale": "dialogue-first widened corner; busy=31.1; overlap=0.02",
+          "background_metrics": {
+            "mean_luma": 53.05,
+            "stddev_luma": 60.09,
+            "edge_mean": 7.82
+          }
+        },
+        {
+          "id": "caption_bottom_left",
+          "kind": "caption",
+          "x": 0.05,
+          "y": 0.8,
+          "w": 0.42,
+          "h": 0.14,
+          "confidence": 0.563,
+          "rationale": "bottom caption fallback; busy=27.1; overlap=0.00",
+          "background_metrics": {
+            "mean_luma": 24.96,
+            "stddev_luma": 42.08,
+            "edge_mean": 9.49
+          }
+        }
+      ],
+      "analysis_forbidden_zones": [
+        {
+          "id": "focal_center",
+          "kind": "focal_center",
+          "box": [
+            202,
+            236,
+            518,
+            600
+          ],
+          "confidence": 0.78
+        },
+        {
+          "id": "protagonist_face",
+          "kind": "face",
+          "box": [
+            115,
+            322,
+            274,
+            493
+          ],
+          "confidence": 0.88
+        },
+        {
+          "id": "mother_face",
+          "kind": "face",
+          "box": [
+            432,
+            279,
+            547,
+            450
+          ],
+          "confidence": 0.9
+        },
+        {
+          "id": "phone_glow",
+          "kind": "screen_region",
+          "box": [
+            389,
+            600,
+            518,
+            836
+          ],
+          "confidence": 0.94
+        },
+        {
+          "id": "laptop_glow",
+          "kind": "screen_region",
+          "box": [
+            274,
+            557,
+            432,
+            750
+          ],
+          "confidence": 0.82
+        },
+        {
+          "id": "typing_hands",
+          "kind": "hand",
+          "box": [
+            202,
+            622,
+            374,
+            772
+          ],
+          "confidence": 0.72
+        }
+      ],
+      "manual_review_required": false,
+      "manual_review_reasons": [],
+      "placements": [
+        {
+          "id": "l05",
+          "kind": "balloon",
+          "speaker": "teacher_chat",
+          "text": "부산대 의대 기준으로 가져와.",
+          "template": "chat_ui",
+          "bubble_kind": "chat",
+          "zone_id": "chat_top_left",
+          "zone_kind": "chat_ui",
+          "zone_confidence": 0.834,
+          "score": 16.722,
+          "candidate_class": "generic",
+          "resolved_anchor_id": null,
+          "resolved_anchor_role": null,
+          "selected_zone_score": 16.722,
+          "score_breakdown": {
+            "zone_confidence": 83.4,
+            "preferred_zone_bonus": 0.0,
+            "speaker_local_bonus": 0.0,
+            "local_priority_bonus": 0.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": -14.0,
+            "anchor_distance_penalty": 35.0,
+            "overlap_penalty": 0.0,
+            "line_count_penalty": 15.0,
+            "line_balance_penalty": 2.678,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 0.0
+          },
+          "font_size": 25,
+          "box": [
+            52.0,
+            91,
+            221.0,
+            230
+          ],
+          "inner_box": [
+            76.0,
+            111,
+            197.0,
+            210
+          ],
+          "tail_points": null,
+          "tail_entry_edge": null,
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "protagonist_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "mother_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "phone_glow",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "laptop_glow",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "typing_hands",
+              "kind": "hand",
+              "ratio": 0.0,
+              "intersection_area": 0
+            }
+          ],
+          "max_forbidden_overlap": 0.0,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "chat_top_right",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 15.022
+            }
+          ]
+        },
+        {
+          "id": "l06",
+          "kind": "balloon",
+          "speaker": "mother",
+          "text": "너는 나한테 의대 본다고 해놓고, 학교에는 또 다르게 말했니?",
+          "template": "speech",
+          "bubble_kind": "speech",
+          "zone_id": "p08_mother_upper_right",
+          "zone_kind": "speech",
+          "zone_confidence": 0.95,
+          "score": 141.278,
+          "candidate_class": "speaker_local",
+          "resolved_anchor_id": "mother_mouth_primary",
+          "resolved_anchor_role": "mouth",
+          "selected_zone_score": 141.278,
+          "score_breakdown": {
+            "zone_confidence": 95.0,
+            "preferred_zone_bonus": 18.0,
+            "speaker_local_bonus": 22.0,
+            "local_priority_bonus": 30.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": 12.0,
+            "anchor_distance_penalty": 6.717,
+            "overlap_penalty": 0.0,
+            "line_count_penalty": 25.0,
+            "line_balance_penalty": 4.005,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 0.0
+          },
+          "font_size": 21,
+          "box": [
+            427.0,
+            21,
+            618.0,
+            218
+          ],
+          "inner_box": [
+            457.0,
+            45,
+            588.0,
+            194
+          ],
+          "tail_points": [
+            [
+              460,
+              214
+            ],
+            [
+              504,
+              214
+            ],
+            [
+              482,
+              364
+            ]
+          ],
+          "tail_entry_edge": "bottom",
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "protagonist_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "mother_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "phone_glow",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "laptop_glow",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "typing_hands",
+              "kind": "hand",
+              "ratio": 0.0,
+              "intersection_area": 0
+            }
+          ],
+          "max_forbidden_overlap": 0.0,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "speech_upper_mid",
+              "candidate_class": "generic",
+              "reason": "text_does_not_fit"
+            },
+            {
+              "zone_id": "speech_top_right",
+              "candidate_class": "generic",
+              "reason": "ranked_below_selected_candidate",
+              "score": 56.387
+            },
+            {
+              "zone_id": "p08_mother_upper_mid",
+              "candidate_class": "speaker_local",
+              "reason": "ranked_below_selected_candidate",
+              "score": 99.827
+            },
+            {
+              "zone_id": "speech_top_left_wide",
+              "candidate_class": "generic",
+              "reason": "collides_with_previous_placement"
+            }
+          ]
+        },
+        {
+          "id": "p08_caption_04",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "나는 서로 다른 미래를 세 벌이나 계약해 둔 거였다.",
+          "template": "caption",
+          "bubble_kind": "caption",
+          "zone_id": "caption_bottom_left",
+          "zone_kind": "caption",
+          "zone_confidence": 0.563,
+          "score": -14.778,
+          "candidate_class": "generic",
+          "resolved_anchor_id": null,
+          "resolved_anchor_role": null,
+          "selected_zone_score": -14.778,
+          "score_breakdown": {
+            "zone_confidence": 56.3,
+            "preferred_zone_bonus": 0.0,
+            "speaker_local_bonus": 0.0,
+            "local_priority_bonus": 0.0,
+            "preferred_side_bonus": 0.0,
+            "anchor_bonus": -14.0,
+            "anchor_distance_penalty": 35.0,
+            "overlap_penalty": 0.0,
+            "line_count_penalty": 10.0,
+            "line_balance_penalty": 0.078,
+            "tail_cross_penalty": 0.0,
+            "generic_fallback_penalty": 0.0,
+            "attachment_review_penalty": 12.0
+          },
+          "font_size": 24,
+          "box": [
+            41.0,
+            885,
+            333.0,
+            981
+          ],
+          "inner_box": [
+            65.0,
+            903,
+            309.0,
+            963
+          ],
+          "tail_points": null,
+          "tail_entry_edge": null,
+          "tail_cross_ratio": 0.0,
+          "overlap_metrics": [
+            {
+              "id": "focal_center",
+              "kind": "focal_center",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "protagonist_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "mother_face",
+              "kind": "face",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "phone_glow",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "laptop_glow",
+              "kind": "screen_region",
+              "ratio": 0.0,
+              "intersection_area": 0
+            },
+            {
+              "id": "typing_hands",
+              "kind": "hand",
+              "ratio": 0.0,
+              "intersection_area": 0
+            }
+          ],
+          "max_forbidden_overlap": 0.0,
+          "selected_with_warning": false,
+          "warning_reason": null,
+          "fallback_reason": null,
+          "review_reasons": [],
+          "rejected_candidates": [
+            {
+              "zone_id": "caption_top_left",
+              "candidate_class": "generic",
+              "reason": "collides_with_previous_placement"
+            },
+            {
+              "zone_id": "caption_top_left_wide",
+              "candidate_class": "generic",
+              "reason": "collides_with_previous_placement"
+            },
+            {
+              "zone_id": "caption_top_right",
+              "candidate_class": "generic",
+              "reason": "collides_with_previous_placement"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

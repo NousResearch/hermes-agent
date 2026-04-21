@@ -1,0 +1,38 @@
+episode: ep002
+render_mode: storyboard_fallback
+output:
+  panels_dir: docs/plans/orbi-romance-webtoon-20260421/renders/ep002/panels
+  longscroll: docs/plans/orbi-romance-webtoon-20260421/renders/ep002/ep002_longscroll.png
+jobs:
+- panel_id: p01
+  mode: storyboard_card
+  prompt: 과외 중 멍하니 있는 시윤과 휴대폰 답장 화면, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p02
+  mode: storyboard_card
+  prompt: 비 오는 밤 스터디실에서 마주 앉은 두 사람, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p03
+  mode: storyboard_card
+  prompt: 서하의 정면 클로즈업, clean Korean webtoon storyboard, emotional readability, dramatic
+    lighting, no visible letters or UI text
+- panel_id: p04
+  mode: storyboard_card
+  prompt: 서하에게 쏘아붙이는 시윤, clean Korean webtoon storyboard, emotional readability, dramatic
+    lighting, no visible letters or UI text
+- panel_id: p05
+  mode: storyboard_card
+  prompt: 조민우가 끼어들며 반수 느낌 나는 애라고 비웃는 장면, clean Korean webtoon storyboard, emotional
+    readability, dramatic lighting, no visible letters or UI text
+- panel_id: p06
+  mode: storyboard_card
+  prompt: 빗속 우산 아래 가까워진 거리, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p07
+  mode: storyboard_card
+  prompt: 서하가 시윤 손목을 잡는 장면, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p08
+  mode: storyboard_card
+  prompt: 건너편에서 휴대폰 카메라가 둘을 잡는 실루엣, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text

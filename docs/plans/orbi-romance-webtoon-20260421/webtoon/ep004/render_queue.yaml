@@ -1,0 +1,38 @@
+episode: ep004
+render_mode: storyboard_fallback
+output:
+  panels_dir: docs/plans/orbi-romance-webtoon-20260421/renders/ep004/panels
+  longscroll: docs/plans/orbi-romance-webtoon-20260421/renders/ep004/ep004_longscroll.png
+jobs:
+- panel_id: p01
+  mode: storyboard_card
+  prompt: 밤새 깨어 있는 시윤과 음성메시지 재생 화면, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p02
+  mode: storyboard_card
+  prompt: 이걸 끝내자고 말하는 시윤, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p03
+  mode: storyboard_card
+  prompt: 소라 앞에서 진짜냐고 묻는 장면, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p04
+  mode: storyboard_card
+  prompt: 거리 한복판에서 서로를 후려치는 대사전, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p05
+  mode: storyboard_card
+  prompt: 예고 없이 원룸에 들어온 엄마와 책상 위 약대 자료, clean Korean webtoon storyboard, emotional
+    readability, dramatic lighting, no visible letters or UI text
+- panel_id: p06
+  mode: storyboard_card
+  prompt: 엄마가 윤서하 이름이 뜬 액정을 보는 순간, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p07
+  mode: storyboard_card
+  prompt: 벽에 기대 통화하는 시윤, clean Korean webtoon storyboard, emotional readability, dramatic
+    lighting, no visible letters or UI text
+- panel_id: p08
+  mode: storyboard_card
+  prompt: 캄캄한 통화 화면 클로즈업, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text

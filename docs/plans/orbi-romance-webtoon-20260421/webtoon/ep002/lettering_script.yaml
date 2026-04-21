@@ -1,0 +1,33 @@
+episode: ep002
+language: ko
+rules:
+- 긴 독백은 캡션으로 분리
+- 대사는 짧고 독하게 유지
+- 말풍선 텍스트는 후처리 전제
+balloons:
+- id: l02
+  panel_id: p02
+  speaker: dialogue
+  text: 현재를 임시거처처럼 대하는 거.
+  tone: 탐색
+- id: l04
+  panel_id: p04
+  speaker: dialogue
+  text: 누가 널 좋아해.
+  tone: 분노
+- id: l07
+  panel_id: p07
+  speaker: dialogue
+  text: 아직 모르겠어, 넌.
+  tone: 흔들림
+captions:
+- panel_id: p01
+  text: 반은. 반은 진심.
+- panel_id: p03
+  text: 난 내려갈 사람 안 만나.
+- panel_id: p05
+  text: 선 넘지 마.
+- panel_id: p06
+  text: 계속 보게 돼.
+- panel_id: p08
+  text: 한소라가 먼저 봤다.

@@ -1,0 +1,62 @@
+episode: ep001
+source_title: 1화. 반수생 주제에
+adaptation_mode: vertical_scroll_webtoon
+scene_id: ep001_orbi_romance_pressure
+core_hook: 1화. 반수생 주제에
+blocks:
+- block_id: b01
+  purpose: opening
+  emotion: 압박
+  visual: 도서관 자리 위 약대 입결표와 반수 루틴 파일이 열린 노트북 클로즈업
+  dialogue:
+  - caption: '"6평 전까지 생명 2회독."'
+  spacing: medium
+- block_id: b02
+  purpose: character_intro
+  emotion: 경계
+  visual: 스터디실에 처음 들어온 윤서하와 노트북을 급히 돌리는 강시윤
+  dialogue:
+  - caption: '"학교 어디 다녀?"'
+  spacing: medium
+- block_id: b03
+  purpose: status_hit
+  emotion: 수치
+  visual: 학교를 말한 직후 서하의 짧은 “아.”와 굳은 시윤 표정
+  dialogue:
+  - caption: '"그 한 글자에 정보량이 너무 많았다."'
+  spacing: medium
+- block_id: b04
+  purpose: conflict
+  emotion: 도발
+  visual: 서하가 반수와 연애를 연결해 말하는 장면
+  dialogue:
+  - caption: '"반수하는 사람은 연애할 시간 없지 않나."'
+  spacing: tall_drop
+- block_id: b05
+  purpose: private_aftershock
+  emotion: 잔상
+  visual: 엘리베이터 거울에 비친 두 사람의 어색한 거리
+  dialogue:
+  - caption: '"다음 데를 먼저 보는 눈."'
+  spacing: medium
+- block_id: b06
+  purpose: message_reveal
+  emotion: 들킴
+  visual: 원룸 어둠 속 휴대폰 화면과 메모 캡처
+  dialogue:
+  - caption: '"얘는 진짜 못 올라가면 사람 망가질 타입."'
+  spacing: medium
+- block_id: b07
+  purpose: family_pressure
+  emotion: 압박
+  visual: 엄마 메시지와 캡처 화면이 동시에 뜬 휴대폰
+  dialogue:
+  - caption: '"너는 지금 있는 자리로는 만족 못 할 애."'
+  spacing: medium
+- block_id: b08
+  purpose: cliff
+  emotion: 예고
+  visual: 침대 끝에 앉아 화면을 보는 시윤의 실루엣
+  dialogue:
+  - caption: '"이번 주말 집 내려오지?"'
+  spacing: tall_drop

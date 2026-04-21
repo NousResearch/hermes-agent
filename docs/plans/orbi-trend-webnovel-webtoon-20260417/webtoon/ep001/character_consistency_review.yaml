@@ -1,0 +1,173 @@
+episode: ep001
+baseline_dir: generated_fal_v3
+review_rubric:
+  face_match: null
+  hair_match: null
+  wardrobe_match: null
+  role_readability: null
+  notes: ""
+review_items:
+  - panel_id: p01
+    characters:
+      protagonist:
+        expected_traits:
+          - black hoodie sleeve edge
+          - slim student hand tension
+    continuity_links:
+      compare_against:
+        protagonist:
+          - protagonist.anchor:desk_halfbody
+    rubric:
+      face_match: null
+      hair_match: null
+      wardrobe_match: null
+      role_readability: null
+      notes: ""
+  - panel_id: p02
+    characters:
+      protagonist:
+        expected_traits:
+          - black hoodie silhouette
+          - slight center-part fringe
+          - late-teen proportions
+      mother:
+        expected_traits:
+          - low-tied hair
+          - beige homewear neckline
+          - middle-aged restraint
+    continuity_links:
+      compare_against:
+        protagonist:
+          - protagonist.anchor:desk_halfbody
+          - protagonist.anchor:portrait_3q
+        mother:
+          - mother.anchor:portrait_front
+    rubric:
+      face_match: null
+      hair_match: null
+      wardrobe_match: null
+      role_readability: null
+      notes: ""
+  - panel_id: p03
+    characters:
+      protagonist:
+        expected_traits:
+          - faint student-room reflection only
+    continuity_links:
+      compare_against:
+        protagonist:
+          - p02
+    rubric:
+      face_match: null
+      hair_match: null
+      wardrobe_match: null
+      role_readability: null
+      notes: ""
+  - panel_id: p04
+    characters:
+      protagonist:
+        expected_traits:
+          - pale oval face
+          - tired narrow eyes
+          - black hoodie silhouette
+    continuity_links:
+      compare_against:
+        protagonist:
+          - protagonist.anchor:portrait_3q
+          - p02
+    rubric:
+      face_match: null
+      hair_match: null
+      wardrobe_match: null
+      role_readability: null
+      notes: ""
+  - panel_id: p05
+    characters:
+      protagonist:
+        expected_traits:
+          - slim student hand
+          - hoodie cuff
+    continuity_links:
+      compare_against:
+        protagonist:
+          - p04
+    rubric:
+      face_match: null
+      hair_match: null
+      wardrobe_match: null
+      role_readability: null
+      notes: ""
+  - panel_id: p06
+    characters:
+      protagonist:
+        expected_traits:
+          - hoodie silhouette
+          - fringe silhouette
+          - pale oval face
+      mother:
+        expected_traits:
+          - low-tied hair
+          - beige homewear neckline
+          - restrained sharp eyes
+    continuity_links:
+      compare_against:
+        protagonist:
+          - protagonist.anchor:desk_halfbody
+          - p02
+        mother:
+          - mother.anchor:doorway_fullbody
+          - mother.anchor:portrait_front
+    rubric:
+      face_match: null
+      hair_match: null
+      wardrobe_match: null
+      role_readability: null
+      notes: ""
+  - panel_id: p07
+    characters:
+      protagonist:
+        expected_traits:
+          - student silhouette only
+      mother:
+        expected_traits:
+          - doorway silhouette only
+    continuity_links:
+      compare_against:
+        protagonist:
+          - p06
+        mother:
+          - p06
+    rubric:
+      face_match: null
+      hair_match: null
+      wardrobe_match: null
+      role_readability: null
+      notes: ""
+  - panel_id: p08
+    characters:
+      protagonist:
+        expected_traits:
+          - slight center-part fringe
+          - tired narrow eyes
+          - black hoodie silhouette
+      mother:
+        expected_traits:
+          - low-tied hair
+          - long oval face
+          - beige homewear neckline
+          - restrained sharp eyes
+    continuity_links:
+      compare_against:
+        protagonist:
+          - p06
+          - protagonist.anchor:portrait_3q
+        mother:
+          - p06
+          - mother.anchor:doorway_fullbody
+          - mother.anchor:portrait_front
+    rubric:
+      face_match: null
+      hair_match: null
+      wardrobe_match: null
+      role_readability: null
+      notes: ""

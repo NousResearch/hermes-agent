@@ -1,0 +1,92 @@
+episode: ep005
+prompt_schema_version: 1
+style_preset: clean_korean_webtoon_storyboard
+style_anchor:
+  positive: clean Korean webtoon storyboard, polished manhwa composition, expressive
+    faces, strong emotional contrast, vertical mobile webtoon panel, no readable text
+    inside image
+  negative:
+  - readable text in image
+  - speech bubbles rendered by model
+  - watermark
+  - logo
+  - western comic page layout
+characters:
+  protagonist:
+    role: 강시윤, 20세, 지방 국립대 1학년 반수생
+    visual: slim Korean male student, black hoodie, tired eyes, sharp but defensive
+      expression
+  heroine:
+    role: 윤서하, 계약학과 재학생
+    visual: sharp-faced Korean female student, dark jacket, cool expression, controlled
+      posture
+  sora:
+    role: 한소라, 스터디 메이트
+    visual: soft but observant Korean female student, casual campus wear
+  minwoo:
+    role: 조민우, 과 선배
+    visual: well-groomed Korean male senior, smug expression
+  mother:
+    role: 시윤의 어머니
+    visual: middle-aged Korean woman, restrained disappointment
+panels:
+- panel_id: p01
+  block_id: b01
+  shot: insert_prop
+  prompt: 모의고사 시험지와 떨리는 손, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+  visible_characters:
+  - protagonist
+- panel_id: p02
+  block_id: b02
+  shot: medium_two_shot
+  prompt: 복도에서 시윤을 보는 소라, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+  visible_characters:
+  - protagonist
+  - sora
+- panel_id: p03
+  block_id: b03
+  shot: close_up
+  prompt: 계약학과 건물 뒤 벤치에서 마주 앉은 둘, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+  visible_characters:
+  - protagonist
+  - heroine
+- panel_id: p04
+  block_id: b04
+  shot: medium_two_shot
+  prompt: 서하를 향해 뱉는 시윤의 말, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+  visible_characters:
+  - protagonist
+  - heroine
+- panel_id: p05
+  block_id: b05
+  shot: medium_two_shot
+  prompt: 처음 흔들린 서하 표정, clean Korean webtoon storyboard, emotional readability, dramatic
+    lighting, no visible letters or UI text
+  visible_characters:
+  - protagonist
+  - heroine
+- panel_id: p06
+  block_id: b06
+  shot: close_up
+  prompt: 성적표 위에 학생증을 내려놓는 손, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+  visible_characters:
+  - protagonist
+- panel_id: p07
+  block_id: b07
+  shot: medium_two_shot
+  prompt: 학생증과 성적표를 동시에 잡는 시윤, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+  visible_characters:
+  - protagonist
+- panel_id: p08
+  block_id: b08
+  shot: close_up
+  prompt: 벤치에 남겨진 학생증 자국과 마지막 메시지, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+  visible_characters:
+  - protagonist

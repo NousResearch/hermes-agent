@@ -1,0 +1,77 @@
+{
+  "mode": "fal_flux2_render",
+  "anchors": {
+    "location": "https://v3b.fal.media/files/b/0a96989e/UGOnsyCNI6s2QMCFB1zxL_ex0dNPW2.png",
+    "protagonist": "https://v3b.fal.media/files/b/0a9698a0/W-Ox9KL0ZhTs2w_9z3WQp_RLLo4gWu.png",
+    "mother": "https://v3b.fal.media/files/b/0a9698a1/G_njogYUH-xtcZes_dgK6_MXcEukWj.png"
+  },
+  "panels": [
+    {
+      "panel_id": "p01",
+      "url": "https://v3b.fal.media/files/b/0a9698a2/pdSsnGmvxSYvERhkHMS5v_jdbxocfb.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p01.png",
+      "block_id": "b01",
+      "shot": "extreme_close_up"
+    },
+    {
+      "panel_id": "p02",
+      "url": "https://v3b.fal.media/files/b/0a9698a5/5HMS_kprJkkfFJK2NA3op_kQe5X9R5.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p02.png",
+      "block_id": "b02",
+      "shot": "over_shoulder"
+    },
+    {
+      "panel_id": "p03",
+      "url": "https://v3b.fal.media/files/b/0a9698a8/u2581mZhAF7zNCgKvh_V1_xfBSQdqq.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p03.png",
+      "block_id": "b03",
+      "shot": "insert_screen"
+    },
+    {
+      "panel_id": "p04",
+      "url": "https://v3b.fal.media/files/b/0a9698aa/0xo1fW76MX6atux1NKwG2_sAAAz0xH.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p04.png",
+      "block_id": "b04",
+      "shot": "split_focus"
+    },
+    {
+      "panel_id": "p05",
+      "url": "https://v3b.fal.media/files/b/0a9698ad/GPd1anhhNhKSsvh1KajZX_ZRYYk26b.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p05.png",
+      "block_id": "b05",
+      "shot": "hand_closeup"
+    },
+    {
+      "panel_id": "p06",
+      "url": "https://v3b.fal.media/files/b/0a9698af/BBwVENwXt4safpyK4eAnA_SvGg1ypd.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p06.png",
+      "block_id": "b06",
+      "shot": "doorway_reveal"
+    },
+    {
+      "panel_id": "p07",
+      "url": "https://v3b.fal.media/files/b/0a9698b3/aVUK53nUNsVaO6G-L8WqB_AgPiUsed.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p07.png",
+      "block_id": "b07",
+      "shot": "text_focus_prop"
+    },
+    {
+      "panel_id": "p08",
+      "url": "https://v3b.fal.media/files/b/0a9698b5/b4H2mfDJOLyrqxHszbKAj_QAZumAuf.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p08.png",
+      "block_id": "b08",
+      "shot": "final_cliffhanger"
+    }
+  ],
+  "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/ep001_fal_longscroll.png",
+  "dimensions": {
+    "panel": [
+      720,
+      1072
+    ],
+    "longscroll": [
+      720,
+      9316
+    ]
+  }
+}

@@ -1,0 +1,417 @@
+episode: ep001
+prompt_schema_version: 2
+style_preset: realistic_korean_webtoon
+style_anchor:
+  positive: "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel"
+  negative:
+    - low quality
+    - extra fingers
+    - malformed hands
+    - unreadable korean text in image
+    - overdesigned sci-fi UI
+    - western comic page layout
+    - text
+    - letters
+    - logos
+    - watermarks
+    - dialogue bubbles
+    - readable monitor text
+    - inconsistent face design
+reference_policy_defaults:
+  always_include:
+    - location_master
+  use_previous_panel_as_primary: false
+  continuity_reset_shots:
+    - insert_screen
+    - hand_closeup
+    - text_focus_prop
+  eligible_strong_ref_face_visibility:
+    - full
+    - three_quarter
+    - half
+  strong_ref_view_classes:
+    - portrait
+    - seated_medium
+    - standing_full
+character_sheets:
+  protagonist:
+    identity_core:
+      role: "19-year-old Korean male first-year oriental medicine student"
+      age_impression: "late teen, exhausted university freshman"
+      body_build: "slim, narrow shoulders"
+    visual_invariants:
+      hair:
+        - soft black hair
+        - slight center-part fringe
+        - low-volume side silhouette
+      face:
+        - pale oval face
+        - tired narrow eyes
+        - soft jawline
+      wardrobe:
+        - faded black hoodie
+        - gray sweatpants
+    expression_baseline:
+      neutral: "sleep-deprived, defensive, tightly held mouth"
+      stress: "eyes widen before posture collapses"
+    negative_drift_cues:
+      - no different haircut
+      - no broad athletic build
+      - no adult office-worker facial proportions
+    anchor_views:
+      - view_id: portrait_3q
+        framing: "shoulders-up three-quarter portrait with laptop glow spill"
+        view_class: portrait
+        suitable_face_visibility:
+          - full
+          - three_quarter
+        suitable_shots:
+          - over_shoulder
+          - split_focus
+          - final_cliffhanger
+      - view_id: desk_halfbody
+        framing: "half-body seated at narrow desk with laptop glow and tense posture"
+        view_class: seated_medium
+        suitable_face_visibility:
+          - half
+          - three_quarter
+        suitable_shots:
+          - over_shoulder
+          - doorway_reveal
+          - final_cliffhanger
+  mother:
+    identity_core:
+      role: "Korean mother in late 40s"
+      age_impression: "middle-aged, composed, not youthful"
+      body_build: "slim-to-average, slightly narrow posture"
+    visual_invariants:
+      hair:
+        - dark brown hair tied low
+        - clean center part
+        - neat tucked side profile
+      face:
+        - long oval face
+        - restrained brows
+        - tired sharp eyes
+      wardrobe:
+        - dark navy cardigan over simple homewear
+        - practical crossbody bag strap
+    expression_baseline:
+      neutral: "emotionally restrained, observant"
+      anger: "cold restraint before disappointment"
+    negative_drift_cues:
+      - no bob cut
+      - no bright makeup
+      - no youthful face proportions
+    anchor_views:
+      - view_id: portrait_front
+        framing: "shoulders-up front portrait with restrained cold expression"
+        view_class: portrait
+        suitable_face_visibility:
+          - full
+          - three_quarter
+        suitable_shots:
+          - over_shoulder
+          - doorway_reveal
+          - final_cliffhanger
+      - view_id: doorway_fullbody
+        framing: "full-body doorway stance with grocery bag and hallway backlight"
+        view_class: standing_full
+        suitable_face_visibility:
+          - half
+          - full
+        suitable_shots:
+          - doorway_reveal
+          - final_cliffhanger
+location_anchor:
+  anchor_id: location_master
+  description: "small Korean student studio room at night, narrow desk with anatomy textbook, white lab coat on chair, instant rice boxes, laptop, prep notes, lived-in but strained atmosphere"
+panels:
+  - panel_id: p01
+    block_id: b01
+    shot: extreme_close_up
+    prompt: "close-up of anatomy notebook and hidden resit checklist on cramped student desk, fluorescent highlighter line over deadline, tense late-night student room lighting"
+    visible_characters:
+      - protagonist
+    identity_focus:
+      protagonist: low
+    face_visibility:
+      protagonist: none
+    continuity_mode: prop_tension
+    must_keep:
+      protagonist:
+        - black hoodie sleeve edge
+        - slim student hand tension
+    allowed_variation:
+      protagonist:
+        - pen grip angle
+        - notebook clutter layout
+    reference_injection:
+      use_character_sheet_views:
+        protagonist:
+          - desk_halfbody
+      use_recent_strong_refs:
+        protagonist: false
+      use_previous_panel:
+        mode: never
+        only_if_previous_panel_has_same_characters: false
+        allow_if_previous_shot_in_reset_list: false
+  - panel_id: p02
+    block_id: b02
+    shot: over_shoulder
+    prompt: "over-the-shoulder shot from behind Korean mother entering narrow studio room, seated male student freezing at desk, pressure-filled silence, grocery bag in one hand"
+    visible_characters:
+      - protagonist
+      - mother
+    identity_focus:
+      protagonist: medium
+      mother: medium
+    face_visibility:
+      protagonist: half
+      mother: half
+    continuity_mode: dual_character_lock
+    must_keep:
+      protagonist:
+        - black hoodie silhouette
+        - slight center-part fringe
+      mother:
+        - low-tied hair
+        - dark cardigan silhouette
+    allowed_variation:
+      protagonist:
+        - seated posture stiffness
+        - mouth tension
+      mother:
+        - shoulder angle
+        - arm position
+    reference_injection:
+      use_character_sheet_views:
+        protagonist:
+          - desk_halfbody
+        mother:
+          - portrait_front
+      use_recent_strong_refs:
+        protagonist: true
+        mother: true
+      use_previous_panel:
+        mode: fallback_only
+        only_if_previous_panel_has_same_characters: false
+        allow_if_previous_shot_in_reset_list: false
+  - panel_id: p03
+    block_id: b03
+    shot: insert_screen
+    prompt: "laptop screen with contract department scholarship comparison layout and hidden university resit notes, school LMS window pushed aside, student studio room reflected faintly on dark screen"
+    visible_characters:
+      - protagonist
+    identity_focus:
+      protagonist: low
+    face_visibility:
+      protagonist: none
+    continuity_mode: continuity_reset
+    must_keep:
+      protagonist:
+        - faint student presence only
+    allowed_variation:
+      protagonist:
+        - reflection softness
+        - screen glow intensity
+    reference_injection:
+      use_character_sheet_views:
+        protagonist:
+          - portrait_3q
+      use_recent_strong_refs:
+        protagonist: false
+      use_previous_panel:
+        mode: fallback_only
+        only_if_previous_panel_has_same_characters: true
+        allow_if_previous_shot_in_reset_list: false
+  - panel_id: p04
+    block_id: b04
+    shot: split_focus
+    prompt: "browser tabs with Orbi search results, contract department comparison notes, and class timetable, young Korean male face reflected on dark screen, calculation and shame"
+    visible_characters:
+      - protagonist
+    identity_focus:
+      protagonist: medium
+    face_visibility:
+      protagonist: three_quarter
+    continuity_mode: single_character_lock
+    must_keep:
+      protagonist:
+        - tired narrow eyes
+        - pale oval face
+        - black hoodie silhouette
+    allowed_variation:
+      protagonist:
+        - reflection distortion
+        - eye wideness
+    reference_injection:
+      use_character_sheet_views:
+        protagonist:
+          - portrait_3q
+      use_recent_strong_refs:
+        protagonist: true
+      use_previous_panel:
+        mode: fallback_only
+        only_if_previous_panel_has_same_characters: true
+        allow_if_previous_shot_in_reset_list: false
+  - panel_id: p05
+    block_id: b05
+    shot: hand_closeup
+    prompt: "shaking hand on laptop mouse, sync notification exposing hidden resit checklist pdf as blurred file bars, fear before being caught, dim cramped room"
+    visible_characters:
+      - protagonist
+    identity_focus:
+      protagonist: low
+    face_visibility:
+      protagonist: none
+    continuity_mode: continuity_reset
+    must_keep:
+      protagonist:
+        - slim student hand
+        - hoodie cuff
+    allowed_variation:
+      protagonist:
+        - cursor glow
+        - wrist angle
+    reference_injection:
+      use_character_sheet_views:
+        protagonist:
+          - desk_halfbody
+      use_recent_strong_refs:
+        protagonist: false
+      use_previous_panel:
+        mode: fallback_only
+        only_if_previous_panel_has_same_characters: true
+        allow_if_previous_shot_in_reset_list: false
+  - panel_id: p06
+    block_id: b06
+    shot: doorway_reveal
+    prompt: "checklist slipping to the floor, mother bending slightly to pick it up before stunned son can move, hard white hallway light cutting into dark studio room"
+    visible_characters:
+      - protagonist
+      - mother
+    identity_focus:
+      protagonist: medium
+      mother: high
+    face_visibility:
+      protagonist: three_quarter
+      mother: full
+    continuity_mode: dual_character_lock
+    must_keep:
+      protagonist:
+        - hoodie silhouette
+        - fringe silhouette
+        - pale oval face
+      mother:
+        - low-tied hair
+        - dark cardigan
+        - restrained sharp eyes
+    allowed_variation:
+      protagonist:
+        - mouth openness
+        - hand pose
+        - screen glow intensity
+      mother:
+        - arm position
+        - brow tension
+    reference_injection:
+      use_character_sheet_views:
+        protagonist:
+          - desk_halfbody
+        mother:
+          - doorway_fullbody
+          - portrait_front
+      use_recent_strong_refs:
+        protagonist: true
+        mother: true
+      use_previous_panel:
+        mode: fallback_only
+        only_if_previous_panel_has_same_characters: true
+        allow_if_previous_shot_in_reset_list: false
+  - panel_id: p07
+    block_id: b07
+    shot: text_focus_prop
+    prompt: "resit checklist item highlighted on paper in foreground, mother and son blurred behind it, feeling of exposure and doom at once"
+    visible_characters:
+      - protagonist
+      - mother
+    identity_focus:
+      protagonist: low
+      mother: low
+    face_visibility:
+      protagonist: blur
+      mother: blur
+    continuity_mode: continuity_reset
+    must_keep:
+      protagonist:
+        - student silhouette only
+      mother:
+        - doorway silhouette only
+    allowed_variation:
+      protagonist:
+        - blur level
+      mother:
+        - blur level
+    reference_injection:
+      use_character_sheet_views:
+        protagonist:
+          - portrait_3q
+        mother:
+          - doorway_fullbody
+      use_recent_strong_refs:
+        protagonist: false
+        mother: false
+      use_previous_panel:
+        mode: fallback_only
+        only_if_previous_panel_has_same_characters: true
+        allow_if_previous_shot_in_reset_list: false
+  - panel_id: p08
+    block_id: b08
+    shot: final_cliffhanger
+    prompt: "dark Korean student studio room, mother cold disappointed expression, father message glow on phone, white lab coat hanging at frame edge, student face lit only by laptop glow, devastating cliffhanger"
+    visible_characters:
+      - protagonist
+      - mother
+    identity_focus:
+      protagonist: medium
+      mother: high
+    face_visibility:
+      protagonist: three_quarter
+      mother: three_quarter
+    continuity_mode: dual_character_recovery
+    must_keep:
+      protagonist:
+        - slight center-part fringe
+        - tired narrow eyes
+        - black hoodie silhouette
+      mother:
+        - low-tied hair
+        - long oval face
+        - dark cardigan silhouette
+        - restrained sharp eyes
+    allowed_variation:
+      protagonist:
+        - laptop glow direction
+        - eye wideness
+      mother:
+        - lip tension
+        - arm position
+    reference_injection:
+      use_character_sheet_views:
+        protagonist:
+          - portrait_3q
+          - desk_halfbody
+        mother:
+          - doorway_fullbody
+          - portrait_front
+      use_recent_strong_refs:
+        protagonist: true
+        mother: true
+      use_previous_panel:
+        mode: fallback_only
+        only_if_previous_panel_has_same_characters: true
+        allow_if_previous_shot_in_reset_list: false
+render_strategy:
+  default: generate_anchor_pack_then_character_weighted_edit_chain
+  note: "연속 컷 continuity는 단일 prev_url이 아니라 location anchor + per-character strong refs + same-cast scene refs로 유지한다."

@@ -1,0 +1,38 @@
+episode: ep005
+render_mode: storyboard_fallback
+output:
+  panels_dir: docs/plans/orbi-romance-webtoon-20260421/renders/ep005/panels
+  longscroll: docs/plans/orbi-romance-webtoon-20260421/renders/ep005/ep005_longscroll.png
+jobs:
+- panel_id: p01
+  mode: storyboard_card
+  prompt: 모의고사 시험지와 떨리는 손, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p02
+  mode: storyboard_card
+  prompt: 복도에서 시윤을 보는 소라, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p03
+  mode: storyboard_card
+  prompt: 계약학과 건물 뒤 벤치에서 마주 앉은 둘, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p04
+  mode: storyboard_card
+  prompt: 서하를 향해 뱉는 시윤의 말, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p05
+  mode: storyboard_card
+  prompt: 처음 흔들린 서하 표정, clean Korean webtoon storyboard, emotional readability, dramatic
+    lighting, no visible letters or UI text
+- panel_id: p06
+  mode: storyboard_card
+  prompt: 성적표 위에 학생증을 내려놓는 손, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p07
+  mode: storyboard_card
+  prompt: 학생증과 성적표를 동시에 잡는 시윤, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text
+- panel_id: p08
+  mode: storyboard_card
+  prompt: 벤치에 남겨진 학생증 자국과 마지막 메시지, clean Korean webtoon storyboard, emotional readability,
+    dramatic lighting, no visible letters or UI text

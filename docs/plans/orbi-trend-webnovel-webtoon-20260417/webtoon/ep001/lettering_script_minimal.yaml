@@ -1,0 +1,25 @@
+episode: ep001
+language: ko
+rules:
+  - 말풍선 수를 최소화하고 핵심 갈등만 남긴다
+  - 메신저/모니터 컷은 일반 말풍선 남발 대신 가능한 한 생략한다
+  - 이미지 위 흰 마스크를 강하게 덮지 않는다
+  - 엔드패널은 설명보다 감정 충돌을 우선한다
+balloons:
+  - id: l01
+    panel_id: p06
+    speaker: mother
+    text: "이게 뭐야?"
+    tone: cold
+  - id: l02
+    panel_id: p08
+    speaker: mother
+    text: "너는 나한테 의대 본다고 해놓고, 학교에는 또 다르게 말했니?"
+    tone: sharp
+captions:
+  - id: c01
+    panel_id: p01
+    text: "지구과학 39."
+  - id: c02
+    panel_id: p07
+    text: "이제 끝났다."

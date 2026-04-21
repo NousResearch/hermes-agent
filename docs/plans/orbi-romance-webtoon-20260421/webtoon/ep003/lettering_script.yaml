@@ -1,0 +1,33 @@
+episode: ep003
+language: ko
+rules:
+- 긴 독백은 캡션으로 분리
+- 대사는 짧고 독하게 유지
+- 말풍선 텍스트는 후처리 전제
+balloons:
+- id: l02
+  panel_id: p02
+  speaker: dialogue
+  text: 사귀는 척하자.
+  tone: 거래
+- id: l04
+  panel_id: p04
+  speaker: dialogue
+  text: 거짓말이 더 정교해졌다.
+  tone: 중독
+- id: l07
+  panel_id: p07
+  speaker: dialogue
+  text: 네가 먼저 허리 잡았잖아.
+  tone: 잔향
+captions:
+- panel_id: p01
+  text: 민우 쪽 단톡에 돌기 시작함.
+- panel_id: p03
+  text: 반수 얘기 누구한테도 꺼내지 마.
+- panel_id: p05
+  text: 늦지 마.
+- panel_id: p06
+  text: 네 표정이 제일 아니거든.
+- panel_id: p08
+  text: 나 너 좋아해도 되냐.

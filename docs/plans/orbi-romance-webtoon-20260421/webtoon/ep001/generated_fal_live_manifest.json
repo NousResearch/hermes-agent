@@ -1,0 +1,55 @@
+{
+  "episode": "ep001",
+  "mode": "fal_live_flux2_pro",
+  "panels": [
+    {
+      "panel_id": "p01",
+      "prompt": "clean Korean webtoon storyboard, polished manhwa composition, expressive faces, strong emotional contrast, vertical mobile webtoon panel, no readable text inside image, clean Korean romance webtoon cartoon illustration, 2D cel shading, polished digital manhwa style, no readable text, no speech bubbles, no letters, avoid readable text in image, speech bubbles rendered by model, watermark, logo, western comic page layout, 도서관 자리 위 약대 입결표와 반수 루틴 파일이 열린 노트북 클로즈업, clean Korean webtoon storyboard, emotional readability, dramatic lighting, no visible letters or UI text, 강시윤, 20세, 지방 국립대 1학년 반수생 with slim Korean male student, black hoodie, tired eyes, sharp but defensive expression, mobile vertical webtoon panel with strong facial acting and clean composition",
+      "url": "https://v3b.fal.media/files/b/0a9715da/iMb_itUqdK9a9UsSClVeV_ImOpOqXV.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/p01.png"
+    },
+    {
+      "panel_id": "p02",
+      "prompt": "clean Korean webtoon storyboard, polished manhwa composition, expressive faces, strong emotional contrast, vertical mobile webtoon panel, no readable text inside image, clean Korean romance webtoon cartoon illustration, 2D cel shading, polished digital manhwa style, no readable text, no speech bubbles, no letters, avoid readable text in image, speech bubbles rendered by model, watermark, logo, western comic page layout, 스터디실에 처음 들어온 윤서하와 노트북을 급히 돌리는 강시윤, clean Korean webtoon storyboard, emotional readability, dramatic lighting, no visible letters or UI text, 강시윤, 20세, 지방 국립대 1학년 반수생 with slim Korean male student, black hoodie, tired eyes, sharp but defensive expression, 윤서하, 계약학과 재학생 with sharp-faced Korean female student, dark jacket, cool expression, controlled posture, mobile vertical webtoon panel with strong facial acting and clean composition",
+      "url": "https://v3b.fal.media/files/b/0a9715dc/Scd8dcNPBfkCc60X3lItq_mQoOHmp2.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/p02.png"
+    },
+    {
+      "panel_id": "p03",
+      "prompt": "clean Korean webtoon storyboard, polished manhwa composition, expressive faces, strong emotional contrast, vertical mobile webtoon panel, no readable text inside image, clean Korean romance webtoon cartoon illustration, 2D cel shading, polished digital manhwa style, no readable text, no speech bubbles, no letters, avoid readable text in image, speech bubbles rendered by model, watermark, logo, western comic page layout, 학교를 말한 직후 서하의 짧은 “아.”와 굳은 시윤 표정, clean Korean webtoon storyboard, emotional readability, dramatic lighting, no visible letters or UI text, 강시윤, 20세, 지방 국립대 1학년 반수생 with slim Korean male student, black hoodie, tired eyes, sharp but defensive expression, 윤서하, 계약학과 재학생 with sharp-faced Korean female student, dark jacket, cool expression, controlled posture, mobile vertical webtoon panel with strong facial acting and clean composition",
+      "url": "https://v3b.fal.media/files/b/0a9715dd/Ib7GFsU4_zl5h2KAlIjRB_IgZTHPiq.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/p03.png"
+    },
+    {
+      "panel_id": "p04",
+      "prompt": "clean Korean webtoon storyboard, polished manhwa composition, expressive faces, strong emotional contrast, vertical mobile webtoon panel, no readable text inside image, clean Korean romance webtoon cartoon illustration, 2D cel shading, polished digital manhwa style, no readable text, no speech bubbles, no letters, avoid readable text in image, speech bubbles rendered by model, watermark, logo, western comic page layout, 서하가 반수와 연애를 연결해 말하는 장면, clean Korean webtoon storyboard, emotional readability, dramatic lighting, no visible letters or UI text, 강시윤, 20세, 지방 국립대 1학년 반수생 with slim Korean male student, black hoodie, tired eyes, sharp but defensive expression, 윤서하, 계약학과 재학생 with sharp-faced Korean female student, dark jacket, cool expression, controlled posture, mobile vertical webtoon panel with strong facial acting and clean composition",
+      "url": "https://v3b.fal.media/files/b/0a9715df/6KUWl8zhioiWKj0Um4v-w_6m9OSiIN.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/p04.png"
+    },
+    {
+      "panel_id": "p05",
+      "prompt": "clean Korean webtoon storyboard, polished manhwa composition, expressive faces, strong emotional contrast, vertical mobile webtoon panel, no readable text inside image, clean Korean romance webtoon cartoon illustration, 2D cel shading, polished digital manhwa style, no readable text, no speech bubbles, no letters, avoid readable text in image, speech bubbles rendered by model, watermark, logo, western comic page layout, 엘리베이터 거울에 비친 두 사람의 어색한 거리, clean Korean webtoon storyboard, emotional readability, dramatic lighting, no visible letters or UI text, 강시윤, 20세, 지방 국립대 1학년 반수생 with slim Korean male student, black hoodie, tired eyes, sharp but defensive expression, mobile vertical webtoon panel with strong facial acting and clean composition",
+      "url": "https://v3b.fal.media/files/b/0a9715e1/le7pIk3MoMzgiYP0B2uSL_HdM9vjWr.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/p05.png"
+    },
+    {
+      "panel_id": "p06",
+      "prompt": "clean Korean webtoon storyboard, polished manhwa composition, expressive faces, strong emotional contrast, vertical mobile webtoon panel, no readable text inside image, clean Korean romance webtoon cartoon illustration, 2D cel shading, polished digital manhwa style, no readable text, no speech bubbles, no letters, avoid readable text in image, speech bubbles rendered by model, watermark, logo, western comic page layout, 원룸 어둠 속 휴대폰 화면과 메모 캡처, clean Korean webtoon storyboard, emotional readability, dramatic lighting, no visible letters or UI text, 강시윤, 20세, 지방 국립대 1학년 반수생 with slim Korean male student, black hoodie, tired eyes, sharp but defensive expression, mobile vertical webtoon panel with strong facial acting and clean composition",
+      "url": "https://v3b.fal.media/files/b/0a9715e2/b5aOjSrAtNTPQgZLb8zTt_jyZAFgM2.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/p06.png"
+    },
+    {
+      "panel_id": "p07",
+      "prompt": "clean Korean webtoon storyboard, polished manhwa composition, expressive faces, strong emotional contrast, vertical mobile webtoon panel, no readable text inside image, clean Korean romance webtoon cartoon illustration, 2D cel shading, polished digital manhwa style, no readable text, no speech bubbles, no letters, avoid readable text in image, speech bubbles rendered by model, watermark, logo, western comic page layout, 엄마 메시지와 캡처 화면이 동시에 뜬 휴대폰, clean Korean webtoon storyboard, emotional readability, dramatic lighting, no visible letters or UI text, 강시윤, 20세, 지방 국립대 1학년 반수생 with slim Korean male student, black hoodie, tired eyes, sharp but defensive expression, 시윤의 어머니 with middle-aged Korean woman, restrained disappointment, mobile vertical webtoon panel with strong facial acting and clean composition",
+      "url": "https://v3b.fal.media/files/b/0a9715e5/GN5gpV_sNqEqnq2N9RGxC_DpIC7vhr.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/p07.png"
+    },
+    {
+      "panel_id": "p08",
+      "prompt": "clean Korean webtoon storyboard, polished manhwa composition, expressive faces, strong emotional contrast, vertical mobile webtoon panel, no readable text inside image, clean Korean romance webtoon cartoon illustration, 2D cel shading, polished digital manhwa style, no readable text, no speech bubbles, no letters, avoid readable text in image, speech bubbles rendered by model, watermark, logo, western comic page layout, 침대 끝에 앉아 화면을 보는 시윤의 실루엣, clean Korean webtoon storyboard, emotional readability, dramatic lighting, no visible letters or UI text, 강시윤, 20세, 지방 국립대 1학년 반수생 with slim Korean male student, black hoodie, tired eyes, sharp but defensive expression, mobile vertical webtoon panel with strong facial acting and clean composition",
+      "url": "https://v3b.fal.media/files/b/0a9715e6/sNspo0Bw9MagKFNfE4kud_GpTGudVo.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/p08.png"
+    }
+  ],
+  "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001/ep001_fal_live_longscroll.png"
+}

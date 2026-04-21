@@ -1,0 +1,62 @@
+episode: ep004
+source_title: 4화. 진짜 같아지면 망하는데
+adaptation_mode: vertical_scroll_webtoon
+scene_id: ep004_orbi_romance_pressure
+core_hook: 4화. 진짜 같아지면 망하는데
+blocks:
+- block_id: b01
+  purpose: opening
+  emotion: 피로
+  visual: 밤새 깨어 있는 시윤과 음성메시지 재생 화면
+  dialogue:
+  - caption: '"좋아해도 되냐."'
+  spacing: medium
+- block_id: b02
+  purpose: break_attempt
+  emotion: 회피
+  visual: 이걸 끝내자고 말하는 시윤
+  dialogue:
+  - caption: '"도망치려는 거잖아."'
+  spacing: medium
+- block_id: b03
+  purpose: exposure
+  emotion: 충돌
+  visual: 소라 앞에서 진짜냐고 묻는 장면
+  dialogue:
+  - caption: '"진짜야."'
+  spacing: medium
+- block_id: b04
+  purpose: fight
+  emotion: 상처
+  visual: 거리 한복판에서 서로를 후려치는 대사전
+  dialogue:
+  - caption: '"나 같은 애를 이겼다는 기분."'
+  spacing: tall_drop
+- block_id: b05
+  purpose: family_arrival
+  emotion: 공포
+  visual: 예고 없이 원룸에 들어온 엄마와 책상 위 약대 자료
+  dialogue:
+  - caption: '"학교도 속이고, 집도 속이고."'
+  spacing: medium
+- block_id: b06
+  purpose: phone
+  emotion: 허탈
+  visual: 엄마가 윤서하 이름이 뜬 액정을 보는 순간
+  dialogue:
+  - caption: '"여자친구?"'
+  spacing: medium
+- block_id: b07
+  purpose: late_call
+  emotion: 의존
+  visual: 벽에 기대 통화하는 시윤
+  dialogue:
+  - caption: '"네 목소리 이상하니까."'
+  spacing: medium
+- block_id: b08
+  purpose: cliff
+  emotion: 유혹
+  visual: 캄캄한 통화 화면 클로즈업
+  dialogue:
+  - caption: '"망치면 나한테 와."'
+  spacing: tall_drop

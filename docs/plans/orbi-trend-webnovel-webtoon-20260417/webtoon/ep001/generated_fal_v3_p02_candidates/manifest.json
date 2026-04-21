@@ -1,0 +1,20 @@
+[
+  {
+    "name": "cand1_generate",
+    "url": "https://v3b.fal.media/files/b/0a96f329/5_DwCp_g79DzH1X9qPphQ_ohdPFTH6.png",
+    "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_p02_candidates/cand1_generate.png",
+    "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, expressive line art, soft cinematic lighting, consistent same apartment study room, same 19-year-old Korean male student in black hoodie, same Korean mother in simple beige homewear when present, emotionally readable faces, absolutely no text, no letters, no Korean characters, no English characters, no numbers, no captions, no speech balloons, no dialogue bubbles, no chat bubbles, no UI labels, no watermarks, no subtitles, no readable monitor text, no gibberish text, no document typography, no signs, no logos, over-the-shoulder shot from behind a Korean mother standing over seated male student in a cramped exam-prep bedroom, pressure-filled silence, both faces visible, clean wall and curtain shapes only, no bubble-shaped white objects anywhere, no oval white shapes, no comic balloons, no empty callout areas"
+  },
+  {
+    "name": "cand2_edit_anchors",
+    "url": "https://v3b.fal.media/files/b/0a96f32c/EGd2H3Cs-Bz8WkdX0Lbmw_0WSvkC4N.png",
+    "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_p02_candidates/cand2_edit_anchors.png",
+    "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, expressive line art, soft cinematic lighting, consistent same apartment study room, same 19-year-old Korean male student in black hoodie, same Korean mother in simple beige homewear when present, emotionally readable faces, absolutely no text, no letters, no Korean characters, no English characters, no numbers, no captions, no speech balloons, no dialogue bubbles, no chat bubbles, no UI labels, no watermarks, no subtitles, no readable monitor text, no gibberish text, no document typography, no signs, no logos, same room and same characters, mother looming over seated son at desk, tense silent confrontation, keep top half of frame visually empty except room background, absolutely no white oval objects, no speech balloons, no bubble silhouettes, no text marks"
+  },
+  {
+    "name": "cand3_generate_wide",
+    "url": "https://v3b.fal.media/files/b/0a96f32e/Jctc04i6xP501u-LL6d16_zvOQaA61.png",
+    "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v3_p02_candidates/cand3_generate_wide.png",
+    "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, expressive line art, soft cinematic lighting, consistent same apartment study room, same 19-year-old Korean male student in black hoodie, same Korean mother in simple beige homewear when present, emotionally readable faces, absolutely no text, no letters, no Korean characters, no English characters, no numbers, no captions, no speech balloons, no dialogue bubbles, no chat bubbles, no UI labels, no watermarks, no subtitles, no readable monitor text, no gibberish text, no document typography, no signs, no logos, wider over-shoulder composition of mother and son in small Korean study room at night, desk glow, bookshelf, curtain, window, pressure-filled silence, all surfaces text-free, no bubble-like objects, no white floating shapes in upper area"
+  }
+]

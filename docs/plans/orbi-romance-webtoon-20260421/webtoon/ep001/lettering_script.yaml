@@ -1,0 +1,33 @@
+episode: ep001
+language: ko
+rules:
+- 긴 독백은 캡션으로 분리
+- 대사는 짧고 독하게 유지
+- 말풍선 텍스트는 후처리 전제
+balloons:
+- id: l02
+  panel_id: p02
+  speaker: dialogue
+  text: 학교 어디 다녀?
+  tone: 경계
+- id: l04
+  panel_id: p04
+  speaker: dialogue
+  text: 반수하는 사람은 연애할 시간 없지 않나.
+  tone: 도발
+- id: l07
+  panel_id: p07
+  speaker: dialogue
+  text: 너는 지금 있는 자리로는 만족 못 할 애.
+  tone: 압박
+captions:
+- panel_id: p01
+  text: 6평 전까지 생명 2회독.
+- panel_id: p03
+  text: 그 한 글자에 정보량이 너무 많았다.
+- panel_id: p05
+  text: 다음 데를 먼저 보는 눈.
+- panel_id: p06
+  text: 얘는 진짜 못 올라가면 사람 망가질 타입.
+- panel_id: p08
+  text: 이번 주말 집 내려오지?

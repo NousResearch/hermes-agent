@@ -1,0 +1,245 @@
+{
+  "episode": "ep001",
+  "language": "ko",
+  "mode": "compact",
+  "input_dir": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2",
+  "output_dir": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal",
+  "lettering": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/lettering_script_minimal.yaml",
+  "scroll_plan": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/scroll_plan.yaml",
+  "font_path": "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+  "mask_strength": 0.0,
+  "command": "heuristic_webtoon_ui.py --input-dir docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2 --output-dir docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal --lettering docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/lettering_script_minimal.yaml --scroll-plan docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/scroll_plan.yaml --compose-longscroll --mode compact --mask-strength 0.0",
+  "panels": [
+    {
+      "panel_id": "p01",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p01.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/p01.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [],
+      "placements": [
+        {
+          "id": "c01",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "지구과학 39.",
+          "zone": "top-right",
+          "score": 119.71,
+          "font_size": 27,
+          "bubble_kind": "caption",
+          "box": [
+            513,
+            24,
+            696,
+            87
+          ],
+          "inner_box": [
+            533,
+            42,
+            676,
+            69
+          ],
+          "tail_points": null,
+          "background_metrics": {
+            "mean_luma": 47.3,
+            "stddev_luma": 11.85,
+            "edge_mean": 4.18
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p02",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p02.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/p02.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [],
+      "placements": []
+    },
+    {
+      "panel_id": "p03",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p03.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/p03.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [],
+      "placements": []
+    },
+    {
+      "panel_id": "p04",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p04.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/p04.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [],
+      "placements": []
+    },
+    {
+      "panel_id": "p05",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p05.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/p05.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [],
+      "placements": []
+    },
+    {
+      "panel_id": "p06",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p06.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/p06.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [],
+      "placements": [
+        {
+          "id": "l01",
+          "kind": "balloon",
+          "speaker": "mother",
+          "text": "이게 뭐야?",
+          "zone": "upper-mid",
+          "score": 115.16,
+          "font_size": 31,
+          "bubble_kind": "speech",
+          "box": [
+            268,
+            24,
+            452,
+            98
+          ],
+          "inner_box": [
+            292,
+            46,
+            428,
+            76
+          ],
+          "tail_points": [
+            [
+              362,
+              92
+            ],
+            [
+              406,
+              92
+            ],
+            [
+              375,
+              183
+            ]
+          ],
+          "background_metrics": {
+            "mean_luma": 178.88,
+            "stddev_luma": 20.6,
+            "edge_mean": 9.6
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p07",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p07.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/p07.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [],
+      "placements": [
+        {
+          "id": "c02",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "이제 끝났다.",
+          "zone": "top-right",
+          "score": 90.65,
+          "font_size": 27,
+          "bubble_kind": "caption",
+          "box": [
+            504,
+            40,
+            682,
+            103
+          ],
+          "inner_box": [
+            524,
+            58,
+            662,
+            85
+          ],
+          "tail_points": null,
+          "background_metrics": {
+            "mean_luma": 47.51,
+            "stddev_luma": 51.39,
+            "edge_mean": 23.63
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p08",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p08.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/p08.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [],
+      "placements": [
+        {
+          "id": "l02",
+          "kind": "balloon",
+          "speaker": "mother",
+          "text": "너는 나한테 의대 본다고 해놓고, 학교에는 또 다르게 말했니?",
+          "zone": "top-left",
+          "score": 92.07,
+          "font_size": 31,
+          "bubble_kind": "speech",
+          "box": [
+            38,
+            40,
+            328.0,
+            243
+          ],
+          "inner_box": [
+            62,
+            62,
+            304.0,
+            221
+          ],
+          "tail_points": [
+            [
+              206,
+              237
+            ],
+            [
+              250,
+              237
+            ],
+            [
+              219,
+              328
+            ]
+          ],
+          "background_metrics": {
+            "mean_luma": 39.22,
+            "stddev_luma": 33.05,
+            "edge_mean": 11.96
+          }
+        }
+      ]
+    }
+  ],
+  "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui_minimal/ep001_ui_longscroll.png"
+}

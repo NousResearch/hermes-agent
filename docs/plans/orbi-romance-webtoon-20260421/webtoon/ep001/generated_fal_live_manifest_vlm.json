@@ -1,0 +1,305 @@
+{
+  "episode": "ep001",
+  "mode": "fal_live_vlm_overlay_mvp",
+  "source_manifest": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_manifest.json",
+  "source_rendered_dir": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001",
+  "source_raw_dir": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw",
+  "observation_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/vlm_observations_ep001.yaml",
+  "panels": [
+    {
+      "panel_id": "p01",
+      "source_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw/p01.png",
+      "output_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/p01.png",
+      "observation_used": true,
+      "placements": [
+        {
+          "item_id": "p01_caption",
+          "item_kind": "caption",
+          "text": "6평 전까지 생명 2회독.",
+          "placement_source": "vlm_observation",
+          "zone_id": "p01_caption_top_band",
+          "zone_kind": "caption",
+          "zone_confidence": 0.95,
+          "target_confidence": 0.95,
+          "target_rationale": "Narration should read immediately before the eye drops to the protagonist face.",
+          "box_px": {
+            "x1": 28,
+            "y1": 32,
+            "x2": 691,
+            "y2": 150
+          },
+          "anchor_id": null,
+          "anchor_px": null,
+          "font_size": 28,
+          "line_count": 1
+        }
+      ],
+      "source_url": "https://v3b.fal.media/files/b/0a9715da/iMb_itUqdK9a9UsSClVeV_ImOpOqXV.png"
+    },
+    {
+      "panel_id": "p02",
+      "source_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw/p02.png",
+      "output_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/p02.png",
+      "observation_used": true,
+      "placements": [
+        {
+          "item_id": "l02",
+          "item_kind": "speech",
+          "text": "학교 어디 다녀?",
+          "placement_source": "vlm_observation",
+          "zone_id": "p02_speech_upper_left",
+          "zone_kind": "speech",
+          "zone_confidence": 0.93,
+          "target_confidence": 0.93,
+          "target_rationale": "The left wall keeps the question legible without covering the entrance beat.",
+          "box_px": {
+            "x1": 43,
+            "y1": 85,
+            "x2": 374,
+            "y2": 225
+          },
+          "anchor_id": "p02_heroine_face",
+          "anchor_px": {
+            "x": 590,
+            "y": 321
+          },
+          "font_size": 30,
+          "line_count": 1,
+          "tail_points": [
+            [
+              312,
+              221
+            ],
+            [
+              356,
+              221
+            ],
+            [
+              590,
+              321
+            ]
+          ]
+        }
+      ],
+      "source_url": "https://v3b.fal.media/files/b/0a9715dc/Scd8dcNPBfkCc60X3lItq_mQoOHmp2.png"
+    },
+    {
+      "panel_id": "p03",
+      "source_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw/p03.png",
+      "output_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/p03.png",
+      "observation_used": true,
+      "placements": [
+        {
+          "item_id": "p03_caption",
+          "item_kind": "caption",
+          "text": "그 한 글자에 정보량이 너무 많았다.",
+          "placement_source": "vlm_observation",
+          "zone_id": "p03_caption_top_band",
+          "zone_kind": "caption",
+          "zone_confidence": 0.94,
+          "target_confidence": 0.94,
+          "target_rationale": "The narration should hover over the emotional collision rather than interrupt it.",
+          "box_px": {
+            "x1": 28,
+            "y1": 32,
+            "x2": 691,
+            "y2": 150
+          },
+          "anchor_id": null,
+          "anchor_px": null,
+          "font_size": 28,
+          "line_count": 1
+        }
+      ],
+      "source_url": "https://v3b.fal.media/files/b/0a9715dd/Ib7GFsU4_zl5h2KAlIjRB_IgZTHPiq.png"
+    },
+    {
+      "panel_id": "p04",
+      "source_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw/p04.png",
+      "output_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/p04.png",
+      "observation_used": true,
+      "placements": [
+        {
+          "item_id": "l04",
+          "item_kind": "speech",
+          "text": "반수하는 사람은 연애할 시간 없지 않나.",
+          "placement_source": "vlm_observation",
+          "zone_id": "p04_speech_bottom_band",
+          "zone_kind": "speech",
+          "zone_confidence": 0.96,
+          "target_confidence": 0.96,
+          "target_rationale": "The lower gutter preserves the confrontational eye-line and still gives the line weight.",
+          "box_px": {
+            "x1": 79,
+            "y1": 868,
+            "x2": 612,
+            "y2": 1007
+          },
+          "anchor_id": "p04_heroine_face",
+          "anchor_px": {
+            "x": 554,
+            "y": 428
+          },
+          "font_size": 30,
+          "line_count": 2,
+          "tail_points": [
+            [
+              532,
+              872
+            ],
+            [
+              576,
+              872
+            ],
+            [
+              554,
+              428
+            ]
+          ]
+        }
+      ],
+      "source_url": "https://v3b.fal.media/files/b/0a9715df/6KUWl8zhioiWKj0Um4v-w_6m9OSiIN.png"
+    },
+    {
+      "panel_id": "p05",
+      "source_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw/p05.png",
+      "output_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/p05.png",
+      "observation_used": true,
+      "placements": [
+        {
+          "item_id": "p05_caption",
+          "item_kind": "caption",
+          "text": "다음 데를 먼저 보는 눈.",
+          "placement_source": "vlm_observation",
+          "zone_id": "p05_caption_top_band",
+          "zone_kind": "caption",
+          "zone_confidence": 0.95,
+          "target_confidence": 0.95,
+          "target_rationale": "The line reads as internal narration and belongs in the clean ceiling band.",
+          "box_px": {
+            "x1": 28,
+            "y1": 32,
+            "x2": 691,
+            "y2": 150
+          },
+          "anchor_id": null,
+          "anchor_px": null,
+          "font_size": 28,
+          "line_count": 1
+        }
+      ],
+      "source_url": "https://v3b.fal.media/files/b/0a9715e1/le7pIk3MoMzgiYP0B2uSL_HdM9vjWr.png"
+    },
+    {
+      "panel_id": "p06",
+      "source_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw/p06.png",
+      "output_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/p06.png",
+      "observation_used": true,
+      "placements": [
+        {
+          "item_id": "p06_caption",
+          "item_kind": "caption",
+          "text": "얘는 진짜 못 올라가면 사람 망가질 타입.",
+          "placement_source": "vlm_observation",
+          "zone_id": "p06_caption_top_band",
+          "zone_kind": "caption",
+          "zone_confidence": 0.95,
+          "target_confidence": 0.95,
+          "target_rationale": "Keeping narration in the overhead darkness leaves the phone message reveal untouched.",
+          "box_px": {
+            "x1": 36,
+            "y1": 42,
+            "x2": 684,
+            "y2": 150
+          },
+          "anchor_id": null,
+          "anchor_px": null,
+          "font_size": 28,
+          "line_count": 1
+        }
+      ],
+      "source_url": "https://v3b.fal.media/files/b/0a9715e2/b5aOjSrAtNTPQgZLb8zTt_jyZAFgM2.png"
+    },
+    {
+      "panel_id": "p07",
+      "source_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw/p07.png",
+      "output_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/p07.png",
+      "observation_used": true,
+      "placements": [
+        {
+          "item_id": "l07",
+          "item_kind": "speech",
+          "text": "너는 지금 있는 자리로는 만족 못 할 애.",
+          "placement_source": "vlm_observation",
+          "zone_id": "p07_speech_top_band",
+          "zone_kind": "speech",
+          "zone_confidence": 0.94,
+          "target_confidence": 0.94,
+          "target_rationale": "Top placement keeps the phone reveal unobstructed while the tail can still bias toward the mother.",
+          "box_px": {
+            "x1": 57,
+            "y1": 42,
+            "x2": 662,
+            "y2": 171
+          },
+          "anchor_id": "p07_mother_face",
+          "anchor_px": {
+            "x": 568,
+            "y": 428
+          },
+          "font_size": 30,
+          "line_count": 1,
+          "tail_points": [
+            [
+              546,
+              167
+            ],
+            [
+              590,
+              167
+            ],
+            [
+              568,
+              428
+            ]
+          ]
+        }
+      ],
+      "source_url": "https://v3b.fal.media/files/b/0a9715e5/GN5gpV_sNqEqnq2N9RGxC_DpIC7vhr.png"
+    },
+    {
+      "panel_id": "p08",
+      "source_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_raw/p08.png",
+      "output_panel_path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/p08.png",
+      "observation_used": true,
+      "placements": [
+        {
+          "item_id": "p08_caption",
+          "item_kind": "caption",
+          "text": "이번 주말 집 내려오지?",
+          "placement_source": "vlm_observation",
+          "zone_id": "p08_caption_top_band",
+          "zone_kind": "caption",
+          "zone_confidence": 0.96,
+          "target_confidence": 0.96,
+          "target_rationale": "Final narration belongs in the night sky rather than near the bed silhouette.",
+          "box_px": {
+            "x1": 28,
+            "y1": 32,
+            "x2": 691,
+            "y2": 150
+          },
+          "anchor_id": null,
+          "anchor_px": null,
+          "font_size": 28,
+          "line_count": 1
+        }
+      ],
+      "source_url": "https://v3b.fal.media/files/b/0a9715e6/sNspo0Bw9MagKFNfE4kud_GpTGudVo.png"
+    }
+  ],
+  "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-romance-webtoon-20260421/webtoon/ep001/generated_fal_live_ep001_vlm/ep001_fal_live_longscroll.png",
+  "placement_sources": [
+    "vlm_observation"
+  ]
+}

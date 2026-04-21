@@ -1,0 +1,567 @@
+{
+  "episode": "ep001",
+  "language": "ko",
+  "mode": "balanced",
+  "input_dir": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2",
+  "output_dir": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui",
+  "lettering": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/lettering_script.yaml",
+  "scroll_plan": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/scroll_plan.yaml",
+  "font_path": "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+  "mask_strength": 0.45,
+  "command": "heuristic_webtoon_ui.py --input-dir docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2 --output-dir docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui --lettering docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/lettering_script.yaml --scroll-plan docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/scroll_plan.yaml --compose-longscroll --mode balanced --mask-strength 0.45",
+  "panels": [
+    {
+      "panel_id": "p01",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p01.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/p01.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [
+        {
+          "box": [
+            115,
+            385,
+            511,
+            567
+          ],
+          "score": 104.76,
+          "mean_luma": 179.67,
+          "std_luma": 66.93,
+          "edge_mean": 49.73,
+          "sat_mean": 33.85
+        }
+      ],
+      "placements": [
+        {
+          "id": "p01_caption",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "지구과학 39. 세 번 그어도 숫자는 바뀌지 않았다.",
+          "zone": "top-right",
+          "score": 117.51,
+          "font_size": 27,
+          "bubble_kind": "caption",
+          "box": [
+            420.0,
+            24,
+            696.0,
+            163
+          ],
+          "inner_box": [
+            440.0,
+            42,
+            676.0,
+            145
+          ],
+          "tail_points": null,
+          "background_metrics": {
+            "mean_luma": 42.03,
+            "stddev_luma": 19.12,
+            "edge_mean": 3.08
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p02",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p02.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/p02.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [
+        {
+          "box": [
+            57,
+            278,
+            575,
+            535
+          ],
+          "score": 85.94,
+          "mean_luma": 135.11,
+          "std_luma": 73.79,
+          "edge_mean": 29.42,
+          "sat_mean": 46.36
+        }
+      ],
+      "placements": [
+        {
+          "id": "l01",
+          "kind": "balloon",
+          "speaker": "mother",
+          "text": "국어가 살아났네. 이러면 다시 해볼 만하잖아.",
+          "zone": "top-left",
+          "score": 107.87,
+          "font_size": 31,
+          "bubble_kind": "speech",
+          "box": [
+            24,
+            24,
+            287.0,
+            184
+          ],
+          "inner_box": [
+            48,
+            46,
+            263.0,
+            162
+          ],
+          "tail_points": [
+            [
+              173,
+              178
+            ],
+            [
+              217,
+              178
+            ],
+            [
+              186,
+              269
+            ]
+          ],
+          "background_metrics": {
+            "mean_luma": 142.15,
+            "stddev_luma": 20.79,
+            "edge_mean": 8.65
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p03",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p03.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/p03.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [
+        {
+          "box": [
+            57,
+            493,
+            453,
+            675
+          ],
+          "score": 95.72,
+          "mean_luma": 125.56,
+          "std_luma": 82.54,
+          "edge_mean": 42.74,
+          "sat_mean": 44.61
+        }
+      ],
+      "placements": [
+        {
+          "id": "p03_caption",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "파일 이름은 영어 오답노트 최종.xlsx였다.",
+          "zone": "top-left",
+          "score": 105.65,
+          "font_size": 27,
+          "bubble_kind": "caption",
+          "box": [
+            24,
+            24,
+            331.0,
+            124
+          ],
+          "inner_box": [
+            44,
+            42,
+            311.0,
+            106
+          ],
+          "tail_points": null,
+          "background_metrics": {
+            "mean_luma": 69.04,
+            "stddev_luma": 58.0,
+            "edge_mean": 22.36
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p04",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p04.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/p04.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [
+        {
+          "box": [
+            57,
+            385,
+            575,
+            642
+          ],
+          "score": 97.08,
+          "mean_luma": 128.78,
+          "std_luma": 87.09,
+          "edge_mean": 33.63,
+          "sat_mean": 33.88
+        }
+      ],
+      "placements": [
+        {
+          "id": "l02",
+          "kind": "balloon",
+          "speaker": "friend_chat",
+          "text": "근데 넌 어차피 메디컬 라인 아니냐 ㅋㅋ",
+          "zone": "top-left",
+          "score": 107.74,
+          "font_size": 29,
+          "bubble_kind": "chat",
+          "box": [
+            24,
+            24,
+            332.0,
+            138
+          ],
+          "inner_box": [
+            48,
+            46,
+            308.0,
+            116
+          ],
+          "tail_points": [
+            [
+              95,
+              132
+            ],
+            [
+              139,
+              132
+            ],
+            [
+              127,
+              223
+            ]
+          ],
+          "background_metrics": {
+            "mean_luma": 131.17,
+            "stddev_luma": 58.08,
+            "edge_mean": 24.15
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p05",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p05.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/p05.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [
+        {
+          "box": [
+            115,
+            493,
+            561,
+            707
+          ],
+          "score": 91.74,
+          "mean_luma": 179.62,
+          "std_luma": 79.17,
+          "edge_mean": 34.78,
+          "sat_mean": 35.89
+        }
+      ],
+      "placements": []
+    },
+    {
+      "panel_id": "p06",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p06.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/p06.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [
+        {
+          "box": [
+            172,
+            493,
+            690,
+            750
+          ],
+          "score": 77.01,
+          "mean_luma": 161.53,
+          "std_luma": 66.84,
+          "edge_mean": 29.81,
+          "sat_mean": 41.85
+        }
+      ],
+      "placements": [
+        {
+          "id": "l03",
+          "kind": "balloon",
+          "speaker": "mother",
+          "text": "이게 뭐야?",
+          "zone": "upper-mid",
+          "score": 115.16,
+          "font_size": 31,
+          "bubble_kind": "speech",
+          "box": [
+            268,
+            24,
+            452,
+            98
+          ],
+          "inner_box": [
+            292,
+            46,
+            428,
+            76
+          ],
+          "tail_points": [
+            [
+              362,
+              92
+            ],
+            [
+              406,
+              92
+            ],
+            [
+              375,
+              183
+            ]
+          ],
+          "background_metrics": {
+            "mean_luma": 178.88,
+            "stddev_luma": 20.6,
+            "edge_mean": 9.6
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p07",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p07.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/p07.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [
+        {
+          "box": [
+            57,
+            192,
+            453,
+            374
+          ],
+          "score": 79.95,
+          "mean_luma": 165.84,
+          "std_luma": 89.0,
+          "edge_mean": 20.88,
+          "sat_mean": 22.66
+        }
+      ],
+      "placements": [
+        {
+          "id": "p07_caption",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "이제 끝났다는 안도감이 먼저 왔다.",
+          "zone": "top-left",
+          "score": 90.55,
+          "font_size": 27,
+          "bubble_kind": "caption",
+          "box": [
+            24,
+            24,
+            325.0,
+            125
+          ],
+          "inner_box": [
+            44,
+            42,
+            305.0,
+            107
+          ],
+          "tail_points": null,
+          "background_metrics": {
+            "mean_luma": 171.54,
+            "stddev_luma": 75.67,
+            "edge_mean": 47.24
+          }
+        },
+        {
+          "id": "l04",
+          "kind": "balloon",
+          "speaker": "internal_note",
+          "text": "의대 실패하면 여기라도 살아남는다.",
+          "zone": "top-right",
+          "score": 68.32,
+          "font_size": 29,
+          "bubble_kind": "note",
+          "box": [
+            372.0,
+            24,
+            696.0,
+            130
+          ],
+          "inner_box": [
+            394.0,
+            42,
+            674.0,
+            112
+          ],
+          "tail_points": null,
+          "background_metrics": {
+            "mean_luma": 79.45,
+            "stddev_luma": 83.49,
+            "edge_mean": 34.96
+          }
+        }
+      ]
+    },
+    {
+      "panel_id": "p08",
+      "source": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_v2/p08.png",
+      "output": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/p08.png",
+      "size": [
+        720,
+        1072
+      ],
+      "masks": [
+        {
+          "box": [
+            115,
+            192,
+            633,
+            449
+          ],
+          "score": 87.69,
+          "mean_luma": 178.08,
+          "std_luma": 95.53,
+          "edge_mean": 18.86,
+          "sat_mean": 20.64
+        }
+      ],
+      "placements": [
+        {
+          "id": "p08_caption",
+          "kind": "caption",
+          "speaker": "caption",
+          "text": "나는 서로 다른 미래를 세 벌이나 계약해 둔 거였다.",
+          "zone": "top-left",
+          "score": 114.12,
+          "font_size": 27,
+          "bubble_kind": "caption",
+          "box": [
+            38,
+            40,
+            320.0,
+            179
+          ],
+          "inner_box": [
+            58,
+            58,
+            300.0,
+            161
+          ],
+          "tail_points": null,
+          "background_metrics": {
+            "mean_luma": 44.66,
+            "stddev_luma": 30.69,
+            "edge_mean": 13.87
+          }
+        },
+        {
+          "id": "l06",
+          "kind": "balloon",
+          "speaker": "mother",
+          "text": "너는 나한테 의대 본다고 해놓고, 학교에는 또 다르게 말했니?",
+          "zone": "top-right",
+          "score": 91.69,
+          "font_size": 31,
+          "bubble_kind": "speech",
+          "box": [
+            406.0,
+            24,
+            696.0,
+            227
+          ],
+          "inner_box": [
+            430.0,
+            46,
+            672.0,
+            205
+          ],
+          "tail_points": [
+            [
+              574.0,
+              221
+            ],
+            [
+              618.0,
+              221
+            ],
+            [
+              587,
+              312
+            ]
+          ],
+          "background_metrics": {
+            "mean_luma": 142.8,
+            "stddev_luma": 109.43,
+            "edge_mean": 21.71
+          }
+        },
+        {
+          "id": "l05",
+          "kind": "balloon",
+          "speaker": "teacher_chat",
+          "text": "부산대 의대 기준으로 가져와.",
+          "zone": "mid-left",
+          "score": 48.28,
+          "font_size": 29,
+          "bubble_kind": "chat",
+          "box": [
+            45,
+            511,
+            346.0,
+            625
+          ],
+          "inner_box": [
+            69,
+            533,
+            322.0,
+            603
+          ],
+          "tail_points": [
+            [
+              126,
+              619
+            ],
+            [
+              170,
+              619
+            ],
+            [
+              156,
+              710
+            ]
+          ],
+          "background_metrics": {
+            "mean_luma": 77.74,
+            "stddev_luma": 82.94,
+            "edge_mean": 9.41
+          }
+        }
+      ]
+    }
+  ],
+  "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_fal_ui/ep001_ui_longscroll.png"
+}

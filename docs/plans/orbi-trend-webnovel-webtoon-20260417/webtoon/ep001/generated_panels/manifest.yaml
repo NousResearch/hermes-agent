@@ -1,0 +1,22 @@
+episode: ep001
+mode: storyboard_fallback
+style_target: realistic_korean_vertical_webtoon
+notes:
+  - Native image generation tool was not available in this environment.
+  - Delivered storyboard-grade text-free visual panels based on panel_prompts.yaml, scroll_plan.yaml, and lettering_script.yaml.
+  - Kept room, protagonist, mother, desk, and laptop continuity across panels.
+files:
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_01_storyboard.png
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_02_storyboard.png
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_03_storyboard.png
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_04_storyboard.png
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_05_storyboard.png
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_06_storyboard.png
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_07_storyboard.png
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_08_storyboard.png
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generated_panels/ep001_storyboard_longscroll.png
+source_files:
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/panel_prompts.yaml
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/scroll_plan.yaml
+  - /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/lettering_script.yaml
+generator_script: /home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-trend-webnovel-webtoon-20260417/webtoon/ep001/generate_storyboard_panels.py

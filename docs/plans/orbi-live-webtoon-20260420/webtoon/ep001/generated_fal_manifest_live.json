@@ -1,0 +1,706 @@
+{
+  "mode": "v3-character-consistency",
+  "dry_run": false,
+  "manifest_only": false,
+  "anchors": {
+    "location_master": {
+      "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png",
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, small Korean student studio room at night, narrow desk with anatomy textbook, white lab coat on chair, instant rice boxes, laptop, prep notes, lived-in but strained atmosphere, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design"
+    },
+    "character_views": {
+      "protagonist": {
+        "portrait_3q": {
+          "url": "https://v3b.fal.media/files/b/0a96fe41/p6-XlZatYpfhEferVO3Wq_w8wfwfKl.png",
+          "view_class": "portrait",
+          "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, shoulders-up three-quarter portrait with laptop glow spill, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, soft black hair, pale oval face, faded black hoodie, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions"
+        },
+        "desk_halfbody": {
+          "url": "https://v3b.fal.media/files/b/0a96fe46/IIci6wH3Z-neiMJDwkWJt_obm3Rpll.png",
+          "view_class": "seated_medium",
+          "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, half-body seated at narrow desk with laptop glow and tense posture, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, soft black hair, pale oval face, faded black hoodie, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions"
+        }
+      },
+      "mother": {
+        "portrait_front": {
+          "url": "https://v3b.fal.media/files/b/0a96fe48/kJ9OiLKz3bcFGKCYdH1ce_dI9frQQN.png",
+          "view_class": "portrait",
+          "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, shoulders-up front portrait with restrained cold expression, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, dark brown hair tied low, long oval face, dark navy cardigan over simple homewear, emotionally restrained, observant, cold restraint before disappointment, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no bob cut, no bright makeup, no youthful face proportions"
+        },
+        "doorway_fullbody": {
+          "url": "https://v3b.fal.media/files/b/0a96fe4a/nrTc0bAs1doeYr7ltKusK_J4Y6VSZJ.png",
+          "view_class": "standing_full",
+          "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, full-body doorway stance with grocery bag and hallway backlight, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, dark brown hair tied low, long oval face, dark navy cardigan over simple homewear, emotionally restrained, observant, cold restraint before disappointment, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no bob cut, no bright makeup, no youthful face proportions"
+        }
+      }
+    }
+  },
+  "panels": [
+    {
+      "panel_id": "p01",
+      "url": "https://v3b.fal.media/files/b/0a96fe4c/ReWIn2xeqxDmMIl59zavH_pMZsBI65.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/p01.png",
+      "block_id": "b01",
+      "shot": "extreme_close_up",
+      "visible_characters": [
+        "protagonist"
+      ],
+      "identity_focus": {
+        "protagonist": "low"
+      },
+      "face_visibility": {
+        "protagonist": "none"
+      },
+      "prompt_parts": {
+        "style": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks",
+        "scene": "close-up of anatomy notebook and hidden resit checklist on cramped student desk, fluorescent highlighter line over deadline, tense late-night student room lighting, story beat opening, emotion 압박",
+        "identity_lock": "protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, black hoodie sleeve edge, slim student hand tension, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses",
+        "negative_lock": "avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions"
+      },
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, close-up of anatomy notebook and hidden resit checklist on cramped student desk, fluorescent highlighter line over deadline, tense late-night student room lighting, story beat opening, emotion 압박, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, black hoodie sleeve edge, slim student hand tension, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions",
+      "reference_strategy": {
+        "continuity_mode": "prop_tension",
+        "used_refs": [
+          {
+            "label": "location_master",
+            "source": "anchor",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png"
+          },
+          {
+            "label": "protagonist.desk_halfbody",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe46/IIci6wH3Z-neiMJDwkWJt_obm3Rpll.png"
+          }
+        ],
+        "skipped_refs": [
+          {
+            "label": "scene_ref:protagonist",
+            "source": "scene_ref",
+            "reason": "missing_scene_ref"
+          },
+          {
+            "label": "prev_panel",
+            "source": "panel:none",
+            "reason": "no_previous_panel"
+          }
+        ],
+        "strong_ref_updates": [
+          {
+            "character": "protagonist",
+            "view_class": "seated_medium",
+            "source_panel": "p01",
+            "accepted": false,
+            "reason": "face_visibility:none"
+          }
+        ]
+      }
+    },
+    {
+      "panel_id": "p02",
+      "url": "https://v3b.fal.media/files/b/0a96fe4f/VK8UOciMlMiuB5zHGVC3A_WAD3xN4V.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/p02.png",
+      "block_id": "b02",
+      "shot": "over_shoulder",
+      "visible_characters": [
+        "protagonist",
+        "mother"
+      ],
+      "identity_focus": {
+        "protagonist": "medium",
+        "mother": "medium"
+      },
+      "face_visibility": {
+        "protagonist": "half",
+        "mother": "half"
+      },
+      "prompt_parts": {
+        "style": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks",
+        "scene": "over-the-shoulder shot from behind Korean mother entering narrow studio room, seated male student freezing at desk, pressure-filled silence, grocery bag in one hand, story beat pressure, emotion 질식",
+        "identity_lock": "protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, black hoodie silhouette, slight center-part fringe, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, low-tied hair, dark cardigan silhouette, emotionally restrained, observant, cold restraint before disappointment",
+        "negative_lock": "avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions, no bob cut, no bright makeup, no youthful face proportions"
+      },
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, over-the-shoulder shot from behind Korean mother entering narrow studio room, seated male student freezing at desk, pressure-filled silence, grocery bag in one hand, story beat pressure, emotion 질식, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, black hoodie silhouette, slight center-part fringe, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, low-tied hair, dark cardigan silhouette, emotionally restrained, observant, cold restraint before disappointment, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions, no bob cut, no bright makeup, no youthful face proportions",
+      "reference_strategy": {
+        "continuity_mode": "dual_character_lock",
+        "used_refs": [
+          {
+            "label": "location_master",
+            "source": "anchor",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png"
+          },
+          {
+            "label": "mother.portrait_front",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe48/kJ9OiLKz3bcFGKCYdH1ce_dI9frQQN.png"
+          },
+          {
+            "label": "protagonist.desk_halfbody",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe46/IIci6wH3Z-neiMJDwkWJt_obm3Rpll.png"
+          },
+          {
+            "label": "prev_panel",
+            "source": "panel:p01",
+            "source_panel": "p01",
+            "url": "https://v3b.fal.media/files/b/0a96fe4c/ReWIn2xeqxDmMIl59zavH_pMZsBI65.png"
+          }
+        ],
+        "skipped_refs": [
+          {
+            "label": "mother.last_strong_ref.portrait",
+            "source": "strong_ref",
+            "reason": "missing_strong_ref"
+          },
+          {
+            "label": "protagonist.last_strong_ref.seated_medium",
+            "source": "strong_ref",
+            "reason": "missing_strong_ref"
+          },
+          {
+            "label": "scene_ref:mother+protagonist",
+            "source": "scene_ref",
+            "reason": "missing_scene_ref"
+          }
+        ],
+        "strong_ref_updates": [
+          {
+            "character": "protagonist",
+            "view_id": "desk_halfbody",
+            "view_class": "seated_medium",
+            "source_panel": "p02",
+            "accepted": true,
+            "face_visibility": "half"
+          },
+          {
+            "character": "mother",
+            "view_class": "portrait",
+            "source_panel": "p02",
+            "accepted": false,
+            "reason": "view_visibility_mismatch:half"
+          }
+        ]
+      }
+    },
+    {
+      "panel_id": "p03",
+      "url": "https://v3b.fal.media/files/b/0a96fe52/5C6uW5xLPKAgFQ7qVp0Xm_IWDgEl9s.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/p03.png",
+      "block_id": "b03",
+      "shot": "insert_screen",
+      "visible_characters": [
+        "protagonist"
+      ],
+      "identity_focus": {
+        "protagonist": "low"
+      },
+      "face_visibility": {
+        "protagonist": "none"
+      },
+      "prompt_parts": {
+        "style": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks",
+        "scene": "laptop screen with contract department scholarship comparison layout and hidden university resit notes, school LMS window pushed aside, student studio room reflected faintly on dark screen, story beat reveal_setup, emotion 비밀",
+        "identity_lock": "protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, faint student presence only, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses",
+        "negative_lock": "avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions"
+      },
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, laptop screen with contract department scholarship comparison layout and hidden university resit notes, school LMS window pushed aside, student studio room reflected faintly on dark screen, story beat reveal_setup, emotion 비밀, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, faint student presence only, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions",
+      "reference_strategy": {
+        "continuity_mode": "continuity_reset",
+        "used_refs": [
+          {
+            "label": "location_master",
+            "source": "anchor",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png"
+          },
+          {
+            "label": "protagonist.portrait_3q",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe41/p6-XlZatYpfhEferVO3Wq_w8wfwfKl.png"
+          },
+          {
+            "label": "scene_ref:protagonist",
+            "source": "panel:p01",
+            "source_panel": "p01",
+            "url": "https://v3b.fal.media/files/b/0a96fe4c/ReWIn2xeqxDmMIl59zavH_pMZsBI65.png"
+          }
+        ],
+        "skipped_refs": [
+          {
+            "label": "prev_panel",
+            "source": "panel:p02",
+            "reason": "different_visible_character_set"
+          }
+        ],
+        "strong_ref_updates": [
+          {
+            "character": "protagonist",
+            "view_class": "portrait",
+            "source_panel": "p03",
+            "accepted": false,
+            "reason": "continuity_reset_shot"
+          }
+        ]
+      }
+    },
+    {
+      "panel_id": "p04",
+      "url": "https://v3b.fal.media/files/b/0a96fe54/g5rfaUYA0MTag_lYf937h_WLix0G68.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/p04.png",
+      "block_id": "b04",
+      "shot": "split_focus",
+      "visible_characters": [
+        "protagonist"
+      ],
+      "identity_focus": {
+        "protagonist": "medium"
+      },
+      "face_visibility": {
+        "protagonist": "three_quarter"
+      },
+      "prompt_parts": {
+        "style": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks",
+        "scene": "browser tabs with Orbi search results, contract department comparison notes, and class timetable, young Korean male face reflected on dark screen, calculation and shame, story beat external_mask, emotion 계산",
+        "identity_lock": "protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, tired narrow eyes, pale oval face, black hoodie silhouette, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses",
+        "negative_lock": "avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions"
+      },
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, browser tabs with Orbi search results, contract department comparison notes, and class timetable, young Korean male face reflected on dark screen, calculation and shame, story beat external_mask, emotion 계산, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, tired narrow eyes, pale oval face, black hoodie silhouette, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions",
+      "reference_strategy": {
+        "continuity_mode": "single_character_lock",
+        "used_refs": [
+          {
+            "label": "location_master",
+            "source": "anchor",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png"
+          },
+          {
+            "label": "protagonist.portrait_3q",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe41/p6-XlZatYpfhEferVO3Wq_w8wfwfKl.png"
+          }
+        ],
+        "skipped_refs": [
+          {
+            "label": "protagonist.last_strong_ref.portrait",
+            "source": "strong_ref",
+            "reason": "missing_strong_ref"
+          },
+          {
+            "label": "scene_ref:protagonist",
+            "source": "panel:p03",
+            "reason": "continuity_reset_shot"
+          },
+          {
+            "label": "prev_panel",
+            "source": "panel:p03",
+            "reason": "continuity_reset_shot"
+          }
+        ],
+        "strong_ref_updates": [
+          {
+            "character": "protagonist",
+            "view_id": "portrait_3q",
+            "view_class": "portrait",
+            "source_panel": "p04",
+            "accepted": true,
+            "face_visibility": "three_quarter"
+          }
+        ]
+      }
+    },
+    {
+      "panel_id": "p05",
+      "url": "https://v3b.fal.media/files/b/0a96fe57/HL3c1zHo8aJMPbgtm__dq_88HjtPnl.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/p05.png",
+      "block_id": "b05",
+      "shot": "hand_closeup",
+      "visible_characters": [
+        "protagonist"
+      ],
+      "identity_focus": {
+        "protagonist": "low"
+      },
+      "face_visibility": {
+        "protagonist": "none"
+      },
+      "prompt_parts": {
+        "style": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks",
+        "scene": "shaking hand on laptop mouse, sync notification exposing hidden resit checklist pdf as blurred file bars, fear before being caught, dim cramped room, story beat pre_cliff, emotion 공포",
+        "identity_lock": "protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, slim student hand, hoodie cuff, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses",
+        "negative_lock": "avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions"
+      },
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, shaking hand on laptop mouse, sync notification exposing hidden resit checklist pdf as blurred file bars, fear before being caught, dim cramped room, story beat pre_cliff, emotion 공포, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, slim student hand, hoodie cuff, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions",
+      "reference_strategy": {
+        "continuity_mode": "continuity_reset",
+        "used_refs": [
+          {
+            "label": "location_master",
+            "source": "anchor",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png"
+          },
+          {
+            "label": "protagonist.desk_halfbody",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe46/IIci6wH3Z-neiMJDwkWJt_obm3Rpll.png"
+          },
+          {
+            "label": "scene_ref:protagonist",
+            "source": "panel:p04",
+            "source_panel": "p04",
+            "url": "https://v3b.fal.media/files/b/0a96fe54/g5rfaUYA0MTag_lYf937h_WLix0G68.png"
+          }
+        ],
+        "skipped_refs": [
+          {
+            "label": "prev_panel",
+            "source": "panel:p04",
+            "reason": "duplicate_url_preserved_by_precedence"
+          }
+        ],
+        "strong_ref_updates": [
+          {
+            "character": "protagonist",
+            "view_class": "seated_medium",
+            "source_panel": "p05",
+            "accepted": false,
+            "reason": "continuity_reset_shot"
+          }
+        ]
+      }
+    },
+    {
+      "panel_id": "p06",
+      "url": "https://v3b.fal.media/files/b/0a96fe5b/oRB5-knd_3hD9b-lorvUK_2lLrAi5k.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/p06.png",
+      "block_id": "b06",
+      "shot": "doorway_reveal",
+      "visible_characters": [
+        "protagonist",
+        "mother"
+      ],
+      "identity_focus": {
+        "protagonist": "medium",
+        "mother": "high"
+      },
+      "face_visibility": {
+        "protagonist": "three_quarter",
+        "mother": "full"
+      },
+      "prompt_parts": {
+        "style": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks",
+        "scene": "checklist slipping to the floor, mother bending slightly to pick it up before stunned son can move, hard white hallway light cutting into dark studio room, story beat reveal, emotion 정지",
+        "identity_lock": "protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, hoodie silhouette, fringe silhouette, pale oval face, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, low-tied hair, dark cardigan, restrained sharp eyes, emotionally restrained, observant, cold restraint before disappointment",
+        "negative_lock": "avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions, no bob cut, no bright makeup, no youthful face proportions"
+      },
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, checklist slipping to the floor, mother bending slightly to pick it up before stunned son can move, hard white hallway light cutting into dark studio room, story beat reveal, emotion 정지, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, hoodie silhouette, fringe silhouette, pale oval face, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, low-tied hair, dark cardigan, restrained sharp eyes, emotionally restrained, observant, cold restraint before disappointment, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions, no bob cut, no bright makeup, no youthful face proportions",
+      "reference_strategy": {
+        "continuity_mode": "dual_character_lock",
+        "used_refs": [
+          {
+            "label": "location_master",
+            "source": "anchor",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png"
+          },
+          {
+            "label": "mother.doorway_fullbody",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe4a/nrTc0bAs1doeYr7ltKusK_J4Y6VSZJ.png"
+          },
+          {
+            "label": "mother.portrait_front",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe48/kJ9OiLKz3bcFGKCYdH1ce_dI9frQQN.png"
+          },
+          {
+            "label": "protagonist.desk_halfbody",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe46/IIci6wH3Z-neiMJDwkWJt_obm3Rpll.png"
+          },
+          {
+            "label": "protagonist.last_strong_ref.seated_medium",
+            "source": "panel:p02",
+            "source_panel": "p02",
+            "url": "https://v3b.fal.media/files/b/0a96fe4f/VK8UOciMlMiuB5zHGVC3A_WAD3xN4V.png"
+          }
+        ],
+        "skipped_refs": [
+          {
+            "label": "mother.last_strong_ref.portrait",
+            "source": "strong_ref",
+            "reason": "missing_strong_ref"
+          },
+          {
+            "label": "mother.last_strong_ref.standing_full",
+            "source": "strong_ref",
+            "reason": "missing_strong_ref"
+          },
+          {
+            "label": "prev_panel",
+            "source": "panel:p05",
+            "reason": "different_visible_character_set"
+          },
+          {
+            "label": "scene_ref:mother+protagonist",
+            "source": "panel:p02",
+            "reason": "duplicate_url_preserved_by_precedence"
+          }
+        ],
+        "strong_ref_updates": [
+          {
+            "character": "protagonist",
+            "view_id": "desk_halfbody",
+            "view_class": "seated_medium",
+            "source_panel": "p06",
+            "accepted": true,
+            "face_visibility": "three_quarter"
+          },
+          {
+            "character": "mother",
+            "view_id": "doorway_fullbody",
+            "view_class": "standing_full",
+            "source_panel": "p06",
+            "accepted": true,
+            "face_visibility": "full"
+          },
+          {
+            "character": "mother",
+            "view_id": "portrait_front",
+            "view_class": "portrait",
+            "source_panel": "p06",
+            "accepted": true,
+            "face_visibility": "full"
+          }
+        ]
+      }
+    },
+    {
+      "panel_id": "p07",
+      "url": "https://v3b.fal.media/files/b/0a96fe5e/nligk9EzZC9yVjvyo_NqG_38lRepYh.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/p07.png",
+      "block_id": "b07",
+      "shot": "text_focus_prop",
+      "visible_characters": [
+        "protagonist",
+        "mother"
+      ],
+      "identity_focus": {
+        "protagonist": "low",
+        "mother": "low"
+      },
+      "face_visibility": {
+        "protagonist": "blur",
+        "mother": "blur"
+      },
+      "prompt_parts": {
+        "style": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks",
+        "scene": "resit checklist item highlighted on paper in foreground, mother and son blurred behind it, feeling of exposure and doom at once, story beat emotional_turn, emotion 들킴",
+        "identity_lock": "protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, student silhouette only, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, doorway silhouette only, emotionally restrained, observant, cold restraint before disappointment",
+        "negative_lock": "avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions, no bob cut, no bright makeup, no youthful face proportions"
+      },
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, resit checklist item highlighted on paper in foreground, mother and son blurred behind it, feeling of exposure and doom at once, story beat emotional_turn, emotion 들킴, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, student silhouette only, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, doorway silhouette only, emotionally restrained, observant, cold restraint before disappointment, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions, no bob cut, no bright makeup, no youthful face proportions",
+      "reference_strategy": {
+        "continuity_mode": "continuity_reset",
+        "used_refs": [
+          {
+            "label": "location_master",
+            "source": "anchor",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png"
+          },
+          {
+            "label": "mother.doorway_fullbody",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe4a/nrTc0bAs1doeYr7ltKusK_J4Y6VSZJ.png"
+          },
+          {
+            "label": "protagonist.portrait_3q",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe41/p6-XlZatYpfhEferVO3Wq_w8wfwfKl.png"
+          },
+          {
+            "label": "scene_ref:mother+protagonist",
+            "source": "panel:p06",
+            "source_panel": "p06",
+            "url": "https://v3b.fal.media/files/b/0a96fe5b/oRB5-knd_3hD9b-lorvUK_2lLrAi5k.png"
+          }
+        ],
+        "skipped_refs": [
+          {
+            "label": "prev_panel",
+            "source": "panel:p06",
+            "reason": "duplicate_url_preserved_by_precedence"
+          }
+        ],
+        "strong_ref_updates": [
+          {
+            "character": "protagonist",
+            "view_class": "portrait",
+            "source_panel": "p07",
+            "accepted": false,
+            "reason": "continuity_reset_shot"
+          },
+          {
+            "character": "mother",
+            "view_class": "standing_full",
+            "source_panel": "p07",
+            "accepted": false,
+            "reason": "continuity_reset_shot"
+          }
+        ]
+      }
+    },
+    {
+      "panel_id": "p08",
+      "url": "https://v3b.fal.media/files/b/0a96fe61/RCBajn3_KKreSMn6HvJhJ_ufg6gz8F.png",
+      "path": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/p08.png",
+      "block_id": "b08",
+      "shot": "final_cliffhanger",
+      "visible_characters": [
+        "protagonist",
+        "mother"
+      ],
+      "identity_focus": {
+        "protagonist": "medium",
+        "mother": "high"
+      },
+      "face_visibility": {
+        "protagonist": "three_quarter",
+        "mother": "three_quarter"
+      },
+      "prompt_parts": {
+        "style": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks",
+        "scene": "dark Korean student studio room, mother cold disappointed expression, father message glow on phone, white lab coat hanging at frame edge, student face lit only by laptop glow, devastating cliffhanger, story beat cliff, emotion 붕괴",
+        "identity_lock": "protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, slight center-part fringe, tired narrow eyes, black hoodie silhouette, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, low-tied hair, long oval face, dark cardigan silhouette, restrained sharp eyes, emotionally restrained, observant, cold restraint before disappointment",
+        "negative_lock": "avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions, no bob cut, no bright makeup, no youthful face proportions"
+      },
+      "prompt": "clean Korean webtoon cartoon illustration, polished digital manhwa style, 2D cel shading, cramped student studio room, anatomy textbook and white lab coat as recurring props, emotionally readable faces, vertical mobile webtoon panel, vertical mobile webtoon panel, clean composition, keep open areas free of any text-like marks, dark Korean student studio room, mother cold disappointed expression, father message glow on phone, white lab coat hanging at frame edge, student face lit only by laptop glow, devastating cliffhanger, story beat cliff, emotion 붕괴, protagonist identity lock, 19-year-old Korean male first-year oriental medicine student, late teen, exhausted university freshman, slim, narrow shoulders, soft black hair, slight center-part fringe, low-volume side silhouette, pale oval face, tired narrow eyes, soft jawline, faded black hoodie, gray sweatpants, slight center-part fringe, tired narrow eyes, black hoodie silhouette, sleep-deprived, defensive, tightly held mouth, eyes widen before posture collapses, mother identity lock, Korean mother in late 40s, middle-aged, composed, not youthful, slim-to-average, slightly narrow posture, dark brown hair tied low, clean center part, neat tucked side profile, long oval face, restrained brows, tired sharp eyes, dark navy cardigan over simple homewear, practical crossbody bag strap, low-tied hair, long oval face, dark cardigan silhouette, restrained sharp eyes, emotionally restrained, observant, cold restraint before disappointment, avoid low quality, extra fingers, malformed hands, unreadable korean text in image, overdesigned sci-fi UI, western comic page layout, text, letters, logos, watermarks, dialogue bubbles, readable monitor text, inconsistent face design, no different haircut, no broad athletic build, no adult office-worker facial proportions, no bob cut, no bright makeup, no youthful face proportions",
+      "reference_strategy": {
+        "continuity_mode": "dual_character_recovery",
+        "used_refs": [
+          {
+            "label": "location_master",
+            "source": "anchor",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe40/n1OhHNGAwWOeIMBs_-5qt_GOKTz8Uk.png"
+          },
+          {
+            "label": "mother.doorway_fullbody",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe4a/nrTc0bAs1doeYr7ltKusK_J4Y6VSZJ.png"
+          },
+          {
+            "label": "mother.portrait_front",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe48/kJ9OiLKz3bcFGKCYdH1ce_dI9frQQN.png"
+          },
+          {
+            "label": "protagonist.portrait_3q",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe41/p6-XlZatYpfhEferVO3Wq_w8wfwfKl.png"
+          },
+          {
+            "label": "protagonist.desk_halfbody",
+            "source": "character_sheet",
+            "source_panel": null,
+            "url": "https://v3b.fal.media/files/b/0a96fe46/IIci6wH3Z-neiMJDwkWJt_obm3Rpll.png"
+          },
+          {
+            "label": "mother.last_strong_ref.portrait",
+            "source": "panel:p06",
+            "source_panel": "p06",
+            "url": "https://v3b.fal.media/files/b/0a96fe5b/oRB5-knd_3hD9b-lorvUK_2lLrAi5k.png"
+          },
+          {
+            "label": "protagonist.last_strong_ref.portrait",
+            "source": "panel:p04",
+            "source_panel": "p04",
+            "url": "https://v3b.fal.media/files/b/0a96fe54/g5rfaUYA0MTag_lYf937h_WLix0G68.png"
+          }
+        ],
+        "skipped_refs": [
+          {
+            "label": "scene_ref:mother+protagonist",
+            "source": "panel:p07",
+            "reason": "continuity_reset_shot"
+          },
+          {
+            "label": "prev_panel",
+            "source": "panel:p07",
+            "reason": "continuity_reset_shot"
+          },
+          {
+            "label": "mother.last_strong_ref.standing_full",
+            "source": "panel:p06",
+            "reason": "duplicate_url_preserved_by_precedence"
+          },
+          {
+            "label": "protagonist.last_strong_ref.seated_medium",
+            "source": "panel:p06",
+            "reason": "duplicate_url_preserved_by_precedence"
+          }
+        ],
+        "strong_ref_updates": [
+          {
+            "character": "protagonist",
+            "view_id": "portrait_3q",
+            "view_class": "portrait",
+            "source_panel": "p08",
+            "accepted": true,
+            "face_visibility": "three_quarter"
+          },
+          {
+            "character": "protagonist",
+            "view_id": "desk_halfbody",
+            "view_class": "seated_medium",
+            "source_panel": "p08",
+            "accepted": true,
+            "face_visibility": "three_quarter"
+          },
+          {
+            "character": "mother",
+            "view_class": "standing_full",
+            "source_panel": "p08",
+            "accepted": false,
+            "reason": "view_visibility_mismatch:three_quarter"
+          },
+          {
+            "character": "mother",
+            "view_id": "portrait_front",
+            "view_class": "portrait",
+            "source_panel": "p08",
+            "accepted": true,
+            "face_visibility": "three_quarter"
+          }
+        ]
+      }
+    }
+  ],
+  "dimensions": {
+    "panel": [
+      720,
+      1072
+    ],
+    "longscroll": [
+      720,
+      9316
+    ]
+  },
+  "longscroll": "/home/orbibot/.zeroclaw/workspace/hermes-agent/docs/plans/orbi-live-webtoon-20260420/webtoon/ep001/generated_fal_live/ep001_fal_live_longscroll.png"
+}

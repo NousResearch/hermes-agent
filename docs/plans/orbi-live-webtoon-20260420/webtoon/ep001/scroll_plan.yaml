@@ -1,0 +1,67 @@
+episode: ep001
+source_title: 한의대를 버리면 집이 산다 1화
+adaptation_mode: vertical_scroll_webtoon
+scene_id: ep001_hidden_resit_contract
+core_hook: 해부학 노트 밑에 숨긴 반수 체크리스트
+blocks:
+  - block_id: b01
+    purpose: opening
+    emotion: 압박
+    visual: 해부학 노트 위 체크리스트 클로즈업, 2학기 등록 직전 결론 형광펜 표시
+    dialogue:
+      - caption: "2학기 등록 직전까지 결론."
+    spacing: tight
+  - block_id: b02
+    purpose: pressure
+    emotion: 질식
+    visual: 어머니가 원룸에 들어와 서 있고 주인공은 책상 앞에서 얼어붙어 있음
+    dialogue:
+      - mother: "한의대는 원래 그래. 버티는 애가 이기는 거야."
+      - caption: "위로처럼 들렸지만, 사실은 명령에 가까웠다."
+    spacing: tight
+  - block_id: b03
+    purpose: reveal_setup
+    emotion: 비밀
+    visual: 노트북 화면에 계약학과 장학 조건표와 오르비 탭, 학교 LMS를 가린 창들
+    dialogue:
+      - caption: "적응한 적은 없었다. 적응한 척하는 법만 빨라졌다."
+    spacing: medium
+  - block_id: b04
+    purpose: external_mask
+    emotion: 계산
+    visual: 오르비 검색 결과와 계약학과 비교표, 학교 시간표가 한 화면에 겹침
+    dialogue:
+      - caption: "다들 미래를 사랑해서가 아니라, 덜 망하는 쪽을 찾고 있었다."
+    spacing: medium
+  - block_id: b05
+    purpose: pre_cliff
+    emotion: 공포
+    visual: 반수체크리스트_v2.pdf 동기화 알림, 떨리는 손과 마우스
+    dialogue:
+      - caption: "왜 하필 지금."
+    spacing: tall_drop
+  - block_id: b06
+    purpose: reveal
+    emotion: 정지
+    visual: 바닥에 떨어진 체크리스트를 어머니가 먼저 집어 드는 순간
+    dialogue:
+      - mother: "이게 뭐야?"
+    spacing: tall_drop
+  - block_id: b07
+    purpose: emotional_turn
+    emotion: 들킴
+    visual: 체크리스트 항목이 보이고 뒤에서 주인공 표정이 굳어 있음
+    dialogue:
+      - text_focus: "부모 설득 실패 시 등록 후 반수 유지"
+      - caption: "아, 이제 들켰다."
+    spacing: tall_drop
+  - block_id: b08
+    purpose: cliff
+    emotion: 붕괴
+    visual: 아버지 메신저와 어머니의 굳은 얼굴, 포르말린 묻은 흰 가운이 프레임에 걸림
+    dialogue:
+      - father: "이번 학기만 버티면 된다. 너는 면허만 따면 돼."
+      - mother: "학교 힘든 게 아니라, 너는 여기서 나갈 생각부터 했네."
+      - caption: "서로 다른 미래를 동시에 붙들고 있던 손이 먼저 들켜 버렸다."
+    spacing: end_cliff
+final_image_direction: 어두운 원룸, 노트북 빛과 형광펜 표시만 도드라지는 엔드패널로 마감

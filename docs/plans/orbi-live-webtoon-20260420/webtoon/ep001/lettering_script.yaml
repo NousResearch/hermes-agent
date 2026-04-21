@@ -1,0 +1,43 @@
+episode: ep001
+language: ko
+rules:
+  - 긴 문장은 캡션으로 분리하고 말풍선은 짧게 유지
+  - 이미지 안에 한글 장문 직접 생성 금지, 후처리 식자 전제
+  - 엔드패널은 대사보다 침묵을 살리는 배치 우선
+balloons:
+  - id: l01
+    panel_id: p02
+    speaker: mother
+    text: "한의대는 원래 그래. 버티는 애가 이기는 거야."
+    tone: low_pressure
+  - id: l02
+    panel_id: p06
+    speaker: mother
+    text: "이게 뭐야?"
+    tone: cold
+  - id: l03
+    panel_id: p07
+    speaker: text_focus
+    text: "부모 설득 실패 시 등록 후 반수 유지"
+    tone: internal_note
+  - id: l04
+    panel_id: p08
+    speaker: teacher_chat
+    text: "이번 학기만 버티면 된다. 너는 면허만 따면 돼."
+    tone: phone_message
+  - id: l05
+    panel_id: p08
+    speaker: mother
+    text: "학교 힘든 게 아니라, 너는 여기서 나갈 생각부터 했네."
+    tone: sharp
+captions:
+  - panel_id: p01
+    text: "2학기 등록 직전까지 결론."
+  - panel_id: p03
+    text: "적응한 적은 없었다. 적응한 척하는 법만 빨라졌다."
+  - panel_id: p05
+    text: "왜 하필 지금."
+  - panel_id: p07
+    text: "아, 이제 들켰다."
+  - panel_id: p08
+    text: "서로 다른 미래를 동시에 붙들고 있던 손이 먼저 들켜 버렸다."

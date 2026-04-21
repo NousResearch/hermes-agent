@@ -595,6 +595,31 @@ class TestRuntimeProviderResolution:
         assert result["args"] == ["--acp", "--stdio", "--debug"]
 
 
+class TestAuthenticatedProviderLists:
+
+    def test_minimax_provider_list_includes_highspeed_variants(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        providers = list_authenticated_providers(current_provider="openrouter")
+        minimax = next((p for p in providers if p["slug"] == "minimax"), None)
+
+        assert minimax is not None
+        assert minimax["models"] == [
+            "MiniMax-M2.7",
+            "MiniMax-M2.7-highspeed",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5-highspeed",
+            "MiniMax-M2.1",
+            "MiniMax-M2.1-highspeed",
+            "MiniMax-M2",
+            "MiniMax-M2-highspeed",
+        ]
+        assert minimax["total_models"] == 8
+
+
 # =============================================================================
 # _has_any_provider_configured tests
 # =============================================================================

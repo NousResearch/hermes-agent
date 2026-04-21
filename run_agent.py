@@ -2804,15 +2804,82 @@ class AIAgent:
             import contextlib
             review_agent = None
             try:
+                try:
+                    from hermes_cli.config import load_config
+
+                    _cfg = load_config()
+                except Exception:
+                    _cfg = {}
+                _mem = _cfg.get("memory") if isinstance(_cfg.get("memory"), dict) else {}
+                _skills_cfg = _cfg.get("skills") if isinstance(_cfg.get("skills"), dict) else {}
+                _mrv = _mem.get("review") if isinstance(_mem.get("review"), dict) else {}
+                _srv = _skills_cfg.get("review") if isinstance(_skills_cfg.get("review"), dict) else {}
+                if review_memory and review_skills:
+                    _rk = "memory+skills"
+                    _blocks = (_mrv, _srv)
+                elif review_memory:
+                    _rk = "memory"
+                    _blocks = (_mrv,)
+                else:
+                    _rk = "skills"
+                    _blocks = (_srv,)
+                eff_model = self.model
+                eff_provider = self.provider
+                eff_base = self.base_url
+                for _b in _blocks:
+                    if not isinstance(_b, dict):
+                        continue
+                    v = _b.get("model")
+                    if v is not None and not (isinstance(v, str) and not v.strip()):
+                        eff_model = v.strip() if isinstance(v, str) else v
+                        break
+                for _b in _blocks:
+                    if not isinstance(_b, dict):
+                        continue
+                    v = _b.get("provider")
+                    if v is not None and not (isinstance(v, str) and not v.strip()):
+                        eff_provider = v.strip() if isinstance(v, str) else v
+                        break
+                for _b in _blocks:
+                    if not isinstance(_b, dict):
+                        continue
+                    v = _b.get("base_url")
+                    if v is not None and not (isinstance(v, str) and not v.strip()):
+                        eff_base = v.strip() if isinstance(v, str) else v
+                        break
+                eff_key = getattr(self, "api_key", None) or ""
+                _key_log = "main"
+                for _b in _blocks:
+                    if not isinstance(_b, dict):
+                        continue
+                    envn = _b.get("api_key_env")
+                    if envn is None or (isinstance(envn, str) and not envn.strip()):
+                        continue
+                    es = envn.strip()
+                    _k = os.environ.get(es, "")
+                    if _k:
+                        eff_key = _k
+                        _key_log = "env:%s" % es
+                        break
+                logger.info(
+                    "Background %s review: model=%r provider=%r base_url=%r api_key=%s",
+                    _rk,
+                    eff_model,
+                    eff_provider,
+                    eff_base,
+                    _key_log,
+                )
                 with open(os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
-                        model=self.model,
+                        model=eff_model,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
+                        provider=eff_provider,
+                        base_url=eff_base,
+                        api_key=eff_key,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled

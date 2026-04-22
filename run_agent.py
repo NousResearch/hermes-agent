@@ -1431,12 +1431,12 @@ class AIAgent:
         # tool+args is called consecutively N times, we abort to force
         # the LLM into a different strategy.
         self._consecutive_tool_calls: list[tuple[str, str]] = []
-        self._circuit_breaker_threshold: int = 5
+        self._circuit_breaker_threshold: int = 3
         # Per-tool failure retry counter: tracks consecutive failures
         # for a tool regardless of argument changes.  Prevents the LLM
         # from retrying different variations of a failing tool call.
         self._tool_failure_count: dict[str, int] = {}
-        self._tool_failure_threshold: int = 5
+        self._tool_failure_threshold: int = 3
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -7719,7 +7719,10 @@ class AIAgent:
                 msg = (
                     f"[Circuit breaker triggered] Tool '{function_name}' called "
                     f"{streak} consecutive times with identical arguments. "
-                    f"Please try a different approach."
+                    f"This approach is not working. STOP retrying the same tool with the same parameters. "
+                    f"Consider: (1) the tool may not be available in this environment, "
+                    f"(2) there may be a permission issue, or (3) the command syntax is wrong. "
+                    f"Try a completely different approach or investigate the root cause."
                 )
                 logger.warning("Circuit breaker triggered: %s (streak=%d)", function_name, streak)
                 # Reset streak so future calls can succeed

@@ -419,7 +419,7 @@ Hermes currently integrates with these skills ecosystems and discovery sources:
 
 #### 1. Official optional skills (`official`)
 
-These are maintained in the Hermes repository itself and install with builtin trust.
+These are maintained in the Hermes repository itself and install with built-in trust.
 
 - Catalog: [Official Optional Skills Catalog](../../reference/optional-skills-catalog)
 - Source in repo: `optional-skills/`
@@ -569,14 +569,14 @@ hermes skills install skills-sh/anthropics/skills/pdf --force
 Important behavior:
 - `--force` can override policy blocks for caution/warn-style findings.
 - `--force` does **not** override a `dangerous` scan verdict.
-- Official optional skills (`official/...`) are treated as builtin trust and do not show the third-party warning panel.
+- Official optional skills (`official/...`) are treated as built-in trust and do not show the third-party warning panel.
 
 ### Trust levels
 
 | Level | Source | Policy |
 |-------|--------|--------|
 | `builtin` | Ships with Hermes | Always trusted |
-| `official` | `optional-skills/` in the repo | Builtin trust, no third-party warning |
+| `official` | `optional-skills/` in the repo | Built-in trust, no third-party warning |
 | `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills` | More permissive policy than community sources |
 | `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
 

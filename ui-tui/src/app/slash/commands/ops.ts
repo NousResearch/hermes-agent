@@ -8,12 +8,7 @@ import type {
 import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import {
-  getSpawnHistory,
-  pushDiskSnapshot,
-  setDiffPair,
-  type SpawnSnapshot
-} from '../../spawnHistoryStore.js'
+import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -101,10 +96,11 @@ export const opsCommands: SlashCommand[] = [
 
       // ── Disk-backed listing ─────────────────────────────────────
       if (lower === 'list' || lower === 'ls') {
-        ctx.gateway.rpc<SpawnTreeListResponse>('spawn_tree.list', {
-          limit: 30,
-          session_id: ctx.sid ?? 'default'
-        })
+        ctx.gateway
+          .rpc<SpawnTreeListResponse>('spawn_tree.list', {
+            limit: 30,
+            session_id: ctx.sid ?? 'default'
+          })
           .then(
             ctx.guarded<SpawnTreeListResponse>(r => {
               const entries = r.entries ?? []
@@ -136,7 +132,8 @@ export const opsCommands: SlashCommand[] = [
           return ctx.transcript.sys('usage: /replay load <path>')
         }
 
-        ctx.gateway.rpc<SpawnTreeLoadResponse>('spawn_tree.load', { path })
+        ctx.gateway
+          .rpc<SpawnTreeLoadResponse>('spawn_tree.load', { path })
           .then(
             ctx.guarded<SpawnTreeLoadResponse>(r => {
               if (!r.subagents?.length) {
@@ -202,9 +199,7 @@ export const opsCommands: SlashCommand[] = [
       const candidate = resolve(b!)
 
       if (!baseline || !candidate) {
-        return ctx.transcript.sys(
-          `replay-diff: could not resolve indices · history has ${history.length} entries`
-        )
+        return ctx.transcript.sys(`replay-diff: could not resolve indices · history has ${history.length} entries`)
       }
 
       setDiffPair({ baseline, candidate })

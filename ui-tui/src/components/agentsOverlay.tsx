@@ -206,7 +206,6 @@ function GanttStrip({
   now: number
   t: Theme
 }) {
-
   const spans = flatNodes
     .map((node, idx) => {
       const started = node.item.startedAt ?? now
@@ -273,7 +272,6 @@ function GanttStrip({
       </Text>
 
       {shown.map(({ endAt, idx, node, startAt }) => {
-
         const active = idx === cursor
         const { color } = statusGlyph(node.item, t)
         const accent = active ? t.color.amber : t.color.dim

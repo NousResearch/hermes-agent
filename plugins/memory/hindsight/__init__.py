@@ -1112,7 +1112,6 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: waiting for background threads")
-        global _loop, _loop_thread
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
@@ -1131,13 +1130,17 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
             self._client = None
-        # Stop the background event loop so no tasks are pending at exit
-        if _loop is not None and _loop.is_running():
-            _loop.call_soon_threadsafe(_loop.stop)
-            if _loop_thread is not None:
-                _loop_thread.join(timeout=5.0)
-            _loop = None
-            _loop_thread = None
+        # The module-global background event loop (_loop / _loop_thread)
+        # is intentionally NOT stopped here. It is shared across every
+        # HindsightMemoryProvider instance in the process — the plugin
+        # loader creates a new provider per AIAgent, and the gateway
+        # creates one AIAgent per concurrent chat session. Stopping the
+        # loop from one provider's shutdown() strands the aiohttp
+        # ClientSession + TCPConnector owned by every sibling provider
+        # on a dead loop, which surfaces as the "Unclosed client session"
+        # / "Unclosed connector" warnings reported in #11923. The loop
+        # runs on a daemon thread and is reclaimed on process exit;
+        # per-session cleanup happens via self._client.aclose() above.
 
 
 def register(ctx) -> None:

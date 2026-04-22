@@ -150,6 +150,40 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_cleans_stale_metadata_from_dead_foreign_pid(self, tmp_path, monkeypatch):
+        """Stale PID file from a *different* PID (crashed process) must still be cleaned.
+
+        Regression for: ``remove_pid_file()`` defensively refuses to delete a
+        PID file whose pid != ``os.getpid()`` to protect ``--replace``
+        handoffs.  Stale-cleanup must not go through that path or real
+        crashed-process PID files never get removed.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+
+        # PID that is guaranteed not alive and not our own.
+        dead_foreign_pid = 999999
+        assert dead_foreign_pid != os.getpid()
+
+        pid_path.write_text(json.dumps({
+            "pid": dead_foreign_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }))
+        lock_path.write_text(json.dumps({
+            "pid": dead_foreign_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }))
+
+        # No live lock holder → get_running_pid should clean both files.
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+        assert not lock_path.exists()
+
     def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

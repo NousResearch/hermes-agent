@@ -1085,11 +1085,29 @@ def convert_messages_to_anthropic(
                 })
             # Kimi's /coding endpoint (Anthropic protocol) requires assistant
             # tool-call messages to carry reasoning_content when thinking is
-            # enabled.  Preserve it as a thinking block so Kimi can validate
-            # the message history.  See hermes-agent#13848.
+            # enabled server-side.  Preserve it as a thinking block so Kimi
+            # can validate the message history.  See hermes-agent#13848.
+            #
+            # Accept empty string "" — _copy_reasoning_content_for_api()
+            # injects "" as a tier-3 fallback for Kimi tool-call messages
+            # that had no reasoning.  Kimi requires the field to exist, even
+            # if empty.
+            #
+            # Prepend (not append): Anthropic protocol requires thinking
+            # blocks before text and tool_use blocks.
+            #
+            # Guard: only add when reasoning_details didn't already contribute
+            # thinking blocks.  On native Anthropic, reasoning_details produces
+            # signed thinking blocks — adding another unsigned one from
+            # reasoning_content would create a duplicate (same text) that gets
+            # downgraded to a spurious text block on the last assistant message.
             reasoning_content = m.get("reasoning_content")
-            if reasoning_content and isinstance(reasoning_content, str):
-                blocks.append({"type": "thinking", "thinking": reasoning_content})
+            _already_has_thinking = any(
+                isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+                for b in blocks
+            )
+            if isinstance(reasoning_content, str) and not _already_has_thinking:
+                blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
             # Anthropic rejects empty assistant content
             effective = blocks or content
             if not effective or effective == "":
@@ -1245,6 +1263,7 @@ def convert_messages_to_anthropic(
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+    _is_kimi = _is_kimi_coding_endpoint(base_url)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1256,7 +1275,25 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _is_third_party or idx != last_assistant_idx:
+        if _is_kimi:
+            # Kimi's /coding endpoint enables thinking server-side and
+            # requires unsigned thinking blocks on replayed assistant
+            # tool-call messages.  Strip signed Anthropic blocks (Kimi
+            # can't validate signatures) but preserve the unsigned ones
+            # we synthesised from reasoning_content above.
+            new_content = []
+            for b in m["content"]:
+                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
+                    new_content.append(b)
+                    continue
+                if b.get("signature") or b.get("data"):
+                    # Anthropic-signed block — Kimi can't validate, strip
+                    continue
+                # Unsigned thinking (synthesised from reasoning_content) —
+                # keep it: Kimi needs it for message-history validation.
+                new_content.append(b)
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif _is_third_party or idx != last_assistant_idx:
             # Third-party endpoint: strip ALL thinking blocks from every
             # assistant message — signatures are Anthropic-proprietary.
             # Direct Anthropic: strip from non-latest assistant messages only.

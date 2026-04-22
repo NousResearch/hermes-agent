@@ -123,8 +123,7 @@ def _format_messages_as_prompt(
         elif role not in {"system", "user", "assistant"}:
             role = "context"
 
-        content = message.get("content")
-        rendered = _render_message_content(content)
+        rendered = _render_transcript_message(message, role)
         if not rendered:
             continue
 
@@ -142,6 +141,29 @@ def _format_messages_as_prompt(
 
     sections.append("Continue the conversation from the latest user request.")
     return "\n\n".join(section.strip() for section in sections if section and section.strip())
+
+
+def _render_transcript_message(message: dict[str, Any], role: str) -> str:
+    content = message.get("content")
+    rendered = _render_message_content(content)
+
+    if role == "assistant":
+        rendered_tool_calls = _render_tool_calls(message.get("tool_calls"))
+        if rendered_tool_calls:
+            rendered = "\n".join(part for part in (rendered, rendered_tool_calls) if part).strip()
+    elif role == "tool":
+        meta_parts: list[str] = []
+        tool_call_id = str(message.get("tool_call_id") or "").strip()
+        tool_name = str(message.get("tool_name") or "").strip()
+        if tool_call_id:
+            meta_parts.append(f"tool_call_id={tool_call_id}")
+        if tool_name:
+            meta_parts.append(f"tool_name={tool_name}")
+        if meta_parts:
+            prefix = "[" + ", ".join(meta_parts) + "]"
+            rendered = "\n".join(part for part in (prefix, rendered) if part).strip()
+
+    return rendered
 
 
 def _render_message_content(content: Any) -> str:
@@ -168,6 +190,50 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
+def _render_tool_calls(tool_calls: Any) -> str:
+    if not isinstance(tool_calls, list):
+        return ""
+
+    rendered: list[str] = []
+    for tool_call in tool_calls:
+        payload = _tool_call_payload(tool_call)
+        if not payload:
+            continue
+        rendered.append(
+            "<tool_call>" + json.dumps(payload, ensure_ascii=False) + "</tool_call>"
+        )
+    return "\n".join(rendered).strip()
+
+
+def _tool_call_payload(tool_call: Any) -> dict[str, Any] | None:
+    def _get(obj: Any, key: str, default: Any = None) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    fn = _get(tool_call, "function")
+    name = _get(fn, "name", "")
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    arguments = _get(fn, "arguments", "{}")
+    if not isinstance(arguments, str):
+        arguments = json.dumps(arguments, ensure_ascii=False)
+
+    call_id = _get(tool_call, "id", "") or _get(tool_call, "call_id", "")
+    if not isinstance(call_id, str) or not call_id.strip():
+        call_id = f"acp_call_{abs(hash((name, arguments))) % 1000000}"
+
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name.strip(),
+            "arguments": arguments,
+        },
+    }
+
+
 def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
@@ -189,7 +255,20 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
         if not isinstance(fn_name, str) or not fn_name.strip():
             return
         fn_args = fn.get("arguments", "{}")
-        if not isinstance(fn_args, str):
+        if isinstance(fn_args, str):
+            try:
+                # Outer tool-call parsing decodes escape sequences inside the
+                # nested arguments string (e.g. "\n" -> actual newline), but
+                # downstream Hermes expects function.arguments to remain a valid
+                # JSON string. Re-canonicalize it here so multiline terminal
+                # commands and heredocs survive a second json.loads().
+                fn_args = json.dumps(json.loads(fn_args), ensure_ascii=False)
+            except Exception:
+                # Leave non-JSON strings untouched; run_agent will surface a
+                # normal invalid-JSON tool-call error if the model truly emitted
+                # malformed arguments.
+                pass
+        else:
             fn_args = json.dumps(fn_args, ensure_ascii=False)
         call_id = obj.get("id")
         if not isinstance(call_id, str) or not call_id.strip():
@@ -266,6 +345,21 @@ class _ACPChatCompletions:
 class _ACPChatNamespace:
     def __init__(self, client: "CopilotACPClient"):
         self.completions = _ACPChatCompletions(client)
+
+
+class _AsyncACPChatCompletions:
+    def __init__(self, client: "CopilotACPClient"):
+        self._client = client
+
+    async def create(self, **kwargs: Any) -> Any:
+        import asyncio
+
+        return await asyncio.to_thread(self._client._create_chat_completion, **kwargs)
+
+
+class _AsyncACPChatNamespace:
+    def __init__(self, client: "CopilotACPClient"):
+        self.completions = _AsyncACPChatCompletions(client)
 
 
 class CopilotACPClient:
@@ -602,3 +696,16 @@ class CopilotACPClient:
         process.stdin.write(json.dumps(response) + "\n")
         process.stdin.flush()
         return True
+
+
+class AsyncCopilotACPClient:
+    """Async-compatible facade over the sync Copilot ACP client."""
+
+    def __init__(self, sync_client: CopilotACPClient):
+        self._sync_client = sync_client
+        self.chat = _AsyncACPChatNamespace(sync_client)
+        self.api_key = sync_client.api_key
+        self.base_url = sync_client.base_url
+
+    def close(self) -> None:
+        self._sync_client.close()

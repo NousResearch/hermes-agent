@@ -265,6 +265,37 @@ def test_list_authenticated_providers_accepts_base_url_and_singular_model(monkey
     assert custom["total_models"] == 3
 
 
+def test_list_authenticated_providers_dedupes_providers_dict_against_custom_providers(monkeypatch):
+    """providers: dict entries should not be duplicated by the compat custom_providers view."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "ollama-local": {
+            "name": "Ollama Local",
+            "api": "http://127.0.0.1:11434/v1",
+            "default_model": "llama3.2:3b",
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="ollama-local",
+        user_providers=user_providers,
+        custom_providers=[
+            {
+                "name": "Ollama Local",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "provider_key": "ollama-local",
+                "model": "llama3.2:3b",
+            }
+        ],
+        max_models=50,
+    )
+
+    ollama_rows = [p for p in providers if p["slug"] == "ollama-local"]
+    assert len(ollama_rows) == 1, f"Expected one Ollama row, got {len(ollama_rows)}"
+
+
 def test_list_authenticated_providers_dedupes_when_user_and_custom_overlap(monkeypatch):
     """When the same slug appears in both ``providers:`` dict and
     ``custom_providers:`` list, emit exactly one row (providers: dict wins

@@ -1,4 +1,4 @@
-"""Focused regressions for the Copilot ACP shim safety layer."""
+"""Focused regressions for the Copilot ACP shim safety layer and prompt formatting."""
 
 from __future__ import annotations
 
@@ -8,9 +8,91 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.copilot_acp_client import CopilotACPClient
+from agent.copilot_acp_client import (
+    CopilotACPClient,
+    _extract_tool_calls_from_text,
+    _format_messages_as_prompt,
+)
+
+
+def test_prompt_includes_assistant_tool_calls_without_content():
+    prompt = _format_messages_as_prompt(
+        [
+            {"role": "user", "content": "Investigate this task."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "delegate_task",
+                            "arguments": "{\"goal\":\"Inspect the flow\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "tool_name": "delegate_task",
+                "content": "{\"results\":[{\"status\":\"ok\"}]}",
+            },
+        ]
+    )
+
+    assert "Assistant:\n<tool_call>" in prompt
+    assert '"name": "delegate_task"' in prompt
+    assert '"arguments": "{\\"goal\\":\\"Inspect the flow\\"}"' in prompt
+    assert "Tool:\n[tool_call_id=call_1, tool_name=delegate_task]" in prompt
+
+
+def test_prompt_renders_simplenamespace_tool_calls():
+    tool_call = SimpleNamespace(
+        id="call_ns",
+        function=SimpleNamespace(
+            name="search_files",
+            arguments="{\"pattern\":\"*.md\"}",
+        ),
+    )
+
+    prompt = _format_messages_as_prompt(
+        [
+            {
+                "role": "assistant",
+                "content": "I'll inspect the notes first.",
+                "tool_calls": [tool_call],
+            }
+        ]
+    )
+
+    assert "I'll inspect the notes first." in prompt
+    assert "<tool_call>" in prompt
+    assert '"id": "call_ns"' in prompt
+    assert '"name": "search_files"' in prompt
+
+
+def test_extract_tool_calls_recovers_multiline_terminal_arguments_as_valid_json():
+    raw = """<tool_call>{
+      "id":"call_1",
+      "type":"function",
+      "function":{
+        "name":"terminal",
+        "arguments":"{\\"command\\":\\"python3 - <<'PY'\\\\nprint('hello')\\\\nPY\\",\\"timeout\\":60}"
+      }
+    }</tool_call>"""
+
+    tool_calls, cleaned = _extract_tool_calls_from_text(raw)
+
+    assert cleaned == ""
+    assert len(tool_calls) == 1
+    parsed = json.loads(tool_calls[0].function.arguments)
+    assert parsed["timeout"] == 60
+    assert parsed["command"] == "python3 - <<'PY'\nprint('hello')\nPY"
 
 
 class _FakeProcess:
@@ -55,7 +137,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             home = Path(tmpdir) / "home"
             blocked = home / ".hermes" / "skills" / ".hub" / "index-cache" / "entry.json"
             blocked.parent.mkdir(parents=True, exist_ok=True)
-            blocked.write_text('{"token":"sk-test-secret-1234567890"}')
+            blocked.write_text('{"token": "abc123def456"}')
 
             with patch.dict(
                 os.environ,
@@ -78,7 +160,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             secret_file = root / "config.env"
-            secret_file.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012")
+            secret_file.write_text("OPENAI_API_KEY=abc123def456\n")
 
             response = self._dispatch(
                 {
@@ -92,7 +174,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
 
         content = ((response.get("result") or {}).get("content") or "")
         self.assertNotIn("abc123def456", content)
-        self.assertIn("OPENAI_API_KEY=", content)
+        self.assertIn("OPENAI_API_KEY=***", content)
 
     def test_write_text_file_reuses_write_denylist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -100,19 +182,20 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             target = home / ".ssh" / "id_rsa"
             target.parent.mkdir(parents=True, exist_ok=True)
 
-            with patch("agent.copilot_acp_client.is_write_denied", return_value=True, create=True):
-                response = self._dispatch(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 4,
-                        "method": "fs/write_text_file",
-                        "params": {
-                            "path": str(target),
-                            "content": "fake-private-key",
+            with patch.dict(os.environ, {"HOME": str(home)}, clear=False):
+                with patch("agent.copilot_acp_client.is_write_denied", return_value=True, create=True):
+                    response = self._dispatch(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 4,
+                            "method": "fs/write_text_file",
+                            "params": {
+                                "path": str(target),
+                                "content": "fake-private-key",
+                            },
                         },
-                    },
-                    cwd=str(home),
-                )
+                        cwd=str(home),
+                    )
 
         self.assertIn("error", response)
         self.assertFalse(target.exists())

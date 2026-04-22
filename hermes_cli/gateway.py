@@ -1820,23 +1820,60 @@ def launchd_start():
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         print("↻ launchd plist missing; regenerating service definition")
-        plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
-        print("✓ Service started")
+        try:
+            plist_path.parent.mkdir(parents=True, exist_ok=True)
+            plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+        except OSError as exc:
+            print_warning(f"Could not write launchd plist ({exc}); starting a detached background gateway instead")
+            pid = _start_gateway_detached_background()
+            print(f"✓ Gateway started in the background (PID {pid})")
+            return
+        service_pids = _get_service_pids()
+        manual_pids = find_gateway_pids(exclude_pids=service_pids)
+        if manual_pids:
+            killed = kill_gateway_processes(force=False, exclude_pids=service_pids)
+            if killed:
+                print(f"↻ Stopped {killed} manual gateway process(es) before starting launchd")
+                _wait_for_gateway_pids_exit(exclude_pids=service_pids, timeout=10.0)
+        try:
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+            subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+            print("✓ Service started")
+            return
+        except (subprocess.CalledProcessError, OSError) as exc:
+            print_warning(f"launchd start failed ({exc}); starting a detached background gateway instead")
+            pid = _start_gateway_detached_background()
+            print(f"✓ Gateway started in the background (PID {pid})")
         return
 
-    refresh_launchd_plist_if_needed()
+    try:
+        refresh_launchd_plist_if_needed()
+    except OSError as exc:
+        print_warning(f"Could not refresh launchd plist ({exc}); starting a detached background gateway instead")
+        pid = _start_gateway_detached_background()
+        print(f"✓ Gateway started in the background (PID {pid})")
+        return
     try:
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
-    print("✓ Service started")
+        service_pids = _get_service_pids()
+        manual_pids = find_gateway_pids(exclude_pids=service_pids)
+        if manual_pids:
+            killed = kill_gateway_processes(force=False, exclude_pids=service_pids)
+            if killed:
+                print(f"↻ Stopped {killed} manual gateway process(es) before starting launchd")
+                _wait_for_gateway_pids_exit(exclude_pids=service_pids, timeout=10.0)
+        try:
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+            subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+            print("✓ Service started")
+        except (subprocess.CalledProcessError, OSError) as exc:
+            print_warning(f"launchd start failed ({exc}); starting a detached background gateway instead")
+            pid = _start_gateway_detached_background()
+            print(f"✓ Gateway started in the background (PID {pid})")
 
 def launchd_stop():
     label = get_launchd_label()
@@ -1897,6 +1934,107 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _wait_for_gateway_pids_exit(exclude_pids: set[int] | None = None, timeout: float = 10.0) -> bool:
+    """Wait until no gateway processes remain for the current profile."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    _exclude = set(exclude_pids or set())
+    while time.monotonic() < deadline:
+        if not find_gateway_pids(exclude_pids=_exclude):
+            return True
+        time.sleep(0.3)
+    return not find_gateway_pids(exclude_pids=_exclude)
+
+
+def _start_gateway_detached_background() -> int:
+    """Start the gateway in a detached background subprocess.
+
+    This is a fallback for environments where launchd/systemd bootstrap is
+    unavailable or fails even though the gateway itself can run normally.
+    Returns the spawned PID.
+    """
+    import time
+    import tempfile
+
+    primary_log_dir = get_hermes_home() / "logs"
+    fallback_log_dir = Path(tempfile.gettempdir()) / "hermes-gateway-logs"
+    stdout_fh = None
+    stderr_fh = None
+    log_dir = None
+
+    cmd = [
+        get_python_path(),
+        "-m",
+        "hermes_cli.main",
+    ]
+    profile_arg = _profile_arg(str(get_hermes_home().resolve()))
+    if profile_arg:
+        cmd.extend(profile_arg.split())
+    cmd.extend(["gateway", "run", "--replace"])
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(get_hermes_home().resolve())
+
+    try:
+        primary_log_dir.mkdir(parents=True, exist_ok=True)
+        log_dir = primary_log_dir
+    except OSError:
+        try:
+            fallback_log_dir.mkdir(parents=True, exist_ok=True)
+            log_dir = fallback_log_dir
+        except OSError:
+            log_dir = None
+
+    try:
+        if log_dir is not None:
+            stdout_fh = (log_dir / "gateway.log").open("ab")
+            stderr_fh = (log_dir / "gateway.error.log").open("ab")
+        else:
+            stdout_fh = subprocess.DEVNULL
+            stderr_fh = subprocess.DEVNULL
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_fh,
+            stderr=stderr_fh,
+            close_fds=True,
+            start_new_session=True,
+        )
+    finally:
+        for fh in (stdout_fh, stderr_fh):
+            try:
+                if fh not in (None, subprocess.DEVNULL):
+                    fh.close()
+            except Exception:
+                pass
+
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise subprocess.CalledProcessError(
+                proc.returncode or 1,
+                cmd,
+            )
+        from gateway.status import get_running_pid
+
+        running_pid = get_running_pid()
+        if running_pid is not None:
+            return running_pid
+        time.sleep(0.25)
+
+    if proc.poll() is not None:
+        raise subprocess.CalledProcessError(
+            proc.returncode or 1,
+            cmd,
+        )
+
+    return proc.pid
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -1925,9 +2063,14 @@ def launchd_restart():
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
-        print("✓ Service restarted")
+        try:
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+            print("✓ Service restarted")
+        except (subprocess.CalledProcessError, OSError) as exc:
+            print_warning(f"launchd restart failed ({exc}); starting a detached background gateway instead")
+            pid = _start_gateway_detached_background()
+            print(f"✓ Gateway started in the background (PID {pid})")
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()

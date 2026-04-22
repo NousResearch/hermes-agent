@@ -116,7 +116,10 @@ all = [
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
-hermes-agent = "run_agent:main"
+# Keep `hermes-agent` aligned with the real CLI entrypoint so top-level flags
+# like `--version` are handled by argparse instead of the legacy Fire demo
+# runner in run_agent.py.
+hermes-agent = "hermes_cli.main:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]

@@ -23,8 +23,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils import base_url_host_matches, base_url_hostname
-
 logger = logging.getLogger(__name__)
 
 
@@ -93,12 +91,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
-    ),
-    "stepfun": HermesOverlay(
-        transport="openai_chat",
-        extra_env_vars=("STEPFUN_API_KEY",),
-        base_url_override="https://api.stepfun.ai/step_plan/v1",
-        base_url_env_var="STEPFUN_BASE_URL",
     ),
     "minimax": HermesOverlay(
         transport="anthropic_messages",
@@ -216,10 +208,6 @@ ALIASES: Dict[str, str] = {
     "kimi-coding-cn": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
 
-    # stepfun
-    "step": "stepfun",
-    "stepfun-coding-plan": "stepfun",
-
     # minimax-cn
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
@@ -302,9 +290,8 @@ ALIASES: Dict[str, str] = {
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
-    "openai-codex": "ChatGPT Codex CLI",
+    "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
-    "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
@@ -335,16 +322,12 @@ def normalize_provider(name: str) -> str:
 
 
 def get_provider(name: str) -> Optional[ProviderDef]:
-    """Look up a built-in provider by id or alias.
+    """Look up a provider by id or alias, merging all data sources.
 
     Resolution order:
       1. Hermes overlays (for providers not in models.dev: nous, openai-codex, etc.)
       2. models.dev catalog + Hermes overlay
-
-    User-defined providers from config.yaml (``providers:`` / ``custom_providers:``)
-    are resolved by :func:`resolve_provider_full`, which layers ``resolve_user_provider``
-    and ``resolve_custom_provider`` on top of this function. Callers that need
-    user-config support should use ``resolve_provider_full`` instead.
+      3. User-defined providers from config (TODO: Phase 4)
 
     Returns a fully-resolved ProviderDef or None.
     """
@@ -438,16 +421,6 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     """
     pdef = get_provider(provider)
     if pdef is not None:
-        # Even for known providers, check URL heuristics for special endpoints
-        # (e.g. kimi /coding endpoint needs anthropic_messages even on 'custom')
-        if base_url:
-            url_lower = base_url.rstrip("/").lower()
-            if "api.kimi.com/coding" in url_lower:
-                return "anthropic_messages"
-            if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
-                return "anthropic_messages"
-            if "api.openai.com" in url_lower:
-                return "codex_responses"
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
     # Direct provider checks for providers not in HERMES_OVERLAYS
@@ -457,14 +430,11 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     # URL-based heuristics for custom / unknown providers
     if base_url:
         url_lower = base_url.rstrip("/").lower()
-        hostname = base_url_hostname(base_url)
-        if url_lower.endswith("/anthropic") or hostname == "api.anthropic.com":
+        if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
             return "anthropic_messages"
-        if hostname == "api.kimi.com" and "/coding" in url_lower:
-            return "anthropic_messages"
-        if hostname == "api.openai.com":
+        if "api.openai.com" in url_lower:
             return "codex_responses"
-        if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
+        if "bedrock-runtime" in url_lower and "amazonaws.com" in url_lower:
             return "bedrock_converse"
 
     return "chat_completions"

@@ -2465,15 +2465,26 @@ class HermesCLI:
 
         # 2. Replace untouched default with a Codex model
         if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
+            fallback_model = "gpt-5.4-mini"
             try:
-                from hermes_cli.codex_models import get_codex_model_ids
+                from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
 
                 available = get_codex_model_ids(
                     access_token=self.api_key if self.api_key else None,
                 )
                 if available:
-                    fallback_model = available[0]
+                    preferred_models = (
+                        "gpt-5.4-mini",
+                        "gpt-5.4",
+                        "gpt-5.3-codex",
+                        "gpt-5.2-codex",
+                    )
+                    fallback_model = next(
+                        (model for model in preferred_models if model in available),
+                        DEFAULT_CODEX_MODELS[0] if DEFAULT_CODEX_MODELS else available[0],
+                    )
+                elif DEFAULT_CODEX_MODELS:
+                    fallback_model = DEFAULT_CODEX_MODELS[0]
             except Exception:
                 pass
 

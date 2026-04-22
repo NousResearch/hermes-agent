@@ -237,11 +237,11 @@ class TestNormalizeModelForProvider:
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        # Uses first from available list
-        assert cli.model == "gpt-5.3-codex"
+        # Prefers the curated Codex default when it is available.
+        assert cli.model == "gpt-5.4"
 
     def test_default_fallback_when_api_fails(self):
-        """No model configured falls back to gpt-5.3-codex when API unreachable."""
+        """No model configured falls back to gpt-5.4-mini when API unreachable."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
@@ -267,4 +267,34 @@ class TestNormalizeModelForProvider:
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.4-mini"
+
+    def test_default_fallback_skips_unsupported_51_variant(self):
+        """If discovery only exposes gpt-5.1-codex-mini, keep the safer gpt-5.4-mini default."""
+        import cli as _cli_mod
+        _clean_config = {
+            "model": {
+                "default": "",
+                "base_url": "",
+                "provider": "auto",
+            },
+            "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},
+            "agent": {},
+            "terminal": {"env_type": "local"},
+        }
+        with (
+            patch("cli.get_tool_definitions", return_value=[]),
+            patch.dict("os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}, clear=False),
+            patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}),
+        ):
+            from cli import HermesCLI
+            cli = HermesCLI()
+
+        with patch(
+            "hermes_cli.codex_models.get_codex_model_ids",
+            return_value=["gpt-5.1-codex-mini"],
+        ):
+            changed = cli._normalize_model_for_provider("openai-codex")
+
+        assert changed is True
+        assert cli.model == "gpt-5.4-mini"

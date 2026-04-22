@@ -2745,6 +2745,9 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 provider_label = current_provider
 
+            from hermes_cli.model_switch import filter_model_picker_entries
+            providers = filter_model_picker_entries(providers)
+
             embed = discord.Embed(
                 title="⚙ Model Configuration",
                 description=(

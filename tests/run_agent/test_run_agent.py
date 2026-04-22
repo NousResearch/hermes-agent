@@ -444,6 +444,18 @@ class TestCleanSessionContent:
         assert "after" in result
 
 
+class TestParseToolArgumentsJson:
+    def test_allows_raw_control_characters_in_json_string(self):
+        raw = '{"command":"python3 - <<\'PY\'\nprint(\'hello\')\nPY","timeout":60}'
+
+        parsed = run_agent._parse_tool_arguments_json(raw)
+
+        assert parsed == {
+            "command": "python3 - <<'PY'\nprint('hello')\nPY",
+            "timeout": 60,
+        }
+
+
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
         assert agent._get_messages_up_to_last_assistant([]) == []

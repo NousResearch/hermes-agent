@@ -86,7 +86,7 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_handle_model_command_shows_all_telegram_picker_providers(tmp_path, monkeypatch):
+async def test_handle_model_command_filters_telegram_picker_providers(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
@@ -110,7 +110,7 @@ async def test_handle_model_command_shows_all_telegram_picker_providers(tmp_path
     monkeypatch.setattr(
         "hermes_cli.model_switch.list_authenticated_providers",
         lambda **kwargs: [
-            _provider("openai-codex", "ChatGPT Codex CLI", 3),
+            _provider("openai-codex", "OpenAI Codex", 3),
             _provider("ollama-cloud", "Ollama Cloud", 5),
             _provider("anthropic", "Anthropic", 7),
         ],
@@ -125,16 +125,13 @@ async def test_handle_model_command_shows_all_telegram_picker_providers(tmp_path
     assert result is None
     providers = adapter.calls[0]["providers"]
     slugs = [p["slug"] for p in providers]
-    assert slugs == ["openai-codex", "ollama-cloud", "anthropic"]
-    assert [p["name"] for p in providers] == [
-        "ChatGPT Codex CLI",
-        "Ollama Cloud",
-        "Anthropic",
-    ]
+    assert "openai-codex" not in slugs
+    assert "ollama-cloud" not in slugs
+    assert "anthropic" in slugs
 
 
 @pytest.mark.asyncio
-async def test_handle_model_command_shows_all_telegram_fallback_text_list(tmp_path, monkeypatch):
+async def test_handle_model_command_filters_telegram_fallback_text_list(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
@@ -158,7 +155,7 @@ async def test_handle_model_command_shows_all_telegram_fallback_text_list(tmp_pa
     monkeypatch.setattr(
         "hermes_cli.model_switch.list_authenticated_providers",
         lambda **kwargs: [
-            _provider("openai-codex", "ChatGPT Codex CLI", 3),
+            _provider("openai-codex", "OpenAI Codex", 3),
             _provider("ollama-cloud", "Ollama Cloud", 5),
             _provider("anthropic", "Anthropic", 7),
         ],
@@ -167,6 +164,6 @@ async def test_handle_model_command_shows_all_telegram_fallback_text_list(tmp_pa
     result = await _make_runner()._handle_model_command(_make_event())
 
     assert result is not None
-    assert "ChatGPT Codex CLI" in result
-    assert "Ollama Cloud" in result
+    assert "OpenAI Codex" not in result
+    assert "Ollama Cloud" not in result
     assert "Anthropic" in result

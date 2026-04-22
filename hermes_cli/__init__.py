@@ -11,5 +11,4 @@ Provides subcommands for:
 - hermes cron          - Manage cron jobs
 """
 
-__version__ = "0.10.0"
-__release_date__ = "2026.4.16"
+from .version import __release_date__, __version__

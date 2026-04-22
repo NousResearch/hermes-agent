@@ -285,6 +285,9 @@ class TestLaunchdPlistRefresh:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old</plist>")
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [])
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda *args, **kwargs: 0)
 
         calls = []
         def fake_run(cmd, check=False, **kwargs):
@@ -306,6 +309,9 @@ class TestLaunchdPlistRefresh:
         assert not plist_path.exists()
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [])
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda *args, **kwargs: 0)
 
         calls = []
         def fake_run(cmd, check=False, **kwargs):

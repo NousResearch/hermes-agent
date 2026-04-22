@@ -21,6 +21,7 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
         calls = []
+        kill_calls = []
 
         def fake_run(cmd, check=True, **kwargs):
             calls.append(cmd)
@@ -219,6 +220,9 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [])
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda *args, **kwargs: 0)
 
         calls = []
         domain = gateway_cli._launchd_domain()
@@ -246,6 +250,9 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [])
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda *args, **kwargs: 0)
 
         calls = []
         domain = gateway_cli._launchd_domain()
@@ -266,6 +273,73 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
+        ]
+
+    def test_launchd_start_stops_manual_gateway_before_bootstrap(self, tmp_path, monkeypatch):
+        """If a manual gateway is running, launchd_start should stop it first."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        calls = []
+        kill_calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [11111] if not exclude_pids else [])
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda *args, **kwargs: kill_calls.append((args, kwargs)) or 1)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_pids_exit", lambda **kwargs: True)
+
+        gateway_cli.launchd_start()
+
+        assert len(kill_calls) == 1
+        assert calls == [
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
+    def test_launchd_start_falls_back_to_detached_background_when_bootstrap_fails(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        calls = []
+        detached_calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(113, cmd, stderr="Could not find service")
+            if cmd == ["launchctl", "bootstrap", domain, str(plist_path)]:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="Input/output error")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [])
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda *args, **kwargs: 0)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_pids_exit", lambda **kwargs: True)
+        monkeypatch.setattr(gateway_cli, "_start_gateway_detached_background", lambda: detached_calls.append(True) or 4242)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert detached_calls == [True]
+        assert calls == [
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
 
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):

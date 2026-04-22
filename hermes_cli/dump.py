@@ -207,7 +207,7 @@ def run_dump(args):
     hermes_home = get_hermes_home()
 
     try:
-        from hermes_cli import __version__, __release_date__
+        from hermes_cli.version import __release_date__, __version__
     except ImportError:
         __version__ = "(unknown)"
         __release_date__ = ""

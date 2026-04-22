@@ -31,7 +31,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__, __release_date__
+from hermes_cli.version import __release_date__, __version__
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,

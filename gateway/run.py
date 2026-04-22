@@ -5413,6 +5413,9 @@ class GatewayRunner:
                         custom_providers=custom_provs,
                         max_models=50,
                     )
+                    if source.platform == Platform.TELEGRAM:
+                        from hermes_cli.model_switch import filter_model_picker_entries
+                        providers = filter_model_picker_entries(providers)
                 except Exception:
                     providers = []
 
@@ -5524,6 +5527,9 @@ class GatewayRunner:
                     custom_providers=custom_provs,
                     max_models=5,
                 )
+                if source.platform == Platform.TELEGRAM:
+                    from hermes_cli.model_switch import filter_model_picker_entries
+                    providers = filter_model_picker_entries(providers)
                 for p in providers:
                     tag = " (current)" if p["is_current"] else ""
                     lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -922,6 +923,52 @@ class TestKimiTemperatureOmitted:
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["model"] == "kimi-for-coding"
         assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_copilot_acp_async_client_wraps_sync_create(self):
+        from agent.copilot_acp_client import AsyncCopilotACPClient
+
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok", tool_calls=None)
+                )
+            ]
+        )
+        provider_cfg = SimpleNamespace(auth_type="external_process")
+
+        with patch.dict(
+            "hermes_cli.auth.PROVIDER_REGISTRY",
+            {"copilot-acp": provider_cfg},
+            clear=False,
+        ), patch(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            return_value={
+                "api_key": "***",
+                "base_url": "acp://copilot",
+                "command": "copilot",
+                "args": ["--acp", "--stdio"],
+            },
+        ), patch(
+            "agent.copilot_acp_client.CopilotACPClient._create_chat_completion",
+            return_value=response,
+        ) as mock_create:
+            client, model = resolve_provider_client(
+                "copilot-acp",
+                model="gpt-5.4-mini",
+                async_mode=True,
+            )
+
+            assert isinstance(client, AsyncCopilotACPClient)
+            assert model == "gpt-5.4-mini"
+
+            result = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        mock_create.assert_called_once()
 
     @pytest.mark.parametrize(
         "model",

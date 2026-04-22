@@ -309,7 +309,7 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
         try:
-            function_args = json.loads(tool_call.function.arguments)
+            function_args = _parse_tool_arguments_json(tool_call.function.arguments)
         except Exception:
             logging.debug(
                 "Could not parse args for %s — defaulting to sequential; raw=%s",
@@ -338,6 +338,23 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
             return False
 
     return True
+
+
+def _parse_tool_arguments_json(raw_args: Any) -> Any:
+    """Parse tool-call arguments, tolerating raw control characters.
+
+    Some providers/adapters emit a JSON-encoded string whose nested values
+    contain literal newlines or tabs (common with multiline terminal commands).
+    Standard ``json.loads`` rejects those with ``Invalid control character``.
+    We first try strict parsing, then fall back to ``strict=False``.
+    """
+    if isinstance(raw_args, (dict, list)):
+        return raw_args
+    if raw_args is None:
+        return {}
+    if not isinstance(raw_args, str):
+        raw_args = str(raw_args)
+    return json.loads(raw_args, strict=False)
 
 
 def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | None:
@@ -1280,6 +1297,20 @@ class AIAgent:
         self._fallback_activated = False
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        logger.info(
+            "ACTIVE MODEL: %s/%s",
+            self.provider or "unknown",
+            self.model or "unknown",
+        )
+        if self._fallback_chain:
+            _fb = self._fallback_chain[0]
+            logger.info(
+                "FALLBACK MODEL: %s/%s",
+                _fb.get("provider", "unknown"),
+                _fb.get("model", "unknown"),
+            )
+        else:
+            logger.info("FALLBACK MODEL: NONE")
         if self._fallback_chain and not self.quiet_mode:
             if len(self._fallback_chain) == 1:
                 fb = self._fallback_chain[0]
@@ -2946,7 +2977,9 @@ class AIAgent:
             )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
-            for msg in messages[flush_from:]:
+            for idx, msg in enumerate(messages[flush_from:], start=flush_from):
+                if self._should_skip_recovery_artifact_at(messages, idx):
+                    continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 tool_calls_data = None
@@ -3473,7 +3506,7 @@ class AIAgent:
         try:
             # Clean assistant content for session logs
             cleaned = []
-            for msg in messages:
+            for msg in self._strip_recovery_artifacts(messages):
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
@@ -3519,6 +3552,59 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
+
+    @staticmethod
+    def _is_post_tool_empty_nudge(msg: Dict[str, Any]) -> bool:
+        return (
+            isinstance(msg, dict)
+            and msg.get("role") == "user"
+            and str(msg.get("content") or "").strip()
+            == "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task."
+        )
+
+    @classmethod
+    def _strip_recovery_artifacts(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove synthetic empty-response recovery messages from history.
+
+        These messages are injected only to recover a broken turn. They help the
+        next immediate API call, but if they persist in saved history they pollute
+        later turns and context compaction, especially for text-transcript-backed
+        providers like Copilot ACP.
+        """
+        cleaned: List[Dict[str, Any]] = []
+        idx = 0
+        while idx < len(messages):
+            msg = messages[idx]
+            next_msg = messages[idx + 1] if idx + 1 < len(messages) else None
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "assistant"
+                and str(msg.get("content") or "").strip() == "(empty)"
+                and cls._is_post_tool_empty_nudge(next_msg)
+            ):
+                idx += 2
+                continue
+            if cls._is_post_tool_empty_nudge(msg):
+                idx += 1
+                continue
+            cleaned.append(msg)
+            idx += 1
+        return cleaned
+
+    @classmethod
+    def _should_skip_recovery_artifact_at(cls, messages: List[Dict[str, Any]], idx: int) -> bool:
+        if idx < 0 or idx >= len(messages):
+            return False
+        msg = messages[idx]
+        next_msg = messages[idx + 1] if idx + 1 < len(messages) else None
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and str(msg.get("content") or "").strip() == "(empty)"
+            and cls._is_post_tool_empty_nudge(next_msg)
+        ):
+            return True
+        return cls._is_post_tool_empty_nudge(msg)
     
     def interrupt(self, message: str = None) -> None:
         """
@@ -5542,6 +5628,12 @@ class AIAgent:
             self._touch_activity("waiting for provider response (streaming)")
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
+            # Some OpenAI-compatible adapters (e.g. copilot-acp) ignore
+            # stream=True and return a finalized non-streaming response object.
+            # Treat that as success instead of trying to iterate it as a stream.
+            if hasattr(stream, "choices"):
+                return stream
+
             # Capture rate limit headers from the initial HTTP response.
             # The OpenAI SDK Stream object exposes the underlying httpx
             # response via .response before any chunks are consumed.
@@ -5646,15 +5738,23 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                # Use assignment, not +=.  Function names are
-                                # atomic identifiers delivered complete in the
-                                # first chunk (OpenAI spec).  Some providers
-                                # (MiniMax M2.7 via NVIDIA NIM) resend the full
-                                # name in every chunk; concatenation would
-                                # produce "read_fileread_file".  Assignment
-                                # (matching the OpenAI Node SDK / LiteLLM /
-                                # Vercel AI patterns) is immune to this.
-                                entry["function"]["name"] = tc_delta.function.name
+                                # Provider behavior is inconsistent here:
+                                # some stream function names as partials
+                                # ("web_" then "search"), while others resend
+                                # the full name on every chunk ("read_file").
+                                # Merge incrementally without duplicating.
+                                name_piece = tc_delta.function.name
+                                current_name = entry["function"]["name"]
+                                if not current_name:
+                                    entry["function"]["name"] = name_piece
+                                elif name_piece == current_name:
+                                    pass
+                                elif name_piece.startswith(current_name):
+                                    entry["function"]["name"] = name_piece
+                                elif current_name.startswith(name_piece):
+                                    pass
+                                else:
+                                    entry["function"]["name"] = current_name + name_piece
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
                         extra = getattr(tc_delta, "extra_content", None)
@@ -7283,7 +7383,7 @@ class AIAgent:
             for tc in tool_calls:
                 if tc.function.name == "memory":
                     try:
-                        args = json.loads(tc.function.arguments)
+                        args = _parse_tool_arguments_json(tc.function.arguments)
                         flush_target = args.get("target", "memory")
                         from tools.memory_tool import memory_tool as _memory_tool
                         _memory_tool(
@@ -7589,7 +7689,7 @@ class AIAgent:
                 self._iters_since_skill = 0
 
             try:
-                function_args = json.loads(tool_call.function.arguments)
+                function_args = _parse_tool_arguments_json(tool_call.function.arguments)
             except json.JSONDecodeError:
                 function_args = {}
             if not isinstance(function_args, dict):
@@ -7883,7 +7983,7 @@ class AIAgent:
             function_name = tool_call.function.name
 
             try:
-                function_args = json.loads(tool_call.function.arguments)
+                function_args = _parse_tool_arguments_json(tool_call.function.arguments)
             except json.JSONDecodeError as e:
                 logging.warning(f"Unexpected JSON error after validation: {e}")
                 function_args = {}
@@ -8261,7 +8361,9 @@ class AIAgent:
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
             _needs_sanitize = self._should_sanitize_tool_calls()
             api_messages = []
-            for msg in messages:
+            for idx, msg in enumerate(messages):
+                if self._should_skip_recovery_artifact_at(messages, idx):
+                    continue
                 api_msg = msg.copy()
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
@@ -8901,6 +9003,8 @@ class AIAgent:
             # on assistant messages with tool_calls. We handle both cases here.
             api_messages = []
             for idx, msg in enumerate(messages):
+                if self._should_skip_recovery_artifact_at(messages, idx):
+                    continue
                 api_msg = msg.copy()
 
                 # Inject ephemeral context into the current turn's user message.
@@ -10980,7 +11084,9 @@ class AIAgent:
                             tc.function.arguments = "{}"
                             continue
                         try:
-                            json.loads(args)
+                            parsed_args = _parse_tool_arguments_json(args)
+                            if isinstance(parsed_args, (dict, list)):
+                                tc.function.arguments = json.dumps(parsed_args, ensure_ascii=False)
                         except json.JSONDecodeError as e:
                             invalid_json_args.append((tc.function.name, str(e)))
                     
@@ -11984,5 +12090,29 @@ def main(
     print("\n👋 Agent execution completed!")
 
 
+def _handle_legacy_version_argv(argv: list[str]) -> bool:
+    """Handle version requests for stale console scripts still pointing here.
+
+    Older installs may still map `hermes-agent` to `run_agent:main`. In that
+    path, Fire treats `--version` poorly and can fall through into the demo
+    conversation. Intercept the common version invocations early and print the
+    canonical CLI version instead.
+    """
+    version_flags = {"--version", "-V", "version"}
+    args = [arg for arg in argv[1:] if arg]
+    if not args:
+        return False
+    if len(args) == 1 and args[0] in version_flags:
+        try:
+            from hermes_cli.main import cmd_version
+            cmd_version(None)
+        except Exception:
+            from hermes_cli.version import __version__, __release_date__
+            print(f"Hermes Agent v{__version__} ({__release_date__})")
+        return True
+    return False
+
+
 if __name__ == "__main__":
-    fire.Fire(main)
+    if not _handle_legacy_version_argv(sys.argv):
+        fire.Fire(main)

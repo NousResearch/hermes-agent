@@ -143,6 +143,36 @@ class TestBuildApiKwargsOpenRouter:
         assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
         assert "codex_reasoning_items" in messages[1]
 
+    def test_plain_assistant_turn_does_not_replay_reasoning_content(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        msg = {
+            "role": "assistant",
+            "content": "Hello!",
+            "reasoning": "We should greet the user politely.",
+        }
+
+        assert agent._assistant_reasoning_content_for_api(msg) is None
+
+    def test_tool_call_turn_replays_reasoning_content(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "I should inspect the workspace before answering.",
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{\"command\":\"pwd\"}"},
+                }
+            ],
+        }
+
+        assert (
+            agent._assistant_reasoning_content_for_api(msg)
+            == "I should inspect the workspace before answering."
+        )
+
     def test_should_sanitize_tool_calls_codex_vs_chat(self, monkeypatch):
         """Codex API should NOT sanitize, all other APIs should sanitize."""
         # Codex mode should NOT need sanitization

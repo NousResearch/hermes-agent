@@ -6709,6 +6709,23 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
+    @staticmethod
+    def _assistant_reasoning_content_for_api(msg: dict) -> Optional[str]:
+        """Return replayable reasoning text for an assistant history message.
+
+        Only tool-call turns replay plain ``reasoning_content``. Normal
+        assistant text turns can carry low-quality hidden thoughts that should
+        not be fed back into later chat-completions requests.
+        """
+        if not isinstance(msg, dict):
+            return None
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            return None
+        reasoning_text = msg.get("reasoning")
+        if isinstance(reasoning_text, str) and reasoning_text:
+            return reasoning_text
+        return None
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -9130,13 +9147,17 @@ class AIAgent:
                         if isinstance(_base, str):
                             api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
 
-                # For ALL assistant messages, pass reasoning back to the API
-                # This ensures multi-turn reasoning context is preserved
-                if msg.get("role") == "assistant":
-                    reasoning_text = msg.get("reasoning")
-                    if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
-                        api_msg["reasoning_content"] = reasoning_text
+                # Only replay plain reasoning_content on assistant tool-call
+                # turns. General assistant turns already preserve structured
+                # reasoning_details for providers that support multi-turn
+                # reasoning continuity. Replaying unstructured reasoning on
+                # every assistant turn can poison weaker chat-completions
+                # models with low-quality hidden thoughts from prior turns.
+                reasoning_text = self._assistant_reasoning_content_for_api(msg)
+                if reasoning_text:
+                    # Add reasoning_content for API compatibility on
+                    # providers/routes that expect it for tool-call turns.
+                    api_msg["reasoning_content"] = reasoning_text
 
                 # Remove 'reasoning' field - it's for trajectory storage only
                 # We've copied it to 'reasoning_content' for the API above

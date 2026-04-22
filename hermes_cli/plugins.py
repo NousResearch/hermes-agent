@@ -136,6 +136,46 @@ def _get_enabled_plugins() -> Optional[set]:
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive"}
 
 
+def _looks_like_exclusive_plugin(plugin_dir: Path) -> bool:
+    """Heuristic: does *plugin_dir* implement an exclusive provider contract?
+
+    Today this is primarily used to keep memory provider plugins discovered under
+    ``$HERMES_HOME/plugins`` out of the general plugin loader. Those plugins are
+    selected via ``memory.provider`` and register via
+    ``ctx.register_memory_provider(...)`` rather than generic tool/hook APIs.
+
+    We scan a small set of Python files under the plugin root so wrapper-style
+    packages that re-export their real implementation from ``src/`` still get
+    classified correctly.
+    """
+    py_files = []
+    init_file = plugin_dir / "__init__.py"
+    if init_file.exists():
+        py_files.append(init_file)
+    try:
+        for path in sorted(plugin_dir.rglob("*.py")):
+            if path == init_file:
+                continue
+            py_files.append(path)
+            if len(py_files) >= 12:
+                break
+    except Exception:
+        pass
+
+    scanned = 0
+    for path in py_files:
+        try:
+            source = path.read_text(errors="replace")
+        except Exception:
+            continue
+        scanned += len(source)
+        if "register_memory_provider" in source or "MemoryProvider" in source:
+            return True
+        if scanned >= 32768:
+            break
+    return False
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -723,16 +763,24 @@ class PluginManager:
             name = data.get("name", plugin_dir.name)
             key = f"{prefix}/{plugin_dir.name}" if prefix else name
 
-            raw_kind = data.get("kind", "standalone")
-            if not isinstance(raw_kind, str):
-                raw_kind = "standalone"
-            kind = raw_kind.strip().lower()
-            if kind not in _VALID_PLUGIN_KINDS:
-                logger.warning(
-                    "Plugin %s: unknown kind '%s' (valid: %s); treating as 'standalone'",
-                    key, raw_kind, ", ".join(sorted(_VALID_PLUGIN_KINDS)),
-                )
-                kind = "standalone"
+            raw_kind = data.get("kind")
+            if raw_kind is None:
+                kind = "exclusive" if _looks_like_exclusive_plugin(plugin_dir) else "standalone"
+                if kind == "exclusive":
+                    logger.debug(
+                        "Auto-classifying plugin %s as exclusive based on provider-style register() contract",
+                        key,
+                    )
+            else:
+                if not isinstance(raw_kind, str):
+                    raw_kind = "standalone"
+                kind = raw_kind.strip().lower()
+                if kind not in _VALID_PLUGIN_KINDS:
+                    logger.warning(
+                        "Plugin %s: unknown kind '%s' (valid: %s); treating as 'standalone'",
+                        key, raw_kind, ", ".join(sorted(_VALID_PLUGIN_KINDS)),
+                    )
+                    kind = "standalone"
 
             return PluginManifest(
                 name=name,

@@ -100,6 +100,41 @@ class TestPluginDiscovery:
         assert "hello_plugin" in mgr._plugins
         assert mgr._plugins["hello_plugin"].enabled
 
+    def test_user_memory_provider_plugins_are_classified_exclusive(self, tmp_path, monkeypatch):
+        """Wrapper-style user memory providers should bypass the general loader."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "memory_plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "memory_plugin",
+                "version": "0.1.0",
+                "description": "Wrapper-style memory provider plugin",
+            })
+        )
+        (plugin_dir / "__init__.py").write_text(
+            'from .src.memory_plugin_impl import register\n'
+        )
+        impl_dir = plugin_dir / "src" / "memory_plugin_impl"
+        impl_dir.mkdir(parents=True, exist_ok=True)
+        (impl_dir / "__init__.py").write_text(
+            'def register(ctx):\n    ctx.register_memory_provider(object())\n'
+        )
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["memory_plugin"]}})
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "memory_plugin" in mgr._plugins
+        loaded = mgr._plugins["memory_plugin"]
+        assert loaded.manifest.kind == "exclusive"
+        assert not loaded.enabled
+        assert "exclusive plugin" in (loaded.error or "")
+
     def test_discover_project_plugins(self, tmp_path, monkeypatch):
         """Plugins in ./.hermes/plugins/ are discovered."""
         project_dir = tmp_path / "project"

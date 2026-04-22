@@ -142,9 +142,6 @@ def _make_fake_mautrix():
         async def get_member_profiles(self, room_id):
             return {}
 
-        async def has_full_member_list(self, room_id):
-            return False
-
     class MemorySyncStore:
         pass
 
@@ -1298,8 +1295,8 @@ class TestMatrixSyncLoop:
         mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
     @pytest.mark.asyncio
-    async def test_sync_loop_does_not_store_token_when_dispatch_task_fails(self):
-        """Failed dispatch must not advance next_batch or we would skip events."""
+    async def test_sync_loop_dispatch_failure_retries_after_backoff(self):
+        """Failed dispatch must not advance next_batch and should back off."""
         adapter = _make_adapter()
         adapter._closing = False
 
@@ -1325,10 +1322,12 @@ class TestMatrixSyncLoop:
         fake_client.handle_sync = MagicMock(return_value=[_failing_task()])
         adapter._client = fake_client
 
-        await adapter._sync_loop()
+        with patch("gateway.platforms.matrix.asyncio.sleep", AsyncMock()) as mock_sleep:
+            await adapter._sync_loop()
 
         fake_client.handle_sync.assert_called_once()
         mock_sync_store.put_next_batch.assert_not_awaited()
+        mock_sleep.assert_awaited_once_with(5)
 
     @pytest.mark.asyncio
     async def test_connect_initial_sync_does_not_store_token_when_dispatch_fails(self):

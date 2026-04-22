@@ -113,6 +113,7 @@ _CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
 
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
+_SYNC_RETRY_DELAY_SECONDS = 5
 
 
 _E2EE_INSTALL_HINT = (
@@ -1245,6 +1246,12 @@ class MatrixAdapter(BasePlatformAdapter):
                         if nb:
                             next_batch = nb
                             await client.sync_store.put_next_batch(nb)
+                    else:
+                        # Keep the current token so we can retry the same
+                        # batch, but back off to avoid hammering /sync when a
+                        # handler is persistently failing.
+                        await asyncio.sleep(_SYNC_RETRY_DELAY_SECONDS)
+                        continue
                 else:
                     logger.debug(
                         "Matrix: sync returned non-dict payload of type %s",
@@ -1274,8 +1281,12 @@ class MatrixAdapter(BasePlatformAdapter):
                         "Matrix: permanent auth error: %s — stopping sync", exc
                     )
                     return
-                logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
-                await asyncio.sleep(5)
+                logger.warning(
+                    "Matrix: sync error: %s — retrying in %ss",
+                    exc,
+                    _SYNC_RETRY_DELAY_SECONDS,
+                )
+                await asyncio.sleep(_SYNC_RETRY_DELAY_SECONDS)
 
     # ------------------------------------------------------------------
     # Event callbacks

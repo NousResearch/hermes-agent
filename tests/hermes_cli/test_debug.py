@@ -174,6 +174,42 @@ class TestReadFullLog:
         assert content is not None
         assert "truncated" in content
 
+    def test_keeps_first_line_when_truncation_on_boundary(self, hermes_home):
+        """When truncation lands on a line boundary, keep the first full line."""
+        from hermes_cli.debug import _read_full_log
+
+        # File must exceed the initial chunk_size (8192) used by the
+        # backward-reading loop so the truncation path actually fires.
+        line = "A" * 99 + "\n"  # 100 bytes per line
+        num_lines = 200  # 20000 bytes
+        (hermes_home / "logs" / "agent.log").write_text(line * num_lines)
+
+        # max_bytes = 1000 = 100 * 10 → cut at byte 20000 - 1000 = 19000,
+        # and byte 19000 - 1 is '\n'.  Boundary hit → keep all 10 lines.
+        content = _read_full_log("agent", max_bytes=1000)
+        assert content is not None
+        assert "truncated" in content
+        raw = content.split("\n", 1)[1]
+        kept = [l for l in raw.strip().splitlines() if l.startswith("A")]
+        assert len(kept) == 10
+
+    def test_drops_partial_when_truncation_mid_line(self, hermes_home):
+        """When truncation lands mid-line, drop the partial fragment."""
+        from hermes_cli.debug import _read_full_log
+
+        line = "A" * 99 + "\n"  # 100 bytes per line
+        num_lines = 200  # 20000 bytes
+        (hermes_home / "logs" / "agent.log").write_text(line * num_lines)
+
+        # max_bytes = 950 doesn't divide evenly into 100 → mid-line cut.
+        content = _read_full_log("agent", max_bytes=950)
+        assert content is not None
+        assert "truncated" in content
+        raw = content.split("\n", 1)[1]
+        kept = [l for l in raw.strip().splitlines() if l.startswith("A")]
+        # 950 / 100 = 9.5 → 9 complete lines after dropping partial
+        assert len(kept) == 9
+
     def test_unknown_log_returns_none(self, hermes_home):
         from hermes_cli.debug import _read_full_log
         assert _read_full_log("nonexistent") is None

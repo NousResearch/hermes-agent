@@ -114,6 +114,91 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+# Accepted Host header values for loopback binds. DNS rebinding attacks
+# point a victim browser at an attacker-controlled hostname (evil.test)
+# which resolves to 127.0.0.1 after a TTL flip — bypassing same-origin
+# checks because the browser now considers evil.test and our dashboard
+# "same origin". Validating the Host header at the app layer rejects any
+# request whose Host isn't one we bound for. See GHSA-ppp5-vxwm-4cf7.
+_LOOPBACK_HOST_VALUES: frozenset = frozenset({
+    "localhost", "127.0.0.1", "::1",
+})
+
+
+def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+    """True if the Host header targets the interface we bound to.
+
+    Accepts:
+    - Exact bound host (with or without port suffix)
+    - Loopback aliases when bound to loopback
+    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
+      no protection possible at this layer)
+    """
+    if not host_header:
+        return False
+    # Strip port suffix. IPv6 addresses use bracket notation:
+    #   [::1]         — no port
+    #   [::1]:9119    — with port
+    # Plain hosts/v4:
+    #   localhost:9119
+    #   127.0.0.1:9119
+    h = host_header.strip()
+    if h.startswith("["):
+        # IPv6 bracketed — port (if any) follows "]:"
+        close = h.find("]")
+        if close != -1:
+            host_only = h[1:close]  # strip brackets
+        else:
+            host_only = h.strip("[]")
+    else:
+        host_only = h.rsplit(":", 1)[0] if ":" in h else h
+    host_only = host_only.lower()
+
+    # 0.0.0.0 bind means operator explicitly opted into all-interfaces
+    # (requires --insecure per web_server.start_server). No Host-layer
+    # defence can protect that mode; rely on operator network controls.
+    if bound_host in ("0.0.0.0", "::"):
+        return True
+
+    # Loopback bind: accept the loopback names
+    bound_lc = bound_host.lower()
+    if bound_lc in _LOOPBACK_HOST_VALUES:
+        return host_only in _LOOPBACK_HOST_VALUES
+
+    # Explicit non-loopback bind: require exact host match
+    return host_only == bound_lc
+
+
+@app.middleware("http")
+async def host_header_middleware(request: Request, call_next):
+    """Reject requests whose Host header doesn't match the bound interface.
+
+    Defends against DNS rebinding: a victim browser on a localhost
+    dashboard is tricked into fetching from an attacker hostname that
+    TTL-flips to 127.0.0.1. CORS and same-origin checks don't help —
+    the browser now treats the attacker origin as same-origin with the
+    dashboard. Host-header validation at the app layer catches it.
+
+    See GHSA-ppp5-vxwm-4cf7.
+    """
+    # Store the bound host on app.state so this middleware can read it —
+    # set by start_server() at listen time.
+    bound_host = getattr(app.state, "bound_host", None)
+    if bound_host:
+        host_header = request.headers.get("host", "")
+        if not _is_accepted_host(host_header, bound_host):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": (
+                        "Invalid Host header. Dashboard requests must use "
+                        "the hostname the server was bound to."
+                    ),
+                },
+            )
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
@@ -232,8 +317,8 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "checkpoints": "agent",
     "approvals": "security",
     "human_delay": "display",
-    "smart_model_routing": "agent",
     "dashboard": "display",
+    "code_execution": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -1958,6 +2043,8 @@ async def update_config_raw(body: RawConfigUpdate):
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30):
     from hermes_state import SessionDB
+    from agent.insights import InsightsEngine
+
     db = SessionDB()
     try:
         cutoff = time.time() - (days * 86400)
@@ -1997,8 +2084,24 @@ async def get_usage_analytics(days: int = 30):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
+        insights_report = InsightsEngine(db).generate(days=days)
+        skills = insights_report.get("skills", {
+            "summary": {
+                "total_skill_loads": 0,
+                "total_skill_edits": 0,
+                "total_skill_actions": 0,
+                "distinct_skills_used": 0,
+            },
+            "top_skills": [],
+        })
 
-        return {"daily": daily, "by_model": by_model, "totals": totals, "period_days": days}
+        return {
+            "daily": daily,
+            "by_model": by_model,
+            "totals": totals,
+            "period_days": days,
+            "skills": skills,
+        }
     finally:
         db.close()
 
@@ -2305,13 +2408,15 @@ def start_server(
             "authentication. Only use on trusted networks.", host,
         )
 
+    # Record the bound host so host_header_middleware can validate incoming
+    # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
+    app.state.bound_host = host
+
     if open_browser:
-        import threading
         import webbrowser
 
         def _open():
-            import time as _t
-            _t.sleep(1.0)
+            time.sleep(1.0)
             webbrowser.open(f"http://{host}:{port}")
 
         threading.Thread(target=_open, daemon=True).start()

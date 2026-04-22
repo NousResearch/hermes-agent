@@ -120,6 +120,11 @@ export interface Translations {
     dailyTokenUsage: string;
     dailyBreakdown: string;
     perModelBreakdown: string;
+    topSkills: string;
+    skill: string;
+    loads: string;
+    edits: string;
+    lastUsed: string;
     input: string;
     output: string;
     total: string;

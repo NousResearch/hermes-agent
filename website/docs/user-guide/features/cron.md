@@ -30,7 +30,7 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 /cron add 30m "Remind me to check the build"
 /cron add "every 2h" "Check server status"
 /cron add "every 1h" "Summarize new feed items" --skill blogwatcher
-/cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill find-nearby
+/cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill maps
 ```
 
 ### From the standalone CLI
@@ -40,7 +40,7 @@ hermes cron create "every 2h" "Check server status"
 hermes cron create "every 1h" "Summarize new feed items" --skill blogwatcher
 hermes cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
-  --skill find-nearby \
+  --skill maps \
   --name "Skill combo"
 ```
 
@@ -77,7 +77,7 @@ Skills are loaded in order. The prompt becomes the task instruction layered on t
 ```python
 cronjob(
     action="create",
-    skills=["blogwatcher", "find-nearby"],
+    skills=["blogwatcher", "maps"],
     prompt="Look for new local events and interesting nearby places, then combine them into one short brief.",
     schedule="every 6h",
     name="Local brief",
@@ -95,7 +95,7 @@ You do not need to delete and recreate jobs just to change them.
 ```bash
 /cron edit <job_id> --schedule "every 4h"
 /cron edit <job_id> --prompt "Use the revised task"
-/cron edit <job_id> --skill blogwatcher --skill find-nearby
+/cron edit <job_id> --skill blogwatcher --skill maps
 /cron edit <job_id> --remove-skill blogwatcher
 /cron edit <job_id> --clear-skills
 ```
@@ -105,8 +105,8 @@ You do not need to delete and recreate jobs just to change them.
 ```bash
 hermes cron edit <job_id> --schedule "every 4h"
 hermes cron edit <job_id> --prompt "Use the revised task"
-hermes cron edit <job_id> --skill blogwatcher --skill find-nearby
-hermes cron edit <job_id> --add-skill find-nearby
+hermes cron edit <job_id> --skill blogwatcher --skill maps
+hermes cron edit <job_id> --add-skill maps
 hermes cron edit <job_id> --remove-skill blogwatcher
 hermes cron edit <job_id> --clear-skills
 ```

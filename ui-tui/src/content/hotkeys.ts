@@ -1,16 +1,28 @@
+import { isMac } from '../lib/platform.js'
+
+const action = isMac ? 'Cmd' : 'Ctrl'
+const paste = isMac ? 'Cmd' : 'Alt'
+
 export const HOTKEYS: [string, string][] = [
-  ['Ctrl+C', 'interrupt / clear draft / exit'],
-  ['Ctrl+D', 'exit'],
-  ['Ctrl+G', 'open $EDITOR for prompt'],
-  ['Ctrl+L', 'new session (clear)'],
-  ['Alt+V / /paste', 'paste clipboard image'],
+  ...(
+    isMac
+      ? ([
+          ['Cmd+C', 'copy selection'],
+          ['Ctrl+C', 'interrupt / clear draft / exit']
+        ] as [string, string][])
+      : ([['Ctrl+C', 'copy selection / interrupt / clear draft / exit']] as [string, string][])
+  ),
+  [action + '+D', 'exit'],
+  [action + '+G', 'open $EDITOR for prompt'],
+  [action + '+L', 'new session (clear)'],
+  [paste + '+V / /paste', 'paste clipboard image'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
-  ['Ctrl+A/E', 'home / end of line'],
-  ['Ctrl+Z / Ctrl+Y', 'undo / redo input edits'],
-  ['Ctrl+W', 'delete word'],
-  ['Ctrl+U/K', 'delete to start / end'],
-  ['Ctrl+←/→', 'jump word'],
+  [action + '+A/E', 'home / end of line'],
+  [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],
+  [action + '+W', 'delete word'],
+  [action + '+U/K', 'delete to start / end'],
+  [action + '+←/→', 'jump word'],
   ['Home/End', 'start / end of line'],
   ['Shift+Enter / Alt+Enter', 'insert newline'],
   ['\\+Enter', 'multi-line continuation (fallback)'],

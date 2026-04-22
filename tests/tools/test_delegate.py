@@ -905,6 +905,45 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_delegation_acp_runtime_reaches_child_agent(self, mock_creds, mock_cfg):
+        """Resolved ACP runtime command/args must be forwarded to child agents."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "copilot-model",
+            "provider": "copilot-acp",
+        }
+        mock_creds.return_value = {
+            "model": "copilot-model",
+            "provider": "copilot-acp",
+            "base_url": "acp://copilot",
+            "api_key": "copilot-acp",
+            "api_mode": "chat_completions",
+            "command": "custom-copilot",
+            "args": ["--stdio-custom"],
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(goal="ACP delegation test", parent_agent=parent)
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs.get("override_provider"), "copilot-acp")
+            self.assertEqual(kwargs.get("override_base_url"), "acp://copilot")
+            self.assertEqual(kwargs.get("override_api_key"), "copilot-acp")
+            self.assertEqual(kwargs.get("override_api_mode"), "chat_completions")
+            self.assertEqual(kwargs.get("override_acp_command"), "custom-copilot")
+            self.assertEqual(kwargs.get("override_acp_args"), ["--stdio-custom"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_model_only_no_provider_inherits_parent_credentials(self, mock_creds, mock_cfg):
         """Setting only model (no provider) changes model but keeps parent credentials."""
         mock_cfg.return_value = {

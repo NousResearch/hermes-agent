@@ -1,4 +1,5 @@
 import atexit
+import concurrent.futures
 import copy
 import json
 import os
@@ -27,7 +28,7 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
-_pending: dict[str, threading.Event] = {}
+_pending: dict[str, tuple[str, threading.Event]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _stdout_lock = threading.Lock()
@@ -35,6 +36,23 @@ _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _SLASH_WORKER_TIMEOUT_S = max(5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45))
+
+# ── Async RPC dispatch (#12546) ──────────────────────────────────────
+# A handful of handlers block the dispatcher loop in entry.py for seconds
+# to minutes (slash.exec, cli.exec, shell.exec, session.resume,
+# session.branch). While they're running, inbound RPCs — notably
+# approval.respond and session.interrupt — sit unread in the stdin pipe.
+# We route only those slow handlers onto a small thread pool; everything
+# else stays on the main thread so ordering stays sane for the fast path.
+# write_json is already _stdout_lock-guarded, so concurrent response
+# writes are safe.
+_LONG_HANDLERS = frozenset({"cli.exec", "session.branch", "session.resume", "shell.exec", "slash.exec"})
+
+_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4)),
+    thread_name_prefix="tui-rpc",
+)
+atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -200,6 +218,29 @@ def handle_request(req: dict) -> dict | None:
     return fn(req.get("id"), req.get("params", {}))
 
 
+def dispatch(req: dict) -> dict | None:
+    """Route inbound RPCs — long handlers to the pool, everything else inline.
+
+    Returns a response dict when handled inline. Returns None when the
+    handler was scheduled on the pool; the worker writes its own
+    response via write_json when done.
+    """
+    if req.get("method") not in _LONG_HANDLERS:
+        return handle_request(req)
+
+    def run():
+        try:
+            resp = handle_request(req)
+        except Exception as exc:
+            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+        if resp is not None:
+            write_json(resp)
+
+    _pool.submit(run)
+
+    return None
+
+
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     ready = session.get("agent_ready")
     if ready is not None and not ready.wait(timeout=timeout):
@@ -296,7 +337,7 @@ def _enable_gateway_prompts() -> None:
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
-    _pending[rid] = ev
+    _pending[rid] = (sid, ev)
     payload["request_id"] = rid
     _emit(event, sid, payload)
     ev.wait(timeout=timeout)
@@ -304,10 +345,19 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     return _answers.pop(rid, "")
 
 
-def _clear_pending():
-    for rid, ev in list(_pending.items()):
-        _answers[rid] = ""
-        ev.set()
+def _clear_pending(sid: str | None = None) -> None:
+    """Release pending prompts with an empty answer.
+
+    When *sid* is provided, only prompts owned by that session are
+    released — critical for session.interrupt, which must not
+    collaterally cancel clarify/sudo/secret prompts on unrelated
+    sessions sharing the same tui_gateway process.  When *sid* is
+    None, every pending prompt is released (used during shutdown).
+    """
+    for rid, (owner_sid, ev) in list(_pending.items()):
+        if sid is None or owner_sid == sid:
+            _answers[rid] = ""
+            ev.set()
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -1079,7 +1129,23 @@ def _(rid, params: dict) -> dict:
     }
 
     def _build() -> None:
-        session = _sessions[sid]
+        session = _sessions.get(sid)
+        if session is None:
+            # session.close ran before the build thread got scheduled.
+            ready.set()
+            return
+
+        # Track what we allocate so we can clean up if session.close
+        # races us to the finish line.  session.close pops _sessions[sid]
+        # unconditionally and tries to close the slash_worker it finds;
+        # if _build is still mid-construction when close runs, close
+        # finds slash_worker=None / notify unregistered and returns
+        # cleanly — leaving us, the build thread, to later install the
+        # worker + notify on an orphaned session dict.  The finally
+        # block below detects the orphan and cleans up instead of
+        # leaking a subprocess and a global notify registration.
+        worker = None
+        notify_registered = False
         try:
             tokens = _set_session_context(key)
             try:
@@ -1091,13 +1157,15 @@ def _(rid, params: dict) -> dict:
             session["agent"] = agent
 
             try:
-                session["slash_worker"] = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                session["slash_worker"] = worker
             except Exception:
                 pass
 
             try:
                 from tools.approval import register_gateway_notify, load_permanent_allowlist
                 register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+                notify_registered = True
                 load_permanent_allowlist()
             except Exception:
                 pass
@@ -1113,6 +1181,23 @@ def _(rid, params: dict) -> dict:
             session["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
+            # Orphan check: if session.close raced us and popped
+            # _sessions[sid] while we were building, the dict we just
+            # populated is unreachable.  Clean up the subprocess and
+            # the global notify registration ourselves — session.close
+            # couldn't see them at the time it ran.
+            if _sessions.get(sid) is not session:
+                if worker is not None:
+                    try:
+                        worker.close()
+                    except Exception:
+                        pass
+                if notify_registered:
+                    try:
+                        from tools.approval import unregister_gateway_notify
+                        unregister_gateway_notify(key)
+                    except Exception:
+                        pass
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
@@ -1224,6 +1309,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    # Reject during an in-flight turn.  If we mutated history while
+    # the agent thread is running, prompt.submit's post-run history
+    # write would either clobber the undo (version matches) or
+    # silently drop the agent's output (version mismatch, see below).
+    # Neither is what the user wants — make them /interrupt first.
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /undo")
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
@@ -1243,6 +1335,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before /compress")
     try:
         with session["history_lock"]:
             removed, usage = _compress_session_history(session, str(params.get("focus_topic", "") or "").strip())
@@ -1336,7 +1430,11 @@ def _(rid, params: dict) -> dict:
         return err
     if hasattr(session["agent"], "interrupt"):
         session["agent"].interrupt()
-    _clear_pending()
+    # Scope the pending-prompt release to THIS session.  A global
+    # _clear_pending() would collaterally cancel clarify/sudo/secret
+    # prompts on unrelated sessions sharing the same tui_gateway
+    # process, silently resolving them to empty strings.
+    _clear_pending(params.get("session_id", ""))
     try:
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
@@ -1443,12 +1541,33 @@ def _(rid, params: dict) -> dict:
             )
 
             last_reasoning = None
+            status_note = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     with session["history_lock"]:
-                        if int(session.get("history_version", 0)) == history_version:
+                        current_version = int(session.get("history_version", 0))
+                        if current_version == history_version:
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                        else:
+                            # History mutated externally during the turn
+                            # (undo/compress/retry/rollback now guard on
+                            # session.running, but this is the defensive
+                            # backstop for any path that slips past).
+                            # Surface the desync rather than silently
+                            # dropping the agent's output — the UI can
+                            # show the response and warn that it was
+                            # not persisted.
+                            print(
+                                f"[tui_gateway] prompt.submit: history_version mismatch "
+                                f"(expected={history_version} current={current_version}) — "
+                                f"agent output NOT written to session history",
+                                file=sys.stderr,
+                            )
+                            status_note = (
+                                "History changed during this turn — the response above is visible "
+                                "but was not saved to session history."
+                            )
                 raw = result.get("final_response", "")
                 status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
                 lr = result.get("last_reasoning")
@@ -1461,6 +1580,8 @@ def _(rid, params: dict) -> dict:
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
+            if status_note:
+                payload["warning"] = status_note
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
@@ -1487,7 +1608,6 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from datetime import datetime
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
@@ -1652,9 +1772,10 @@ def _(rid, params: dict) -> dict:
 
 def _respond(rid, params, key):
     r = params.get("request_id", "")
-    ev = _pending.get(r)
-    if not ev:
+    entry = _pending.get(r)
+    if not entry:
         return _err(rid, 4009, f"no pending {key} request")
+    _, ev = entry
     _answers[r] = params.get(key, "")
     ev.set()
     return _ok(rid, {"status": "ok"})
@@ -1697,6 +1818,19 @@ def _(rid, params: dict) -> dict:
             if not value:
                 return _err(rid, 4002, "model value required")
             if session:
+                # Reject during an in-flight turn.  agent.switch_model()
+                # mutates self.model / self.provider / self.base_url /
+                # self.client in place; the worker thread running
+                # agent.run_conversation is reading those on every
+                # iteration.  A mid-turn swap can send an HTTP request
+                # with the new base_url but old model (or vice versa),
+                # producing 400/404s the user never asked for.  Parity
+                # with the gateway's running-agent /model guard.
+                if session.get("running"):
+                    return _err(
+                        rid, 4009,
+                        "session busy — /interrupt the current turn before switching models",
+                    )
                 result = _apply_model_switch(params.get("session_id", ""), session, value)
             else:
                 result = _apply_model_switch("", {"agent": None}, value)
@@ -2168,6 +2302,8 @@ def _(rid, params: dict) -> dict:
     if name == "retry":
         if not session:
             return _err(rid, 4001, "no active session to retry")
+        if session.get("running"):
+            return _err(rid, 4009, "session busy — /interrupt the current turn before /retry")
         history = session.get("history", [])
         if not history:
             return _err(rid, 4018, "no previous user message to retry")
@@ -2362,27 +2498,24 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.model_switch import list_authenticated_providers
-        from hermes_cli.models import provider_model_ids
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
         cfg = _load_cfg()
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
+        # list_authenticated_providers already populates each provider's
+        # "models" with the curated list (same source as `hermes model` and
+        # classic CLI's /model picker). Do NOT overwrite with live
+        # provider_model_ids() — that bypasses curation and pulls in
+        # non-agentic models (e.g. Nous /models returns ~400 IDs including
+        # TTS, embeddings, rerankers, image/video generators).
         providers = list_authenticated_providers(
             current_provider=current_provider,
             user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
             custom_providers=cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), list) else [],
             max_models=50,
         )
-        for provider in providers:
-            try:
-                models = provider_model_ids(provider.get("slug"))
-                if models:
-                    provider["models"] = models
-                    provider["total_models"] = len(models)
-            except Exception as e:
-                provider["warning"] = f"model catalog unavailable: {e}"
         return _ok(rid, {"providers": providers, "model": current_model, "provider": current_provider})
     except Exception as e:
         return _err(rid, 5033, str(e))
@@ -2397,6 +2530,17 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if not parts:
         return ""
     name, arg, agent = parts[0], (parts[1].strip() if len(parts) > 1 else ""), session.get("agent")
+
+    # Reject agent-mutating commands during an in-flight turn.  These
+    # all do read-then-mutate on live agent/session state that the
+    # worker thread running agent.run_conversation is using.  Parity
+    # with the session.compress / session.undo guards and the gateway
+    # runner's running-agent /model guard.
+    _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
+    if name in _MUTATES_WHILE_RUNNING and session.get("running"):
+        return (
+            f"session busy — /interrupt the current turn before running /{name}"
+        )
 
     try:
         if name == "model" and arg and agent:
@@ -2542,7 +2686,6 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     days = params.get("days", 30)
     try:
-        import time
         cutoff = time.time() - days * 86400
         rows = [s for s in _get_db().list_sessions_rich(limit=500) if (s.get("started_at") or 0) >= cutoff]
         return _ok(rid, {"days": days, "sessions": len(rows), "messages": sum(s.get("message_count", 0) for s in rows)})
@@ -2578,6 +2721,13 @@ def _(rid, params: dict) -> dict:
     file_path = params.get("file_path", "")
     if not target:
         return _err(rid, 4014, "hash required")
+    # Full-history rollback mutates session history.  Rejecting during
+    # an in-flight turn prevents prompt.submit from silently dropping
+    # the agent's output (version mismatch path) or clobbering the
+    # rollback (version-matches path).  A file-scoped rollback only
+    # touches disk, so we allow it.
+    if not file_path and session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before full rollback.restore")
     try:
         def go(mgr, cwd):
             resolved = _resolve_checkpoint_hash(mgr, cwd, target)

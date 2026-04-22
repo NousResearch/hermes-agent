@@ -354,6 +354,24 @@ class TestBuildSkillsSystemPrompt:
         assert "web-search" in result
         assert "old-tool" not in result
 
+    def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: cached-skill\ndescription: Cached skill\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "cached-skill" in first
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  disabled: [cached-skill]\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "cached-skill" not in second
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

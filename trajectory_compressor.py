@@ -40,6 +40,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from utils import base_url_host_matches, base_url_hostname
 import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
@@ -54,14 +56,24 @@ _project_env = Path(__file__).parent / ".env"
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 
-def _effective_temperature_for_model(model: str, requested_temperature: float) -> float:
-    """Apply fixed model temperature contracts to direct client calls."""
+def _effective_temperature_for_model(
+    model: str,
+    requested_temperature: float,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Apply fixed model temperature contracts to direct client calls.
+
+    Returns ``None`` when the model manages temperature server-side (Kimi);
+    callers must omit the ``temperature`` kwarg entirely in that case.
+    """
     try:
-        from agent.auxiliary_client import _fixed_temperature_for_model
+        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
     except Exception:
         return requested_temperature
 
-    fixed_temperature = _fixed_temperature_for_model(model)
+    fixed_temperature = _fixed_temperature_for_model(model, base_url)
+    if fixed_temperature is OMIT_TEMPERATURE:
+        return None  # caller must omit temperature
     if fixed_temperature is not None:
         return fixed_temperature
     return requested_temperature
@@ -422,22 +434,29 @@ class TrajectoryCompressor:
 
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""
-        url = (self.config.base_url or "").lower()
-        if "openrouter" in url:
+        url = self.config.base_url or ""
+        if base_url_host_matches(url, "openrouter.ai"):
             return "openrouter"
-        if "nousresearch.com" in url:
+        if base_url_host_matches(url, "nousresearch.com"):
             return "nous"
-        if "chatgpt.com/backend-api/codex" in url:
+        if (
+            base_url_hostname(url) == "chatgpt.com"
+            and "/backend-api/codex" in url.lower()
+        ):
             return "codex"
-        if "api.z.ai" in url:
+        if base_url_host_matches(url, "z.ai"):
             return "zai"
-        if "moonshot.ai" in url or "moonshot.cn" in url or "api.kimi.com" in url:
+        if (
+            base_url_host_matches(url, "moonshot.ai")
+            or base_url_host_matches(url, "moonshot.cn")
+            or base_url_host_matches(url, "api.kimi.com")
+        ):
             return "kimi-coding"
-        if "arcee.ai" in url:
+        if base_url_host_matches(url, "arcee.ai"):
             return "arcee"
-        if "minimaxi.com" in url:
+        if base_url_host_matches(url, "minimaxi.com"):
             return "minimax-cn"
-        if "minimax.io" in url:
+        if base_url_host_matches(url, "minimax.io"):
             return "minimax"
         # Unknown base_url — not a known provider
         return ""
@@ -583,6 +602,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 summary_temperature = _effective_temperature_for_model(
                     self.config.summarization_model,
                     self.config.temperature,
+                    self.config.base_url,
                 )
                 
                 if getattr(self, '_use_call_llm', False):
@@ -595,12 +615,14 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 else:
-                    response = self.client.chat.completions.create(
-                        model=self.config.summarization_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=summary_temperature,
-                        max_tokens=self.config.summary_target_tokens * 2,
-                    )
+                    _create_kwargs = {
+                        "model": self.config.summarization_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": self.config.summary_target_tokens * 2,
+                    }
+                    if summary_temperature is not None:
+                        _create_kwargs["temperature"] = summary_temperature
+                    response = self.client.chat.completions.create(**_create_kwargs)
                 
                 summary = self._coerce_summary_content(response.choices[0].message.content)
                 return self._ensure_summary_prefix(summary)
@@ -649,6 +671,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 summary_temperature = _effective_temperature_for_model(
                     self.config.summarization_model,
                     self.config.temperature,
+                    self.config.base_url,
                 )
                 
                 if getattr(self, '_use_call_llm', False):
@@ -661,12 +684,14 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 else:
-                    response = await self._get_async_client().chat.completions.create(
-                        model=self.config.summarization_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=summary_temperature,
-                        max_tokens=self.config.summary_target_tokens * 2,
-                    )
+                    _create_kwargs = {
+                        "model": self.config.summarization_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": self.config.summary_target_tokens * 2,
+                    }
+                    if summary_temperature is not None:
+                        _create_kwargs["temperature"] = summary_temperature
+                    response = await self._get_async_client().chat.completions.create(**_create_kwargs)
                 
                 summary = self._coerce_summary_content(response.choices[0].message.content)
                 return self._ensure_summary_prefix(summary)

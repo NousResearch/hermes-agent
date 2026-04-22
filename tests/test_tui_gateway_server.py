@@ -546,3 +546,641 @@ def test_session_info_includes_mcp_servers(monkeypatch):
 
     assert info["mcp_servers"] == fake_status
 
+
+# ---------------------------------------------------------------------------
+# History-mutating commands must reject while session.running is True.
+# Without these guards, prompt.submit's post-run history write either
+# clobbers the mutation (version matches) or silently drops the agent's
+# output (version mismatch) — both produce UI<->backend state desync.
+# ---------------------------------------------------------------------------
+
+
+def test_session_undo_rejects_while_running():
+    """Fix for TUI silent-drop #1: /undo must not mutate history
+    while the agent is mid-turn — would either clobber the undo or
+    cause prompt.submit to silently drop the agent's response."""
+    server._sessions["sid"] = _session(running=True, history=[
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ])
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("error"), "session.undo should reject while running"
+        assert resp["error"]["code"] == 4009
+        assert "session busy" in resp["error"]["message"]
+        # History must be unchanged
+        assert len(server._sessions["sid"]["history"]) == 2
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_undo_allowed_when_idle():
+    """Regression guard: when not running, /undo still works."""
+    server._sessions["sid"] = _session(running=False, history=[
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ])
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert resp["result"]["removed"] == 2
+        assert server._sessions["sid"]["history"] == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_compress_rejects_while_running(monkeypatch):
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("error")
+        assert resp["error"]["code"] == 4009
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_rollback_restore_rejects_full_history_while_running(monkeypatch):
+    """Full-history rollback must reject; file-scoped rollback still allowed."""
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "rollback.restore", "params": {"session_id": "sid", "hash": "abc"}}
+        )
+        assert resp.get("error"), "full-history rollback should reject while running"
+        assert resp["error"]["code"] == 4009
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
+    """Fix for TUI silent-drop #2: the defensive backstop at prompt.submit
+    must attach a 'warning' to message.complete when history was
+    mutated externally during the turn (instead of silently dropping
+    the agent's output)."""
+    # Agent bumps history_version itself mid-run to simulate an external
+    # mutation slipping past the guards.
+    session_ref = {"s": None}
+
+    class _RacyAgent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            # Simulate: something external bumped history_version
+            # while we were running.
+            with session_ref["s"]["history_lock"]:
+                session_ref["s"]["history_version"] += 1
+            return {"final_response": "agent reply", "messages": [{"role": "assistant", "content": "agent reply"}]}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_RacyAgent())
+    session_ref["s"] = server._sessions["sid"]
+    emits: list[tuple] = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+        resp = server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hi"}}
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        # History should NOT contain the agent's output (version mismatch)
+        assert server._sessions["sid"]["history"] == []
+
+        # message.complete must carry a 'warning' so the UI / operator
+        # knows the output was not persisted.
+        complete_calls = [a for a in emits if a[0] == "message.complete"]
+        assert len(complete_calls) == 1
+        _, _, payload = complete_calls[0]
+        assert "warning" in payload, (
+            "message.complete must include a 'warning' field on "
+            "history_version mismatch — otherwise the UI silently "
+            "shows output that was never persisted"
+        )
+        assert "not saved" in payload["warning"].lower() or "changed" in payload["warning"].lower()
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
+    """Regression guard: the backstop does not affect the happy path."""
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {"final_response": "reply", "messages": [{"role": "assistant", "content": "reply"}]}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    emits: list[tuple] = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+        resp = server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hi"}}
+        )
+        assert resp.get("result")
+
+        # History was written
+        assert server._sessions["sid"]["history"] == [{"role": "assistant", "content": "reply"}]
+        assert server._sessions["sid"]["history_version"] == 1
+
+        # No warning should be attached
+        complete_calls = [a for a in emits if a[0] == "message.complete"]
+        assert len(complete_calls) == 1
+        _, _, payload = complete_calls[0]
+        assert "warning" not in payload
+    finally:
+        server._sessions.pop("sid", None)
+
+
+# ---------------------------------------------------------------------------
+# session.interrupt must only cancel pending prompts owned by the calling
+# session — it must not blast-resolve clarify/sudo/secret prompts on
+# unrelated sessions sharing the same tui_gateway process.  Without
+# session scoping the other sessions' prompts silently resolve to empty
+# strings, unblocking their agent threads as if the user cancelled.
+# ---------------------------------------------------------------------------
+
+
+def test_interrupt_only_clears_own_session_pending():
+    """session.interrupt on session A must NOT release pending prompts
+    that belong to session B."""
+    import types
+
+    session_a = _session()
+    session_a["agent"] = types.SimpleNamespace(interrupt=lambda: None)
+    session_b = _session()
+    session_b["agent"] = types.SimpleNamespace(interrupt=lambda: None)
+    server._sessions["sid_a"] = session_a
+    server._sessions["sid_b"] = session_b
+
+    try:
+        # Simulate pending prompts on both sessions (what _block creates
+        # while a clarify/sudo/secret request is outstanding).
+        ev_a = threading.Event()
+        ev_b = threading.Event()
+        server._pending["rid-a"] = ("sid_a", ev_a)
+        server._pending["rid-b"] = ("sid_b", ev_b)
+        server._answers.clear()
+
+        # Interrupt session A.
+        resp = server.handle_request(
+            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid_a"}}
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        # Session A's pending must be released to empty.
+        assert ev_a.is_set(), "sid_a pending Event should be set after interrupt"
+        assert server._answers.get("rid-a") == ""
+
+        # Session B's pending MUST remain untouched — no cross-session blast.
+        assert not ev_b.is_set(), (
+            "CRITICAL: session.interrupt on sid_a released a pending prompt "
+            "belonging to sid_b — other sessions' clarify/sudo/secret "
+            "prompts are being silently cancelled"
+        )
+        assert "rid-b" not in server._answers
+    finally:
+        server._sessions.pop("sid_a", None)
+        server._sessions.pop("sid_b", None)
+        server._pending.pop("rid-a", None)
+        server._pending.pop("rid-b", None)
+        server._answers.pop("rid-a", None)
+        server._answers.pop("rid-b", None)
+
+
+def test_interrupt_clears_multiple_own_pending():
+    """When a single session has multiple pending prompts (uncommon but
+    possible via nested tool calls), interrupt must release all of them."""
+    import types
+
+    sess = _session()
+    sess["agent"] = types.SimpleNamespace(interrupt=lambda: None)
+    server._sessions["sid"] = sess
+
+    try:
+        ev1, ev2 = threading.Event(), threading.Event()
+        server._pending["r1"] = ("sid", ev1)
+        server._pending["r2"] = ("sid", ev2)
+
+        resp = server.handle_request(
+            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("result")
+        assert ev1.is_set() and ev2.is_set()
+        assert server._answers.get("r1") == "" and server._answers.get("r2") == ""
+    finally:
+        server._sessions.pop("sid", None)
+        for key in ("r1", "r2"):
+            server._pending.pop(key, None)
+            server._answers.pop(key, None)
+
+
+def test_clear_pending_without_sid_clears_all():
+    """_clear_pending(None) is the shutdown path — must still release
+    every pending prompt regardless of owning session."""
+    ev1, ev2, ev3 = threading.Event(), threading.Event(), threading.Event()
+    server._pending["a"] = ("sid_x", ev1)
+    server._pending["b"] = ("sid_y", ev2)
+    server._pending["c"] = ("sid_z", ev3)
+    try:
+        server._clear_pending(None)
+        assert ev1.is_set() and ev2.is_set() and ev3.is_set()
+    finally:
+        for key in ("a", "b", "c"):
+            server._pending.pop(key, None)
+            server._answers.pop(key, None)
+
+
+def test_respond_unpacks_sid_tuple_correctly():
+    """After the (sid, Event) tuple change, _respond must still work."""
+    ev = threading.Event()
+    server._pending["rid-x"] = ("sid_x", ev)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "clarify.respond",
+             "params": {"request_id": "rid-x", "answer": "the answer"}}
+        )
+        assert resp.get("result")
+        assert ev.is_set()
+        assert server._answers.get("rid-x") == "the answer"
+    finally:
+        server._pending.pop("rid-x", None)
+        server._answers.pop("rid-x", None)
+
+
+
+# ---------------------------------------------------------------------------
+# /model switch and other agent-mutating commands must reject while the
+# session is running.  agent.switch_model() mutates self.model, self.provider,
+# self.base_url, self.client etc. in place — the worker thread running
+# agent.run_conversation is reading those on every iteration.  Same class of
+# bug as the session.undo / session.compress mid-run silent-drop; same fix
+# pattern: reject with 4009 while running.
+# ---------------------------------------------------------------------------
+
+
+def test_config_set_model_rejects_while_running(monkeypatch):
+    """/model via config.set must reject during an in-flight turn."""
+    seen = {"called": False}
+
+    def _fake_apply(sid, session, raw):
+        seen["called"] = True
+        return {"value": raw, "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {"session_id": "sid", "key": "model", "value": "anthropic/claude-sonnet-4.6"},
+        })
+        assert resp.get("error")
+        assert resp["error"]["code"] == 4009
+        assert "session busy" in resp["error"]["message"]
+        assert not seen["called"], (
+            "_apply_model_switch was called mid-turn — would race with "
+            "the worker thread reading agent.model / agent.client"
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_model_allowed_when_idle(monkeypatch):
+    """Regression guard: idle sessions can still switch models."""
+    seen = {"called": False}
+
+    def _fake_apply(sid, session, raw):
+        seen["called"] = True
+        return {"value": "newmodel", "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+
+    server._sessions["sid"] = _session(running=False)
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "config.set",
+            "params": {"session_id": "sid", "key": "model", "value": "newmodel"},
+        })
+        assert resp.get("result")
+        assert resp["result"]["value"] == "newmodel"
+        assert seen["called"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monkeypatch):
+    """Slash worker passthrough (e.g. /model, /personality, /prompt,
+    /compress) must reject during an in-flight turn.  Same race as
+    config.set — mutates live agent state while run_conversation is
+    reading it."""
+    import types
+
+    applied = {"model": False, "compress": False}
+
+    def _fake_apply_model(sid, session, arg):
+        applied["model"] = True
+        return {"value": arg, "warning": ""}
+
+    def _fake_compress(session, focus):
+        applied["compress"] = True
+        return (0, {})
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply_model)
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+
+    session = _session(running=True)
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    for cmd, expected_name in [
+        ("/model new/model", "model"),
+        ("/personality default", "personality"),
+        ("/prompt", "prompt"),
+        ("/compress", "compress"),
+    ]:
+        warning = server._mirror_slash_side_effects("sid", session, cmd)
+        assert "session busy" in warning, (
+            f"{cmd} should have returned busy warning, got: {warning!r}"
+        )
+        assert f"/{expected_name}" in warning
+
+    # None of the mutating side-effect helpers should have fired.
+    assert not applied["model"], "model switch fired despite running session"
+    assert not applied["compress"], "compress fired despite running session"
+
+
+def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
+    """Regression guard: idle session still runs the side effects."""
+    import types
+
+    applied = {"model": False}
+
+    def _fake_apply_model(sid, session, arg):
+        applied["model"] = True
+        return {"value": arg, "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply_model)
+
+    session = _session(running=False)
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    warning = server._mirror_slash_side_effects("sid", session, "/model foo")
+    # Should NOT contain "session busy" — the switch went through.
+    assert "session busy" not in warning
+    assert applied["model"]
+
+
+# ---------------------------------------------------------------------------
+# session.create / session.close race: fast /new churn must not orphan the
+# slash_worker subprocess or the global approval-notify registration.
+# ---------------------------------------------------------------------------
+
+
+def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
+    """Regression guard: if session.close runs while session.create's
+    _build thread is still constructing the agent, the build thread
+    must detect the orphan and clean up the slash_worker + notify
+    registration it's about to install.  Without the cleanup those
+    resources leak — the subprocess stays alive until atexit and the
+    notify callback lingers in the global registry."""
+    import threading
+
+    closed_workers: list[str] = []
+    unregistered_keys: list[str] = []
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+            self._closed = False
+
+        def close(self):
+            self._closed = True
+            closed_workers.append(self.key)
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "x"
+            self.provider = "openrouter"
+            self.base_url = ""
+            self.api_key = ""
+
+    # Make _build block until we release it — simulates slow agent init
+    release_build = threading.Event()
+
+    def _slow_make_agent(sid, key):
+        release_build.wait(timeout=3.0)
+        return _FakeAgent()
+
+    # Stub everything _build touches
+    monkeypatch.setattr(server, "_make_agent", _slow_make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: types.SimpleNamespace(create_session=lambda *a, **kw: None))
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    # Shim register/unregister to observe leaks
+    import tools.approval as _approval
+    monkeypatch.setattr(_approval, "register_gateway_notify",
+                        lambda key, cb: None)
+    monkeypatch.setattr(_approval, "unregister_gateway_notify",
+                        lambda key: unregistered_keys.append(key))
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    # Start: session.create spawns _build thread, returns synchronously
+    resp = server.handle_request({
+        "id": "1", "method": "session.create", "params": {"cols": 80},
+    })
+    assert resp.get("result"), f"got error: {resp.get('error')}"
+    sid = resp["result"]["session_id"]
+
+    # Build thread is blocked in _slow_make_agent.  Close the session
+    # NOW — this pops _sessions[sid] before _build can install the
+    # worker/notify.
+    close_resp = server.handle_request({
+        "id": "2", "method": "session.close", "params": {"session_id": sid},
+    })
+    assert close_resp.get("result", {}).get("closed") is True
+
+    # At this point session.close saw slash_worker=None (not yet
+    # installed) so it didn't close anything.  Release the build thread
+    # and let it finish — it should detect the orphan and clean up the
+    # worker it just allocated + unregister the notify.
+    release_build.set()
+
+    # Give the build thread a moment to run through its finally.
+    for _ in range(100):
+        if closed_workers:
+            break
+        import time
+        time.sleep(0.02)
+
+    assert len(closed_workers) == 1, (
+        f"orphan worker was not cleaned up — closed_workers={closed_workers}"
+    )
+    # Notify may be unregistered by both session.close (unconditional)
+    # and the orphan-cleanup path; the key guarantee is that the build
+    # thread does at least one unregister call (any prior close
+    # already popped the callback; the duplicate is a no-op).
+    assert len(unregistered_keys) >= 1, (
+        f"orphan notify registration was not unregistered — "
+        f"unregistered_keys={unregistered_keys}"
+    )
+
+
+def test_session_create_no_race_keeps_worker_alive(monkeypatch):
+    """Regression guard: when session.close does NOT race, the build
+    thread must install the worker + notify normally and leave them
+    alone (no over-eager cleanup)."""
+    closed_workers: list[str] = []
+    unregistered_keys: list[str] = []
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            closed_workers.append(self.key)
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "x"
+            self.provider = "openrouter"
+            self.base_url = ""
+            self.api_key = ""
+
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: types.SimpleNamespace(create_session=lambda *a, **kw: None))
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "unregister_gateway_notify",
+                        lambda key: unregistered_keys.append(key))
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request({
+        "id": "1", "method": "session.create", "params": {"cols": 80},
+    })
+    sid = resp["result"]["session_id"]
+
+    # Wait for the build to finish (ready event inside session dict).
+    session = server._sessions[sid]
+    session["agent_ready"].wait(timeout=2.0)
+
+    # Build finished without a close race — nothing should have been
+    # cleaned up by the orphan check.
+    assert closed_workers == [], (
+        f"build thread closed its own worker despite no race: {closed_workers}"
+    )
+    assert unregistered_keys == [], (
+        f"build thread unregistered its own notify despite no race: {unregistered_keys}"
+    )
+
+    # Session should have the live worker installed.
+    assert session.get("slash_worker") is not None
+
+    # Cleanup
+    server._sessions.pop(sid, None)
+
+
+# --------------------------------------------------------------------------
+# model.options — curated-list parity with `hermes model` and classic /model
+# --------------------------------------------------------------------------
+
+
+def test_model_options_does_not_overwrite_curated_models(monkeypatch):
+    """The TUI model.options handler must surface the same curated model
+    list as `hermes model` and the classic CLI /model picker.
+
+    Regression: earlier versions of this handler unconditionally replaced
+    each provider's curated ``models`` field with ``provider_model_ids()``
+    (live /models catalog).  That pulled in hundreds of non-agentic models
+    for providers like Nous whose /models endpoint returns image/video
+    generators, rerankers, embeddings, and TTS models alongside chat models.
+    """
+    curated_providers = [
+        {
+            "slug": "nous",
+            "name": "Nous",
+            "models": ["moonshotai/kimi-k2.5", "anthropic/claude-opus-4.7"],
+            "total_models": 30,
+            "source": "built-in",
+            "is_current": False,
+            "is_user_defined": False,
+        },
+    ]
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"providers": {}, "custom_providers": []},
+    )
+
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=curated_providers,
+    ) as listing:
+        # If provider_model_ids gets called at all, the handler is still
+        # overwriting curated with live — that's the regression we're
+        # guarding against.
+        with patch("hermes_cli.models.provider_model_ids") as live_fetch:
+            resp = server._methods["model.options"](99, {"session_id": ""})
+
+    assert "result" in resp, resp
+    providers = resp["result"]["providers"]
+    nous = next((p for p in providers if p.get("slug") == "nous"), None)
+    assert nous is not None
+    assert nous["models"] == [
+        "moonshotai/kimi-k2.5",
+        "anthropic/claude-opus-4.7",
+    ]
+    assert nous["total_models"] == 30
+    # Handler must not consult the live catalog — curated is the truth.
+    live_fetch.assert_not_called()
+    # list_authenticated_providers is the single source.
+    assert listing.call_count == 1
+
+
+def test_model_options_propagates_list_exception(monkeypatch):
+    """If list_authenticated_providers itself raises, surface as an RPC
+    error rather than swallowing to a blank picker."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"providers": {}, "custom_providers": []},
+    )
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        side_effect=RuntimeError("catalog blew up"),
+    ):
+        resp = server._methods["model.options"](77, {"session_id": ""})
+    assert "error" in resp
+    assert resp["error"]["code"] == 5033
+    assert "catalog blew up" in resp["error"]["message"]

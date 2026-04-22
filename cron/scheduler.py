@@ -438,7 +438,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
                 # fresh thread that has no running loop.
                 coro.close()
-                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
                     result = future.result(timeout=30)
@@ -657,15 +656,53 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script execution failed: {exc}"
 
 
-def _build_job_prompt(job: dict) -> str:
-    """Build the effective prompt for a cron job, optionally loading one or more skills first."""
+def _parse_wake_gate(script_output: str) -> bool:
+    """Parse the last non-empty stdout line of a cron job's pre-check script
+    as a wake gate.
+
+    The convention (ported from nanoclaw #1232): if the last stdout line is
+    JSON like ``{"wakeAgent": false}``, the agent is skipped entirely — no
+    LLM run, no delivery. Any other output (non-JSON, missing flag, gate
+    absent, or ``wakeAgent: true``) means wake the agent normally.
+
+    Returns True if the agent should wake, False to skip.
+    """
+    if not script_output:
+        return True
+    stripped_lines = [line for line in script_output.splitlines() if line.strip()]
+    if not stripped_lines:
+        return True
+    last_line = stripped_lines[-1].strip()
+    try:
+        gate = json.loads(last_line)
+    except (json.JSONDecodeError, ValueError):
+        return True
+    if not isinstance(gate, dict):
+        return True
+    return gate.get("wakeAgent", True) is not False
+
+
+def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
+    """Build the effective prompt for a cron job, optionally loading one or more skills first.
+
+    Args:
+        job: The cron job dict.
+        prerun_script: Optional ``(success, stdout)`` from a script that has
+            already been executed by the caller (e.g. for a wake-gate check).
+            When provided, the script is not re-executed and the cached
+            result is used for prompt injection. When omitted, the script
+            (if any) runs inline as before.
+    """
     prompt = job.get("prompt", "")
     skills = job.get("skills")
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
     if script_path:
-        success, script_output = _run_job_script(script_path)
+        if prerun_script is not None:
+            success, script_output = prerun_script
+        else:
+            success, script_output = _run_job_script(script_path)
         if success:
             if script_output:
                 prompt = (
@@ -767,7 +804,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     
     job_id = job["id"]
     job_name = job["name"]
-    prompt = _build_job_prompt(job)
+
+    # Wake-gate: if this job has a pre-check script, run it BEFORE building
+    # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
+    # the whole agent run. We pass the result into _build_job_prompt so
+    # the script is only executed once.
+    prerun_script = None
+    script_path = job.get("script")
+    if script_path:
+        prerun_script = _run_job_script(script_path)
+        _ran_ok, _script_output = prerun_script
+        if _ran_ok and not _parse_wake_gate(_script_output):
+            logger.info(
+                "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
+                job_name, job_id,
+            )
+            silent_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "Script gate returned `wakeAgent=false` — agent skipped.\n"
+            )
+            return True, silent_doc, SILENT_MARKER, None
+
+    prompt = _build_job_prompt(job, prerun_script=prerun_script)
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -779,14 +839,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # scheduler process — every job this process runs is a cron job.
     os.environ["HERMES_CRON_SESSION"] = "1"
 
+    # Use ContextVars for per-job session/delivery state so parallel jobs
+    # don't clobber each other's targets (os.environ is process-global).
+    from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
+
+    _ctx_tokens = set_session_vars(
+        platform=origin["platform"] if origin else "",
+        chat_id=str(origin["chat_id"]) if origin else "",
+        chat_name=origin.get("chat_name", "") if origin else "",
+    )
+
     try:
-        # Inject origin context so the agent's send_message tool knows the chat.
-        # Must be INSIDE the try block so the finally cleanup always runs.
-        if origin:
-            os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-            os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-            if origin.get("chat_name"):
-                os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -797,10 +860,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
-            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
             if delivery_target.get("thread_id") is not None:
-                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -839,14 +902,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         prefill_messages = None
         prefill_file = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "") or _cfg.get("prefill_messages_file", "")
         if prefill_file:
-            import json as _json
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():
                 pfpath = _hermes_home / pfpath
             if pfpath.exists():
                 try:
                     with open(pfpath, "r", encoding="utf-8") as _pf:
-                        prefill_messages = _json.load(_pf)
+                        prefill_messages = json.load(_pf)
                     if not isinstance(prefill_messages, list):
                         prefill_messages = None
                 except Exception as e:
@@ -858,7 +920,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
-        smart_routing = _cfg.get("smart_model_routing", {}) or {}
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
@@ -875,24 +936,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        from agent.smart_model_routing import resolve_turn_route
-        turn_route = resolve_turn_route(
-            prompt,
-            smart_routing,
-            {
-                "model": model,
-                "api_key": runtime.get("api_key"),
-                "base_url": runtime.get("base_url"),
-                "provider": runtime.get("provider"),
-                "api_mode": runtime.get("api_mode"),
-                "command": runtime.get("command"),
-                "args": list(runtime.get("args") or []),
-            },
-        )
-
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
-        runtime_provider = str(turn_route["runtime"].get("provider") or "").strip().lower()
+        runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
             try:
                 from agent.credential_pool import load_pool
@@ -909,13 +955,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
         agent = AIAgent(
-            model=turn_route["model"],
-            api_key=turn_route["runtime"].get("api_key"),
-            base_url=turn_route["runtime"].get("base_url"),
-            provider=turn_route["runtime"].get("provider"),
-            api_mode=turn_route["runtime"].get("api_mode"),
-            acp_command=turn_route["runtime"].get("command"),
-            acp_args=turn_route["runtime"].get("args"),
+            model=model,
+            api_key=runtime.get("api_key"),
+            base_url=runtime.get("base_url"),
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
+            acp_command=runtime.get("command"),
+            acp_args=runtime.get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
@@ -1060,16 +1106,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
-        # Clean up injected env vars so they don't leak to other jobs
-        for key in (
-            "HERMES_SESSION_PLATFORM",
-            "HERMES_SESSION_CHAT_ID",
-            "HERMES_SESSION_CHAT_NAME",
-            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
-        ):
-            os.environ.pop(key, None)
+        # Clean up ContextVar session/delivery state for this job.
+        clear_session_vars(_ctx_tokens)
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

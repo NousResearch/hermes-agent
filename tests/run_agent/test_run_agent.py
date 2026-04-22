@@ -918,6 +918,118 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
+        """Kimi models should NOT have client-side temperature overrides.
+
+        The Kimi gateway selects the correct temperature server-side.
+        """
+        agent.base_url = "https://api.moonshot.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-k2.5"
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert "temperature" not in kwargs
+
+    def test_public_moonshot_cn_kimi_k2_5_omits_temperature(self, agent):
+        agent.base_url = "https://api.moonshot.cn/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-k2.5"
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert "temperature" not in kwargs
+
+    def test_kimi_coding_endpoint_omits_temperature(self, agent):
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-k2.5"
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert "temperature" not in kwargs
+
+    def test_kimi_coding_endpoint_sends_max_tokens_and_reasoning(self, agent):
+        """Kimi endpoint should send max_tokens=32000 and reasoning_effort as
+        top-level params, matching Kimi CLI's default behavior."""
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-for-coding"
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["max_tokens"] == 32000
+        assert kwargs["reasoning_effort"] == "medium"
+
+    def test_kimi_coding_endpoint_respects_custom_effort(self, agent):
+        """reasoning_effort should reflect reasoning_config.effort when set."""
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-for-coding"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["reasoning_effort"] == "high"
+
+    def test_kimi_coding_endpoint_sends_thinking_extra_body(self, agent):
+        """Kimi endpoint should send extra_body.thinking={"type":"enabled"}
+        to activate reasoning mode, mirroring Kimi CLI's with_thinking()."""
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-for-coding"
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_kimi_coding_endpoint_disables_thinking(self, agent):
+        """When reasoning_config.enabled=False, thinking should be disabled
+        and reasoning_effort should be omitted entirely — mirroring Kimi
+        CLI's with_thinking("off") which maps to reasoning_effort=None."""
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-for-coding"
+        agent.reasoning_config = {"enabled": False}
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in kwargs
+
+    def test_moonshot_endpoint_sends_max_tokens_and_reasoning(self, agent):
+        """api.moonshot.ai should get the same Kimi-compatible params."""
+        agent.base_url = "https://api.moonshot.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-k2.5"
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["max_tokens"] == 32000
+        assert kwargs["reasoning_effort"] == "medium"
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_moonshot_cn_endpoint_sends_max_tokens_and_reasoning(self, agent):
+        """api.moonshot.cn (China endpoint) should get the same params."""
+        agent.base_url = "https://api.moonshot.cn/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-k2.5"
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["max_tokens"] == 32000
+        assert kwargs["reasoning_effort"] == "medium"
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
     def test_provider_preferences_injected(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.providers_allowed = ["Anthropic"]
@@ -1285,6 +1397,7 @@ class TestExecuteToolCalls:
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
+        agent.platform = "cli"
         agent.tool_progress_callback = None
 
         with patch("run_agent.handle_function_call", return_value="search result"), \
@@ -1293,6 +1406,21 @@ class TestExecuteToolCalls:
 
         mock_print.assert_called_once()
         assert "search" in str(mock_print.call_args.args[0]).lower()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+
+    def test_quiet_tool_output_suppressed_without_progress_callback_for_non_cli_agent(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        agent.platform = None
+        agent.tool_progress_callback = None
+
+        with patch("run_agent.handle_function_call", return_value="search result"), \
+             patch.object(agent, "_safe_print") as mock_print:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        mock_print.assert_not_called()
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
 
@@ -1875,6 +2003,30 @@ class TestRunConversation:
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
         assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
         assert all("usage" in c and "response" not in c for c in post_request_calls)
+
+    def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
+        self._setup_agent(agent)
+        agent.platform = None
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="I'll search for that.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_safe_print") as mock_print,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        mock_print.assert_not_called()
 
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
@@ -3575,7 +3727,9 @@ class TestAnthropicCredentialRefresh:
             assert agent._try_refresh_anthropic_client_credentials() is True
 
         old_client.close.assert_called_once()
-        rebuild.assert_called_once_with("sk-ant-oat01-fresh-token", "https://api.anthropic.com")
+        rebuild.assert_called_once_with(
+            "sk-ant-oat01-fresh-token", "https://api.anthropic.com", timeout=None,
+        )
         assert agent._anthropic_client is new_client
         assert agent._anthropic_api_key == "sk-ant-oat01-fresh-token"
 
@@ -3675,9 +3829,13 @@ class TestStreamingApiCall:
         callback.assert_any_call("World")
 
     def test_tool_call_accumulation(self, agent):
+        # Per OpenAI streaming spec, function names are delivered atomically
+        # in the first chunk; only `arguments` is fragmented across chunks.
+        # The accumulator uses assignment for names (immune to MiniMax/NIM
+        # resends of the full name) and `+=` for arguments.
         chunks = [
-            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "web_", '{"q":')]),
-            _make_chunk(tool_calls=[_make_tc_delta(0, None, "search", '"test"}')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "web_search", '{"q":')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, None, None, '"test"}')]),
             _make_chunk(finish_reason="tool_calls"),
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)

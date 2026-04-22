@@ -1361,41 +1361,158 @@ def _is_auth_error(exc: BaseException) -> bool:
     return True
 
 
+def _classify_recoverable_error(exc: BaseException) -> Optional[str]:
+    """Classify an MCP failure into auth / reconnectable buckets."""
+    if _is_auth_error(exc):
+        return "auth"
+    if _is_session_identity_error(exc):
+        return "session_identity_error"
+    if _is_transport_dead_error(exc):
+        return "transport_dead"
+    return None
+
+
+def _reconnect_and_retry_once(
+    server_name: str,
+    retry_call,
+    op_description: str,
+    log_label: str,
+):
+    """Signal transport reconnect, wait for readiness, then retry once."""
+    with _lock:
+        srv = _servers.get(server_name)
+    if srv is None or not hasattr(srv, "_reconnect_event"):
+        return None
+
+    loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return None
+
+    logger.info(
+        "MCP server '%s': %s failed with %s; signalling transport reconnect and retrying once.",
+        server_name, op_description, log_label,
+    )
+
+    loop.call_soon_threadsafe(srv._reconnect_event.set)
+    deadline = time.monotonic() + 15
+    ready = False
+    while time.monotonic() < deadline:
+        if srv.session is not None and srv._ready.is_set():
+            ready = True
+            break
+        time.sleep(0.25)
+    if not ready:
+        logger.warning(
+            "MCP server '%s': reconnect did not ready within 15s after %s; falling through to error response.",
+            server_name,
+            log_label,
+        )
+        return None
+
+    try:
+        result = retry_call()
+        try:
+            parsed = json.loads(result)
+            if "error" not in parsed:
+                _reset_server_error(server_name)
+                return result
+        except (json.JSONDecodeError, TypeError):
+            _reset_server_error(server_name)
+            return result
+    except Exception as retry_exc:
+        logger.warning(
+            "MCP %s/%s retry after %s failed: %s",
+            server_name, op_description, log_label, retry_exc,
+        )
+    return None
+
+
+def _handle_reconnectable_error_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Reconnect and retry once for recoverable non-auth MCP failures."""
+    kind = _classify_recoverable_error(exc)
+    if kind == "session_identity_error":
+        return _reconnect_and_retry_once(
+            server_name, retry_call, op_description, "session-identity error",
+        )
+    if kind == "transport_dead":
+        return _reconnect_and_retry_once(
+            server_name, retry_call, op_description, "transport-dead error",
+        )
+    return None
+
+
+def _is_session_identity_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like an MCP session-id expiry/missing error."""
+    if isinstance(exc, InterruptedError):
+        return False
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return any(marker in msg for marker in _SESSION_IDENTITY_ERROR_MARKERS)
+
+
+def _is_transport_dead_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like a dead MCP transport/client session."""
+    if isinstance(exc, InterruptedError):
+        return False
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return any(marker in msg for marker in _TRANSPORT_DEAD_ERROR_MARKERS)
+
+
+def _handle_recoverable_error_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Dispatch to the appropriate recoverable-error strategy."""
+    kind = _classify_recoverable_error(exc)
+    if kind == "auth":
+        return _handle_auth_error_and_retry(
+            server_name, exc, retry_call, op_description,
+        )
+    if kind in {"session_identity_error", "transport_dead"}:
+        return _handle_reconnectable_error_and_retry(
+            server_name, exc, retry_call, op_description,
+        )
+    return None
+
+
+_SESSION_IDENTITY_ERROR_MARKERS: tuple = (
+    "invalid or expired session",
+    "expired session",
+    "session expired",
+    "session not found",
+    "unknown session",
+    "invalid or missing session id",
+)
+
+
+_TRANSPORT_DEAD_ERROR_MARKERS: tuple = (
+    "session terminated",
+    "stream closed",
+    "endofstream",
+    "connection closed",
+    "connection reset",
+    "server disconnected",
+)
+
+
 def _handle_auth_error_and_retry(
     server_name: str,
     exc: BaseException,
     retry_call,
     op_description: str,
 ):
-    """Attempt auth recovery and one retry; return None to fall through.
-
-    Called by the 5 MCP tool handlers when ``session.<op>()`` raises an
-    auth-related exception. Workflow:
-
-      1. Ask :class:`tools.mcp_oauth_manager.MCPOAuthManager.handle_401` if
-         recovery is viable (i.e., disk has fresh tokens, or the SDK can
-         refresh in-place).
-      2. If yes, set the server's ``_reconnect_event`` so the server task
-         tears down the current MCP session and rebuilds it with fresh
-         credentials. Wait briefly for ``_ready`` to re-fire.
-      3. Retry the operation once. Return the retry result if it produced
-         a non-error JSON payload. Otherwise return the ``needs_reauth``
-         error dict so the model stops hallucinating manual refresh.
-      4. Return None if ``exc`` is not an auth error, signalling the
-         caller to use the generic error path.
-
-    Args:
-        server_name: Name of the MCP server that raised.
-        exc: The exception from the failed tool call.
-        retry_call: Zero-arg callable that re-runs the tool call, returning
-            the same JSON string format as the handler.
-        op_description: Human-readable name of the operation (for logs).
-
-    Returns:
-        A JSON string if auth recovery was attempted, or None to fall
-        through to the caller's generic error path.
-    """
-    if not _is_auth_error(exc):
+    """Attempt auth recovery and one retry; return None to fall through."""
+    if _classify_recoverable_error(exc) != "auth":
         return None
 
     from tools.mcp_oauth_manager import get_manager
@@ -1420,23 +1537,12 @@ def _handle_auth_error_and_retry(
             loop = _mcp_loop
             if loop is not None and loop.is_running():
                 loop.call_soon_threadsafe(srv._reconnect_event.set)
-                # Wait briefly for the session to come back ready. Bounded
-                # so that a stuck reconnect falls through to the error
-                # path rather than hanging the caller.
                 deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
                     if srv.session is not None and srv._ready.is_set():
                         break
                     time.sleep(0.25)
 
-        # A successful OAuth recovery is independent evidence that the
-        # server is viable again, so close the circuit breaker here —
-        # not only on retry success. Without this, a reconnect
-        # followed by a failing retry would leave the breaker pinned
-        # above threshold forever (the retry-exception branch below
-        # bumps the count again).  The post-reset retry still goes
-        # through _bump_server_error on failure, so a genuinely broken
-        # server will re-trip the breaker as normal.
         _reset_server_error(server_name)
 
         try:
@@ -1455,9 +1561,6 @@ def _handle_auth_error_and_retry(
                 server_name, op_description, retry_exc,
             )
 
-    # No recovery available, or retry also failed: surface a structured
-    # needs_reauth error. Bumps the circuit breaker so the model stops
-    # retrying the tool.
     _bump_server_error(server_name)
     return json.dumps({
         "error": (
@@ -1469,6 +1572,7 @@ def _handle_auth_error_and_retry(
         "needs_reauth": True,
         "server": server_name,
     }, ensure_ascii=False)
+
 
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1749,7 +1853,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Auth-specific recovery path: consult the manager, signal
             # reconnect if viable, retry once. Returns None to fall
             # through for non-auth exceptions.
-            recovered = _handle_auth_error_and_retry(
+            recovered = _handle_recoverable_error_and_retry(
                 server_name, exc, _call_once,
                 f"tools/call {tool_name}",
             )
@@ -1805,7 +1909,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
-            recovered = _handle_auth_error_and_retry(
+            recovered = _handle_recoverable_error_and_retry(
                 server_name, exc, _call_once, "resources/list",
             )
             if recovered is not None:
@@ -1859,7 +1963,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
-            recovered = _handle_auth_error_and_retry(
+            recovered = _handle_recoverable_error_and_retry(
                 server_name, exc, _call_once, "resources/read",
             )
             if recovered is not None:
@@ -1916,7 +2020,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
-            recovered = _handle_auth_error_and_retry(
+            recovered = _handle_recoverable_error_and_retry(
                 server_name, exc, _call_once, "prompts/list",
             )
             if recovered is not None:
@@ -1981,7 +2085,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
-            recovered = _handle_auth_error_and_retry(
+            recovered = _handle_recoverable_error_and_retry(
                 server_name, exc, _call_once, "prompts/get",
             )
             if recovered is not None:

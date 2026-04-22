@@ -43,13 +43,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _effective_temperature_for_model(model: str) -> Optional[float]:
-    """Return a fixed temperature for models with strict sampling contracts."""
+def _effective_temperature_for_model(
+    model: str,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Return a fixed temperature for models with strict sampling contracts.
+
+    Returns ``None`` when the model manages temperature server-side (Kimi);
+    callers must omit the ``temperature`` kwarg entirely in that case.
+    """
     try:
-        from agent.auxiliary_client import _fixed_temperature_for_model
+        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
     except Exception:
         return None
-    return _fixed_temperature_for_model(model)
+    result = _fixed_temperature_for_model(model, base_url)
+    if result is OMIT_TEMPERATURE:
+        return None  # caller must omit temperature
+    return result
 
 
 
@@ -457,7 +467,10 @@ Complete the user's task step by step."""
                         "tools": self.tools,
                         "timeout": 300.0,
                     }
-                    fixed_temperature = _effective_temperature_for_model(self.model)
+                    fixed_temperature = _effective_temperature_for_model(
+                        self.model,
+                        str(getattr(self.client, "base_url", "") or ""),
+                    )
                     if fixed_temperature is not None:
                         api_kwargs["temperature"] = fixed_temperature
 

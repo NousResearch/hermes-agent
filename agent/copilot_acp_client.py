@@ -21,6 +21,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from agent.file_safety import get_read_block_error, is_write_denied
+from agent.redact import redact_sensitive_text
+
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
@@ -50,6 +53,18 @@ def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
         "error": {
             "code": code,
             "message": message,
+        },
+    }
+
+
+def _permission_denied(message_id: Any) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "result": {
+            "outcome": {
+                "outcome": "cancelled",
+            }
         },
     }
 
@@ -386,6 +401,8 @@ class CopilotACPClient:
         stderr_tail: deque[str] = deque(maxlen=40)
 
         def _stdout_reader() -> None:
+            if proc.stdout is None:
+                return
             for line in proc.stdout:
                 try:
                     inbox.put(json.loads(line))
@@ -533,18 +550,13 @@ class CopilotACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
-            response = {
-                "jsonrpc": "2.0",
-                "id": message_id,
-                "result": {
-                    "outcome": {
-                        "outcome": "allow_once",
-                    }
-                },
-            }
+            response = _permission_denied(message_id)
         elif method == "fs/read_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
+                block_error = get_read_block_error(str(path))
+                if block_error:
+                    raise PermissionError(block_error)
                 content = path.read_text() if path.exists() else ""
                 line = params.get("line")
                 limit = params.get("limit")
@@ -553,6 +565,8 @@ class CopilotACPClient:
                     start = line - 1
                     end = start + limit if isinstance(limit, int) and limit > 0 else None
                     content = "".join(lines[start:end])
+                if content:
+                    content = redact_sensitive_text(content)
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,
@@ -565,6 +579,10 @@ class CopilotACPClient:
         elif method == "fs/write_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
+                if is_write_denied(str(path)):
+                    raise PermissionError(
+                        f"Write denied: '{path}' is a protected system/credential file."
+                    )
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(params.get("content") or ""))
                 response = {

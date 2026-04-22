@@ -33,6 +33,11 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         agent._active_children = []
         agent._active_children_lock = threading.Lock()
         agent.quiet_mode = True
+        # Provider/model/base_url are read by stale-timeout resolution paths;
+        # the specific values don't matter for interrupt tests.
+        agent.provider = "openrouter"
+        agent.model = "test/model"
+        agent._base_url = "http://localhost:1234"
         return agent
 
     def test_parent_interrupt_sets_child_flag(self):

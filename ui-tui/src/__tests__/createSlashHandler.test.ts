@@ -211,6 +211,42 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
   })
 
+  it('/history pages the current TUI transcript (user + assistant)', () => {
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'user', text: 'hello' },
+          { role: 'system', text: 'ignore me' },
+          { role: 'assistant', text: 'hi there' },
+          { role: 'user', text: 'test' }
+        ])
+      }
+    })
+
+    createSlashHandler(ctx)('/history')
+    expect(ctx.transcript.page).toHaveBeenCalledTimes(1)
+
+    const [body, title] = ctx.transcript.page.mock.calls[0]!
+
+    expect(title).toBe('History')
+    expect(body).toContain('[You #1]')
+    expect(body).toContain('hello')
+    expect(body).toContain('[Hermes #2]')
+    expect(body).toContain('hi there')
+    expect(body).toContain('[You #3]')
+    expect(body).not.toContain('ignore me')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('/history reports empty state without paging', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/history')
+    expect(ctx.transcript.page).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
+  })
+
   it('handles send-type dispatch for /plan command', async () => {
     const planMessage = 'Plan skill content loaded'
 

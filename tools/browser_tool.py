@@ -582,6 +582,8 @@ def _reap_orphaned_browser_sessions():
     socket_dirs = glob.glob(pattern)
     # Also pick up CDP sessions
     socket_dirs += glob.glob(os.path.join(tmpdir, "agent-browser-cdp_*"))
+    # Also pick up cloud-provider sessions (browser-use/browserbase/firecrawl)
+    socket_dirs += glob.glob(os.path.join(tmpdir, "agent-browser-hermes_*"))
 
     if not socket_dirs:
         return
@@ -1909,7 +1911,6 @@ def _maybe_start_recording(task_id: str):
         recordings_dir.mkdir(parents=True, exist_ok=True)
         _cleanup_old_recordings(max_age_hours=72)
         
-        import time
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         recording_path = recordings_dir / f"session_{timestamp}_{task_id[:16]}.webm"
         
@@ -2025,8 +2026,6 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
 
     import base64
     import uuid as uuid_mod
-    from pathlib import Path
-    
     effective_task_id = task_id or "default"
     
     # Save screenshot to persistent location so it can be shared with users
@@ -2098,16 +2097,21 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         logger.debug("browser_vision: analysing screenshot (%d bytes)",
                      len(_screenshot_bytes))
 
-        # Read vision timeout from config (auxiliary.vision.timeout), default 120s.
+        # Read vision timeout/temperature from config (auxiliary.vision.*).
         # Local vision models (llama.cpp, ollama) can take well over 30s for
-        # screenshot analysis, so the default must be generous.
+        # screenshot analysis, so the default timeout must be generous.
         vision_timeout = 120.0
+        vision_temperature = 0.1
         try:
             from hermes_cli.config import load_config
             _cfg = load_config()
-            _vt = _cfg.get("auxiliary", {}).get("vision", {}).get("timeout")
+            _vision_cfg = _cfg.get("auxiliary", {}).get("vision", {})
+            _vt = _vision_cfg.get("timeout")
             if _vt is not None:
                 vision_timeout = float(_vt)
+            _vtemp = _vision_cfg.get("temperature")
+            if _vtemp is not None:
+                vision_temperature = float(_vtemp)
         except Exception:
             pass
 
@@ -2123,7 +2127,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 }
             ],
             "max_tokens": 2000,
-            "temperature": 0.1,
+            "temperature": vision_temperature,
             "timeout": vision_timeout,
         }
         if vision_model:
@@ -2203,7 +2207,6 @@ def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
 
 def _cleanup_old_recordings(max_age_hours=72):
     """Remove browser recordings older than max_age_hours to prevent disk bloat."""
-    import time
     try:
         hermes_home = get_hermes_home()
         recordings_dir = hermes_home / "browser_recordings"

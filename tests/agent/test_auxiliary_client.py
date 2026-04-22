@@ -476,6 +476,133 @@ class TestGetTextAuxiliaryClient:
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.2-codex"
 
+
+class TestNousAuxiliaryRefresh:
+    def test_try_nous_prefers_runtime_credentials(self):
+        fresh_base = "https://inference-api.nousresearch.com/v1"
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "stale-token"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            mock_openai.return_value = MagicMock()
+            client, model = _try_nous()
+
+        assert client is not None
+        # No Portal recommendation → falls back to the hardcoded default.
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "fresh-agent-key"
+        assert mock_openai.call_args.kwargs["base_url"] == fresh_base
+
+    def test_try_nous_uses_portal_recommendation_for_text(self):
+        """When the Portal recommends a compaction model, _try_nous honors it."""
+        fresh_base = "https://inference-api.nousresearch.com/v1"
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "***"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="minimax/minimax-m2.7") as mock_rec,
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            mock_openai.return_value = MagicMock()
+            client, model = _try_nous(vision=False)
+
+        assert client is not None
+        assert model == "minimax/minimax-m2.7"
+        assert mock_rec.call_args.kwargs["vision"] is False
+
+    def test_try_nous_uses_portal_recommendation_for_vision(self):
+        """Vision tasks should ask for the vision-specific recommendation."""
+        fresh_base = "https://inference-api.nousresearch.com/v1"
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "***"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="google/gemini-3-flash-preview") as mock_rec,
+            patch("agent.auxiliary_client.OpenAI"),
+        ):
+            from agent.auxiliary_client import _try_nous
+            client, model = _try_nous(vision=True)
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_rec.call_args.kwargs["vision"] is True
+
+    def test_try_nous_falls_back_when_recommendation_lookup_raises(self):
+        """If the Portal lookup throws, we must still return a usable model."""
+        fresh_base = "https://inference-api.nousresearch.com/v1"
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "***"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", side_effect=RuntimeError("portal down")),
+            patch("agent.auxiliary_client.OpenAI"),
+        ):
+            from agent.auxiliary_client import _try_nous
+            client, model = _try_nous()
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+
+    def test_call_llm_retries_nous_after_401(self):
+        class _Auth401(Exception):
+            status_code = 401
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://inference-api.nousresearch.com/v1"
+        stale_client.chat.completions.create.side_effect = _Auth401("stale nous key")
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://inference-api.nousresearch.com/v1"
+        fresh_client.chat.completions.create.return_value = {"ok": True}
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
+            patch("agent.auxiliary_client.OpenAI", return_value=fresh_client),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_retries_nous_after_401(self):
+        class _Auth401(Exception):
+            status_code = 401
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://inference-api.nousresearch.com/v1"
+        stale_client.chat.completions.create = AsyncMock(side_effect=_Auth401("stale nous key"))
+
+        fresh_async_client = MagicMock()
+        fresh_async_client.base_url = "https://inference-api.nousresearch.com/v1"
+        fresh_async_client.chat.completions.create = AsyncMock(return_value={"ok": True})
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
+            patch("agent.auxiliary_client._to_async_client", return_value=(fresh_async_client, "nous-model")),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        assert stale_client.chat.completions.create.await_count == 1
+        assert fresh_async_client.chat.completions.create.await_count == 1
+
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
 
 
@@ -696,27 +823,46 @@ class TestIsConnectionError:
         assert _is_connection_error(err) is False
 
 
-class TestKimiForCodingTemperature:
-    """Moonshot kimi-for-coding models require fixed temperatures.
+class TestKimiTemperatureOmitted:
+    """Kimi/Moonshot models should have temperature OMITTED from API kwargs.
 
-    k2.5 / k2-turbo-preview / k2-0905-preview → 0.6 (non-thinking lock).
-    k2-thinking / k2-thinking-turbo → 1.0 (thinking lock).
-    kimi-k2-instruct* and every other model preserve the caller's temperature.
+    The Kimi gateway selects the correct temperature server-side based on the
+    active mode (thinking → 1.0, non-thinking → 0.6).  Sending any temperature
+    value conflicts with gateway-managed defaults.
     """
 
-    def test_build_call_kwargs_forces_fixed_temperature(self):
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "kimi-for-coding",
+            "kimi-k2.5",
+            "kimi-k2.6",
+            "kimi-k2-turbo-preview",
+            "kimi-k2-0905-preview",
+            "kimi-k2-thinking",
+            "kimi-k2-thinking-turbo",
+            "kimi-k2-instruct",
+            "kimi-k2-instruct-0905",
+            "moonshotai/kimi-k2.5",
+            "moonshotai/Kimi-K2-Thinking",
+            "moonshotai/Kimi-K2-Instruct",
+        ],
+    )
+    def test_kimi_models_omit_temperature(self, model):
+        """No kimi model should have a temperature key in kwargs."""
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
             provider="kimi-coding",
-            model="kimi-for-coding",
+            model=model,
             messages=[{"role": "user", "content": "hello"}],
             temperature=0.3,
         )
 
-        assert kwargs["temperature"] == 0.6
+        assert "temperature" not in kwargs
 
-    def test_build_call_kwargs_injects_temperature_when_missing(self):
+    def test_kimi_for_coding_no_temperature_when_none(self):
+        """When caller passes temperature=None, still no temperature key."""
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -726,9 +872,9 @@ class TestKimiForCodingTemperature:
             temperature=None,
         )
 
-        assert kwargs["temperature"] == 0.6
+        assert "temperature" not in kwargs
 
-    def test_auto_routed_kimi_for_coding_sync_call_uses_fixed_temperature(self):
+    def test_sync_call_omits_temperature(self):
         client = MagicMock()
         client.base_url = "https://api.kimi.com/coding/v1"
         response = MagicMock()
@@ -750,10 +896,10 @@ class TestKimiForCodingTemperature:
         assert result is response
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["model"] == "kimi-for-coding"
-        assert kwargs["temperature"] == 0.6
+        assert "temperature" not in kwargs
 
     @pytest.mark.asyncio
-    async def test_auto_routed_kimi_for_coding_async_call_uses_fixed_temperature(self):
+    async def test_async_call_omits_temperature(self):
         client = MagicMock()
         client.base_url = "https://api.kimi.com/coding/v1"
         response = MagicMock()
@@ -775,52 +921,17 @@ class TestKimiForCodingTemperature:
         assert result is response
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["model"] == "kimi-for-coding"
-        assert kwargs["temperature"] == 0.6
-
-    @pytest.mark.parametrize(
-        "model,expected",
-        [
-            ("kimi-k2.5", 0.6),
-            ("kimi-k2-turbo-preview", 0.6),
-            ("kimi-k2-0905-preview", 0.6),
-            ("kimi-k2-thinking", 1.0),
-            ("kimi-k2-thinking-turbo", 1.0),
-            ("moonshotai/kimi-k2.5", 0.6),
-            ("moonshotai/Kimi-K2-Thinking", 1.0),
-        ],
-    )
-    def test_kimi_k2_family_temperature_override(self, model, expected):
-        """Moonshot kimi-k2.* models only accept fixed temperatures.
-
-        Non-thinking models → 0.6, thinking-mode models → 1.0.
-        """
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="kimi-coding",
-            model=model,
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=0.3,
-        )
-
-        assert kwargs["temperature"] == expected
+        assert "temperature" not in kwargs
 
     @pytest.mark.parametrize(
         "model",
         [
             "anthropic/claude-sonnet-4-6",
             "gpt-5.4",
-            # kimi-k2-instruct is the non-coding K2 family — temperature is
-            # variable (recommended 0.6 but not enforced).  Must not clamp.
-            "kimi-k2-instruct",
-            "moonshotai/Kimi-K2-Instruct",
-            "moonshotai/Kimi-K2-Instruct-0905",
-            "kimi-k2-instruct-0905",
-            # Hypothetical future kimi name not in the whitelist.
-            "kimi-k2-experimental",
+            "deepseek-chat",
         ],
     )
-    def test_non_restricted_model_preserves_temperature(self, model):
+    def test_non_kimi_models_preserve_temperature(self, model):
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -831,6 +942,28 @@ class TestKimiForCodingTemperature:
         )
 
         assert kwargs["temperature"] == 0.3
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.moonshot.ai/v1",
+            "https://api.moonshot.cn/v1",
+            "https://api.kimi.com/coding/v1",
+        ],
+    )
+    def test_kimi_k2_5_omits_temperature_regardless_of_endpoint(self, base_url):
+        """Temperature is omitted regardless of which Kimi endpoint is used."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.1,
+            base_url=base_url,
+        )
+
+        assert "temperature" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +990,70 @@ class TestStaleBaseUrlWarning:
         assert any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Expected a warning about stale OPENAI_BASE_URL"
         assert mod._stale_base_url_warned is True
+
+
+class TestAuxiliaryTaskExtraBody:
+    def test_sync_call_merges_task_extra_body_from_config(self):
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        config = {
+            "auxiliary": {
+                "session_search": {
+                    "extra_body": {
+                        "enable_thinking": False,
+                        "reasoning": {"effort": "none"},
+                    }
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                extra_body={"metadata": {"source": "test"}},
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["enable_thinking"] is False
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "none"}
+        assert kwargs["extra_body"]["metadata"] == {"source": "test"}
+
+    @pytest.mark.asyncio
+    async def test_async_call_explicit_extra_body_overrides_task_config(self):
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
+
+        config = {
+            "auxiliary": {
+                "session_search": {
+                    "extra_body": {"enable_thinking": False}
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                extra_body={"enable_thinking": True},
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["enable_thinking"] is True
 
     def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
         """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""

@@ -76,8 +76,6 @@ from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
 
-from hermes_constants import OPENROUTER_BASE_URL
-
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
@@ -98,19 +96,11 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
-    _chat_content_to_responses_parts,
-    _chat_messages_to_responses_input as _codex_chat_messages_to_responses_input,
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
-    _extract_responses_message_text as _codex_extract_responses_message_text,
-    _extract_responses_reasoning_text as _codex_extract_responses_reasoning_text,
-    _normalize_codex_response as _codex_normalize_codex_response,
-    _preflight_codex_api_kwargs as _codex_preflight_codex_api_kwargs,
-    _preflight_codex_input_items as _codex_preflight_codex_input_items,
-    _responses_tools as _codex_responses_tools,
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
 )
@@ -385,9 +375,8 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
-# _chat_content_to_responses_parts and _summarize_user_message_for_log are
-# imported from agent.codex_responses_adapter (see import block above).
-# They remain importable from run_agent for backward compatibility.
+# _summarize_user_message_for_log is imported from agent.codex_responses_adapter
+# (see import block above). Remains importable from run_agent for backward compat.
 
 
 def _sanitize_structure_surrogates(payload: Any) -> bool:
@@ -881,6 +870,13 @@ class AIAgent:
             self.api_mode = "bedrock_converse"
         else:
             self.api_mode = "chat_completions"
+
+        # Eagerly warm the transport cache so import errors surface at init,
+        # not mid-conversation.  Also validates the api_mode is registered.
+        try:
+            self._get_transport()
+        except Exception:
+            pass  # Non-fatal — transport may not exist for all modes yet
 
         try:
             from hermes_cli.model_normalize import (
@@ -1923,6 +1919,9 @@ class AIAgent:
         self.provider = new_provider
         self.base_url = base_url or self.base_url
         self.api_mode = api_mode
+        # Invalidate transport cache — new api_mode may need a different transport
+        if hasattr(self, "_transport_cache"):
+            self._transport_cache.clear()
         if api_key:
             self.api_key = api_key
 
@@ -4892,7 +4891,7 @@ class AIAgent:
         active_client = client or self._ensure_primary_openai_client(reason="codex_create_stream_fallback")
         fallback_kwargs = dict(api_kwargs)
         fallback_kwargs["stream"] = True
-        fallback_kwargs = self._get_codex_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
+        fallback_kwargs = self._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
         stream_or_response = active_client.responses.create(**fallback_kwargs)
 
         # Compatibility shim for mocks or providers that still return a concrete response.
@@ -5247,6 +5246,9 @@ class AIAgent:
                     result["response"] = self._anthropic_messages_create(api_kwargs)
                 elif self.api_mode == "bedrock_converse":
                     # Bedrock uses boto3 directly — no OpenAI client needed.
+                    # normalize_converse_response produces an OpenAI-compatible
+                    # SimpleNamespace so the rest of the agent loop can treat
+                    # bedrock responses like chat_completions responses.
                     from agent.bedrock_adapter import (
                         _get_bedrock_runtime_client,
                         normalize_converse_response,
@@ -6361,6 +6363,8 @@ class AIAgent:
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
             self._fallback_activated = True
 
             # Honor per-provider / per-model request_timeout_seconds for the
@@ -6472,6 +6476,8 @@ class AIAgent:
             self.provider = rt["provider"]
             self.base_url = rt["base_url"]           # setter updates _base_url_lower
             self.api_mode = rt["api_mode"]
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
             self.api_key = rt["api_key"]
             self._client_kwargs = dict(rt["client_kwargs"])
             self._use_prompt_caching = rt["use_prompt_caching"]
@@ -6578,6 +6584,8 @@ class AIAgent:
             self.provider = rt["provider"]
             self.base_url = rt["base_url"]
             self.api_mode = rt["api_mode"]
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
             self.api_key = rt["api_key"]
 
             if self.api_mode == "anthropic_messages":
@@ -6736,41 +6744,59 @@ class AIAgent:
             return suffix
         return "[A multimodal message was converted to text for Anthropic compatibility.]"
 
-    def _get_anthropic_transport(self):
-        """Return the cached AnthropicTransport instance (lazy singleton)."""
-        t = getattr(self, "_anthropic_transport", None)
+    def _get_transport(self, api_mode: str = None):
+        """Return the cached transport for the given (or current) api_mode.
+
+        Lazy-initializes on first call per api_mode. Returns None if no
+        transport is registered for the mode.
+        """
+        mode = api_mode or self.api_mode
+        cache = getattr(self, "_transport_cache", None)
+        if cache is None:
+            cache = {}
+            self._transport_cache = cache
+        t = cache.get(mode)
         if t is None:
             from agent.transports import get_transport
-            t = get_transport("anthropic_messages")
-            self._anthropic_transport = t
+            t = get_transport(mode)
+            cache[mode] = t
         return t
 
-    def _get_codex_transport(self):
-        """Return the cached ResponsesApiTransport instance (lazy singleton)."""
-        t = getattr(self, "_codex_transport", None)
-        if t is None:
-            from agent.transports import get_transport
-            t = get_transport("codex_responses")
-            self._codex_transport = t
-        return t
+    @staticmethod
+    def _nr_to_assistant_message(nr):
+        """Convert a NormalizedResponse to the SimpleNamespace shape downstream expects.
 
-    def _get_chat_completions_transport(self):
-        """Return the cached ChatCompletionsTransport instance (lazy singleton)."""
-        t = getattr(self, "_chat_completions_transport", None)
-        if t is None:
-            from agent.transports import get_transport
-            t = get_transport("chat_completions")
-            self._chat_completions_transport = t
-        return t
+        This is the single back-compat shim between the transport layer
+        (NormalizedResponse) and the agent loop (SimpleNamespace with
+        .content, .tool_calls, .reasoning, .reasoning_content,
+        .reasoning_details, .codex_reasoning_items, and per-tool-call
+        .call_id / .response_item_id).
 
-    def _get_bedrock_transport(self):
-        """Return the cached BedrockTransport instance (lazy singleton)."""
-        t = getattr(self, "_bedrock_transport", None)
-        if t is None:
-            from agent.transports import get_transport
-            t = get_transport("bedrock_converse")
-            self._bedrock_transport = t
-        return t
+        TODO: Remove when downstream code reads NormalizedResponse directly.
+        """
+        tc_list = None
+        if nr.tool_calls:
+            tc_list = []
+            for tc in nr.tool_calls:
+                tc_ns = SimpleNamespace(
+                    id=tc.id,
+                    type="function",
+                    function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
+                )
+                if tc.provider_data:
+                    for key in ("call_id", "response_item_id"):
+                        if tc.provider_data.get(key):
+                            setattr(tc_ns, key, tc.provider_data[key])
+                tc_list.append(tc_ns)
+        pd = nr.provider_data or {}
+        return SimpleNamespace(
+            content=nr.content,
+            tool_calls=tc_list or None,
+            reasoning=nr.reasoning,
+            reasoning_content=pd.get("reasoning_content"),
+            reasoning_details=pd.get("reasoning_details"),
+            codex_reasoning_items=pd.get("codex_reasoning_items"),
+        )
 
     def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
         if not any(
@@ -6888,7 +6914,7 @@ class AIAgent:
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
-            _transport = self._get_anthropic_transport()
+            _transport = self._get_transport()
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
             ctx_len = getattr(self, "context_compressor", None)
             ctx_len = ctx_len.context_length if ctx_len else None
@@ -6911,7 +6937,7 @@ class AIAgent:
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
         # The adapter handles message/tool conversion and boto3 calls directly.
         if self.api_mode == "bedrock_converse":
-            _bt = self._get_bedrock_transport()
+            _bt = self._get_transport()
             region = getattr(self, "_bedrock_region", None) or "us-east-1"
             guardrail = getattr(self, "_bedrock_guardrail_config", None)
             return _bt.build_kwargs(
@@ -6924,7 +6950,7 @@ class AIAgent:
             )
 
         if self.api_mode == "codex_responses":
-            _ct = self._get_codex_transport()
+            _ct = self._get_transport()
             is_github_responses = (
                 base_url_host_matches(self.base_url, "models.github.ai")
                 or base_url_host_matches(self.base_url, "api.githubcopilot.com")
@@ -6952,7 +6978,7 @@ class AIAgent:
             )
 
         # ── chat_completions (default) ─────────────────────────────────────
-        _ct = self._get_chat_completions_transport()
+        _ct = self._get_transport()
 
         # Provider detection flags
         _is_qwen = self._is_qwen_portal()
@@ -7427,7 +7453,7 @@ class AIAgent:
             if not _aux_available and self.api_mode == "codex_responses":
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
-                codex_kwargs["tools"] = self._get_codex_transport().convert_tools([memory_tool_def])
+                codex_kwargs["tools"] = self._get_transport().convert_tools([memory_tool_def])
                 if _flush_temperature is not None:
                     codex_kwargs["temperature"] = _flush_temperature
                 else:
@@ -7437,7 +7463,7 @@ class AIAgent:
                 response = self._run_codex_stream(codex_kwargs)
             elif not _aux_available and self.api_mode == "anthropic_messages":
                 # Native Anthropic — use the transport for kwargs
-                _tflush = self._get_anthropic_transport()
+                _tflush = self._get_transport()
                 ant_kwargs = _tflush.build_kwargs(
                     model=self.model, messages=api_messages,
                     tools=[memory_tool_def], max_tokens=5120,
@@ -7462,7 +7488,7 @@ class AIAgent:
             # Extract tool calls from the response, handling all API formats
             tool_calls = []
             if self.api_mode == "codex_responses" and not _aux_available:
-                _ct_flush = self._get_codex_transport()
+                _ct_flush = self._get_transport()
                 _cnr_flush = _ct_flush.normalize_response(response)
                 if _cnr_flush and _cnr_flush.tool_calls:
                     tool_calls = [
@@ -7472,7 +7498,7 @@ class AIAgent:
                         ) for tc in _cnr_flush.tool_calls
                     ]
             elif self.api_mode == "anthropic_messages" and not _aux_available:
-                _tfn = self._get_anthropic_transport()
+                _tfn = self._get_transport()
                 _flush_nr = _tfn.normalize_response(response, strip_tool_prefix=self._is_anthropic_oauth)
                 if _flush_nr and _flush_nr.tool_calls:
                     tool_calls = [
@@ -7482,9 +7508,11 @@ class AIAgent:
                         ) for tc in _flush_nr.tool_calls
                     ]
             elif hasattr(response, "choices") and response.choices:
-                assistant_message = response.choices[0].message
-                if assistant_message.tool_calls:
-                    tool_calls = assistant_message.tool_calls
+                # chat_completions / bedrock — normalize through transport
+                _flush_cc_nr = self._get_transport().normalize_response(response)
+                _flush_msg = self._nr_to_assistant_message(_flush_cc_nr)
+                if _flush_msg.tool_calls:
+                    tool_calls = _flush_msg.tool_calls
 
             for tc in tool_calls:
                 if tc.function.name == "memory":
@@ -8514,7 +8542,7 @@ class AIAgent:
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
                 summary_response = self._run_codex_stream(codex_kwargs)
-                _ct_sum = self._get_codex_transport()
+                _ct_sum = self._get_transport()
                 _cnr_sum = _ct_sum.normalize_response(summary_response)
                 final_response = (_cnr_sum.content or "").strip()
             else:
@@ -8544,7 +8572,7 @@ class AIAgent:
                     summary_kwargs["extra_body"] = summary_extra_body
 
                 if self.api_mode == "anthropic_messages":
-                    _tsum = self._get_anthropic_transport()
+                    _tsum = self._get_transport()
                     _ant_kw = _tsum.build_kwargs(model=self.model, messages=api_messages, tools=None,
                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                    is_oauth=self._is_anthropic_oauth,
@@ -8554,11 +8582,8 @@ class AIAgent:
                     final_response = (_sum_nr.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
-
-                    if summary_response.choices and summary_response.choices[0].message.content:
-                        final_response = summary_response.choices[0].message.content
-                    else:
-                        final_response = ""
+                    _sum_cc_nr = self._get_transport().normalize_response(summary_response)
+                    final_response = (_sum_cc_nr.content or "").strip()
 
             if final_response:
                 if "<think>" in final_response:
@@ -8573,11 +8598,11 @@ class AIAgent:
                     codex_kwargs = self._build_api_kwargs(api_messages)
                     codex_kwargs.pop("tools", None)
                     retry_response = self._run_codex_stream(codex_kwargs)
-                    _ct_retry = self._get_codex_transport()
+                    _ct_retry = self._get_transport()
                     _cnr_retry = _ct_retry.normalize_response(retry_response)
                     final_response = (_cnr_retry.content or "").strip()
                 elif self.api_mode == "anthropic_messages":
-                    _tretry = self._get_anthropic_transport()
+                    _tretry = self._get_transport()
                     _ant_kw2 = _tretry.build_kwargs(model=self.model, messages=api_messages, tools=None,
                                     is_oauth=self._is_anthropic_oauth,
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
@@ -8598,11 +8623,8 @@ class AIAgent:
                         summary_kwargs["extra_body"] = summary_extra_body
 
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
-
-                    if summary_response.choices and summary_response.choices[0].message.content:
-                        final_response = summary_response.choices[0].message.content
-                    else:
-                        final_response = ""
+                    _retry_cc_nr = self._get_transport().normalize_response(summary_response)
+                    final_response = (_retry_cc_nr.content or "").strip()
 
                 if final_response:
                     if "<think>" in final_response:
@@ -9333,7 +9355,7 @@ class AIAgent:
                     if self._force_ascii_payload:
                         _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
-                        api_kwargs = self._get_codex_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+                        api_kwargs = self._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -9421,7 +9443,7 @@ class AIAgent:
                     response_invalid = False
                     error_details = []
                     if self.api_mode == "codex_responses":
-                        _ct_v = self._get_codex_transport()
+                        _ct_v = self._get_transport()
                         if not _ct_v.validate_response(response):
                             if response is None:
                                 response_invalid = True
@@ -9450,7 +9472,7 @@ class AIAgent:
                                     response_invalid = True
                                     error_details.append("response.output is empty")
                     elif self.api_mode == "anthropic_messages":
-                        _tv = self._get_anthropic_transport()
+                        _tv = self._get_transport()
                         if not _tv.validate_response(response):
                             response_invalid = True
                             if response is None:
@@ -9458,7 +9480,7 @@ class AIAgent:
                             else:
                                 error_details.append("response.content invalid (not a non-empty list)")
                     elif self.api_mode == "bedrock_converse":
-                        _btv = self._get_bedrock_transport()
+                        _btv = self._get_transport()
                         if not _btv.validate_response(response):
                             response_invalid = True
                             if response is None:
@@ -9466,7 +9488,7 @@ class AIAgent:
                             else:
                                 error_details.append("Bedrock response invalid (no output or choices)")
                     else:
-                        _ctv = self._get_chat_completions_transport()
+                        _ctv = self._get_transport()
                         if not _ctv.validate_response(response):
                             response_invalid = True
                             if response is None:
@@ -9626,15 +9648,18 @@ class AIAgent:
                         else:
                             finish_reason = "stop"
                     elif self.api_mode == "anthropic_messages":
-                        _tfr = self._get_anthropic_transport()
+                        _tfr = self._get_transport()
                         finish_reason = _tfr.map_finish_reason(response.stop_reason)
                     elif self.api_mode == "bedrock_converse":
-                        # Bedrock response is already normalized at dispatch — finish_reason
-                        # is already in OpenAI format via normalize_converse_response()
-                        finish_reason = response.choices[0].finish_reason if hasattr(response, "choices") and response.choices else "stop"
+                        # Bedrock response already normalized at dispatch — use transport
+                        _bt_fr = self._get_transport()
+                        _bt_fr_nr = _bt_fr.normalize_response(response)
+                        finish_reason = _bt_fr_nr.finish_reason
                     else:
-                        finish_reason = response.choices[0].finish_reason
-                        assistant_message = response.choices[0].message
+                        _cc_fr = self._get_transport()
+                        _cc_fr_nr = _cc_fr.normalize_response(response)
+                        finish_reason = _cc_fr_nr.finish_reason
+                        assistant_message = self._nr_to_assistant_message(_cc_fr_nr)
                         if self._should_treat_stop_as_truncated(
                             finish_reason,
                             assistant_message,
@@ -9657,27 +9682,14 @@ class AIAgent:
                         # interim assistant message is byte-identical to what
                         # would have been appended in the non-truncated path.
                         _trunc_msg = None
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
-                            _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
-                        elif self.api_mode == "anthropic_messages":
-                            _trunc_nr = self._get_anthropic_transport().normalize_response(
+                        _trunc_transport = self._get_transport()
+                        if self.api_mode == "anthropic_messages":
+                            _trunc_nr = _trunc_transport.normalize_response(
                                 response, strip_tool_prefix=self._is_anthropic_oauth
                             )
-                            _trunc_msg = SimpleNamespace(
-                                content=_trunc_nr.content,
-                                tool_calls=[
-                                    SimpleNamespace(
-                                        id=tc.id, type="function",
-                                        function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                                    ) for tc in (_trunc_nr.tool_calls or [])
-                                ] or None,
-                                reasoning=_trunc_nr.reasoning,
-                                reasoning_content=None,
-                                reasoning_details=(
-                                    _trunc_nr.provider_data.get("reasoning_details")
-                                    if _trunc_nr.provider_data else None
-                                ),
-                            )
+                        else:
+                            _trunc_nr = _trunc_transport.normalize_response(response)
+                        _trunc_msg = self._nr_to_assistant_message(_trunc_nr)
 
                         _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                         _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
@@ -10908,69 +10920,13 @@ class AIAgent:
                 break
 
             try:
-                if self.api_mode == "codex_responses":
-                    _ct = self._get_codex_transport()
-                    _cnr = _ct.normalize_response(response)
-                    # Back-compat shim: downstream expects SimpleNamespace with
-                    # codex-specific fields (.codex_reasoning_items, .reasoning_details,
-                    # and .call_id/.response_item_id on tool calls).
-                    _tc_list = None
-                    if _cnr.tool_calls:
-                        _tc_list = []
-                        for tc in _cnr.tool_calls:
-                            _tc_ns = SimpleNamespace(
-                                id=tc.id, type="function",
-                                function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                            )
-                            if tc.provider_data:
-                                if tc.provider_data.get("call_id"):
-                                    _tc_ns.call_id = tc.provider_data["call_id"]
-                                if tc.provider_data.get("response_item_id"):
-                                    _tc_ns.response_item_id = tc.provider_data["response_item_id"]
-                            _tc_list.append(_tc_ns)
-                    assistant_message = SimpleNamespace(
-                        content=_cnr.content,
-                        tool_calls=_tc_list or None,
-                        reasoning=_cnr.reasoning,
-                        reasoning_content=None,
-                        codex_reasoning_items=(
-                            _cnr.provider_data.get("codex_reasoning_items")
-                            if _cnr.provider_data else None
-                        ),
-                        reasoning_details=(
-                            _cnr.provider_data.get("reasoning_details")
-                            if _cnr.provider_data else None
-                        ),
-                    )
-                    finish_reason = _cnr.finish_reason
-                elif self.api_mode == "anthropic_messages":
-                    _transport = self._get_anthropic_transport()
-                    _nr = _transport.normalize_response(
-                        response, strip_tool_prefix=self._is_anthropic_oauth
-                    )
-                    # Back-compat shim: downstream code expects SimpleNamespace with
-                    # .content, .tool_calls, .reasoning, .reasoning_content,
-                    # .reasoning_details attributes.
-                    assistant_message = SimpleNamespace(
-                        content=_nr.content,
-                        tool_calls=[
-                            SimpleNamespace(
-                                id=tc.id,
-                                type="function",
-                                function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                            )
-                            for tc in (_nr.tool_calls or [])
-                        ] or None,
-                        reasoning=_nr.reasoning,
-                        reasoning_content=None,
-                        reasoning_details=(
-                            _nr.provider_data.get("reasoning_details")
-                            if _nr.provider_data else None
-                        ),
-                    )
-                    finish_reason = _nr.finish_reason
-                else:
-                    assistant_message = response.choices[0].message
+                _transport = self._get_transport()
+                _normalize_kwargs = {}
+                if self.api_mode == "anthropic_messages":
+                    _normalize_kwargs["strip_tool_prefix"] = self._is_anthropic_oauth
+                _nr = _transport.normalize_response(response, **_normalize_kwargs)
+                assistant_message = self._nr_to_assistant_message(_nr)
+                finish_reason = _nr.finish_reason
                 
                 # Normalize content to string — some OpenAI-compatible servers
                 # (llama-server, etc.) return content as a dict or list instead

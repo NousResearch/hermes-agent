@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+from __future__ import annotations
+
 AI Agent Runner with Tool Calling
 
 This module provides a clean, standalone agent that can execute AI models

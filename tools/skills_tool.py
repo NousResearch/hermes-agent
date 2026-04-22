@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+from __future__ import annotations
+
 Skills Tool Module
 
 This module provides tools for listing and viewing skill documents.

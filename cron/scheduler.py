@@ -1,4 +1,6 @@
 """
+from __future__ import annotations
+
 Cron job scheduler - executes due jobs.
 
 Provides tick() which checks for due jobs and runs them. The gateway

@@ -1,5 +1,7 @@
 """Send Message Tool -- cross-channel messaging via platform APIs.
 
+from __future__ import annotations
+
 Sends a message to a user or channel on any connected messaging platform
 (Telegram, Discord, Slack). Supports listing available targets and resolving
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.

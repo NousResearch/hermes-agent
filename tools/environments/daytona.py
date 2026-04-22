@@ -1,5 +1,7 @@
 """Daytona cloud execution environment.
 
+from __future__ import annotations
+
 Uses the Daytona Python SDK to run commands in cloud sandboxes.
 Supports persistent sandboxes: when enabled, sandboxes are stopped on cleanup
 and resumed on next creation, preserving the filesystem across sessions.

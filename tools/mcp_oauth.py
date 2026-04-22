@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+from __future__ import annotations
+
 MCP OAuth 2.1 Client Support
 
 Implements the browser-based OAuth 2.1 authorization code flow with PKCE

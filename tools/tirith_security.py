@@ -1,5 +1,7 @@
 """Tirith pre-exec security scanning wrapper.
 
+from __future__ import annotations
+
 Runs the tirith binary as a subprocess to scan commands for content-level
 threats (homograph URLs, pipe-to-interpreter, terminal injection, etc.).
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+from __future__ import annotations
+
 Image Generation Tools Module
 
 Provides image generation via FAL.ai. Multiple FAL models are supported and

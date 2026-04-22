@@ -1,5 +1,7 @@
 """Model metadata, context lengths, and token estimation utilities.
 
+from __future__ import annotations
+
 Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """

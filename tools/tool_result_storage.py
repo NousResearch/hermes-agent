@@ -1,5 +1,7 @@
 """Tool result persistence -- preserves large outputs instead of truncating.
 
+from __future__ import annotations
+
 Defense against context-window overflow operates at three levels:
 
 1. **Per-tool output cap** (inside each tool): Tools like search_files

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Polymarket CLI helper — query prediction market data.
 
+from __future__ import annotations
+
 Usage:
     python3 polymarket.py search "bitcoin"
     python3 polymarket.py trending [--limit 10]

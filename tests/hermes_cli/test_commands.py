@@ -1,5 +1,7 @@
 """Tests for the central command registry and autocomplete."""
 
+from __future__ import annotations
+
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 

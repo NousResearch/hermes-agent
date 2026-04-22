@@ -1,5 +1,7 @@
 """Configurable budget constants for tool result persistence.
 
+from __future__ import annotations
+
 Overridable at the RL environment level via HermesAgentEnvConfig fields.
 Per-tool resolution: pinned > config overrides > registry > default.
 """

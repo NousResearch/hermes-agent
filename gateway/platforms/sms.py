@@ -1,5 +1,7 @@
 """SMS (Twilio) platform adapter.
 
+from __future__ import annotations
+
 Connects to the Twilio REST API for outbound SMS and runs an aiohttp
 webhook server to receive inbound messages.
 

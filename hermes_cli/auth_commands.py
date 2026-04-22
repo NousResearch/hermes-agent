@@ -307,7 +307,12 @@ def auth_remove_command(args) -> None:
     # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
     # clear the underlying auth store / credential file so it doesn't get
     # re-seeded on the next load_pool() call.
-    elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
+    # Normalise "manual:<source>" aliases — manually added OAuth creds use a
+    # "manual:" prefix to distinguish them from auto-seeded ones, but the
+    # underlying singleton key is the same.
+    _source_key = removed.source.removeprefix("manual:") if removed.source.startswith("manual:") else removed.source
+
+    if _source_key == "device_code" and provider in ("openai-codex", "nous"):
         from hermes_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
         )
@@ -319,14 +324,14 @@ def auth_remove_command(args) -> None:
                 _save_auth_store(auth_store)
                 print(f"Cleared {provider} OAuth tokens from auth store")
 
-    elif removed.source == "hermes_pkce" and provider == "anthropic":
+    elif _source_key == "hermes_pkce" and provider == "anthropic":
         from hermes_constants import get_hermes_home
         oauth_file = get_hermes_home() / ".anthropic_oauth.json"
         if oauth_file.exists():
             oauth_file.unlink()
             print("Cleared Hermes Anthropic OAuth credentials")
 
-    elif removed.source == "claude_code" and provider == "anthropic":
+    elif _source_key == "claude_code" and provider == "anthropic":
         print("Note: Claude Code credentials live in ~/.claude/.credentials.json")
         print("      Remove them manually if you want to deauthorize Claude Code.")
 

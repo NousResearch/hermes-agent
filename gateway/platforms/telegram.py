@@ -8,10 +8,12 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import collections
 import json
 import logging
 import os
 import re
+import time
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -155,6 +157,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Inbound reaction routing: LRU cache of bot-sent message_id → (event, timestamp)
+        # Used to correlate incoming reaction updates with the originating conversation.
+        # Bounded to _REACTION_CACHE_SIZE entries; entries expire after _REACTION_TTL_S.
+        self._reaction_cache: collections.OrderedDict = collections.OrderedDict()
+        self._reaction_cache_lock = asyncio.Lock()
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -553,6 +560,12 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Inbound emoji reaction routing (opt-in via TELEGRAM_INBOUND_REACTIONS=true)
+            try:
+                from telegram.ext import MessageReactionHandler
+                self._app.add_handler(MessageReactionHandler(self._handle_message_reaction))
+            except ImportError:
+                logger.debug("[%s] MessageReactionHandler not available in this python-telegram-bot version", self.name)
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -883,11 +896,22 @@ class TelegramAdapter(BasePlatformAdapter):
                         raise
                 message_ids.append(str(msg.message_id))
             
-            return SendResult(
+            result = SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
+            # Cache last sent message so inbound reactions can be correlated.
+            if message_ids and self._inbound_reactions_enabled() and metadata:
+                _src_event = metadata.get("_source_event")
+                if _src_event is not None:
+                    try:
+                        asyncio.ensure_future(
+                            self._cache_bot_message(int(message_ids[-1]), _src_event)
+                        )
+                    except Exception:
+                        pass
+            return result
             
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
@@ -2716,3 +2740,103 @@ class TelegramAdapter(BasePlatformAdapter):
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
             await self._set_reaction(chat_id, message_id, "\u2705" if success else "\u274c")
+
+    # ── Inbound reaction routing ──────────────────────────────────────────────
+
+    # Emoji reactions that are routed as synthetic confirmation signals.
+    _INBOUND_REACTION_ALLOW = frozenset({"\U0001f44d", "\u2705", "\U0001f44e", "\u274c"})
+    # Max cached bot-sent messages and TTL seconds for cache entries.
+    _REACTION_CACHE_SIZE = 500
+    _REACTION_CACHE_TTL = 3600.0
+
+    def _inbound_reactions_enabled(self) -> bool:
+        return os.getenv("TELEGRAM_INBOUND_REACTIONS", "false").lower() not in ("false", "0", "no")
+
+    async def _cache_bot_message(self, message_id: int, source_event: MessageEvent) -> None:
+        """Record a bot-sent message so inbound reactions can reference its context."""
+        if not self._inbound_reactions_enabled():
+            return
+        now = time.monotonic()
+        async with self._reaction_cache_lock:
+            self._reaction_cache[message_id] = (source_event, now)
+            self._reaction_cache.move_to_end(message_id)
+            # Evict stale entries from the front (oldest first).
+            cutoff = now - self._REACTION_CACHE_TTL
+            while self._reaction_cache:
+                oldest_id, (_, oldest_ts) = next(iter(self._reaction_cache.items()))
+                if oldest_ts < cutoff or len(self._reaction_cache) > self._REACTION_CACHE_SIZE:
+                    self._reaction_cache.popitem(last=False)
+                else:
+                    break
+
+    async def _handle_message_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Route an inbound emoji reaction as a synthetic MessageEvent.
+
+        Only fires when TELEGRAM_INBOUND_REACTIONS=true.  Allowlisted emoji
+        (👍 ✅ 👎 ❌) are emitted as [reaction: <emoji>] text events so the
+        agent can treat them as lightweight confirmation signals.
+
+        Bot's own reactions are ignored to prevent feedback loops.
+        """
+        if not self._inbound_reactions_enabled():
+            return
+
+        reaction_update = getattr(update, "message_reaction", None)
+        if reaction_update is None:
+            return
+
+        # Ignore reactions added by the bot itself.
+        actor = getattr(reaction_update, "actor_chat", None) or getattr(reaction_update, "user", None)
+        if actor and self._bot:
+            actor_id = getattr(actor, "id", None)
+            try:
+                bot_id = self._bot.id
+            except Exception:
+                bot_id = None
+            if bot_id and actor_id == bot_id:
+                return
+
+        new_reactions = getattr(reaction_update, "new_reaction", []) or []
+        emoji_set = set()
+        for r in new_reactions:
+            emoji = getattr(r, "emoji", None)
+            if emoji and emoji in self._INBOUND_REACTION_ALLOW:
+                emoji_set.add(emoji)
+
+        if not emoji_set:
+            return
+
+        msg_id = getattr(reaction_update, "message_id", None)
+        if msg_id is None:
+            return
+
+        # Find the originating event for this message.
+        async with self._reaction_cache_lock:
+            cached = self._reaction_cache.get(msg_id)
+
+        origin_event: Optional[MessageEvent] = cached[0] if cached else None
+
+        for emoji in sorted(emoji_set):
+            if origin_event is not None:
+                source = origin_event.source
+            else:
+                # Best-effort: build a minimal source from the reaction update.
+                chat = getattr(reaction_update, "chat", None)
+                chat_id = str(chat.id) if chat else "unknown"
+                user_id = str(getattr(actor, "id", "unknown")) if actor else None
+                user_name = getattr(actor, "full_name", None) if actor else None
+                source = self.build_source(
+                    chat_id=chat_id,
+                    chat_type="dm",
+                    user_id=user_id,
+                    user_name=user_name,
+                )
+
+            event = MessageEvent(
+                text=f"[reaction: {emoji}]",
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=reaction_update,
+                message_id=str(msg_id),
+            )
+            await self.handle_message(event)

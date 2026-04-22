@@ -144,11 +144,21 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "kimi-coding": ProviderConfig(
         id="kimi-coding",
-        name="Kimi / Moonshot",
+        name="Kimi Code (api.kimi.com — needs sk-kimi-* key)",
         auth_type="api_key",
         inference_base_url="https://api.moonshot.ai/v1",
         api_key_env_vars=("KIMI_API_KEY",),
         base_url_env_var="KIMI_BASE_URL",
+    ),
+    # Moonshot AI Global (platform.moonshot.ai) — distinct from kimi-coding.
+    # Keys from platform.moonshot.ai use api.moonshot.ai/v1, not api.kimi.com.
+    "moonshotai": ProviderConfig(
+        id="moonshotai",
+        name="Moonshot AI (platform.moonshot.ai)",
+        auth_type="api_key",
+        inference_base_url="https://api.moonshot.ai/v1",
+        api_key_env_vars=("MOONSHOT_API_KEY", "KIMI_API_KEY"),
+        base_url_env_var="MOONSHOT_BASE_URL",
     ),
     "minimax": ProviderConfig(
         id="minimax",

@@ -5528,6 +5528,9 @@ Examples:
     )
     logs_parser.set_defaults(func=cmd_logs)
 
+    from hermes_cli.debug import register_debug_parser
+    register_debug_parser(subparsers)
+
     # =========================================================================
     # Parse and execute
     # =========================================================================

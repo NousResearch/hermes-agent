@@ -997,13 +997,25 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+# Set when a dangerous-command approval prompt is active.  Background threads
+# that produce streaming output must wait for this event to be set before
+# printing, so they don't flood the terminal and make the prompt unresponsive.
+_approval_output_gate = threading.Event()
+_approval_output_gate.set()  # cleared while prompt is shown, set when done
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
     Raw ANSI escapes written via print() are swallowed by patch_stdout's
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
+
+    When a dangerous-command approval prompt is active the gate is cleared,
+    blocking background output until the user responds so the prompt stays
+    readable.
     """
+    _approval_output_gate.wait(timeout=120)
     _pt_print(_PT_ANSI(text))
 
 
@@ -6265,24 +6277,31 @@ class HermesCLI:
             }
             self._approval_deadline = _time.monotonic() + timeout
 
+            # Block background output so streaming model tokens / command logs
+            # don't flood over the prompt and make it unresponsive.
+            _approval_output_gate.clear()
             self._invalidate()
 
             _last_countdown_refresh = _time.monotonic()
-            while True:
-                try:
-                    result = response_queue.get(timeout=1)
-                    self._approval_state = None
-                    self._approval_deadline = 0
-                    self._invalidate()
-                    return result
-                except queue.Empty:
-                    remaining = self._approval_deadline - _time.monotonic()
-                    if remaining <= 0:
-                        break
-                    now = _time.monotonic()
-                    if now - _last_countdown_refresh >= 5.0:
-                        _last_countdown_refresh = now
+            try:
+                while True:
+                    try:
+                        result = response_queue.get(timeout=1)
+                        self._approval_state = None
+                        self._approval_deadline = 0
                         self._invalidate()
+                        return result
+                    except queue.Empty:
+                        remaining = self._approval_deadline - _time.monotonic()
+                        if remaining <= 0:
+                            break
+                        now = _time.monotonic()
+                        if now - _last_countdown_refresh >= 5.0:
+                            _last_countdown_refresh = now
+                            self._invalidate()
+            finally:
+                # Always re-open the gate so background threads unblock.
+                _approval_output_gate.set()
 
             self._approval_state = None
             self._approval_deadline = 0

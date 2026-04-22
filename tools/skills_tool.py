@@ -87,6 +87,30 @@ logger = logging.getLogger(__name__)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
+
+def get_agent_skills_dir() -> Path:
+    """Return the directory where the agent should write self-created skills.
+
+    Reads ``skills.agent_dir`` from config.yaml.  Falls back to SKILLS_DIR so
+    the default behaviour is unchanged when the option is not set.
+
+    Example config.yaml entry::
+
+        skills:
+          agent_dir: ~/my-agent-skills
+    """
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        cfg = _load_cfg().get("skills", {})
+        raw = cfg.get("agent_dir", "") if isinstance(cfg, dict) else ""
+        if raw:
+            resolved = Path(raw).expanduser().resolve()
+            resolved.mkdir(parents=True, exist_ok=True)
+            return resolved
+    except Exception:
+        pass
+    return SKILLS_DIR
+
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024

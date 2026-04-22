@@ -190,10 +190,16 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """Build the directory path for a new skill, optionally under a category.
+
+    Uses the configured ``skills.agent_dir`` when set so agent-created skills
+    land in a separate directory from bundled ones.
+    """
+    from tools.skills_tool import get_agent_skills_dir
+    target = get_agent_skills_dir()
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return target / category / name
+    return target / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -318,10 +324,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
+    from tools.skills_tool import get_agent_skills_dir
+    _base = get_agent_skills_dir()
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": str(skill_dir.relative_to(_base)),
         "skill_md": str(skill_md),
     }
     if category:

@@ -81,6 +81,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
     ),
+    "moonshotai": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="MOONSHOT_BASE_URL",
+    ),
     "minimax": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="MINIMAX_BASE_URL",
@@ -161,10 +165,11 @@ ALIASES: Dict[str, str] = {
     "z.ai": "zai",
     "zhipu": "zai",
 
-    # kimi-for-coding (models.dev ID)
+    # kimi-for-coding (models.dev ID) — api.kimi.com/coding, needs sk-kimi-* key
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
-    "moonshot": "kimi-for-coding",
+    # moonshot → moonshotai (platform.moonshot.ai); distinct from kimi-for-coding
+    "moonshot": "moonshotai",
 
     # minimax-cn
     "minimax-china": "minimax-cn",
@@ -355,7 +360,8 @@ LABELS: Dict[str, str] = {
     "github-copilot": "GitHub Copilot",
     "anthropic": "Anthropic",
     "zai": "Z.AI / GLM",
-    "kimi-for-coding": "Kimi / Moonshot",
+    "kimi-for-coding": "Kimi Code (api.kimi.com)",
+    "moonshotai": "Moonshot AI (platform.moonshot.ai)",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "deepseek": "DeepSeek",
@@ -371,7 +377,8 @@ LABELS: Dict[str, str] = {
     "ai-gateway": "Vercel AI Gateway",
     "kilocode": "Kilo Gateway",
     "copilot": "GitHub Copilot",
-    "kimi-coding": "Kimi / Moonshot",
+    "kimi-coding": "Kimi Code (api.kimi.com)",
+    "moonshot": "Moonshot AI (platform.moonshot.ai)",
     "opencode-zen": "OpenCode Zen",
 }
 

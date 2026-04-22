@@ -527,8 +527,17 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
 
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
+    """Prompt for yes/no. Ctrl+C exits, empty input returns default.
+
+    In non-interactive sessions (no TTY / piped stdin) the default is
+    returned immediately so --dry-run and inspection-only commands can still
+    print their preview without aborting.
+    """
     default_str = "Y/n" if default else "y/N"
+
+    if not sys.stdin.isatty():
+        print(color(f"{question} [{default_str}]: ", Colors.YELLOW) + ("y" if default else "n"))
+        return default
 
     while True:
         try:

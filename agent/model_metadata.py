@@ -255,6 +255,18 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+def is_ollama_endpoint(base_url: str) -> bool:
+    """Return True only for endpoints that are explicitly Ollama.
+
+    Matches the default Ollama port (11434) or "ollama" in the URL.
+    Unlike is_local_endpoint(), this does NOT match arbitrary local proxies,
+    preventing false positives when a local gateway forwards to a remote API
+    (e.g. a GLM/ZAI proxy at localhost:8000).
+    """
+    normalized = (_normalize_base_url(base_url) or "").lower()
+    return ":11434" in normalized or "ollama" in normalized
+
+
 def detect_local_server_type(base_url: str) -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 

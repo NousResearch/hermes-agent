@@ -73,6 +73,15 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
             "  → `gh auth login` with the default device code flow (produces gho_* tokens)"
         )
 
+    if not any(token.startswith(prefix) for prefix in _SUPPORTED_PREFIXES):
+        supported = ", ".join(f"{p}*" for p in _SUPPORTED_PREFIXES)
+        return False, (
+            f"Unrecognised token type. Supported prefixes: {supported}.\n"
+            "  → `copilot login` or `hermes model` to authenticate via OAuth (gho_*)\n"
+            "  → A fine-grained PAT (github_pat_*) with Copilot Requests permission\n"
+            "  → `gh auth login` with the default device code flow"
+        )
+
     return True, "OK"
 
 

@@ -228,8 +228,19 @@ def get_all_skills_dirs() -> List[Path]:
 
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
+
+    When ``skills.agent_dir`` is configured, that directory is included
+    immediately after the local dir so agent-created skills are discovered.
     """
-    dirs = [get_hermes_home() / "skills"]
+    local = get_hermes_home() / "skills"
+    dirs: List[Path] = [local]
+    try:
+        from tools.skills_tool import get_agent_skills_dir
+        agent_dir = get_agent_skills_dir()
+        if agent_dir.resolve() != local.resolve() and agent_dir not in dirs:
+            dirs.append(agent_dir)
+    except Exception:
+        pass
     dirs.extend(get_external_skills_dirs())
     return dirs
 
@@ -415,13 +426,13 @@ def resolve_skill_config_values(
 
 
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
-    """Extract a truncated description from parsed frontmatter."""
+    """Extract a description from parsed frontmatter, capped at 1024 characters."""
     raw_desc = frontmatter.get("description", "")
     if not raw_desc:
         return ""
     desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
+    if len(desc) > 1024:
+        return desc[:1021] + "..."
     return desc
 
 

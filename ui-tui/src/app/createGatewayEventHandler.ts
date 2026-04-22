@@ -1,11 +1,17 @@
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import type { CommandsCatalogResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
+import type {
+  CommandsCatalogResponse,
+  DelegationStatusResponse,
+  GatewayEvent,
+  GatewaySkin
+} from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress } from '../types.js'
 
+import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
@@ -52,6 +58,54 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
+
+  // Inject the disk-save callback into turnController so recordMessageComplete
+  // can fire-and-forget a persist without having to plumb a gateway ref around.
+  turnController.persistSpawnTree = async (subagents, sessionId) => {
+    try {
+      const startedAt = subagents.reduce<number>((min, s) => {
+        if (!s.startedAt) {
+          return min
+        }
+
+        return min === 0 ? s.startedAt : Math.min(min, s.startedAt)
+      }, 0)
+
+      const top = subagents.filter(s => !s.parentId).slice(0, 2)
+
+      const label = top.length
+        ? top.map(s => s.goal).filter(Boolean).slice(0, 2).join(' · ')
+        : `${subagents.length} subagents`
+
+      await rpc('spawn_tree.save', {
+        finished_at: Date.now() / 1000,
+        label: label.slice(0, 120),
+        session_id: sessionId ?? 'default',
+        started_at: startedAt ? startedAt / 1000 : null,
+        subagents
+      })
+    } catch {
+      // Persistence is best-effort; in-memory history is the authoritative
+      // same-session source.  A write failure doesn't block the turn.
+    }
+  }
+
+  // Refresh delegation caps at most every 5s so the status bar HUD can
+  // render a /warning close to the configured cap without spamming the RPC.
+  let lastDelegationFetchAt = 0
+
+  const refreshDelegationStatus = (force = false) => {
+    const now = Date.now()
+
+    if (!force && now - lastDelegationFetchAt < 5000) {
+      return
+    }
+
+    lastDelegationFetchAt = now
+    rpc<DelegationStatusResponse>('delegation.status', {})
+      .then(r => applyDelegationStatus(r))
+      .catch(() => {})
+  }
 
   const setStatus = (status: string) => {
     pendingThinkingStatus = ''
@@ -329,8 +383,27 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'subagent.spawn_requested':
+        // Child built but not yet running (waiting on ThreadPoolExecutor slot).
+        // Preserve completed state if a later event races in before this one.
+        turnController.upsertSubagent(ev.payload, c =>
+          c.status === 'completed' ? {} : { status: 'queued' }
+        )
+
+        // Prime the status-bar HUD: fetch caps (once every 5s) so we can
+        // warn as depth/concurrency approaches the configured ceiling.
+        if (getDelegationState().maxSpawnDepth === null) {
+          refreshDelegationStatus(true)
+        } else {
+          refreshDelegationStatus()
+        }
+
+        return
+
       case 'subagent.start':
-        turnController.upsertSubagent(ev.payload, () => ({ status: 'running' }))
+        turnController.upsertSubagent(ev.payload, c =>
+          c.status === 'completed' ? {} : { status: 'running' }
+        )
 
         return
       case 'subagent.thinking': {

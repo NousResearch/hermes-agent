@@ -1,10 +1,14 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
-import { type ReactNode, type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useStore } from '@nanostores/react'
+import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 
+import { $delegationState } from '../app/delegationStore.js'
+import { $turnState } from '../app/turnStore.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { buildSubagentTree, treeTotals } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
@@ -58,6 +62,58 @@ function ctxBar(pct: number | undefined, w = 10) {
   const filled = Math.round((p / 100) * w)
 
   return '█'.repeat(filled) + '░'.repeat(w - filled)
+}
+
+function SpawnHud({ t }: { t: Theme }) {
+  // Tight HUD that only appears when the session is actually fanning out.
+  // Colour escalates to warn/error as depth or concurrency approaches the cap.
+  const delegation = useStore($delegationState)
+  const turn = useStore($turnState)
+
+  const tree = useMemo(() => buildSubagentTree(turn.subagents), [turn.subagents])
+  const totals = useMemo(() => treeTotals(tree), [tree])
+
+  if (!totals.descendantCount && !delegation.paused) {
+    return null
+  }
+
+  const maxDepth = delegation.maxSpawnDepth
+  const maxConc = delegation.maxConcurrentChildren
+  const depth = Math.max(0, totals.maxDepthFromHere)
+  const active = totals.activeCount
+
+  // Concurrency here is "concurrent top-level spawns per parent at the
+  // tightest branch" — approximated by the widest level in the tree.
+  const depthRatio = maxDepth ? depth / maxDepth : 0
+  const concRatio = maxConc ? active / maxConc : 0
+  const ratio = Math.max(depthRatio, concRatio)
+
+  const color = delegation.paused || ratio >= 1 ? t.color.error : ratio >= 0.66 ? t.color.warn : t.color.dim
+
+  const pieces: string[] = []
+
+  if (delegation.paused) {
+    pieces.push('⏸ paused')
+  }
+
+  if (totals.descendantCount > 0) {
+    const depthLabel = maxDepth ? `${depth}/${maxDepth}` : `${depth}`
+    pieces.push(`d${depthLabel}`)
+
+    if (active > 0) {
+      const concLabel = maxConc ? `${active}/${maxConc}` : `${active}`
+      pieces.push(`⚡${concLabel}`)
+    }
+  }
+
+  const atCap = depthRatio >= 1 || concRatio >= 1
+
+  return (
+    <Text color={color}>
+      {atCap ? ' │ ⚠ ' : ' │ '}
+      {pieces.join(' ')}
+    </Text>
+  )
 }
 
 function SessionDuration({ startedAt }: { startedAt: number }) {
@@ -145,6 +201,7 @@ export function StatusRule({
               <SessionDuration startedAt={sessionStartedAt} />
             </Text>
           ) : null}
+          <SpawnHud t={t} />
           {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
           {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (

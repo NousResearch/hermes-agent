@@ -1,8 +1,19 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
+import {
+  buildSubagentTree,
+  fmtCost,
+  fmtTokens,
+  formatSummary as formatSpawnSummary,
+  hotnessBucket,
+  peakHotness,
+  sparkline,
+  treeTotals,
+  widthByDepth
+} from '../lib/subagentTree.js'
 import {
   compactPreview,
   estimateTokensRough,
@@ -14,7 +25,7 @@ import {
   toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { ActiveTool, ActivityItem, DetailsMode, SubagentProgress, ThinkingMode } from '../types.js'
+import type { ActiveTool, ActivityItem, DetailsMode, SubagentNode, SubagentProgress, ThinkingMode } from '../types.js'
 
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
@@ -106,6 +117,8 @@ function TreeNode({
   header,
   open,
   rails = [],
+  stemColor,
+  stemDim,
   t
 }: {
   branch: TreeBranch
@@ -113,11 +126,13 @@ function TreeNode({
   header: ReactNode
   open: boolean
   rails?: TreeRails
+  stemColor?: string
+  stemDim?: boolean
   t: Theme
 }) {
   return (
     <Box flexDirection="column">
-      <TreeRow branch={branch} rails={rails} t={t}>
+      <TreeRow branch={branch} rails={rails} stemColor={stemColor} stemDim={stemDim} t={t}>
         {header}
       </TreeRow>
       {open ? children?.(nextTreeRails(rails, branch)) : null}
@@ -239,16 +254,31 @@ function Chevron({
   )
 }
 
+function heatColor(node: SubagentNode, peak: number, theme: Theme): string | undefined {
+  const palette = [theme.color.bronze, theme.color.amber, theme.color.gold, theme.color.warn, theme.color.error]
+  const idx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
+
+  // Below the median bucket we keep the default dim stem so cool branches
+  // fade into the chrome — only "hot" branches draw the eye.
+  if (idx < 2) {
+    return undefined
+  }
+
+  return palette[idx]
+}
+
 function SubagentAccordion({
   branch,
   expanded,
-  item,
+  node,
+  peak,
   rails = [],
   t
 }: {
   branch: TreeBranch
   expanded: boolean
-  item: SubagentProgress
+  node: SubagentNode
+  peak: number
   rails?: TreeRails
   t: Theme
 }) {
@@ -257,6 +287,7 @@ function SubagentAccordion({
   const [openThinking, setOpenThinking] = useState(expanded)
   const [openTools, setOpenTools] = useState(expanded)
   const [openNotes, setOpenNotes] = useState(expanded)
+  const [openKids, setOpenKids] = useState(expanded)
 
   useEffect(() => {
     if (!expanded) {
@@ -268,6 +299,7 @@ function SubagentAccordion({
     setOpenThinking(true)
     setOpenTools(true)
     setOpenNotes(true)
+    setOpenKids(true)
   }, [expanded])
 
   const expandAll = () => {
@@ -276,7 +308,12 @@ function SubagentAccordion({
     setOpenThinking(true)
     setOpenTools(true)
     setOpenNotes(true)
+    setOpenKids(true)
   }
+
+  const item = node.item
+  const children = node.children
+  const aggregate = node.aggregate
 
   const statusTone: 'dim' | 'error' | 'warn' =
     item.status === 'failed' ? 'error' : item.status === 'interrupted' ? 'warn' : 'dim'
@@ -286,10 +323,60 @@ function SubagentAccordion({
   const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
 
-  const suffix =
-    item.status === 'running'
-      ? 'running'
-      : `${item.status}${item.durationSeconds ? ` · ${fmtElapsed(item.durationSeconds * 1000)}` : ''}`
+  // Suffix packs branch rollup: status · elapsed · per-branch tool/agent/token/cost.
+  // Emphasises the numbers the user can't easily eyeball from a flat list.
+  const statusLabel = item.status === 'queued' ? 'queued' : item.status === 'running' ? 'running' : String(item.status)
+
+  const rollupBits: string[] = [statusLabel]
+
+  if (item.durationSeconds) {
+    rollupBits.push(fmtElapsed(item.durationSeconds * 1000))
+  }
+
+  const localTools = item.toolCount ?? 0
+  const subtreeTools = aggregate.totalTools - localTools
+
+  if (localTools > 0) {
+    rollupBits.push(`${localTools} tool${localTools === 1 ? '' : 's'}`)
+  }
+
+  const localTokens = (item.inputTokens ?? 0) + (item.outputTokens ?? 0)
+
+  if (localTokens > 0) {
+    rollupBits.push(`${fmtTokens(localTokens)} tok`)
+  }
+
+  const localCost = item.costUsd ?? 0
+
+  if (localCost > 0) {
+    rollupBits.push(fmtCost(localCost))
+  }
+
+  const filesLocal = (item.filesWritten?.length ?? 0) + (item.filesRead?.length ?? 0)
+
+  if (filesLocal > 0) {
+    rollupBits.push(`⎘${filesLocal}`)
+  }
+
+  if (children.length > 0) {
+    rollupBits.push(`${aggregate.descendantCount}↓`)
+
+    if (subtreeTools > 0) {
+      rollupBits.push(`+${subtreeTools}t sub`)
+    }
+
+    const subCost = aggregate.costUsd - localCost
+
+    if (subCost >= 0.01) {
+      rollupBits.push(`+${fmtCost(subCost)} sub`)
+    }
+
+    if (aggregate.activeCount > 0 && item.status !== 'running') {
+      rollupBits.push(`⚡${aggregate.activeCount}`)
+    }
+  }
+
+  const suffix = rollupBits.join(' · ')
 
   const thinkingText = item.thinking.join('\n')
   const hasThinking = Boolean(thinkingText)
@@ -418,6 +505,50 @@ function SubagentAccordion({
     })
   }
 
+  if (children.length > 0) {
+    // Nested grandchildren — rendered recursively via SubagentAccordion,
+    // sharing the same keybindings / expand semantics as top-level nodes.
+    sections.push({
+      header: (
+        <Chevron
+          count={children.length}
+          onClick={shift => {
+            if (shift) {
+              expandAll()
+            } else {
+              setOpenKids(v => !v)
+            }
+          }}
+          open={showChildren || openKids}
+          suffix={`d${item.depth + 1} · ${aggregate.descendantCount} total`}
+          t={t}
+          title="Spawned"
+        />
+      ),
+      key: 'subagents',
+      open: showChildren || openKids,
+      render: childRails => (
+        <Box flexDirection="column">
+          {children.map((child, i) => (
+            <SubagentAccordion
+              branch={i === children.length - 1 ? 'last' : 'mid'}
+              expanded={expanded || deep}
+              key={child.item.id}
+              node={child}
+              peak={peak}
+              rails={childRails}
+              t={t}
+            />
+          ))}
+        </Box>
+      )
+    })
+  }
+
+  // Heatmap: amber→error gradient on the stem when this branch is "hot"
+  // (high tools/sec) relative to the whole tree's peak.
+  const stem = heatColor(node, peak, t)
+
   return (
     <TreeNode
       branch={branch}
@@ -447,6 +578,8 @@ function SubagentAccordion({
       }
       open={open}
       rails={rails}
+      stemColor={stem}
+      stemDim={stem == null}
       t={t}
     >
       {childRails => (
@@ -597,6 +730,16 @@ export const ToolTrail = memo(function ToolTrail({
   }, [detailsMode])
 
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
+
+  // Spawn-tree derivations must live above any early return so React's
+  // rules-of-hooks sees a stable call order.  Cheap O(N) builds memoised
+  // by subagent-list identity.
+  const spawnTree = useMemo(() => buildSubagentTree(subagents), [subagents])
+  const spawnPeak = useMemo(() => peakHotness(spawnTree), [spawnTree])
+  const spawnTotals = useMemo(() => treeTotals(spawnTree), [spawnTree])
+  const spawnWidths = useMemo(() => widthByDepth(spawnTree), [spawnTree])
+  const spawnSpark = useMemo(() => sparkline(spawnWidths), [spawnWidths])
+  const spawnSummaryLabel = useMemo(() => formatSpawnSummary(spawnTotals), [spawnTotals])
 
   if (
     !busy &&
@@ -753,12 +896,13 @@ export const ToolTrail = memo(function ToolTrail({
 
   const renderSubagentList = (rails: boolean[]) => (
     <Box flexDirection="column">
-      {subagents.map((item, index) => (
+      {spawnTree.map((node, index) => (
         <SubagentAccordion
-          branch={index === subagents.length - 1 ? 'last' : 'mid'}
+          branch={index === spawnTree.length - 1 ? 'last' : 'mid'}
           expanded={detailsMode === 'expanded' || deepSubagents}
-          item={item}
-          key={item.id}
+          key={node.item.id}
+          node={node}
+          peak={spawnPeak}
           rails={rails}
           t={t}
         />
@@ -881,10 +1025,14 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   if (hasSubagents && !inlineDelegateKey) {
+    // Spark + summary give a one-line read on the branch shape before
+    // opening the subtree.  `/agents` opens the full-screen audit overlay.
+    const suffix = spawnSpark ? `${spawnSummaryLabel}  ${spawnSpark}  (/agents)` : `${spawnSummaryLabel}  (/agents)`
+
     sections.push({
       header: (
         <Chevron
-          count={subagents.length}
+          count={spawnTotals.descendantCount}
           onClick={shift => {
             if (shift) {
               expandAll()
@@ -895,8 +1043,9 @@ export const ToolTrail = memo(function ToolTrail({
             }
           }}
           open={detailsMode === 'expanded' || openSubagents}
+          suffix={suffix}
           t={t}
-          title="Subagents"
+          title="Spawn tree"
         />
       ),
       key: 'subagents',

@@ -1201,6 +1201,44 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs.get("extra_body", {}).get("think") is None
 
+    def test_custom_chat_template_kwargs_on_effort_none(self, agent):
+        """Custom provider with effort=none should also inject
+        chat_template_kwargs.enable_thinking=false (llama.cpp / vLLM)."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"effort": "none"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        extra = kwargs.get("extra_body", {})
+        assert extra.get("think") is False
+        assert extra.get("chat_template_kwargs", {}).get("enable_thinking") is False
+
+    def test_custom_chat_template_kwargs_on_enabled_false(self, agent):
+        """Custom provider with enabled=false should also inject
+        chat_template_kwargs.enable_thinking=false."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": False}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        extra = kwargs.get("extra_body", {})
+        assert extra.get("think") is False
+        assert extra.get("chat_template_kwargs", {}).get("enable_thinking") is False
+
+    def test_custom_no_chat_template_kwargs_when_reasoning_enabled(self, agent):
+        """Custom provider with reasoning enabled should NOT inject
+        chat_template_kwargs.enable_thinking=false."""
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        extra = kwargs.get("extra_body", {})
+        assert extra.get("chat_template_kwargs") is None
+
 
 
 class TestBuildAssistantMessage:

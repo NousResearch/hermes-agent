@@ -6988,17 +6988,22 @@ class AIAgent:
             options["num_ctx"] = self._ollama_num_ctx
             extra_body["options"] = options
 
-        # Ollama / custom provider: pass think=false when reasoning is disabled.
-        # Ollama does not recognise the OpenRouter-style `reasoning` extra_body
-        # field, so we use its native `think` parameter instead.
-        # This prevents thinking-capable models (Qwen3, etc.) from generating
-        # <think> blocks and producing empty-response errors when the user has
-        # set reasoning_effort: none.
+        # Custom provider: opt out of thinking when reasoning is disabled.
+        # Different OpenAI-compat backends use different field names and
+        # ignore unknown fields, so send all the common ones:
+        #   * Ollama:                   think: false
+        #   * llama.cpp / vLLM (Qwen):  chat_template_kwargs.enable_thinking: false
+        # Without this, thinking-capable models (Qwen3, etc.) emit <think>
+        # blocks and trigger llama.cpp's prefill-incompatibility 400 on the
+        # next turn (see llama.cpp tools/server/server-common.cpp).
         if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
             _effort = (self.reasoning_config.get("effort") or "").strip().lower()
             _enabled = self.reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
                 extra_body["think"] = False
+                _ctk = extra_body.setdefault("chat_template_kwargs", {})
+                if isinstance(_ctk, dict):
+                    _ctk["enable_thinking"] = False
 
         if self._is_qwen_portal():
             extra_body["vl_high_resolution_images"] = True

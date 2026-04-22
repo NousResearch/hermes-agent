@@ -2165,7 +2165,6 @@ def _model_flow_nous(config, current_model="", args=None):
     from hermes_cli.models import (
         _PROVIDER_MODELS,
         get_pricing_for_provider,
-        filter_nous_free_models,
         check_nous_free_tier,
         partition_nous_models_by_tier,
     )
@@ -2208,10 +2207,8 @@ def _model_flow_nous(config, current_model="", args=None):
     # Check if user is on free tier
     free_tier = check_nous_free_tier()
 
-    # For both tiers: apply the allowlist filter first (removes non-allowlisted
-    # free models and allowlist models that aren't actually free).
-    # Then for free users: partition remaining models into selectable/unavailable.
-    model_ids = filter_nous_free_models(model_ids, pricing)
+    # For free users: partition models into selectable/unavailable based on
+    # whether they are free per the Portal-reported pricing.
     unavailable_models: list[str] = []
     if free_tier:
         model_ids, unavailable_models = partition_nous_models_by_tier(

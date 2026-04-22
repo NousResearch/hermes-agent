@@ -4,7 +4,6 @@ from unittest.mock import patch, MagicMock
 
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
-    filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
 )
@@ -291,89 +290,6 @@ class TestDetectProviderForModel:
             result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
         assert result is not None
         assert result[0] not in ("nous",)  # nous has claude models but shouldn't be suggested
-
-
-class TestFilterNousFreeModels:
-    """Tests for filter_nous_free_models — Nous Portal free-model policy."""
-
-    _PAID = {"prompt": "0.000003", "completion": "0.000015"}
-    _FREE = {"prompt": "0", "completion": "0"}
-
-    def test_paid_models_kept(self):
-        """Regular paid models pass through unchanged."""
-        models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]
-        pricing = {m: self._PAID for m in models}
-        assert filter_nous_free_models(models, pricing) == models
-
-    def test_free_non_allowlist_models_removed(self):
-        """Free models NOT in the allowlist are filtered out."""
-        models = ["anthropic/claude-opus-4.6", "arcee-ai/trinity-large-preview:free"]
-        pricing = {
-            "anthropic/claude-opus-4.6": self._PAID,
-            "arcee-ai/trinity-large-preview:free": self._FREE,
-        }
-        result = filter_nous_free_models(models, pricing)
-        assert result == ["anthropic/claude-opus-4.6"]
-
-    def test_allowlist_model_kept_when_free(self):
-        """Allowlist models are kept when they report as free."""
-        models = ["anthropic/claude-opus-4.6", "xiaomi/mimo-v2-pro"]
-        pricing = {
-            "anthropic/claude-opus-4.6": self._PAID,
-            "xiaomi/mimo-v2-pro": self._FREE,
-        }
-        result = filter_nous_free_models(models, pricing)
-        assert result == ["anthropic/claude-opus-4.6", "xiaomi/mimo-v2-pro"]
-
-    def test_allowlist_model_removed_when_paid(self):
-        """Allowlist models are removed when they are NOT free."""
-        models = ["anthropic/claude-opus-4.6", "xiaomi/mimo-v2-pro"]
-        pricing = {
-            "anthropic/claude-opus-4.6": self._PAID,
-            "xiaomi/mimo-v2-pro": self._PAID,
-        }
-        result = filter_nous_free_models(models, pricing)
-        assert result == ["anthropic/claude-opus-4.6"]
-
-    def test_no_pricing_returns_all(self):
-        """When pricing data is unavailable, all models pass through."""
-        models = ["anthropic/claude-opus-4.6", "nvidia/nemotron-3-super-120b-a12b:free"]
-        assert filter_nous_free_models(models, {}) == models
-
-    def test_model_with_no_pricing_entry_treated_as_paid(self):
-        """A model missing from the pricing dict is kept (assumed paid)."""
-        models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]
-        pricing = {"anthropic/claude-opus-4.6": self._PAID}  # gpt-5.4 not in pricing
-        result = filter_nous_free_models(models, pricing)
-        assert result == models
-
-    def test_mixed_scenario(self):
-        """End-to-end: mix of paid, free-allowed, free-disallowed, allowlist-not-free."""
-        models = [
-            "anthropic/claude-opus-4.6",       # paid, not allowlist → keep
-            "nvidia/nemotron-3-super-120b-a12b:free",  # free, not allowlist → drop
-            "xiaomi/mimo-v2-pro",              # free, allowlist → keep
-            "xiaomi/mimo-v2-omni",             # paid, allowlist → drop
-            "openai/gpt-5.4",                  # paid, not allowlist → keep
-        ]
-        pricing = {
-            "anthropic/claude-opus-4.6": self._PAID,
-            "nvidia/nemotron-3-super-120b-a12b:free": self._FREE,
-            "xiaomi/mimo-v2-pro": self._FREE,
-            "xiaomi/mimo-v2-omni": self._PAID,
-            "openai/gpt-5.4": self._PAID,
-        }
-        result = filter_nous_free_models(models, pricing)
-        assert result == [
-            "anthropic/claude-opus-4.6",
-            "xiaomi/mimo-v2-pro",
-            "openai/gpt-5.4",
-        ]
-
-    def test_allowlist_contains_expected_models(self):
-        """Sanity: the allowlist has the models we expect."""
-        assert "xiaomi/mimo-v2-pro" in _NOUS_ALLOWED_FREE_MODELS
-        assert "xiaomi/mimo-v2-omni" in _NOUS_ALLOWED_FREE_MODELS
 
 
 class TestIsNousFreeTier:

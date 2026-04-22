@@ -7583,31 +7583,47 @@ class HermesCLI:
         # main model receives text descriptions instead of raw base64 image
         # content — works with any model, not just vision-capable ones.
         if images:
-            message = self._preprocess_images_with_vision(
-                message if isinstance(message, str) else "", images
-            )
+            try:
+                from hermes_sentry import start_span as _sentry_span
+            except ImportError:
+                from contextlib import contextmanager as _cm
+                @_cm
+                def _sentry_span(**_kw):
+                    yield None
+            with _sentry_span(op="hermes.preprocess_images", description=f"{len(images)} image(s)"):
+                message = self._preprocess_images_with_vision(
+                    message if isinstance(message, str) else "", images
+                )
 
         # Expand @ context references (e.g. @file:main.py, @diff, @folder:src/)
         if isinstance(message, str) and "@" in message:
             try:
-                from agent.context_references import preprocess_context_references
-                from agent.model_metadata import get_model_context_length
-                _ctx_len = get_model_context_length(
-                    self.model, base_url=self.base_url or "", api_key=self.api_key or "")
-                _ctx_result = preprocess_context_references(
-                    message, cwd=os.getcwd(), context_length=_ctx_len)
-                if _ctx_result.expanded or _ctx_result.blocked:
-                    if _ctx_result.references:
-                        _cprint(
-                            f"  {_DIM}[@ context: {len(_ctx_result.references)} ref(s), "
-                            f"{_ctx_result.injected_tokens} tokens]{_RST}")
-                    for w in _ctx_result.warnings:
-                        _cprint(f"  {_DIM}⚠ {w}{_RST}")
-                    if _ctx_result.blocked:
-                        return "\n".join(_ctx_result.warnings) or "Context injection refused."
-                    message = _ctx_result.message
-            except Exception as e:
-                logging.debug("@ context reference expansion failed: %s", e)
+                from hermes_sentry import start_span as _sentry_span_ctx
+            except ImportError:
+                from contextlib import contextmanager as _cm2
+                @_cm2
+                def _sentry_span_ctx(**_kw):
+                    yield None
+            with _sentry_span_ctx(op="hermes.context_refs", description="@ context expansion"):
+                try:
+                    from agent.context_references import preprocess_context_references
+                    from agent.model_metadata import get_model_context_length
+                    _ctx_len = get_model_context_length(
+                        self.model, base_url=self.base_url or "", api_key=self.api_key or "")
+                    _ctx_result = preprocess_context_references(
+                        message, cwd=os.getcwd(), context_length=_ctx_len)
+                    if _ctx_result.expanded or _ctx_result.blocked:
+                        if _ctx_result.references:
+                            _cprint(
+                                f"  {_DIM}[@ context: {len(_ctx_result.references)} ref(s), "
+                                f"{_ctx_result.injected_tokens} tokens]{_RST}")
+                        for w in _ctx_result.warnings:
+                            _cprint(f"  {_DIM}⚠ {w}{_RST}")
+                        if _ctx_result.blocked:
+                            return "\n".join(_ctx_result.warnings) or "Context injection refused."
+                        message = _ctx_result.message
+                except Exception as e:
+                    logging.debug("@ context reference expansion failed: %s", e)
 
         # Sanitize surrogate characters that can arrive via clipboard paste from
         # rich-text editors (Google Docs, Word, etc.).  Lone surrogates are invalid
@@ -7710,24 +7726,66 @@ class HermesCLI:
                     agent_message = _msn + "\n\n" + agent_message
                     self._pending_model_switch_note = None
                 try:
-                    result = self.agent.run_conversation(
-                        user_message=agent_message,
-                        conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-                        stream_callback=stream_callback,
-                        task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
-                    )
-                except Exception as exc:
-                    logging.error("run_conversation raised: %s", exc, exc_info=True)
-                    _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
-                    result = {
-                        "final_response": f"Error: {_summary}",
-                        "messages": [],
-                        "api_calls": 0,
-                        "completed": False,
-                        "failed": True,
-                        "error": _summary,
-                    }
+                    from hermes_sentry import start_transaction as _sentry_txn
+                except ImportError:
+                    from contextlib import contextmanager as _cm
+                    @_cm
+                    def _sentry_txn(**_kw):
+                        yield None
+                _msg_preview = (agent_message[:80] + "...") if len(agent_message) > 80 else agent_message
+                _txn_tags = {
+                    "session_id": self.session_id or "",
+                    "model": getattr(self, "model", "") or "",
+                }
+                _agent_name = os.environ.get("AGENT_NAME", "")
+                if _agent_name:
+                    _txn_tags["agent_name"] = _agent_name
+                # Distributed trace continuation — when this process was
+                # spawned by a peer sidecar, pick up the parent trace so
+                # Agent B's work nests under Agent A's Sentry trace.
+                _trace_parent = os.environ.pop("SENTRY_TRACE_PARENT", "") or ""
+                _trace_baggage = os.environ.pop("SENTRY_BAGGAGE", "") or ""
+                if _trace_parent:
+                    _txn_tags["trace_origin"] = "peer-continuation"
+                with _sentry_txn(
+                    op="hermes.chat",
+                    name=_msg_preview.replace("\n", " "),
+                    tags=_txn_tags,
+                    trace_parent=_trace_parent or None,
+                    baggage=_trace_baggage or None,
+                ) as _txn:
+                    if _txn is not None:
+                        try:
+                            from hermes_sentry import sanitize_observability_text as _sot
+                            _txn.set_data("input", _sot(agent_message, limit=2000))
+                        except Exception:
+                            pass
+                    try:
+                        result = self.agent.run_conversation(
+                            user_message=agent_message,
+                            conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                            stream_callback=stream_callback,
+                            task_id=self.session_id,
+                            persist_user_message=message if _voice_prefix else None,
+                        )
+                        if _txn is not None and result:
+                            _txn.set_data("api_calls", result.get("api_calls", 0))
+                            _txn.set_data("completed", result.get("completed", False))
+                            try:
+                                _txn.set_data("output", _sot(result.get("final_response", ""), limit=2000))
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        logging.error("run_conversation raised: %s", exc, exc_info=True)
+                        _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
+                        result = {
+                            "final_response": f"Error: {_summary}",
+                            "messages": [],
+                            "api_calls": 0,
+                            "completed": False,
+                            "failed": True,
+                            "error": _summary,
+                        }
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP

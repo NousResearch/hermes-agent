@@ -346,6 +346,15 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `HERMES_CRON_TIMEOUT` | Inactivity timeout for cron job agent runs in seconds (default: `600`). The agent can run indefinitely while actively calling tools or receiving stream tokens — this only triggers when idle. Set to `0` for unlimited. |
 | `HERMES_CRON_SCRIPT_TIMEOUT` | Timeout for pre-run scripts attached to cron jobs in seconds (default: `120`). Override for scripts that need longer execution (e.g., randomized delays for anti-bot timing). Also configurable via `cron.script_timeout_seconds` in `config.yaml`. |
 
+## Sentry
+
+| Variable | Description |
+|----------|-------------|
+| `SENTRY_DSN` | Enables Sentry error reporting for Hermes when set. Gateway, CLI, standalone agent runs, and cron job failures all use this DSN. Also accepts `HERMES_SENTRY_DSN` as a fallback. |
+| `HERMES_SENTRY_ENVIRONMENT` | Optional environment label for Sentry events. When multiple Hermes agents share one Sentry project, set one shared value such as `shared-vm` or `prod` and use the `agent_name` tag to split agents in Sentry. Defaults to `development` when unset. Falls back to `SENTRY_ENVIRONMENT` if `HERMES_SENTRY_ENVIRONMENT` is not set. |
+| `HERMES_SENTRY_RELEASE` | Optional release override for Sentry events. Defaults to the Hermes package version when unset. Falls back to `SENTRY_RELEASE` if `HERMES_SENTRY_RELEASE` is not set. |
+| `HERMES_SENTRY_TRACES_SAMPLE_RATE` | Optional performance trace sampling rate from `0.0` to `1.0`. Defaults to `0.0` so only error reporting is enabled. Falls back to `SENTRY_TRACES_SAMPLE_RATE` if `HERMES_SENTRY_TRACES_SAMPLE_RATE` is not set. |
+
 ## Session Settings
 
 | Variable | Description |

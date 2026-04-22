@@ -397,7 +397,7 @@ compression:
 #       model: "mimo-v2-pro"
 #     reference_models:
 #       - provider: "minimax"
-#         model: "MiniMax-M2.7"
+#         model: "MiniMax-M2.7-highspeed"
 #       - provider: "deepseek"
 #         model: "deepseek-reasoner"
 

@@ -8,7 +8,7 @@
 
 ## ✨ Highlights
 
-- **Direct-Provider MoA Default Stack** — `mixture_of_agents` now uses **Xiaomi MiMo v2 Pro** as the aggregator with **MiniMax-M2.7** and **DeepSeek Reasoner** as the default reference models. This keeps MoA on first-class direct providers while still preserving support for legacy OpenRouter-style model slugs passed explicitly.
+- **Direct-Provider MoA Default Stack** — `mixture_of_agents` now uses **Xiaomi MiMo v2 Pro** as the aggregator with **MiniMax-M2.7-highspeed** and **DeepSeek Reasoner** as the default reference models. This keeps MoA on first-class direct providers while still preserving support for legacy OpenRouter-style model slugs passed explicitly.
 
 - **Cleaner Provider Routing** — MoA now flows through Hermes' shared provider-aware `async_call_llm()` / `resolve_provider_client()` pipeline instead of maintaining a separate OpenRouter-only client path. That means consistent credential resolution, base URL handling, and fallback behavior with the rest of Hermes auxiliary routing.
 
@@ -27,4 +27,3 @@
 - Empty reasoning-only responses from reference models now fail closed on the final retry instead of being counted as successful empty outputs.
 
 - Setup, tool configuration, and docs now describe the real MoA credential contract: Xiaomi as aggregator plus at least one reference provider.
-

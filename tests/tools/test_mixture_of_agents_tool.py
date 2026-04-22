@@ -10,7 +10,7 @@ moa = importlib.import_module("tools.mixture_of_agents_tool")
 
 def test_moa_defaults_track_current_direct_provider_stack():
     assert moa.REFERENCE_MODELS == [
-        "minimax/MiniMax-M2.7",
+        "minimax/MiniMax-M2.7-highspeed",
         "deepseek/deepseek-reasoner",
     ]
     assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2-pro"
@@ -26,10 +26,10 @@ async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_fail
     monkeypatch.setattr(moa.logger, "error", err)
 
     model, message, success = await moa._run_reference_model_safe(
-        {"provider": "minimax", "model": "MiniMax-M2.7"}, "hello", max_retries=2
+        {"provider": "minimax", "model": "MiniMax-M2.7-highspeed"}, "hello", max_retries=2
     )
 
-    assert model == "minimax/MiniMax-M2.7"
+    assert model == "minimax/MiniMax-M2.7-highspeed"
     assert success is False
     assert "failed after 2 attempts" in message
     assert warn.call_count == 2
@@ -45,10 +45,10 @@ async def test_reference_model_empty_final_attempt_is_failure(monkeypatch):
     )))
 
     model, message, success = await moa._run_reference_model_safe(
-        {"provider": "minimax", "model": "MiniMax-M2.7"}, "hello", max_retries=1
+        {"provider": "minimax", "model": "MiniMax-M2.7-highspeed"}, "hello", max_retries=1
     )
 
-    assert model == "minimax/MiniMax-M2.7"
+    assert model == "minimax/MiniMax-M2.7-highspeed"
     assert success is False
     assert "empty reasoning-only content" in message
 
@@ -58,7 +58,7 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
     monkeypatch.setattr(
         moa,
         "_run_reference_model_safe",
-        AsyncMock(return_value=("minimax/MiniMax-M2.7", "ok", True)),
+        AsyncMock(return_value=("minimax/MiniMax-M2.7-highspeed", "ok", True)),
     )
     monkeypatch.setattr(
         moa,
@@ -78,7 +78,7 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
     result = json.loads(
         await moa.mixture_of_agents_tool(
             "solve this",
-            reference_models=[{"provider": "minimax", "model": "MiniMax-M2.7"}],
+            reference_models=[{"provider": "minimax", "model": "MiniMax-M2.7-highspeed"}],
         )
     )
 
@@ -91,7 +91,7 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
 def test_check_moa_requirements_accepts_direct_provider_stack(monkeypatch):
     available = {
         "xiaomi/mimo-v2-pro",
-        "minimax/MiniMax-M2.7",
+        "minimax/MiniMax-M2.7-highspeed",
     }
 
     monkeypatch.setattr(

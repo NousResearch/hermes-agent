@@ -25,7 +25,7 @@ Architecture:
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
 Default Models Used:
-- Reference Models: MiniMax-M2.7, DeepSeek Reasoner
+- Reference Models: MiniMax-M2.7-highspeed, DeepSeek Reasoner
 - Aggregator Model: Xiaomi MiMo v2 Pro
 
 Legacy OpenRouter-style model slugs still work when passed explicitly.
@@ -69,8 +69,8 @@ ModelRoute = Dict[str, Any]
 DEFAULT_REFERENCE_ROUTES: List[ModelRoute] = [
     {
         "provider": "minimax",
-        "model": "MiniMax-M2.7",
-        "label": "minimax/MiniMax-M2.7",
+        "model": "MiniMax-M2.7-highspeed",
+        "label": "minimax/MiniMax-M2.7-highspeed",
     },
     {
         "provider": "deepseek",

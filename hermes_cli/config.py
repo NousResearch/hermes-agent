@@ -543,8 +543,8 @@ DEFAULT_CONFIG = {
             "reference_models": [
                 {
                     "provider": "minimax",
-                    "model": "MiniMax-M2.7",
-                    "label": "minimax/MiniMax-M2.7",
+                    "model": "MiniMax-M2.7-highspeed",
+                    "label": "minimax/MiniMax-M2.7-highspeed",
                 },
                 {
                     "provider": "deepseek",

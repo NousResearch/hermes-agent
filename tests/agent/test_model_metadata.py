@@ -644,6 +644,14 @@ class TestContextLengthCache:
             save_context_length("test/model", "http://localhost:8080/v1", 32768)
             assert get_cached_context_length("test/model", "http://localhost:8080/v1") == 32768
 
+    def test_trailing_slash_lookup_uses_same_cache_key(self, tmp_path):
+        """/v1 and /v1/ should hit the same persistent cache entry."""
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("test/model", "https://example.com/v1", 500000)
+            assert get_cached_context_length("test/model", "https://example.com/v1/") == 500000
+            assert get_cached_context_length("test/model", "https://example.com/v1") == 500000
+
     def test_missing_cache_returns_none(self, tmp_path):
         cache_file = tmp_path / "nonexistent.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):

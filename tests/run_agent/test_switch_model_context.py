@@ -19,8 +19,10 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     agent.client = MagicMock()
     agent.quiet_mode = True
 
-    # Store config_context_length for later use in switch_model
+    # Store config_context_length source state for later use in switch_model
     agent._config_context_length = config_context_length
+    agent._model_context_length_override = config_context_length
+    agent._custom_provider_context_configs = []
 
     # Context compressor with primary model values
     compressor = ContextCompressor(
@@ -72,3 +74,25 @@ def test_switch_model_without_config_context_length():
         mock_ctx_len.assert_called_once()
         call_kwargs = mock_ctx_len.call_args.kwargs
         assert call_kwargs.get("config_context_length") is None
+
+
+def test_switch_model_does_not_reuse_primary_custom_provider_override_for_different_model():
+    """Per-model custom_providers overrides must not bleed into a different target model."""
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent._config_context_length = 500_000
+    agent._model_context_length_override = None
+    agent._custom_provider_context_configs = [
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "models": {
+                "primary-model": {"context_length": 500_000},
+            },
+        }
+    ]
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=128_000) as mock_ctx_len:
+        agent.switch_model("different-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
+
+    mock_ctx_len.assert_called_once()
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") is None

@@ -176,6 +176,77 @@ class TestTryActivateFallback:
             assert agent.provider == "minimax"
             assert agent.client is mock_client
 
+    def test_fallback_preserves_config_context_length(self):
+        """Fallback compressor refresh should reuse the configured context override."""
+        agent = _make_agent(
+            fallback_model={"provider": "custom", "model": "gpt-5.4", "base_url": "https://example.com/v1"},
+        )
+        agent._config_context_length = 500_000
+        agent._model_context_length_override = 500_000
+        agent._custom_provider_context_configs = []
+        agent.context_compressor = MagicMock()
+
+        mock_client = _mock_resolve(
+            api_key="***",
+            base_url="https://example.com/v1",
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "gpt-5.4"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=500_000,
+        ) as mock_ctx_len:
+            assert agent._try_activate_fallback() is True
+
+        mock_ctx_len.assert_called_once_with(
+            "gpt-5.4",
+            base_url="https://example.com/v1",
+            api_key="***",
+            provider="custom",
+            config_context_length=500_000,
+        )
+
+    def test_fallback_does_not_reuse_primary_custom_provider_override_for_different_model(self):
+        """Per-model custom_providers overrides must not bleed into a different fallback model."""
+        agent = _make_agent(
+            fallback_model={"provider": "custom", "model": "fallback-model", "base_url": "https://example.com/v1"},
+        )
+        agent._config_context_length = 500_000
+        agent._model_context_length_override = None
+        agent._custom_provider_context_configs = [
+            {
+                "base_url": "https://example.com/v1",
+                "models": {
+                    "primary-model": {"context_length": 500_000},
+                },
+            }
+        ]
+        agent.context_compressor = MagicMock()
+
+        mock_client = _mock_resolve(
+            api_key="***",
+            base_url="https://example.com/v1",
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "fallback-model"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=128_000,
+        ) as mock_ctx_len:
+            assert agent._try_activate_fallback() is True
+
+        mock_ctx_len.assert_called_once_with(
+            "fallback-model",
+            base_url="https://example.com/v1",
+            api_key="***",
+            provider="custom",
+            config_context_length=None,
+        )
+
     def test_only_fires_once(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},

@@ -656,13 +656,39 @@ def _load_context_cache() -> Dict[str, int]:
         return {}
 
 
+def _normalize_context_cache_base_url(base_url: str) -> str:
+    """Normalize base_url for persistent context cache keys.
+
+    Treat trailing-slash variants (``/v1`` vs ``/v1/``) as the same endpoint so
+    different runtime call sites don't silently miss the same cached value.
+    """
+    return (base_url or "").rstrip("/")
+
+
+def _context_cache_lookup_keys(model: str, base_url: str) -> list[str]:
+    """Return cache-key candidates for a model/base_url lookup.
+
+    New writes use the normalized no-trailing-slash form, but reads also probe
+    legacy slash variants so existing cache files continue to work.
+    """
+    raw = base_url or ""
+    normalized = _normalize_context_cache_base_url(raw)
+    candidates: list[str] = []
+    for url in (normalized, raw, f"{normalized}/" if normalized else ""):
+        if url:
+            key = f"{model}@{url}"
+            if key not in candidates:
+                candidates.append(key)
+    return candidates
+
+
 def save_context_length(model: str, base_url: str, length: int) -> None:
     """Persist a discovered context length for a model+provider combo.
 
     Cache key is ``model@base_url`` so the same model name served from
     different providers can have different limits.
     """
-    key = f"{model}@{base_url}"
+    key = f"{model}@{_normalize_context_cache_base_url(base_url)}"
     cache = _load_context_cache()
     if cache.get(key) == length:
         return  # already stored
@@ -679,9 +705,11 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
 
 def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
     """Look up a previously discovered context length for model+provider."""
-    key = f"{model}@{base_url}"
     cache = _load_context_cache()
-    return cache.get(key)
+    for key in _context_cache_lookup_keys(model, base_url):
+        if key in cache:
+            return cache[key]
+    return None
 
 
 def get_next_probe_tier(current_length: int) -> Optional[int]:

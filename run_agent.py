@@ -2199,19 +2199,104 @@ class AIAgent:
         self._tool_failure_count[tool_name] = self._tool_failure_count.get(tool_name, 0) + 1
         if self._tool_failure_count[tool_name] >= self._tool_failure_threshold:
             count = self._tool_failure_count[tool_name]
-            msg = (
+            base_msg = (
                 f"[Tool retry threshold reached] Tool '{tool_name}' has failed "
                 f"{count} consecutive times (different arguments each time). "
                 f"STOP retrying with different parameters. "
-                f"Analyze why it's failing and try a completely different approach."
             )
+            
+            # Try to get a suggestion from the compression model
+            suggestion = self._get_tool_suggestion(tool_name, result)
+            if suggestion:
+                base_msg += f"\n💡 Compression model suggestion: {suggestion}"
+            
+            base_msg += " Analyze why it's failing and try a completely different approach."
+            
             logger.warning(
                 "Tool retry threshold reached: %s (%d consecutive failures)",
                 tool_name, count,
             )
-            return msg
+            return base_msg
 
         return None
+    
+    def _get_tool_suggestion(self, tool_name: str, last_result: str) -> str | None:
+        """Ask the compression model for a suggestion when a tool keeps failing.
+        
+        This is a lightweight intervention — the compression model acts as an
+        'outsider' that can break the main model's loop with a fresh perspective.
+        Returns a short suggestion string, or None if the compression model
+        is unavailable or the call fails.
+        """
+        try:
+            from agent.auxiliary_client import call_llm
+            
+            # Build a minimal prompt for the compression model
+            result_preview = last_result[:300] if last_result else "(empty)"
+            prompt = (
+                f"A tool call keeps failing. Help identify the root cause.\n\n"
+                f"Tool: {tool_name}\n"
+                f"Last result: {result_preview}\n\n"
+                f"Give ONE short suggestion (max 20 words) on how to fix this. "
+                f"Be specific. Example: 'Use gh api instead of gh run view for log retrieval'."
+            )
+            
+            response = call_llm(
+                task="compression",
+                messages=[
+                    {"role": "system", "content": "You are a debugging assistant. Give concise, specific suggestions."},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=50,
+                temperature=0.3,
+                main_runtime=self._current_main_runtime(),
+            )
+            
+            suggestion = response.choices[0].message.content.strip()
+            # Keep it short
+            if len(suggestion) > 100:
+                suggestion = suggestion[:97] + "..."
+            return suggestion
+        except Exception as e:
+            # Silently fail — we don't want to break the main flow
+            logger.debug("Compression model suggestion failed: %s", e)
+            return None
+    
+    def _get_consecutive_suggestion(self, tool_name: str) -> str | None:
+        """Ask the compression model for a suggestion when consecutive identical calls trigger the circuit breaker.
+        
+        Similar to _get_tool_suggestion but for the consecutive-call case where
+        the model is retrying the EXACT same arguments.
+        """
+        try:
+            from agent.auxiliary_client import call_llm
+            
+            prompt = (
+                f"A tool call is stuck in a loop — same arguments repeated. "
+                f"Break the loop.\n\n"
+                f"Tool: {tool_name}\n\n"
+                f"Give ONE short suggestion (max 20 words) on what to try instead. "
+                f"Be specific. Example: 'Use gh api repos/.../actions/runs/{id}/logs instead of gh run view --log-failed'."
+            )
+            
+            response = call_llm(
+                task="compression",
+                messages=[
+                    {"role": "system", "content": "You are a debugging assistant. Give concise, specific suggestions."},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=50,
+                temperature=0.3,
+                main_runtime=self._current_main_runtime(),
+            )
+            
+            suggestion = response.choices[0].message.content.strip()
+            if len(suggestion) > 100:
+                suggestion = suggestion[:97] + "..."
+            return suggestion
+        except Exception as e:
+            logger.debug("Compression model suggestion failed: %s", e)
+            return None
 
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
@@ -7716,13 +7801,21 @@ class AIAgent:
             if len(set(recent_sigs)) == 1:
                 # All same — circuit breaker triggered!
                 streak = len(self._consecutive_tool_calls)
-                msg = (
+                base_msg = (
                     f"[Circuit breaker triggered] Tool '{function_name}' called "
                     f"{streak} consecutive times with identical arguments. "
                     f"This approach is not working. STOP retrying the same tool with the same parameters. "
-                    f"Consider: (1) the tool may not be available in this environment, "
-                    f"(2) there may be a permission issue, or (3) the command syntax is wrong. "
-                    f"Try a completely different approach or investigate the root cause."
+                )
+                
+                # Try to get a suggestion from the compression model
+                suggestion = self._get_consecutive_suggestion(function_name)
+                if suggestion:
+                    base_msg += f"\n💡 Compression model suggestion: {suggestion}"
+                
+                base_msg += (
+                    " Consider: (1) the tool may not be available in this environment, "
+                    "(2) there may be a permission issue, or (3) the command syntax is wrong. "
+                    "Try a completely different approach or investigate the root cause."
                 )
                 logger.warning("Circuit breaker triggered: %s (streak=%d)", function_name, streak)
                 # Reset streak so future calls can succeed

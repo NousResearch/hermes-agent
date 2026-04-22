@@ -131,7 +131,10 @@ export function StatusRule({
           ) : (
             <Text color={statusColor}>{status}</Text>
           )}
-          <Text color={t.color.dim}> │ {model}</Text>
+          <Text color={t.color.dim}> │ </Text>
+          <Text color={t.color.dim} wrap="truncate-end" width={18}>
+            {model}
+          </Text>
           {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
           {bar ? (
             <Text color={t.color.dim}>

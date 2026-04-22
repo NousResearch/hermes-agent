@@ -513,15 +513,17 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return last_result
 
     # --- Signal: native attachment support via JSON-RPC attachments param ---
-    if platform == Platform.SIGNAL and media_files:
+    # --- Feishu: special handling for media attachments ---
+    if platform == Platform.FEISHU:
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
-            result = await _send_signal(
-                pconfig.extra,
+            result = await _send_feishu(
+                pconfig,
                 chat_id,
                 chunk,
                 media_files=media_files if is_last else [],
+                thread_id=thread_id,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -538,10 +540,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         }
     warning = None
     if media_files:
-        warning = (
-            f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, and signal"
-        )
+        pass
 
     last_result = None
     for chunk in chunks:

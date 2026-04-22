@@ -228,12 +228,12 @@ export function fromSkin(
       sessionLabel: c('session_label') ?? dim,
       sessionBorder: c('session_border') ?? dim,
 
-      statusBg: d.color.statusBg,
-      statusFg: d.color.statusFg,
+      statusBg: c('status_bar_bg') ?? d.color.statusBg,
+      statusFg: c('status_bar_fg') ?? d.color.statusFg,
       statusGood: c('ui_ok') ?? d.color.statusGood,
       statusWarn: c('ui_warn') ?? d.color.statusWarn,
-      statusBad: d.color.statusBad,
-      statusCritical: d.color.statusCritical,
+      statusBad: c('status_bad') ?? d.color.statusBad,
+      statusCritical: c('status_critical') ?? d.color.statusCritical,
       selectionBg: c('selection_bg') ?? d.color.selectionBg,
 
       diffAdded: d.color.diffAdded,

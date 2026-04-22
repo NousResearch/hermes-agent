@@ -17,6 +17,9 @@ const buildUiState = (): UiState => ({
   sid: null,
   status: 'summoning hermes…',
   statusBar: true,
+  statusBarFieldsLeft: undefined,
+  statusBarFieldsRight: undefined,
+  statusBarSeparator: ' │ ',
   streaming: true,
   theme: DEFAULT_THEME,
   usage: ZERO

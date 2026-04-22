@@ -1978,7 +1978,12 @@ def _(rid, params: dict) -> dict:
         cfg0 = _load_cfg()
         d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
         def_key = "tui_compact" if key == "compact" else "tui_statusbar"
-        cur_b = bool(d0.get(def_key, False if key == "compact" else True))
+        cur_val = d0.get(def_key, False if key == "compact" else True)
+        # Handle both boolean and dict tui_statusbar
+        if key == "statusbar" and isinstance(cur_val, dict):
+            cur_b = cur_val.get("enabled", True)
+        else:
+            cur_b = bool(cur_val)
         if raw in ("", "toggle"):
             nv_b = not cur_b
         elif raw == "on":
@@ -1987,9 +1992,26 @@ def _(rid, params: dict) -> dict:
             nv_b = False
         else:
             return _err(rid, 4002, f"unknown {key} value: {value}")
-        _write_config_key(f"display.{def_key}", nv_b)
+        # Preserve dict structure for tui_statusbar
+        if key == "statusbar" and isinstance(cur_val, dict):
+            cur_val["enabled"] = nv_b
+            _write_config_key(f"display.{def_key}", cur_val)
+        else:
+            _write_config_key(f"display.{def_key}", nv_b)
         out = "on" if nv_b else "off"
         return _ok(rid, {"key": key, "value": out})
+
+    if key in ("statusbar_fields", "statusbar_fields_left", "statusbar_fields_right", "statusbar_separator"):
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        statusbar_val = d0.get("tui_statusbar", True)
+        # Ensure tui_statusbar is a dict
+        if not isinstance(statusbar_val, dict):
+            statusbar_val = {"enabled": bool(statusbar_val)}
+        sub_key = key.replace("statusbar_", "", 1)  # fields/fields_left/fields_right/separator
+        statusbar_val[sub_key] = value
+        _write_config_key("display.tui_statusbar", statusbar_val)
+        return _ok(rid, {"key": key, "value": value})
 
     if key in ("prompt", "personality", "skin"):
         try:

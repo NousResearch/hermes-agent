@@ -56,6 +56,7 @@ export interface OverlayState {
   approval: ApprovalReq | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  fieldPicker: boolean
   modelPicker: boolean
   pager: null | PagerState
   picker: boolean
@@ -88,6 +89,9 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: boolean
+  statusBarFieldsLeft?: string[]
+  statusBarFieldsRight?: string[]
+  statusBarSeparator: string
   streaming: boolean
   theme: Theme
   usage: Usage

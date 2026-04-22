@@ -640,3 +640,23 @@ class TestUserMessagePreviewConfig:
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]
         assert preview["first_lines"] == 2
         assert preview["last_lines"] == 2
+
+
+class TestStatusBarConfig:
+    """Test display.tui_statusbar config structure."""
+
+    def test_default_config_statusbar_structure(self):
+        sb = DEFAULT_CONFIG["display"]["tui_statusbar"]
+        assert isinstance(sb, dict)
+        assert sb["enabled"] is True
+        assert sb["fields_left"] is None
+        assert sb["fields_right"] is None
+        assert sb["separator"] == " │ "
+        # No format key — removed
+        assert "format" not in sb
+
+    def test_statusbar_fields_fallback_to_fields_left(self):
+        """The 'fields' key maps to fields_left at read time (backward compat)."""
+        sb = DEFAULT_CONFIG["display"]["tui_statusbar"]
+        # fields is present in default for backward compat but None
+        assert sb.get("fields") is None

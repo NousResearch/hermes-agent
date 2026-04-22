@@ -33,6 +33,9 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       session_label: "#DAA520"           # Session label color
       session_border: "#8B8682"          # Session ID dim color
       status_bar_bg: "#1a1a2e"          # TUI status/usage bar background
+      status_bar_fg: "#C0C0C0"          # TUI status/usage bar foreground text
+      status_bad: "#FF8C00"             # TUI status bar "bad" color (high context usage)
+      status_critical: "#FF6B6B"        # TUI status bar "critical" color (near context limit)
       voice_status_bg: "#1a1a2e"        # TUI voice status background
       completion_menu_bg: "#1a1a2e"      # Completion menu background
       completion_menu_current_bg: "#333355"  # Active completion row background
@@ -332,6 +335,9 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#1D4ED8",
             "session_border": "#64748B",
             "status_bar_bg": "#E5EDF8",
+            "status_bar_fg": "#333333",
+            "status_bad": "#D84315",
+            "status_critical": "#B71C1C",
             "voice_status_bg": "#E5EDF8",
             "completion_menu_bg": "#F8FAFC",
             "completion_menu_current_bg": "#DBEAFE",
@@ -369,6 +375,9 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#5C3D11",
             "session_border": "#A0845C",
             "status_bar_bg": "#F5F0E8",
+            "status_bar_fg": "#333333",
+            "status_bad": "#D84315",
+            "status_critical": "#B71C1C",
             "voice_status_bg": "#F5F0E8",
             "completion_menu_bg": "#F5EFE0",
             "completion_menu_current_bg": "#E8DCC8",

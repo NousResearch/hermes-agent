@@ -504,6 +504,88 @@ def test_dispatch_long_handler_exception_produces_error_response(capture):
     assert "kaboom" in written["error"]["message"]
 
 
+# ── config.set: statusbar fields/separator ───────────────────────────
+
+
+def test_config_set_statusbar_fields_left(server, tmp_path):
+    """statusbar_fields_left writes into display.tui_statusbar.fields_left."""
+    server._hermes_home = tmp_path
+    resp = server.handle_request({
+        "id": "c1",
+        "method": "config.set",
+        "params": {"key": "statusbar_fields_left", "value": ["status", "model", "cost"]},
+    })
+    assert "error" not in resp
+    assert resp["result"]["value"] == ["status", "model", "cost"]
+    cfg = server._load_cfg()
+    assert cfg["display"]["tui_statusbar"]["fields_left"] == ["status", "model", "cost"]
+
+
+def test_config_set_statusbar_fields_right(server, tmp_path):
+    """statusbar_fields_right writes into display.tui_statusbar.fields_right."""
+    server._hermes_home = tmp_path
+    resp = server.handle_request({
+        "id": "c2",
+        "method": "config.set",
+        "params": {"key": "statusbar_fields_right", "value": ["cwd"]},
+    })
+    assert "error" not in resp
+    assert resp["result"]["value"] == ["cwd"]
+    cfg = server._load_cfg()
+    assert cfg["display"]["tui_statusbar"]["fields_right"] == ["cwd"]
+
+
+def test_config_set_statusbar_separator(server, tmp_path):
+    """statusbar_separator writes into display.tui_statusbar.separator."""
+    server._hermes_home = tmp_path
+    resp = server.handle_request({
+        "id": "c3",
+        "method": "config.set",
+        "params": {"key": "statusbar_separator", "value": " · "},
+    })
+    assert "error" not in resp
+    assert resp["result"]["value"] == " · "
+    cfg = server._load_cfg()
+    assert cfg["display"]["tui_statusbar"]["separator"] == " · "
+
+
+def test_config_set_statusbar_field_converts_bool_to_dict(server, tmp_path):
+    """When tui_statusbar is a boolean, config.set converts it to dict first."""
+    server._hermes_home = tmp_path
+    # Seed with boolean tui_statusbar
+    server._save_cfg({"display": {"tui_statusbar": True}})
+    resp = server.handle_request({
+        "id": "c4",
+        "method": "config.set",
+        "params": {"key": "statusbar_fields_left", "value": ["model"]},
+    })
+    assert "error" not in resp
+    cfg = server._load_cfg()
+    sb = cfg["display"]["tui_statusbar"]
+    assert isinstance(sb, dict)
+    assert sb["enabled"] is True
+    assert sb["fields_left"] == ["model"]
+
+
+def test_config_set_statusbar_toggle_preserves_dict(server, tmp_path):
+    """Toggling statusbar on/off preserves existing dict fields."""
+    server._hermes_home = tmp_path
+    server._save_cfg({"display": {"tui_statusbar": {"enabled": True, "fields_left": ["status", "model"], "separator": " │ "}}})
+    # Toggle off
+    resp = server.handle_request({
+        "id": "c5",
+        "method": "config.set",
+        "params": {"key": "statusbar", "value": "off"},
+    })
+    assert "error" not in resp
+    cfg = server._load_cfg()
+    sb = cfg["display"]["tui_statusbar"]
+    assert sb["enabled"] is False
+    # Dict fields preserved
+    assert sb["fields_left"] == ["status", "model"]
+    assert sb["separator"] == " │ "
+
+
 def test_dispatch_unknown_long_method_still_goes_inline(server):
     """Method name not in _LONG_HANDLERS takes the sync path even if handler is slow."""
     server._methods["some.method"] = lambda rid, params: server._ok(rid, {"ok": True})

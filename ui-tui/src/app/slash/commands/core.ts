@@ -13,7 +13,7 @@ import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } fr
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
-import type { SlashCommand } from '../types.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -35,6 +35,51 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
   }
 
   return null
+}
+
+const VALID_STATUSBAR_FIELDS = new Set(['model', 'context', 'context_bar', 'duration', 'voice', 'bg', 'cost', 'cwd', 'status'])
+
+function handleStatusbarConfig(args: string[], ctx: SlashRunCtx) {
+  if (args.length === 0) {
+    patchOverlayState({ fieldPicker: true })
+
+    return
+  }
+
+  if (args[0] === 'reset') {
+    patchUiState({ statusBarFieldsLeft: undefined, statusBarFieldsRight: undefined })
+    ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar_fields_left', value: null }).catch(() => { })
+    ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar_fields_right', value: null }).catch(() => { })
+    queueMicrotask(() => ctx.transcript.sys('status bar fields: reset to default'))
+
+    return
+  }
+
+  const valid = args.filter(f => VALID_STATUSBAR_FIELDS.has(f))
+  const invalid = args.filter(f => !VALID_STATUSBAR_FIELDS.has(f))
+
+  if (invalid.length) {
+    ctx.transcript.sys(`unknown fields: ${invalid.join(', ')} (valid: ${[...VALID_STATUSBAR_FIELDS].join(', ')})`)
+  }
+
+  if (!valid.length) { return }
+
+  patchUiState({ statusBarFieldsLeft: valid })
+  ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar_fields_left', value: valid }).catch(() => { })
+  queueMicrotask(() => ctx.transcript.sys(`status bar fields (left): ${valid.join(', ')}`))
+}
+
+function handleStatusbarSeparator(arg: string, ctx: SlashRunCtx) {
+  if (!arg) {
+    ctx.transcript.sys(`status bar separator: "${ctx.ui.statusBarSeparator}"`)
+
+    return
+  }
+
+  const sep = arg.replace(/^["']|["']$/g, '')
+  patchUiState({ statusBarSeparator: sep })
+  ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar_separator', value: sep }).catch(() => { })
+  queueMicrotask(() => ctx.transcript.sys(`status bar separator: "${sep}"`))
 }
 
 const DETAIL_MODES = new Set(['collapsed', 'cycle', 'expanded', 'hidden', 'toggle'])
@@ -131,7 +176,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ compact: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'compact', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'compact', value: next ? 'on' : 'off' }).catch(() => { })
 
       queueMicrotask(() => ctx.transcript.sys(`compact ${next ? 'on' : 'off'}`))
     }
@@ -175,7 +220,7 @@ export const coreCommands: SlashCommand[] = [
       const next = mode === 'cycle' || mode === 'toggle' ? nextDetailsMode(ui.detailsMode) : (mode as DetailsMode)
 
       patchUiState({ detailsMode: next })
-      gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
+      gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => { })
       transcript.sys(`details: ${next}`)
     }
   },
@@ -305,17 +350,29 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['sb'],
-    help: 'toggle status bar',
+    help: 'toggle status bar or configure fields/separator',
     name: 'statusbar',
+    usage: '/statusbar [on|off|config …|separator …]',
     run: (arg, ctx) => {
+      const parts = arg.trim().split(/\s+/)
+      const sub = parts[0]?.toLowerCase()
+
+      if (sub === 'config') {
+        return handleStatusbarConfig(parts.slice(1), ctx)
+      }
+
+      if (sub === 'separator') {
+        return handleStatusbarSeparator(parts.slice(1).join(' '), ctx)
+      }
+
       const next = flagFromArg(arg, ctx.ui.statusBar)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /statusbar [on|off|toggle]')
+        return ctx.transcript.sys('usage: /statusbar [on|off|config …|separator …]')
       }
 
       patchUiState({ statusBar: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next ? 'on' : 'off' }).catch(() => { })
 
       queueMicrotask(() => ctx.transcript.sys(`status bar ${next ? 'on' : 'off'}`))
     }

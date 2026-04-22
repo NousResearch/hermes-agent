@@ -29,6 +29,13 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
 
 export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
   const d = cfg?.config?.display ?? {}
+  const statusBarRaw = d.tui_statusbar
+  const statusBarObj = typeof statusBarRaw === 'object' ? statusBarRaw : null
+  const statusBarEnabled = statusBarObj ? statusBarObj.enabled !== false : statusBarRaw !== false
+  const statusBarSep = statusBarObj?.separator ? statusBarObj.separator : ' │ '
+  // fields_left/fields_right take precedence; fallback to fields for backward compat
+  const statusBarFieldsLeft = statusBarObj?.fields_left ?? statusBarObj?.fields ?? undefined
+  const statusBarFieldsRight = statusBarObj?.fields_right ?? undefined
 
   setBell(!!d.bell_on_complete)
   patchUiState({
@@ -37,7 +44,10 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     inlineDiffs: d.inline_diffs !== false,
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
-    statusBar: d.tui_statusbar !== false,
+    statusBar: statusBarEnabled,
+    statusBarFieldsLeft,
+    statusBarFieldsRight,
+    statusBarSeparator: statusBarSep,
     streaming: d.streaming !== false
   })
 }

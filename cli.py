@@ -5977,9 +5977,7 @@ class HermesCLI:
         elif canonical == "status":
             self._show_session_status()
         elif canonical == "statusbar":
-            self._status_bar_visible = not self._status_bar_visible
-            state = "visible" if self._status_bar_visible else "hidden"
-            self._console_print(f"  Status bar {state}")
+            self._handle_statusbar(cmd_original)
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "yolo":
@@ -6730,6 +6728,40 @@ class HermesCLI:
         print("  Note: banner colors will update on next session start.")
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
+
+    def _handle_statusbar(self, cmd_original: str):
+        """Handle /statusbar and its sub-commands."""
+        parts = cmd_original.strip().split()
+        sub = parts[1].lower() if len(parts) > 1 else None
+
+        if sub == "separator":
+            sep = " ".join(parts[2:]).strip().strip('"').strip("'") if len(parts) > 2 else None
+            if not sep:
+                # Show current separator
+                cfg = self._cli_config
+                sb = cfg.get("display", {}).get("tui_statusbar", {})
+                if isinstance(sb, dict):
+                    cur = sb.get("separator", " │ ")
+                else:
+                    cur = " │ "
+                self._console_print(f'  Status bar separator: "{cur}"')
+                return
+            # Save new separator
+            cfg = self._cli_config
+            sb = cfg.get("display", {}).get("tui_statusbar", {})
+            if not isinstance(sb, dict):
+                sb = {"enabled": bool(sb)}
+            sb["separator"] = sep
+            if save_config_value("display.tui_statusbar", sb):
+                self._console_print(f'  Status bar separator: "{sep}"')
+            else:
+                self._console_print("  Failed to save separator")
+            return
+
+        # Default: toggle visibility
+        self._status_bar_visible = not self._status_bar_visible
+        state = "visible" if self._status_bar_visible else "hidden"
+        self._console_print(f"  Status bar {state}")
 
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""

@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
-import { $uiState } from '../app/uiStore.js'
+import { $uiState, patchUiState } from '../app/uiStore.js'
 
 import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
@@ -12,6 +12,7 @@ import { ModelPicker } from './modelPicker.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
+import { StatusFieldPicker } from './statusFieldPicker.js'
 
 const COMPLETION_WINDOW = 16
 
@@ -102,7 +103,7 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
+  const hasAny = overlay.fieldPicker || overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
 
   if (!hasAny) {
     return null
@@ -123,6 +124,22 @@ export function FloatingOverlays({
             gw={gw}
             onCancel={() => patchOverlayState({ picker: false })}
             onSelect={onPickerSelect}
+            t={ui.theme}
+          />
+        </FloatBox>
+      )}
+
+      {overlay.fieldPicker && (
+        <FloatBox color={ui.theme.color.bronze}>
+          <StatusFieldPicker
+            currentFieldsLeft={ui.statusBarFieldsLeft}
+            currentFieldsRight={ui.statusBarFieldsRight}
+            gw={gw}
+            onCancel={() => patchOverlayState({ fieldPicker: false })}
+            onSelect={(fieldsLeft, fieldsRight) => {
+              patchUiState({ statusBarFieldsLeft: fieldsLeft, statusBarFieldsRight: fieldsRight })
+              patchOverlayState({ fieldPicker: false })
+            }}
             t={ui.theme}
           />
         </FloatBox>

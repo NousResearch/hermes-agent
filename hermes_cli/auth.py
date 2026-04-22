@@ -168,7 +168,10 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="kimi-coding",
         name="Kimi / Moonshot",
         auth_type="api_key",
-        inference_base_url="https://api.kimi.com/coding",
+        # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat).
+        # sk-kimi- (Kimi Code) keys are auto-redirected to api.kimi.com/coding
+        # by _resolve_kimi_base_url() below.
+        inference_base_url="https://api.moonshot.ai/v1",
         api_key_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
         base_url_env_var="KIMI_BASE_URL",
     ),
@@ -340,10 +343,16 @@ def get_anthropic_key() -> str:
 # =============================================================================
 
 # Kimi Code (kimi.com/code) issues keys prefixed "sk-kimi-" that only work
-# on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
-# api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
+# on api.kimi.com/coding.  Legacy keys from platform.moonshot.ai work on
+# api.moonshot.ai/v1 (the old default).  Auto-detect when user hasn't set
 # KIMI_BASE_URL explicitly.
-KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
+#
+# Note: the base URL intentionally has NO /v1 suffix.  The /coding endpoint
+# speaks the Anthropic Messages protocol, and the anthropic SDK appends
+# "/v1/messages" internally — so "/coding" + SDK suffix → "/coding/v1/messages"
+# (the correct target). Using "/coding/v1" here would produce
+# "/coding/v1/v1/messages" (a 404).
+KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
 
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:

@@ -621,8 +621,87 @@ class TestSendTyping:
 # ---------------------------------------------------------------------------
 
 
+class TestSlackSocketWatchdog:
+    @pytest.mark.asyncio
+    async def test_connect_starts_socket_and_watchdog_tasks(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        mock_app = MagicMock()
+        mock_app.event = lambda *_args, **_kwargs: (lambda fn: fn)
+        mock_app.command = lambda *_args, **_kwargs: (lambda fn: fn)
+        mock_app.action = lambda *_args, **_kwargs: (lambda fn: fn)
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(return_value={
+            "user_id": "U_BOT",
+            "user": "testbot",
+            "team_id": "T_FAKE",
+            "team": "FakeTeam",
+        })
+
+        mock_handler = MagicMock()
+        mock_handler.start_async = AsyncMock()
+
+        created = []
+
+        def fake_create_task(coro):
+            task = MagicMock()
+            task.add_done_callback = MagicMock()
+            created.append((coro, task))
+            if hasattr(coro, "close"):
+                coro.close()
+            return task
+
+        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=mock_handler), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task", side_effect=fake_create_task):
+            ok = await adapter.connect()
+
+        assert ok is True
+        assert len(created) == 2
+        assert adapter._socket_mode_task is created[0][1]
+        assert adapter._watchdog_task is created[1][1]
+        adapter._socket_mode_task.add_done_callback.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_forces_reconnect_after_idle_threshold(self, adapter):
+        adapter._running = True
+        adapter._socket_mode_task = MagicMock()
+        adapter._socket_mode_task.done.return_value = False
+        adapter._watchdog_interval = 0
+        adapter._watchdog_idle_seconds = 5
+        adapter._last_socket_activity_ts = -999.0
+        adapter._force_socket_reconnect = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._watchdog_loop()
+
+        adapter._force_socket_reconnect.assert_awaited_once()
+
+    def test_socket_task_done_marks_adapter_degraded(self, adapter):
+        adapter._running = True
+
+        class DoneTask:
+            def cancelled(self):
+                return False
+            def exception(self):
+                return RuntimeError("socket crashed")
+
+        with patch.object(adapter, "_set_fatal_error") as set_fatal:
+            adapter._handle_socket_mode_task_done(DoneTask())
+
+        set_fatal.assert_not_called()
+        assert adapter._socket_mode_failed is True
+        assert adapter._running is False
+
+
 class TestFormatMessage:
-    """Test markdown to Slack mrkdwn conversion."""
+    """Slack mrkdwn formatting tests."""
 
     def test_bold_conversion(self, adapter):
         assert adapter.format_message("**hello**") == "*hello*"

@@ -86,6 +86,16 @@ class SlackAdapter(BasePlatformAdapter):
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
         self._socket_mode_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._watchdog_interval: float = float(self.config.extra.get("socket_watchdog_interval", 15.0) or 15.0)
+        self._watchdog_idle_seconds: float = float(self.config.extra.get("socket_watchdog_idle_seconds", 60.0) or 60.0)
+        self._watchdog_lock = asyncio.Lock()
+        self._last_socket_activity_ts: float = time.monotonic()
+        self._last_inbound_event_ts: float = 0.0
+        self._last_reconnect_ts: float = 0.0
+        self._consecutive_stale_recoveries: int = 0
+        self._socket_mode_failed: bool = False
+        self._disconnecting: bool = False
         # Multi-workspace support
         self._team_clients: Dict[str, AsyncWebClient] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
@@ -218,9 +228,14 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token)
+            self._disconnecting = False
+            self._socket_mode_failed = False
+            self._mark_socket_activity(kind="connect")
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
+            self._socket_mode_task.add_done_callback(self._handle_socket_mode_task_done)
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
-            self._running = True
+            self._mark_connected()
             logger.info(
                 "[Slack] Socket Mode connected (%d workspace(s))",
                 len(self._team_clients),
@@ -236,12 +251,25 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
+        self._disconnecting = True
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[Slack] Error while stopping watchdog task: %s", e, exc_info=True)
+            self._watchdog_task = None
         if self._handler:
             try:
                 await self._handler.close_async()
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
-        self._running = False
+        if self._socket_mode_task:
+            self._socket_mode_task.cancel()
+            self._socket_mode_task = None
+        self._mark_disconnected()
 
         self._release_platform_lock()
 
@@ -253,6 +281,84 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
+
+    def _mark_socket_activity(self, *, kind: str, inbound: bool = False) -> None:
+        now = time.monotonic()
+        self._last_socket_activity_ts = now
+        if inbound:
+            self._last_inbound_event_ts = now
+        if kind == "reconnect":
+            self._last_reconnect_ts = now
+
+    def _write_slack_health_status(self, state: str, error_message: Optional[str] = None) -> None:
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(
+                platform=self.platform.value,
+                platform_state=state,
+                error_code=None,
+                error_message=error_message,
+            )
+        except Exception:
+            pass
+
+    def _handle_socket_mode_task_done(self, task: asyncio.Task) -> None:
+        if self._disconnecting:
+            return
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except Exception as e:  # pragma: no cover - defensive logging
+            exc = e
+        if exc is None:
+            return
+        self._socket_mode_failed = True
+        self._running = False
+        logger.warning("[Slack] Socket Mode task exited unexpectedly: %s", exc, exc_info=True)
+        self._write_slack_health_status("degraded", f"socket task exited: {exc}")
+        if self._handler is not None:
+            try:
+                asyncio.create_task(self._force_socket_reconnect(reason="socket_task_exited"))
+            except RuntimeError:
+                pass
+
+    async def _force_socket_reconnect(self, *, reason: str) -> None:
+        async with self._watchdog_lock:
+            if self._disconnecting or self._handler is None:
+                return
+            logger.warning("[Slack] Forcing Socket Mode reconnect: %s", reason)
+            self._write_slack_health_status("reconnecting", reason)
+            client = getattr(self._handler, "client", None)
+            try:
+                if client is not None and hasattr(client, "connect_to_new_endpoint"):
+                    await client.connect_to_new_endpoint()
+                else:
+                    await self._handler.close_async()
+                    await self._handler.connect_async()
+            except Exception as e:  # pragma: no cover - defensive logging
+                self._socket_mode_failed = True
+                self._running = False
+                self._write_slack_health_status("degraded", f"reconnect failed: {e}")
+                logger.warning("[Slack] Forced reconnect failed: %s", e, exc_info=True)
+                return
+            self._socket_mode_failed = False
+            self._consecutive_stale_recoveries += 1
+            self._mark_socket_activity(kind="reconnect")
+            self._mark_connected()
+
+    async def _watchdog_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._watchdog_interval)
+            if self._disconnecting or not self._running:
+                continue
+            task = self._socket_mode_task
+            if task is not None and hasattr(task, "done") and task.done():
+                await self._force_socket_reconnect(reason="socket_task_done")
+                continue
+            idle_for = time.monotonic() - self._last_socket_activity_ts
+            if idle_for >= self._watchdog_idle_seconds:
+                await self._force_socket_reconnect(reason=f"socket_idle:{idle_for:.1f}s")
 
     async def send(
         self,
@@ -292,6 +398,7 @@ class SlackAdapter(BasePlatformAdapter):
                         kwargs["reply_broadcast"] = True
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                self._mark_socket_activity(kind="send")
 
             # Track the sent message ts so we can auto-respond to thread
             # replies without requiring @mention.
@@ -334,6 +441,7 @@ class SlackAdapter(BasePlatformAdapter):
                 ts=message_id,
                 text=formatted,
             )
+            self._mark_socket_activity(kind="edit")
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
@@ -957,6 +1065,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
+        self._mark_socket_activity(kind="inbound", inbound=True)
         event_ts = event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
             return

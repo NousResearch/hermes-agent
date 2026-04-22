@@ -1994,12 +1994,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print("└─────────────────────────────────────────────────────────┘")
     print()
     
-    # Exit with code 1 if gateway fails to connect any platform,
-    # so systemd Restart=on-failure will retry on transient errors
+    # Exit with the managed service restart code so systemd / launchd
+    # treat startup failures as supervised restart conditions instead of
+    # consuming the generic on-failure burst budget.
     verbosity = None if quiet else verbose
     success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
     if not success:
-        sys.exit(1)
+        sys.exit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
 
 
 # =============================================================================

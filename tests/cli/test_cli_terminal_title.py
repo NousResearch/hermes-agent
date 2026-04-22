@@ -49,6 +49,18 @@ def test_update_terminal_title_writes_to_prompt_toolkit_output():
     cli_obj._update_terminal_title()
 
     output.set_title.assert_called_once_with("Fix terminal tab titles — Hermes")
+    output.flush.assert_called_once_with()
+
+
+def test_on_auto_title_ready_refreshes_terminal_title_and_ui():
+    cli_obj = _make_cli(title="Fix terminal tab titles")
+    cli_obj._update_terminal_title = MagicMock()
+    cli_obj._invalidate = MagicMock()
+
+    cli_obj._on_auto_title_ready("Fix terminal tab titles")
+
+    cli_obj._update_terminal_title.assert_called_once_with()
+    cli_obj._invalidate.assert_called_once_with(min_interval=0.0)
 
 
 def test_sync_session_id_from_agent_updates_title_and_clears_pending_title():

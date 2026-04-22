@@ -1352,6 +1352,36 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
 
 
+def _recover_codex_tokens_from_cli(
+    existing_tokens: Dict[str, Any],
+    *,
+    reason: str,
+) -> Optional[Dict[str, str]]:
+    """Recover Hermes Codex auth from a fresh Codex CLI session when needed."""
+    cli_tokens = _import_codex_cli_tokens()
+    if not cli_tokens:
+        return None
+
+    current_access = str(existing_tokens.get("access_token", "") or "").strip()
+    current_refresh = str(existing_tokens.get("refresh_token", "") or "").strip()
+    cli_access = str(cli_tokens.get("access_token", "") or "").strip()
+    cli_refresh = str(cli_tokens.get("refresh_token", "") or "").strip()
+    if not cli_access or not cli_refresh:
+        return None
+    if cli_access == current_access and cli_refresh == current_refresh:
+        return None
+
+    logger.info("Recovering Codex credentials from ~/.codex/auth.json after %s", reason)
+    _save_codex_tokens({
+        "access_token": cli_access,
+        "refresh_token": cli_refresh,
+    })
+    return {
+        "access_token": cli_access,
+        "refresh_token": cli_refresh,
+    }
+
+
 def resolve_codex_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -1397,7 +1427,25 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                try:
+                    tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                    refreshed_data = _read_codex_tokens(_lock=False)
+                    refreshed_tokens = dict(refreshed_data["tokens"])
+                    if refreshed_tokens == tokens:
+                        data = refreshed_data
+                    else:
+                        data = dict(data)
+                        data["tokens"] = dict(tokens)
+                except AuthError as exc:
+                    recovered = _recover_codex_tokens_from_cli(
+                        tokens,
+                        reason=f"Codex refresh failure ({exc.code})",
+                    )
+                    if recovered is None:
+                        raise
+                    tokens = recovered
+                    data = _read_codex_tokens(_lock=False)
+                tokens = dict(data["tokens"])
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (
@@ -2138,23 +2186,31 @@ def get_nous_auth_status() -> Dict[str, Any]:
 
 def get_codex_auth_status() -> Dict[str, Any]:
     """Status snapshot for Codex auth.
-    
-    Checks the credential pool first (where `hermes auth` stores credentials),
-    then falls back to the legacy provider state.
+
+    This must stay side-effect free. Status/doctor should not trigger live token
+    refresh attempts because refresh-token rotation can make health output
+    nondeterministic and can mark otherwise usable credentials as exhausted.
     """
     # Check credential pool first — this is where `hermes auth` and
-    # `hermes model` store device_code tokens.
+    # `hermes model` store device_code tokens. Read the persisted entries
+    # directly instead of calling pool.select(), which can trigger refresh.
     try:
         from agent.credential_pool import load_pool
         pool = load_pool("openai-codex")
         if pool and pool.has_credentials():
-            entry = pool.select()
-            if entry is not None:
+            entries = getattr(pool, "_entries", None)
+            if not isinstance(entries, list):
+                try:
+                    entries = pool.entries()
+                except Exception:
+                    entries = []
+            for entry in entries or []:
                 api_key = (
                     getattr(entry, "runtime_api_key", None)
                     or getattr(entry, "access_token", "")
                 )
-                if api_key and not _codex_access_token_is_expiring(api_key, 0):
+                refresh_token = str(getattr(entry, "refresh_token", "") or "").strip()
+                if api_key or refresh_token:
                     return {
                         "logged_in": True,
                         "auth_store": str(_auth_file_path()),
@@ -2162,21 +2218,34 @@ def get_codex_auth_status() -> Dict[str, Any]:
                         "auth_mode": "chatgpt",
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
                         "api_key": api_key,
+                        "needs_refresh": (
+                            _codex_access_token_is_expiring(api_key, 0)
+                            if api_key else True
+                        ),
                     }
     except Exception:
         pass
 
-    # Fall back to legacy provider state
+    # Fall back to Hermes auth store without attempting refresh.
     try:
-        creds = resolve_codex_runtime_credentials()
-        return {
-            "logged_in": True,
-            "auth_store": str(_auth_file_path()),
-            "last_refresh": creds.get("last_refresh"),
-            "auth_mode": creds.get("auth_mode"),
-            "source": creds.get("source"),
-            "api_key": creds.get("api_key"),
-        }
+        data = _read_codex_tokens()
+        tokens = dict(data.get("tokens") or {})
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+        if access_token or refresh_token:
+            return {
+                "logged_in": True,
+                "auth_store": str(_auth_file_path()),
+                "last_refresh": data.get("last_refresh"),
+                "auth_mode": data.get("auth_mode") or "chatgpt",
+                "source": "hermes-auth-store",
+                "api_key": access_token,
+                "needs_refresh": (
+                    _codex_access_token_is_expiring(access_token, 0)
+                    if access_token else True
+                ),
+            }
+        raise AuthError("No Codex credentials found.", code="codex_auth_missing")
     except AuthError as exc:
         return {
             "logged_in": False,

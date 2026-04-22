@@ -262,6 +262,7 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert len(kwargs["prompt_cache_key"]) > 0
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
+    assert "max_output_tokens" not in kwargs
     assert "extra_body" not in kwargs
 
 

@@ -5434,6 +5434,10 @@ class AIAgent:
                 "models.github.ai" in self.base_url.lower()
                 or "api.githubcopilot.com" in self.base_url.lower()
             )
+            is_chatgpt_codex = (
+                self.provider == "openai-codex"
+                and "chatgpt.com/backend-api/codex" in self.base_url.lower()
+            )
 
             # Resolve reasoning effort: config > default (medium)
             reasoning_effort = "medium"
@@ -5471,7 +5475,7 @@ class AIAgent:
             elif not is_github_responses:
                 kwargs["include"] = []
 
-            if self.max_tokens is not None:
+            if self.max_tokens is not None and not is_chatgpt_codex:
                 kwargs["max_output_tokens"] = self.max_tokens
 
             return kwargs

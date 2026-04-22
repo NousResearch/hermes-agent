@@ -4,6 +4,7 @@ import json
 import time
 import base64
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -122,6 +123,43 @@ def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
     assert resolved["api_key"] == "access-forced"
 
 
+def test_resolve_codex_runtime_credentials_recovers_from_fresh_cli_tokens(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
+    _setup_hermes_auth(
+        hermes_home,
+        access_token=_jwt_with_exp(int(time.time()) - 10),
+        refresh_token="refresh-stale",
+    )
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": "cli-access",
+            "refresh_token": "cli-refresh",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    def _fail_refresh(tokens, timeout_seconds):
+        raise AuthError(
+            "Codex token refresh failed with status 401.",
+            provider="openai-codex",
+            code="codex_refresh_failed",
+            relogin_required=False,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _fail_refresh)
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "cli-access"
+    assert resolved["source"] == "hermes-auth-store"
+    saved = _read_codex_tokens()
+    assert saved["tokens"]["access_token"] == "cli-access"
+    assert saved["tokens"]["refresh_token"] == "cli-refresh"
+
+
 def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -190,3 +228,39 @@ def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
     assert creds["source"] == "hermes-auth-store"
     assert creds["provider"] == "openai-codex"
     assert creds["base_url"] == DEFAULT_CODEX_BASE_URL
+
+
+def test_get_codex_auth_status_reads_pool_without_refresh(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    expired_token = _jwt_with_exp(int(time.time()) - 10)
+
+    class DummyPool:
+        def __init__(self, entries):
+            self._entries = entries
+
+        def has_credentials(self):
+            return True
+
+    entry = SimpleNamespace(
+        label="device_code",
+        runtime_api_key=expired_token,
+        access_token=expired_token,
+        refresh_token="refresh-token",
+        last_refresh="2026-04-09T21:22:01.255252Z",
+    )
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: DummyPool([entry]))
+    monkeypatch.setattr(
+        "hermes_cli.auth._read_codex_tokens",
+        lambda: (_ for _ in ()).throw(AssertionError("auth store fallback should not run")),
+    )
+
+    status = get_codex_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["source"] == "pool:device_code"
+    assert status["needs_refresh"] is True
+    assert status["last_refresh"] == "2026-04-09T21:22:01.255252Z"

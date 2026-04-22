@@ -1263,13 +1263,21 @@ def _get_provider_chain() -> List[tuple]:
 def _is_payment_error(exc: Exception) -> bool:
     """Detect payment/credit/quota exhaustion errors.
 
-    Returns True for HTTP 402 (Payment Required) and for 429/other errors
-    whose message indicates billing exhaustion rather than rate limiting.
+    Returns True for HTTP 402 (Payment Required), HTTP 403 responses from
+    OpenRouter that indicate key/spend-limit exhaustion, and for 429/other
+    errors whose message indicates billing exhaustion rather than rate limiting.
     """
     status = getattr(exc, "status_code", None)
     if status == 402:
         return True
     err_lower = str(exc).lower()
+    # OpenRouter 403 key-limit / spend-limit errors are payment exhaustion
+    if status == 403:
+        if any(kw in err_lower for kw in (
+            "key limit", "spending limit", "spend limit",
+            "total limit", "credit limit", "quota exceeded",
+        )):
+            return True
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
     if status in (402, 429, None):

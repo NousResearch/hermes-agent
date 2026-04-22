@@ -11,7 +11,11 @@ from typing import Optional
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
-from tools.file_operations import ShellFileOperations
+from tools.file_operations import (
+    ShellFileOperations,
+    normalize_read_pagination,
+    normalize_search_pagination,
+)
 from tools import file_state
 from agent.redact import redact_sensitive_text
 
@@ -351,6 +355,8 @@ def clear_file_ops_cache(task_id: str = None):
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
+        offset, limit = normalize_read_pagination(offset, limit)
+
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
@@ -762,6 +768,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        offset, limit = normalize_search_pagination(offset, limit)
+
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
         # results without tripping the repeated-search guard.

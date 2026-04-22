@@ -6583,6 +6583,15 @@ class AIAgent:
             self._chat_completions_transport = t
         return t
 
+    def _get_bedrock_transport(self):
+        """Return the cached BedrockTransport instance (lazy singleton)."""
+        t = getattr(self, "_bedrock_transport", None)
+        if t is None:
+            from agent.transports import get_transport
+            t = get_transport("bedrock_converse")
+            self._bedrock_transport = t
+        return t
+
     def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
         if not any(
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
@@ -6722,21 +6731,17 @@ class AIAgent:
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
         # The adapter handles message/tool conversion and boto3 calls directly.
         if self.api_mode == "bedrock_converse":
-            from agent.bedrock_adapter import build_converse_kwargs
+            _bt = self._get_bedrock_transport()
             region = getattr(self, "_bedrock_region", None) or "us-east-1"
             guardrail = getattr(self, "_bedrock_guardrail_config", None)
-            return {
-                "__bedrock_converse__": True,
-                "__bedrock_region__": region,
-                **build_converse_kwargs(
-                    model=self.model,
-                    messages=api_messages,
-                    tools=self.tools,
-                    max_tokens=self.max_tokens or 4096,
-                    temperature=None,  # Let the model use its default
-                    guardrail_config=guardrail,
-                ),
-            }
+            return _bt.build_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                max_tokens=self.max_tokens or 4096,
+                region=region,
+                guardrail_config=guardrail,
+            )
 
         if self.api_mode == "codex_responses":
             _ct = self._get_codex_transport()
@@ -9250,6 +9255,14 @@ class AIAgent:
                                 error_details.append("response is None")
                             else:
                                 error_details.append("response.content invalid (not a non-empty list)")
+                    elif self.api_mode == "bedrock_converse":
+                        _btv = self._get_bedrock_transport()
+                        if not _btv.validate_response(response):
+                            response_invalid = True
+                            if response is None:
+                                error_details.append("response is None")
+                            else:
+                                error_details.append("Bedrock response invalid (no output or choices)")
                     else:
                         _ctv = self._get_chat_completions_transport()
                         if not _ctv.validate_response(response):
@@ -9413,6 +9426,10 @@ class AIAgent:
                     elif self.api_mode == "anthropic_messages":
                         _tfr = self._get_anthropic_transport()
                         finish_reason = _tfr.map_finish_reason(response.stop_reason)
+                    elif self.api_mode == "bedrock_converse":
+                        # Bedrock response is already normalized at dispatch — finish_reason
+                        # is already in OpenAI format via normalize_converse_response()
+                        finish_reason = response.choices[0].finish_reason if hasattr(response, "choices") and response.choices else "stop"
                     else:
                         finish_reason = response.choices[0].finish_reason
                         assistant_message = response.choices[0].message

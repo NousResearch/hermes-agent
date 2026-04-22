@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
-import { resetOverlayState } from '../app/overlayStore.js'
+import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
-import { resetTurnState } from '../app/turnStore.js'
+import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
@@ -272,5 +272,43 @@ describe('createGatewayEventHandler', () => {
       panelData: { title: 'Setup Required' },
       role: 'system'
     })
+  })
+
+  it('keeps gateway noise informational and approval out of Activity', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.gateway.rpc = vi.fn(async () => {
+      throw new Error('cold start')
+    })
+
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { line: 'Traceback: noisy but non-fatal' }, type: 'gateway.stderr' } as any)
+    onEvent({ payload: { preview: 'bad framing' }, type: 'gateway.protocol_error' } as any)
+    onEvent({
+      payload: { command: 'rm -rf /tmp/nope', description: 'dangerous command' },
+      type: 'approval.request'
+    } as any)
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(getOverlayState().approval).toMatchObject({ description: 'dangerous command' })
+    expect(getTurnState().activity).toMatchObject([
+      { text: 'Traceback: noisy but non-fatal', tone: 'info' },
+      { text: 'protocol noise detected · /logs to inspect', tone: 'info' },
+      { text: 'protocol noise: bad framing', tone: 'info' },
+      { text: 'command catalog unavailable: cold start', tone: 'info' }
+    ])
+  })
+
+  it('still surfaces terminal turn failures as errors', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { message: 'boom' }, type: 'error' } as any)
+
+    expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
 })

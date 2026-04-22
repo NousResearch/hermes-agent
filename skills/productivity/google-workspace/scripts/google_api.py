@@ -214,8 +214,7 @@ def gmail_search(args):
                 params={
                     "userId": "me",
                     "id": msg_meta["id"],
-                    "format": "metadata",
-                    "metadataHeaders": ["From", "To", "Subject", "Date"],
+                    "format": "full",
                 },
             )
             headers = _headers_dict(msg)
@@ -354,8 +353,7 @@ def gmail_reply(args):
             params={
                 "userId": "me",
                 "id": args.message_id,
-                "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
+                "format": "full",
             },
         )
         headers = _headers_dict(original)

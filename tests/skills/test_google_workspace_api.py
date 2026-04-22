@@ -185,6 +185,87 @@ def test_api_calendar_list_respects_date_range(api_module):
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
 
 
+def test_api_gmail_search_gws_populates_header_fields(api_module, capsys):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts == ["gmail", "users", "messages", "list"]:
+            return {"messages": [{"id": "m1", "threadId": "t1"}]}
+        if parts == ["gmail", "users", "messages", "get"]:
+            return {
+                "id": "m1",
+                "threadId": "t1",
+                "snippet": "hello snippet",
+                "labelIds": ["INBOX"],
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Sender <sender@example.com>"},
+                        {"name": "To", "value": "me@example.com"},
+                        {"name": "Subject", "value": "Hello there"},
+                        {"name": "Date", "value": "Wed, 22 Apr 2026 10:00:00 +0000"},
+                    ]
+                },
+            }
+        raise AssertionError(f"Unexpected gws call: {parts}")
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(query="newer_than:30d", max=1, func=api_module.gmail_search)
+
+    api_module.gmail_search(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out == [
+        {
+            "id": "m1",
+            "threadId": "t1",
+            "from": "Sender <sender@example.com>",
+            "to": "me@example.com",
+            "subject": "Hello there",
+            "date": "Wed, 22 Apr 2026 10:00:00 +0000",
+            "snippet": "hello snippet",
+            "labels": ["INBOX"],
+        }
+    ]
+    assert calls[1]["params"]["format"] == "full"
+
+
+def test_api_gmail_reply_gws_uses_full_message_for_headers(api_module, capsys):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts == ["gmail", "users", "messages", "get"]:
+            return {
+                "id": "m1",
+                "threadId": "t1",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Sender <sender@example.com>"},
+                        {"name": "Subject", "value": "Hello there"},
+                        {"name": "Message-ID", "value": "<msg-1@example.com>"},
+                    ]
+                },
+            }
+        if parts == ["gmail", "users", "messages", "send"]:
+            return {"id": "sent1", "threadId": "t1"}
+        raise AssertionError(f"Unexpected gws call: {parts}")
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        message_id="m1",
+        body="Thanks",
+        from_header="",
+        func=api_module.gmail_reply,
+    )
+
+    api_module.gmail_reply(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"status": "sent", "id": "sent1", "threadId": "t1"}
+    assert calls[0]["params"]["format"] == "full"
+
+
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path, token="ya29.old")

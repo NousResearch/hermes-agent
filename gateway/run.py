@@ -3274,15 +3274,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if mode not in valid_modes:
                 continue
             key = str(chat_id)
-            # Skip legacy unprefixed keys (warn and skip)
-            if ":" not in key:
-                logger.warning(
-                    "Skipping legacy unprefixed voice mode key %r during migration. "
-                    "Re-enable voice mode on that chat to rebuild the prefixed key.",
+            if ":" in key:
+                result[key] = mode
+                continue
+            # Legacy pre-#12542 key. Keep "off" so auto-TTS suppression
+            # survives the migration (#14025); drop voice_only/all to
+            # avoid firing TTS on a platform the user never configured.
+            if mode == "off":
+                logger.info(
+                    "Preserving legacy unprefixed voice mode key %r (mode=off) "
+                    "for cross-adapter auto-TTS suppression. Run any /voice "
+                    "command on the affected chat to write a prefixed entry "
+                    "that supersedes this fallback on that platform.",
                     key,
                 )
-                continue
-            result[key] = mode
+                result[key] = mode
+            else:
+                logger.warning(
+                    "Skipping legacy unprefixed voice mode key %r (mode=%s) "
+                    "during migration. Re-enable voice mode on that chat to "
+                    "rebuild the prefixed key.",
+                    key, mode,
+                )
         return result
 
     def _save_voice_modes(self) -> None:
@@ -3333,6 +3346,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           - ``_auto_tts_default``: global default from ``voice.auto_tts``
           - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
           - ``_auto_tts_disabled_chats``: chats with mode ``off``
+
+        Explicit platform-prefixed entries win. Legacy pre-#12542 unprefixed
+        ``off`` rows are a cross-platform fallback only for chats without an
+        explicit entry on the adapter's platform (#14025).
         """
         platform = getattr(adapter, "platform", None)
         if not isinstance(platform, Platform):
@@ -3357,16 +3374,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._auto_tts_default = _auto_tts_default
 
         prefix = f"{platform.value}:"
+        explicit_ids = {
+            key[len(prefix):]
+            for key in self._voice_mode
+            if key.startswith(prefix)
+        }
         if isinstance(disabled_chats, set):
             disabled_chats.clear()
             disabled_chats.update(
-                key[len(prefix):] for key, mode in self._voice_mode.items()
+                key[len(prefix):]
+                for key, mode in self._voice_mode.items()
                 if mode == "off" and key.startswith(prefix)
+            )
+            disabled_chats.update(
+                key
+                for key, mode in self._voice_mode.items()
+                if mode == "off" and ":" not in key and key not in explicit_ids
             )
         if isinstance(enabled_chats, set):
             enabled_chats.clear()
             enabled_chats.update(
-                key[len(prefix):] for key, mode in self._voice_mode.items()
+                key[len(prefix):]
+                for key, mode in self._voice_mode.items()
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 

@@ -9,10 +9,12 @@ same key. The fix prefixes keys with platform value: 'telegram:123' vs
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
 from gateway.config import Platform
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
 
 
@@ -64,15 +66,18 @@ class TestVoiceModePlatformIsolation:
 class TestLegacyKeyMigration:
     """Test migration of legacy unprefixed keys in _load_voice_modes."""
 
-    def test_load_voice_modes_skips_legacy_keys(self):
-        """_load_voice_modes skips keys without ':' prefix and logs a warning."""
+    def test_load_voice_modes_skips_legacy_nonoff_keys(self):
+        """Legacy unprefixed non-'off' keys are dropped with a warning.
+
+        Only 'off' legacy rows are preserved (see #14025); 'all' and
+        'voice_only' legacy rows would broadcast TTS to the wrong
+        platform if migrated without knowing the owner.
+        """
         runner = _make_runner()
 
-        # Simulate legacy persisted data with unprefixed keys
         legacy_data = {
             "123": "all",
             "456": "voice_only",
-            # Also includes a properly prefixed key (from after the fix)
             "telegram:789": "off",
         }
 
@@ -84,15 +89,36 @@ class TestLegacyKeyMigration:
                 with patch("gateway.run.logger") as mock_logger:
                     result = runner._load_voice_modes()
 
-            # Legacy keys without ':' should be skipped
             assert "123" not in result
             assert "456" not in result
-            # Prefixed key should be preserved
             assert result.get("telegram:789") == "off"
-            # Warning should be logged for each legacy key
             assert mock_logger.warning.called
             warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
             assert any("Skipping legacy unprefixed voice mode key" in str(c) for c in warning_calls)
+
+    def test_load_voice_modes_preserves_legacy_off_keys(self):
+        """Legacy unprefixed keys with mode='off' are preserved so the
+        auto-TTS suppression survives the #12542 migration (#14025)."""
+        runner = _make_runner()
+
+        legacy_data = {
+            "123": "off",
+            "456": "all",
+            "789": "voice_only",
+            "telegram:999": "off",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            voice_path = Path(tmpdir) / "gateway_voice_mode.json"
+            voice_path.write_text(json.dumps(legacy_data))
+
+            with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
+                result = runner._load_voice_modes()
+
+        assert result.get("123") == "off"
+        assert "456" not in result
+        assert "789" not in result
+        assert result.get("telegram:999") == "off"
 
     def test_load_voice_modes_preserves_prefixed_keys(self):
         """_load_voice_modes correctly loads platform-prefixed keys."""
@@ -203,9 +229,96 @@ class TestSyncVoiceModeStateToAdapter:
         # Should not raise
         runner._sync_voice_mode_state_to_adapter(mock_adapter)
 
+    def test_sync_legacy_off_applies_to_all_adapters(self):
+        """Legacy unprefixed 'off' rows suppress auto-TTS on every adapter
+        that has no explicit prefixed entry for the same chat id (#14025)."""
+        runner = _make_runner()
+        runner._voice_mode = {
+            "123": "off",
+            "telegram:456": "off",
+            "slack:789": "off",
+        }
+
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        slack_adapter = _make_adapter(Platform.SLACK)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"voice": {"auto_tts": True}},
+        ):
+            runner._sync_voice_mode_state_to_adapter(telegram_adapter)
+            runner._sync_voice_mode_state_to_adapter(slack_adapter)
+
+        assert telegram_adapter._auto_tts_disabled_chats == {"123", "456"}
+        assert _should_auto_tts(telegram_adapter, "123") is False
+        assert _should_auto_tts(telegram_adapter, "456") is False
+        assert slack_adapter._auto_tts_disabled_chats == {"123", "789"}
+        assert _should_auto_tts(slack_adapter, "123") is False
+        assert _should_auto_tts(slack_adapter, "789") is False
+
+    def test_explicit_prefixed_enables_override_legacy_off_after_restart(self):
+        """Explicit voice_only/all rows beat legacy off on their platform."""
+        runner = _make_runner()
+        persisted_data = {
+            "123": "off",
+            "456": "off",
+            "telegram:123": "voice_only",
+            "telegram:456": "all",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            voice_path = Path(tmpdir) / "gateway_voice_mode.json"
+            voice_path.write_text(json.dumps(persisted_data))
+            with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
+                runner._voice_mode = runner._load_voice_modes()
+
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        slack_adapter = _make_adapter(Platform.SLACK)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"voice": {"auto_tts": True}},
+        ):
+            runner._sync_voice_mode_state_to_adapter(telegram_adapter)
+            runner._sync_voice_mode_state_to_adapter(slack_adapter)
+
+        assert telegram_adapter._auto_tts_default is True
+        assert telegram_adapter._auto_tts_enabled_chats == {"123", "456"}
+        assert telegram_adapter._auto_tts_disabled_chats == set()
+        assert _should_auto_tts(telegram_adapter, "123") is True
+        assert _should_auto_tts(telegram_adapter, "456") is True
+
+        # The same legacy IDs remain safe fallbacks on a platform without
+        # explicit state, proving platform collisions do not erase suppression.
+        assert slack_adapter._auto_tts_enabled_chats == set()
+        assert slack_adapter._auto_tts_disabled_chats == {"123", "456"}
+        assert _should_auto_tts(slack_adapter, "123") is False
+        assert _should_auto_tts(slack_adapter, "456") is False
+
+    def test_legacy_off_suppresses_enabled_default_after_restart(self):
+        """Legacy off overrides voice.auto_tts=true after an upgrade restart."""
+        runner = _make_runner()
+        legacy_data = {"987654321": "off"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            voice_path = Path(tmpdir) / "gateway_voice_mode.json"
+            voice_path.write_text(json.dumps(legacy_data))
+            with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
+                runner._voice_mode = runner._load_voice_modes()
+
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"voice": {"auto_tts": True}},
+        ):
+            runner._sync_voice_mode_state_to_adapter(telegram_adapter)
+
+        assert telegram_adapter._auto_tts_default is True
+        assert telegram_adapter._auto_tts_enabled_chats == set()
+        assert telegram_adapter._auto_tts_disabled_chats == {"987654321"}
+        assert _should_auto_tts(telegram_adapter, "987654321") is False
+
 
 # ---------------------------------------------------------------------------
-# Helper
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _make_runner() -> GatewayRunner:
@@ -215,3 +328,16 @@ def _make_runner() -> GatewayRunner:
         runner._voice_mode = {}
         runner.adapters = {}
     return runner
+
+
+def _make_adapter(platform: Platform) -> SimpleNamespace:
+    return SimpleNamespace(
+        platform=platform,
+        _auto_tts_default=False,
+        _auto_tts_enabled_chats=set(),
+        _auto_tts_disabled_chats=set(),
+    )
+
+
+def _should_auto_tts(adapter, chat_id: str) -> bool:
+    return BasePlatformAdapter._should_auto_tts_for_chat(adapter, chat_id)

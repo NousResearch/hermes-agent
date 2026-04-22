@@ -97,6 +97,43 @@ tts:
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 
+
+### Input length limits
+
+Each provider has a documented per-request input-character cap. Hermes truncates text before calling the provider so requests never fail with a length error:
+
+| Provider | Default cap (chars) |
+|----------|---------------------|
+| Edge TTS | 5000 |
+| OpenAI | 4096 |
+| xAI | 15000 |
+| MiniMax | 10000 |
+| Mistral | 4000 |
+| Google Gemini | 5000 |
+| ElevenLabs | Model-aware (see below) |
+| NeuTTS | 2000 |
+| KittenTTS | 2000 |
+
+**ElevenLabs** picks a cap from the configured `model_id`:
+
+| `model_id` | Cap (chars) |
+|------------|-------------|
+| `eleven_flash_v2_5` | 40000 |
+| `eleven_flash_v2` | 30000 |
+| `eleven_multilingual_v2` (default), `eleven_multilingual_v1`, `eleven_english_sts_v2`, `eleven_english_sts_v1` | 10000 |
+| `eleven_v3`, `eleven_ttv_v3` | 5000 |
+| Unknown model | Falls back to provider default (10000) |
+
+**Override per provider** with `max_text_length:` under the provider section of your TTS config:
+
+```yaml
+tts:
+  openai:
+    max_text_length: 8192   # raise or lower the provider cap
+```
+
+Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally disable truncation.
+
 ### Telegram Voice Bubbles & ffmpeg
 
 Telegram voice bubbles require Opus/OGG audio format:

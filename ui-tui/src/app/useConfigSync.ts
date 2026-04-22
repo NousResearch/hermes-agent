@@ -14,22 +14,15 @@ import type { StatusBarMode } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
-const STATUSBAR_MODES = new Set<StatusBarMode>(['bottom', 'off', 'top'])
-
-export const normalizeStatusBar = (raw: unknown): StatusBarMode => {
-  if (raw === false) {
-    return 'off'
-  }
-
-  if (typeof raw !== 'string') {
-    return 'top'
-  }
-
-  const v = raw.trim().toLowerCase()
-  const mode = (v === 'on' ? 'top' : v) as StatusBarMode
-
-  return STATUSBAR_MODES.has(mode) ? mode : 'top'
+const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
+  bottom: 'bottom',
+  off: 'off',
+  on: 'top',
+  top: 'top'
 }
+
+export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
+  raw === false ? 'off' : typeof raw === 'string' ? STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top' : 'top'
 
 const MTIME_POLL_MS = 5000
 

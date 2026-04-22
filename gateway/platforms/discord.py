@@ -2679,21 +2679,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 skills: ["skill-a", "skill-b"]
         Also checks parent_id so forum threads inherit the forum's bindings.
         """
-        bindings = self.config.extra.get("channel_skill_bindings", [])
-        if not bindings:
-            return None
-        ids_to_check = {channel_id}
-        if parent_id:
-            ids_to_check.add(parent_id)
-        for entry in bindings:
-            entry_id = str(entry.get("id", ""))
-            if entry_id in ids_to_check:
-                skills = entry.get("skills") or entry.get("skill")
-                if isinstance(skills, str):
-                    return [skills]
-                if isinstance(skills, list) and skills:
-                    return list(dict.fromkeys(skills))  # dedup, preserve order
-        return None
+        from gateway.platforms.base import resolve_channel_skills
+        return resolve_channel_skills(self.config.extra, channel_id, parent_id)
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""

@@ -2680,18 +2680,22 @@ class TestHydrateBotIdentity(unittest.TestCase):
             {
                 "code": 0,
                 "bot": {
-                    "bot_name": "Hermes Bot",
+                    "app_name": "Hermes Bot",
                     "open_id": "ou_hermes_hydrated",
                 },
             }
         ).encode("utf-8")
-        response = SimpleNamespace(content=payload)
+        response = SimpleNamespace(raw=SimpleNamespace(content=payload))
         adapter._client.request = Mock(return_value=response)
 
         asyncio.run(adapter._hydrate_bot_identity())
 
         self.assertEqual(adapter._bot_open_id, "ou_hermes_hydrated")
         self.assertEqual(adapter._bot_name, "Hermes Bot")
+        # Regression #13846: hydration must call Client.request with a single
+        # BaseRequest positionally, not method=/url=/body= kwargs.
+        call_args = adapter._client.request.call_args
+        self.assertEqual(call_args.kwargs, {})
         # Application-info fallback must NOT run when bot_name is already set.
         self.assertFalse(
             adapter._client.application.v6.application.get.called
@@ -2727,12 +2731,12 @@ class TestHydrateBotIdentity(unittest.TestCase):
             {
                 "code": 0,
                 "bot": {
-                    "bot_name": "Hermes Bot",
+                    "app_name": "Hermes Bot",
                     "open_id": "ou_probe_DIFFERENT",
                 },
             }
         ).encode("utf-8")
-        adapter._client.request = Mock(return_value=SimpleNamespace(content=payload))
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
 
         asyncio.run(adapter._hydrate_bot_identity())
 
@@ -2764,9 +2768,9 @@ class TestHydrateBotIdentity(unittest.TestCase):
         adapter = self._make_adapter()
         adapter._client = Mock()
         payload = json.dumps(
-            {"code": 0, "bot": {"bot_name": "Hermes", "open_id": "ou_hermes"}}
+            {"code": 0, "bot": {"app_name": "Hermes", "open_id": "ou_hermes"}}
         ).encode("utf-8")
-        adapter._client.request = Mock(return_value=SimpleNamespace(content=payload))
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
 
         asyncio.run(adapter._hydrate_bot_identity())
 

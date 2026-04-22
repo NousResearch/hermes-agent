@@ -277,7 +277,7 @@ class TestProbeBot:
         from gateway.platforms.feishu import probe_bot
 
         token_resp = _mock_urlopen({"code": 0, "tenant_access_token": "t-123"})
-        bot_resp = _mock_urlopen({"code": 0, "bot": {"bot_name": "HttpBot", "open_id": "ou_http"}})
+        bot_resp = _mock_urlopen({"code": 0, "bot": {"app_name": "HttpBot", "open_id": "ou_http"}})
         mock_urlopen_fn.side_effect = [token_resp, bot_resp]
 
         result = probe_bot("cli_app", "secret", "feishu")

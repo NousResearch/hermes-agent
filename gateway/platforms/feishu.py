@@ -3457,14 +3457,18 @@ class FeishuAdapter(BasePlatformAdapter):
         # uses via probe_bot().
         if not self._bot_open_id or not self._bot_name:
             try:
-                resp = await asyncio.to_thread(
-                    self._client.request,
-                    method="GET",
-                    url="/open-apis/bot/v3/info",
-                    body=None,
-                    raw_response=True,
+                req = (
+                    lark.BaseRequest.builder()
+                    .http_method(lark.HttpMethod.GET)
+                    .uri("/open-apis/bot/v3/info")
+                    .token_types({lark.AccessTokenType.TENANT})
+                    .build()
                 )
-                content = getattr(resp, "content", None)
+                resp = await asyncio.to_thread(self._client.request, req)
+                raw = getattr(resp, "raw", None)
+                content = getattr(raw, "content", None) if raw is not None else None
+                if isinstance(content, bytes):
+                    content = content.decode("utf-8")
                 if content:
                     payload = json.loads(content)
                     parsed = _parse_bot_response(payload) or {}
@@ -4237,7 +4241,7 @@ def _parse_bot_response(data: dict) -> Optional[dict]:
         return None
     bot = data.get("bot") or data.get("data", {}).get("bot") or {}
     return {
-        "bot_name": bot.get("bot_name"),
+        "bot_name": bot.get("app_name"),
         "bot_open_id": bot.get("open_id"),
     }
 
@@ -4246,13 +4250,21 @@ def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
     """Probe bot info using lark_oapi SDK."""
     try:
         client = _build_onboard_client(app_id, app_secret, domain)
-        resp = client.request(
-            method="GET",
-            url="/open-apis/bot/v3/info",
-            body=None,
-            raw_response=True,
+        req = (
+            lark.BaseRequest.builder()
+            .http_method(lark.HttpMethod.GET)
+            .uri("/open-apis/bot/v3/info")
+            .token_types({lark.AccessTokenType.TENANT})
+            .build()
         )
-        return _parse_bot_response(json.loads(resp.content))
+        resp = client.request(req)
+        raw = getattr(resp, "raw", None)
+        content = getattr(raw, "content", None) if raw is not None else None
+        if isinstance(content, bytes):
+            content = content.decode("utf-8")
+        if not content:
+            return None
+        return _parse_bot_response(json.loads(content))
     except Exception as exc:
         logger.debug("[Feishu onboard] SDK probe failed: %s", exc)
         return None

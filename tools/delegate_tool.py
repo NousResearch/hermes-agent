@@ -155,6 +155,38 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _expand_parent_enabled_toolsets(parent_enabled: List[str]) -> set:
+    """Expand any preset names in parent_enabled to individual toolsets.
+
+    `enabled_toolsets` on AIAgent may contain either individual toolset names
+    (``["web", "browser"]``) or a preset bundle name (``["hermes-acp"]``).
+    The subagent intersect-check uses set membership against individual
+    toolset names supplied by the LLM (e.g. ``["web", "browser", "file"]``),
+    so any preset in parent_enabled must be expanded first — otherwise no
+    LLM-requested toolset would ever match and the subagent would receive
+    an empty toolset.
+
+    For individual toolset names this function is idempotent: expanding
+    ``"web"`` walks its tools, resolves each tool's owning toolset, and
+    collects ``{"web"}`` back.
+    """
+    import model_tools
+    from toolsets import resolve_toolset, validate_toolset
+
+    expanded: set = set()
+    for name in parent_enabled:
+        if validate_toolset(name):
+            for tool_name in resolve_toolset(name):
+                ts = model_tools.get_toolset_for_tool(tool_name)
+                if ts is not None:
+                    expanded.add(ts)
+        else:
+            # Unknown / legacy name — keep literal so downstream logic
+            # can still see it (e.g. _LEGACY_TOOLSET_MAP handling).
+            expanded.add(name)
+    return expanded
+
+
 def _build_child_progress_callback(task_index: int, goal: str, parent_agent, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -297,7 +329,12 @@ def _build_child_agent(
     # so we must derive effective toolsets from the parent's loaded tools.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
-        parent_toolsets = set(parent_enabled)
+        # Expand any preset names (e.g. "hermes-acp") into their individual
+        # toolsets so set-intersect against child-requested individual names
+        # (like "web","browser","file") works. Without this expansion a
+        # parent running under a preset would reject every model-supplied
+        # toolset as "not in parent" and the child would get zero tools.
+        parent_toolsets = _expand_parent_enabled_toolsets(parent_enabled)
     elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
         # enabled_toolsets is None (all tools) — derive from loaded tool names
         import model_tools

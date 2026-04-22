@@ -9,7 +9,7 @@ arbitrary toolsets.
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
-from tools.delegate_tool import _strip_blocked_tools
+from tools.delegate_tool import _strip_blocked_tools, _expand_parent_enabled_toolsets
 
 
 class TestToolsetIntersection:
@@ -64,3 +64,48 @@ class TestToolsetIntersection:
         scoped = [t for t in requested if t in parent_toolsets]
 
         assert scoped == []
+
+
+class TestExpandParentEnabledToolsets:
+    """Preset names (e.g. ``hermes-acp``) must expand to individual toolsets
+    before subagent intersection. Without this, an ACP-hosted parent would
+    always pass an empty toolset to children — a regression that stripped
+    every tool from subagents spawned via ``delegate_task``."""
+
+    def test_preset_expands_to_individual_toolsets(self):
+        """Preset bundle expands to its underlying individual toolsets."""
+        expanded = _expand_parent_enabled_toolsets(["hermes-acp"])
+        # hermes-acp bundles web, browser, terminal, file, skills, vision,
+        # session_search, todo, memory, code_execution, delegation — exact
+        # membership depends on toolsets.py, so only assert the key ones
+        # the delegate-scoping test cares about.
+        assert "web" in expanded
+        assert "browser" in expanded
+        assert "file" in expanded
+        assert "terminal" in expanded
+
+    def test_individual_toolset_is_idempotent(self):
+        """Passing an already-individual toolset name returns itself."""
+        expanded = _expand_parent_enabled_toolsets(["web", "terminal"])
+        assert expanded == {"web", "terminal"}
+
+    def test_mixed_preset_and_individual_toolsets(self):
+        """Mix of preset + individual names all expand correctly."""
+        expanded = _expand_parent_enabled_toolsets(["hermes-acp", "rl"])
+        assert "browser" in expanded  # from hermes-acp
+        assert "rl" in expanded       # individual passthrough
+
+    def test_unknown_name_kept_literal(self):
+        """Unknown/legacy names are preserved so downstream code sees them."""
+        expanded = _expand_parent_enabled_toolsets(["definitely-not-a-real-toolset"])
+        assert expanded == {"definitely-not-a-real-toolset"}
+
+    def test_preset_parent_intersects_with_llm_requested(self):
+        """End-to-end: preset parent + LLM-requested individual toolsets
+        must produce the correct intersection. Regression for the bug where
+        ``parent_toolsets = {"hermes-acp"}`` trivially rejected every request.
+        """
+        parent_toolsets = _expand_parent_enabled_toolsets(["hermes-acp"])
+        requested = ["browser", "terminal", "web"]
+        scoped = _strip_blocked_tools([t for t in requested if t in parent_toolsets])
+        assert sorted(scoped) == ["browser", "terminal", "web"]

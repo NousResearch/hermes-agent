@@ -8,10 +8,10 @@ import type {
   SessionSteerResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
-import type { StatusBarMode } from '../../interfaces.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
+import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -306,24 +306,28 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['sb'],
-    help: 'status bar position (on|off|bottom|top)',
+    help: 'status bar position (on|off|top|bottom)',
     name: 'statusbar',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
       const current = ctx.ui.statusBar
-      // No-arg / `toggle` flips visibility while preserving the last
-      // explicit position: off → on (inline default), any-visible → off.
+
+      // 'on' is a legacy alias for 'top' — the inline position above the
+      // input where the bar originally lived. No-arg / `toggle` flips
+      // visibility and defaults to 'top' when reappearing.
       const next: null | StatusBarMode =
         mode === '' || mode === 'toggle'
           ? current === 'off'
-            ? 'on'
+            ? 'top'
             : 'off'
-          : mode === 'on' || mode === 'off' || mode === 'bottom' || mode === 'top'
-            ? mode
-            : null
+          : mode === 'on' || mode === 'top'
+            ? 'top'
+            : mode === 'off' || mode === 'bottom'
+              ? mode
+              : null
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /statusbar [on|off|bottom|top|toggle]')
+        return ctx.transcript.sys('usage: /statusbar [on|off|top|bottom|toggle]')
       }
 
       patchUiState({ statusBar: next })

@@ -6635,9 +6635,12 @@ class AIAgent:
             or "minimax" in base
             or "opencode.ai/zen/" in base
             or "bigmodel.cn" in base
-            # AWS Bedrock runtime endpoints — defense-in-depth when
+            # AWS Bedrock endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
+            # Covers both ``bedrock-runtime.`` (standard) and
+            # ``bedrock-mantle.`` (Mantle proxy) hostname patterns.
             or "bedrock-runtime." in base
+            or "bedrock-mantle." in base
         )
 
     def _is_qwen_portal(self) -> bool:

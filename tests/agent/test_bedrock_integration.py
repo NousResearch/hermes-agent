@@ -438,3 +438,47 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
             preserve_dots=False,
         )
         assert kwargs["model"] == "global-anthropic-claude-opus-4-7"
+
+
+class TestBedrockMantlePreserveDots:
+    """Regression tests for #13816 — Bedrock Mantle proxy
+    (``bedrock-mantle.{region}.api.aws``) must also preserve dots in
+    model names, just like ``bedrock-runtime.`` endpoints."""
+
+    def test_bedrock_mantle_us_east_1_preserves_dots(self):
+        """The reporter's exact URL pattern from #13816."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://bedrock-mantle.us-east-1.api.aws/anthropic",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bedrock_mantle_eu_west_1_preserves_dots(self):
+        """Different region — same Mantle hostname pattern."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://bedrock-mantle.eu-west-1.api.aws",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bedrock_mantle_model_name_survives_normalize(self):
+        """End-to-end: ``normalize_model_name`` with preserve_dots=True
+        keeps the Bedrock dotted model ID intact."""
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name(
+            "anthropic.claude-opus-4-7", preserve_dots=True
+        ) == "anthropic.claude-opus-4-7"
+
+    def test_non_bedrock_mantle_aws_url_does_not_preserve(self):
+        """Unrelated AWS endpoints must not trigger dot preservation."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://lambda.us-east-1.api.aws",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is False

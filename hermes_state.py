@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    api_call_count INTEGER DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -344,6 +345,17 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 7")
+            if current_version < 8:
+                # v8: add api_call_count column to sessions — tracks the number
+                # of individual LLM API calls made within a session (as opposed
+                # to the session count itself).
+                try:
+                    cursor.execute(
+                        'ALTER TABLE sessions ADD COLUMN "api_call_count" INTEGER DEFAULT 0'
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 8")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -450,6 +462,7 @@ class SessionDB:
         billing_provider: Optional[str] = None,
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
+        api_call_count: int = 0,
         absolute: bool = False,
     ) -> None:
         """Update token counters and backfill model if not already set.
@@ -479,7 +492,8 @@ class SessionDB:
                    billing_provider = COALESCE(billing_provider, ?),
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?)
+                   model = COALESCE(model, ?),
+                   api_call_count = ?
                    WHERE id = ?"""
         else:
             sql = """UPDATE sessions SET
@@ -499,7 +513,8 @@ class SessionDB:
                    billing_provider = COALESCE(billing_provider, ?),
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?)
+                   model = COALESCE(model, ?),
+                   api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
         params = (
             input_tokens,
@@ -517,6 +532,7 @@ class SessionDB:
             billing_base_url,
             billing_mode,
             model,
+            api_call_count,
             session_id,
         )
         def _do(conn):

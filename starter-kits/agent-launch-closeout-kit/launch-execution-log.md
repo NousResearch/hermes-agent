@@ -38,6 +38,7 @@ Track launch execution separately from product proof so the operator can close t
 - Status: pending capture
 - Readiness packet: `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md`
 - Capture helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh`
+- Headless finalize helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-headless-finalize.sh`
 - Trigger card: `starter-kits/agent-launch-closeout-kit/demo-trigger.md`
 - Source files:
   - `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`

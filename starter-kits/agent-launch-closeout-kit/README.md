@@ -40,6 +40,7 @@ The closeout kit is only credible if it can close that real gap cleanly.
 | `scripts/publish-unblock-helper.sh` | One-shot unblock helper: runs preflight, captures current state, emits a filled `--verified` command, and generates a timestamped handoff artifact plus `auth-artifacts/latest-publish-unblock-handoff.md` |
 | `scripts/demo-capture-preflight.sh` | Verify the demo source files, rerun the underlying product preflight, and refresh `demo-artifacts/latest-demo-capture-readiness.md` before recording |
 | `scripts/demo-capture.sh` | Freeze a timestamped capture-session packet (`--prepare`) and finalize `launch-execution-log.md` with recording/edit asset paths (`--finalize`) |
+| `scripts/demo-capture-headless-finalize.sh` | Headless closeout path: resolve the latest session packet, require real recording/edit files, and call `demo-capture.sh --finalize` with no GUI dependency |
 | `scripts/verify-demo-capture-finalize.sh` | Smoke-test the finalize flow against a temp copy of the launch log so format drift is caught before a real recording run |
 | `scripts/demo-capture-launcher.sh` | macOS workspace primer: refreshes the latest capture packet, opens the exact walkthrough surfaces, activates QuickTime Player, and prints the finalize command |
 | `demo-trigger.md` | One-screen operator card for recording the walkthrough and closing the loop in the launch log |
@@ -68,6 +69,7 @@ bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh --
 - [ ] If the marker is stale or the browser still lands on login, run `scripts/browser-auth-recovery.sh --prepare` and use the generated recovery packet before retrying publish.
 - [ ] After a real signed-in browser proof event, run `scripts/browser-auth-recovery.sh --verified --surface-url ... --screenshot-path ...` so the launch log, audit, and `x-access.json` marker all refresh from the same evidence.
 - [ ] Prime the walkthrough workspace with `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh` so the latest packet, proof artifact, log, and demo outline are open before recording starts.
+- [ ] After the recording exists on disk, prefer `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-headless-finalize.sh` to close the loop from the latest session packet without reopening the GUI launcher.
 - [ ] Run one real closeout cycle against the proof surface and record URL, timestamp, attachment, and asset path.
 - [ ] Tighten the kit to the proved path only and remove any broadened launch-system scope.
 - [ ] Freeze the kit with docs, checklist alignment, and retrospective-ready packaging.

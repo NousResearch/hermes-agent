@@ -125,13 +125,14 @@ if [[ "$MODE" == "prepare" ]]; then
     printf '1. Keep the claim narrow: closeout process only, not broader product proof.\n'
     printf '2. Follow the one-screen trigger card in `%s` (full detail remains in `%s`).\n' "${TRIGGER_PATH#$ROOT_DIR/}" "${RUNBOOK_PATH#$ROOT_DIR/}"
     printf '3. Capture the raw recording to `%s` or replace with your actual asset path.\n' "${DEFAULT_RECORDING_PATH#$ROOT_DIR/}"
-    printf '4. After recording/editing, run:\n\n'
+    printf '4. After recording/editing, prefer the headless finalize helper:\n\n'
     printf '```bash\n'
-    printf 'bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --finalize \\\n'
+    printf 'bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-headless-finalize.sh \\\n'
     printf '  --recording-path %q \\\n' "$DEFAULT_RECORDING_PATH"
     printf '  --duration 00:01:19 \\\n'
     printf '  --edited-asset-path %q\n' "$DEFAULT_EDITED_PATH"
     printf '```\n\n'
+    printf '   If you need the lower-level path, call `scripts/demo-capture.sh --finalize` directly with the same arguments.\n\n'
 
     printf '## Surfaces to show during capture\n'
     printf -- '- `%s`\n' "${READINESS_PATH#$ROOT_DIR/}"
@@ -175,12 +176,12 @@ text = log_path.read_text()
 
 # Match the Demo walkthrough section robustly using regex that tolerates
 # field-order variation and extra/missing optional fields.
-# Anchored at ## Demo walkthrough and covering everything up to the next ##.
 pattern = re.compile(
     r'(## Demo walkthrough\n)'
     r'(- Status: )(pending capture|captured on[^\n]*)\n'
     r'(- Readiness packet: [^\n]+\n)'
     r'(- Capture helper: [^\n]+\n)'
+    r'((?:- Headless finalize helper: [^\n]+\n)?)'
     r'(- Trigger card: [^\n]+\n)'
     r'(- Source files:\n)((?:  - [^\n]+\n)+)'
     r'(- Done criteria:\n)((?:  - [^\n]+\n)+)'
@@ -188,15 +189,17 @@ pattern = re.compile(
     re.MULTILINE
 )
 
+
 def replacement(m):
     parts = [
         m.group(1),                           # ## Demo walkthrough
         m.group(2), f"captured on {duration}\n",
         m.group(4),                           # - Readiness packet
         m.group(5),                           # - Capture helper
-        m.group(6),                           # - Trigger card
-        m.group(7), m.group(8),               # - Source files: + items
-        m.group(9), m.group(10),              # - Done criteria: + items
+        m.group(6),                           # optional - Headless finalize helper
+        m.group(7),                           # - Trigger card
+        m.group(8), m.group(9),               # - Source files: + items
+        m.group(10), m.group(11),             # - Done criteria: + items
         "- Recorded asset:\n",
         f"  - Recording path: {recording_path}\n",
         f"  - Duration: {duration}\n",

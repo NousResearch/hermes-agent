@@ -42,6 +42,17 @@ bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh
 
 That command reruns `--prepare`, resolves the newest session packet, opens the readiness/proof/log surfaces in an editor, activates QuickTime Player, and prints the exact finalize command again so the walkthrough can start without hunting files.
 
+After recording/editing, prefer the headless closeout path so the launch log can be finalized later without reopening QuickTime or the GUI workspace:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-headless-finalize.sh \
+  --recording-path /absolute/path/to/raw-demo-capture.mov \
+  --edited-asset-path /absolute/path/to/final-demo.mp4 \
+  --duration 00:01:19
+```
+
+By default that helper resolves the latest `demo-capture-session-*.md` packet, reuses its suggested raw/edit paths when you omit them, and requires the recording/edit files to exist before it touches `launch-execution-log.md`.
+
 Before a real recording run, verify the finalize path still matches the current log format:
 
 ```bash
@@ -56,6 +67,8 @@ bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --finalize \
   --duration 00:01:19 \
   --edited-asset-path /absolute/path/to/final-demo.mp4
 ```
+
+Use that lower-level command directly only when you intentionally need to override the headless helper's session-packet defaults.
 
 Then show the proof artifact:
 

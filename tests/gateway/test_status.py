@@ -51,6 +51,26 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_removes_stale_pid_from_different_process(self, tmp_path, monkeypatch):
+        """Regression: stale PID file owned by a dead *different* PID must be removed.
+
+        Previously, stale cleanup called remove_pid_file() for the default PID path,
+        but that helper intentionally refuses to delete files that don't belong to
+        the current process. Result: a dead foreign PID could leave gateway.pid
+        behind forever and block startup with a PID-file race.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({"pid": 99999}))
+
+        def _dead_pid(pid, sig):
+            raise ProcessLookupError
+
+        monkeypatch.setattr(status.os, "kill", _dead_pid)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+
     def test_get_running_pid_accepts_gateway_metadata_when_cmdline_unavailable(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

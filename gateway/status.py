@@ -216,10 +216,11 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     if not cleanup_stale:
         return
     try:
-        if pid_path == _get_pid_path():
-            remove_pid_file()
-        else:
-            pid_path.unlink(missing_ok=True)
+        # Invalid/stale PID records must be removed unconditionally.
+        # Do NOT call remove_pid_file() here: that helper intentionally keeps
+        # PID files that belong to a different process during graceful
+        # handoffs, which is the opposite of what stale cleanup needs.
+        pid_path.unlink(missing_ok=True)
     except Exception:
         pass
 

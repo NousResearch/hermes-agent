@@ -582,29 +582,36 @@ class TestSendDocument:
         assert len(call_kwargs["caption"]) == 1024
 
     @pytest.mark.asyncio
-    async def test_send_document_api_error_falls_back(self, connected_adapter, tmp_path):
-        """If Telegram API raises, falls back to base class text message."""
+    async def test_send_document_api_error_returns_failure(self, connected_adapter, tmp_path):
+        """If Telegram API raises, return a real failure instead of fake text fallback."""
         test_file = tmp_path / "file.pdf"
         test_file.write_bytes(b"data")
 
         connected_adapter._bot.send_document = AsyncMock(
             side_effect=RuntimeError("Telegram API error")
         )
-
-        # The base fallback calls self.send() which is also on _bot, so mock it
-        # to avoid cascading errors.
-        connected_adapter.send = AsyncMock(
-            return_value=SendResult(success=True, message_id="fallback")
-        )
+        connected_adapter.send = AsyncMock()
 
         result = await connected_adapter.send_document(
             chat_id="12345",
             file_path=str(test_file),
         )
 
-        # Should have fallen back to base class
-        assert result.success is True
-        assert result.message_id == "fallback"
+        assert result.success is False
+        assert "failed to send telegram document" in result.error.lower()
+        connected_adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_document_directory_path_returns_failure(self, connected_adapter, tmp_path):
+        """Existing directories like / or tmp dirs must not fall through to text fallback."""
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(tmp_path),
+        )
+
+        assert result.success is False
+        assert "path is not a file" in result.error.lower()
+        connected_adapter._bot.send_document.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_document_reply_to(self, connected_adapter, tmp_path):

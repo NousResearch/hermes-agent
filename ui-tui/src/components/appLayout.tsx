@@ -184,7 +184,16 @@ const ComposerPane = memo(function ComposerPane({
       <StatusRulePane at="top" composer={composer} status={status} />
 
       {!isBlocked && (
-        <>
+        <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
+          <FloatingOverlays
+            cols={composer.cols}
+            compIdx={composer.compIdx}
+            completions={composer.completions}
+            onModelSelect={actions.onModelSelect}
+            onPickerSelect={actions.resumeById}
+            pagerPageSize={composer.pagerPageSize}
+          />
+
           {composer.inputBuf.map((line, i) => (
             <Box key={i}>
               <Box width={3}>
@@ -196,15 +205,6 @@ const ComposerPane = memo(function ComposerPane({
           ))}
 
           <Box position="relative">
-            <FloatingOverlays
-              cols={composer.cols}
-              compIdx={composer.compIdx}
-              completions={composer.completions}
-              onModelSelect={actions.onModelSelect}
-              onPickerSelect={actions.resumeById}
-              pagerPageSize={composer.pagerPageSize}
-            />
-
             <Box width={pw}>
               {sh ? (
                 <Text color={ui.theme.color.shellDollar}>$ </Text>
@@ -230,7 +230,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             </Box>
           </Box>
-        </>
+        </Box>
       )}
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim}>⚕ {ui.status}</Text>}
@@ -264,22 +264,28 @@ const StatusRulePane = memo(function StatusRulePane({
     return null
   }
 
+  // 'top' sits inline above the input; give it one row of breathing
+  // space above so the transcript (or queue) doesn't butt directly
+  // against the status row. 'bottom' lives at the last row of the
+  // viewport so it needs no margin.
   return (
-    <StatusRule
-      bgCount={ui.bgTasks.size}
-      busy={ui.busy}
-      cols={composer.cols}
-      cwdLabel={status.cwdLabel}
-      model={ui.info?.model?.split('/').pop() ?? ''}
-      sessionStartedAt={status.sessionStartedAt}
-      showCost={ui.showCost}
-      status={ui.status}
-      statusColor={status.statusColor}
-      t={ui.theme}
-      turnStartedAt={status.turnStartedAt}
-      usage={ui.usage}
-      voiceLabel={status.voiceLabel}
-    />
+    <Box flexShrink={0} marginTop={at === 'top' ? 1 : 0}>
+      <StatusRule
+        bgCount={ui.bgTasks.size}
+        busy={ui.busy}
+        cols={composer.cols}
+        cwdLabel={status.cwdLabel}
+        model={ui.info?.model?.split('/').pop() ?? ''}
+        sessionStartedAt={status.sessionStartedAt}
+        showCost={ui.showCost}
+        status={ui.status}
+        statusColor={status.statusColor}
+        t={ui.theme}
+        turnStartedAt={status.turnStartedAt}
+        usage={ui.usage}
+        voiceLabel={status.voiceLabel}
+      />
+    </Box>
   )
 })
 

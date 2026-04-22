@@ -7,7 +7,7 @@ license: MIT
 metadata:
   hermes:
     tags: [telephony, phone, sms, mms, voice, twilio, bland.ai, vapi, calling, texting]
-    related_skills: [find-nearby, google-workspace, agentmail]
+    related_skills: [maps, google-workspace, agentmail]
     category: productivity
 ---
 

@@ -245,3 +245,67 @@ class TestTranscribeAudio:
         result = transcribe_audio("/nonexistent/file.ogg")
         assert result["success"] is False
         assert "not found" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Model name normalisation for local providers
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeLocalModel:
+    """_normalize_local_model() maps cloud-only names to the local default."""
+
+    def test_openai_model_name_maps_to_default(self):
+        from tools.transcription_tools import _normalize_local_model, DEFAULT_LOCAL_MODEL
+        assert _normalize_local_model("whisper-1") == DEFAULT_LOCAL_MODEL
+
+    def test_groq_model_name_maps_to_default(self):
+        from tools.transcription_tools import _normalize_local_model, DEFAULT_LOCAL_MODEL
+        assert _normalize_local_model("whisper-large-v3-turbo") == DEFAULT_LOCAL_MODEL
+
+    def test_valid_local_model_preserved(self):
+        from tools.transcription_tools import _normalize_local_model
+        for size in ("tiny", "base", "small", "medium", "large-v3"):
+            assert _normalize_local_model(size) == size
+
+    def test_none_maps_to_default(self):
+        from tools.transcription_tools import _normalize_local_model, DEFAULT_LOCAL_MODEL
+        assert _normalize_local_model(None) == DEFAULT_LOCAL_MODEL
+
+    def test_warning_emitted_for_cloud_model(self, caplog):
+        import logging
+        from tools.transcription_tools import _normalize_local_model
+        with caplog.at_level(logging.WARNING, logger="tools.transcription_tools"):
+            _normalize_local_model("whisper-1")
+        assert any("whisper-1" in r.message for r in caplog.records)
+
+    def test_local_transcribe_normalises_model(self):
+        """transcribe_audio with local provider must not pass 'whisper-1' to WhisperModel."""
+        import tempfile, os
+        from unittest.mock import MagicMock, patch
+
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(b"x")
+            audio_file = f.name
+        try:
+            mock_model = MagicMock()
+            mock_model.transcribe.return_value = (iter([]), MagicMock(language="en", duration=1.0))
+            with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+                 patch("tools.transcription_tools._load_stt_config", return_value={
+                     "enabled": True,
+                     "provider": "local",
+                     "local": {"model": "whisper-1"},
+                 }), \
+                 patch("tools.transcription_tools._local_model", None), \
+                 patch("tools.transcription_tools._local_model_name", None), \
+                 patch("faster_whisper.WhisperModel", return_value=mock_model) as mock_cls:
+                from tools.transcription_tools import transcribe_audio
+                transcribe_audio(audio_file)
+                # WhisperModel must NOT have been called with "whisper-1"
+                call_args = mock_cls.call_args
+                assert call_args is not None
+                assert call_args[0][0] != "whisper-1", (
+                    "WhisperModel was called with the cloud-only name 'whisper-1'"
+                )
+        finally:
+            os.unlink(audio_file)

@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
+from utils import base_url_host_matches, base_url_hostname
+
 from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
@@ -34,7 +36,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
     "ollama",
-    "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "stepfun", "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
     "xai", "x-ai", "x.ai", "grok",
@@ -116,7 +118,6 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
-    "gpt-5.3-codex-spark": 128000,    # Spark variant has reduced 128k context
     "gpt-5.1-chat": 128000,           # Chat variant has 128k context
     "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
@@ -169,6 +170,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "Qwen/Qwen3.5-35B-A3B": 131072,
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
+    "moonshotai/Kimi-K2.6": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
     "MiniMaxAI/MiniMax-M2.5": 204800,
     "XiaomiMiMo/MiMo-V2-Flash": 256000,
@@ -211,8 +213,15 @@ def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
 
 
+def _auth_headers(api_key: str = "") -> Dict[str, str]:
+    token = str(api_key or "").strip()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _is_openrouter_base_url(base_url: str) -> bool:
-    return "openrouter.ai" in _normalize_base_url(base_url).lower()
+    return base_url_host_matches(base_url, "openrouter.ai")
 
 
 def _is_custom_endpoint(base_url: str) -> bool:
@@ -228,6 +237,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.moonshot.ai": "kimi-coding",
     "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",
+    "api.stepfun.ai": "stepfun",
+    "api.stepfun.com": "stepfun",
     "api.arcee.ai": "arcee",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
@@ -310,7 +321,7 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
-def detect_local_server_type(base_url: str) -> Optional[str]:
+def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
@@ -322,8 +333,10 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
+    headers = _auth_headers(api_key)
+
     try:
-        with httpx.Client(timeout=2.0) as client:
+        with httpx.Client(timeout=2.0, headers=headers) as client:
             # LM Studio exposes /api/v1/models — check first (most specific)
             try:
                 r = client.get(f"{server_url}/api/v1/models")
@@ -509,6 +522,59 @@ def fetch_endpoint_model_metadata(
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     last_error: Optional[Exception] = None
+
+    if is_local_endpoint(normalized):
+        try:
+            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
+                server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
+                response = requests.get(
+                    server_url.rstrip("/") + "/api/v1/models",
+                    headers=headers,
+                    timeout=10,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                cache: Dict[str, Dict[str, Any]] = {}
+                for model in payload.get("models", []):
+                    if not isinstance(model, dict):
+                        continue
+                    model_id = model.get("key") or model.get("id")
+                    if not model_id:
+                        continue
+                    entry: Dict[str, Any] = {"name": model.get("name", model_id)}
+
+                    context_length = None
+                    for inst in model.get("loaded_instances", []) or []:
+                        if not isinstance(inst, dict):
+                            continue
+                        cfg = inst.get("config", {})
+                        ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
+                        if isinstance(ctx, int) and ctx > 0:
+                            context_length = ctx
+                            break
+                    if context_length is None:
+                        context_length = _extract_context_length(model)
+                    if context_length is not None:
+                        entry["context_length"] = context_length
+
+                    max_completion_tokens = _extract_max_completion_tokens(model)
+                    if max_completion_tokens is not None:
+                        entry["max_completion_tokens"] = max_completion_tokens
+
+                    pricing = _extract_pricing(model)
+                    if pricing:
+                        entry["pricing"] = pricing
+
+                    _add_model_aliases(cache, model_id, entry)
+                    alt_id = model.get("id")
+                    if isinstance(alt_id, str) and alt_id and alt_id != model_id:
+                        _add_model_aliases(cache, alt_id, entry)
+
+                _endpoint_model_metadata_cache[normalized] = cache
+                _endpoint_model_metadata_cache_time[normalized] = time.time()
+                return cache
+        except Exception as exc:
+            last_error = exc
 
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
@@ -716,7 +782,7 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return False
 
 
-def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
+def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query an Ollama server for the model's context length.
 
     Returns the model's maximum context from GGUF metadata via ``/api/show``,
@@ -734,14 +800,16 @@ def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
         server_url = server_url[:-3]
 
     try:
-        server_type = detect_local_server_type(base_url)
+        server_type = detect_local_server_type(base_url, api_key=api_key)
     except Exception:
         return None
     if server_type != "ollama":
         return None
 
+    headers = _auth_headers(api_key)
+
     try:
-        with httpx.Client(timeout=3.0) as client:
+        with httpx.Client(timeout=3.0, headers=headers) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             if resp.status_code != 200:
                 return None
@@ -769,7 +837,7 @@ def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
     return None
 
 
-def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
+def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
 
@@ -782,13 +850,15 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
+    headers = _auth_headers(api_key)
+
     try:
-        server_type = detect_local_server_type(base_url)
+        server_type = detect_local_server_type(base_url, api_key=api_key)
     except Exception:
         server_type = None
 
     try:
-        with httpx.Client(timeout=3.0) as client:
+        with httpx.Client(timeout=3.0, headers=headers) as client:
             # Ollama: /api/show returns model details with context info
             if server_type == "ollama":
                 resp = client.post(f"{server_url}/api/show", json={"name": model})
@@ -999,7 +1069,7 @@ def get_model_context_length(
         if not _is_known_provider_base_url(base_url):
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
-                local_ctx = _query_local_context_length(model, base_url)
+                local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
                     save_context_length(model, base_url, local_ctx)
                     return local_ctx
@@ -1013,7 +1083,7 @@ def get_model_context_length(
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (
-        base_url and "api.anthropic.com" in base_url
+        base_url and base_url_hostname(base_url) == "api.anthropic.com"
     ):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
         if ctx:
@@ -1022,7 +1092,11 @@ def get_model_context_length(
     # 4b. AWS Bedrock — use static context length table.
     # Bedrock's ListFoundationModels doesn't expose context window sizes,
     # so we maintain a curated table in bedrock_adapter.py.
-    if provider == "bedrock" or (base_url and "bedrock-runtime" in base_url):
+    if provider == "bedrock" or (
+        base_url
+        and base_url_hostname(base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url, "amazonaws.com")
+    ):
         try:
             from agent.bedrock_adapter import get_bedrock_context_length
             return get_bedrock_context_length(model)
@@ -1069,7 +1143,7 @@ def get_model_context_length(
 
     # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):
-        local_ctx = _query_local_context_length(model, base_url)
+        local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
         if local_ctx and local_ctx > 0:
             save_context_length(model, base_url, local_ctx)
             return local_ctx

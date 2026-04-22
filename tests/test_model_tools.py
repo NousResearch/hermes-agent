@@ -72,6 +72,15 @@ class TestHandleFunctionCall:
                 session_id="session-1",
                 tool_call_id="call-1",
             ),
+            call(
+                "transform_tool_result",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+            ),
         ]
 
 

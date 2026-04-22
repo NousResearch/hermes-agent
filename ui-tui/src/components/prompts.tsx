@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from '@hermes/ink'
 import { useState } from 'react'
 
+import { isMac } from '../lib/platform.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
@@ -63,8 +64,8 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
 
       {OPTS.map((o, i) => (
         <Text key={o}>
-          <Text color={sel === i ? t.color.warn : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
-          <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+          <Text bold={sel === i} color={sel === i ? t.color.warn : t.color.dim} inverse={sel === i}>
+            {sel === i ? '▸ ' : '  '}
             {i + 1}. {LABELS[o]}
           </Text>
         </Text>
@@ -128,7 +129,10 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
           <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
         </Box>
 
-        <Text color={t.color.dim}>Enter send · Esc {choices.length ? 'back' : 'cancel'} · Ctrl+C cancel</Text>
+        <Text color={t.color.dim}>
+          Enter send · Esc {choices.length ? 'back' : 'cancel'} ·{' '}
+          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+        </Text>
       </Box>
     )
   }
@@ -139,8 +143,8 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
       {[...choices, 'Other (type your answer)'].map((c, i) => (
         <Text key={i}>
-          <Text color={sel === i ? t.color.label : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
-          <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+          <Text bold={sel === i} color={sel === i ? t.color.label : t.color.dim} inverse={sel === i}>
+            {sel === i ? '▸ ' : '  '}
             {i + 1}. {c}
           </Text>
         </Text>
@@ -155,31 +159,21 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   const [sel, setSel] = useState(0)
 
   useInput((ch, key) => {
-    if (key.escape || (key.ctrl && ch.toLowerCase() === 'c')) {
-      onCancel()
-
-      return
-    }
-
     const lower = ch.toLowerCase()
 
+    if (key.escape || (key.ctrl && lower === 'c') || lower === 'n') {
+      return onCancel()
+    }
+
     if (lower === 'y') {
-      onConfirm()
-
-      return
+      return onConfirm()
     }
 
-    if (lower === 'n') {
-      onCancel()
-
-      return
-    }
-
-    if (key.upArrow && sel > 0) {
+    if (key.upArrow) {
       setSel(0)
     }
 
-    if (key.downArrow && sel < 1) {
+    if (key.downArrow) {
       setSel(1)
     }
 
@@ -189,12 +183,10 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   })
 
   const accent = req.danger ? t.color.error : t.color.warn
-  const confirmLabel = req.confirmLabel ?? 'Yes'
-  const cancelLabel = req.cancelLabel ?? 'No'
 
   const rows = [
-    { color: t.color.cornsilk, label: cancelLabel },
-    { color: req.danger ? t.color.error : t.color.cornsilk, label: confirmLabel }
+    { color: t.color.cornsilk, label: req.cancelLabel ?? 'No' },
+    { color: req.danger ? t.color.error : t.color.cornsilk, label: req.confirmLabel ?? 'Yes' }
   ]
 
   return (

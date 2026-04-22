@@ -497,9 +497,8 @@ def _collect_gateway_skill_entries(
     # --- Tier 1: Plugin slash commands (never trimmed) ---------------------
     plugin_pairs: list[tuple[str, str]] = []
     try:
-        from hermes_cli.plugins import get_plugin_manager
-        pm = get_plugin_manager()
-        plugin_cmds = getattr(pm, "_plugin_commands", {})
+        from hermes_cli.plugins import get_plugin_commands
+        plugin_cmds = get_plugin_commands()
         for cmd_name in sorted(plugin_cmds):
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
@@ -925,12 +924,22 @@ class SlashCommandCompleter(Completer):
                     display_meta=meta,
                 )
 
-        # If the user typed @file: or @folder:, delegate to path completions
+        # If the user typed @file: / @folder: (or just @file / @folder with
+        # no colon yet), delegate to path completions.  Accepting the bare
+        # form lets the picker surface directories as soon as the user has
+        # typed `@folder`, without requiring them to first accept the static
+        # `@folder:` hint and re-trigger completion.
         for prefix in ("@file:", "@folder:"):
-            if word.startswith(prefix):
-                path_part = word[len(prefix):] or "."
+            bare = prefix[:-1]
+
+            if word == bare or word.startswith(prefix):
+                want_dir = prefix == "@folder:"
+                path_part = '' if word == bare else word[len(prefix):]
                 expanded = os.path.expanduser(path_part)
-                if expanded.endswith("/"):
+
+                if not expanded or expanded == ".":
+                    search_dir, match_prefix = ".", ""
+                elif expanded.endswith("/"):
                     search_dir, match_prefix = expanded, ""
                 else:
                     search_dir = os.path.dirname(expanded) or "."
@@ -946,15 +955,21 @@ class SlashCommandCompleter(Completer):
                 for entry in sorted(entries):
                     if match_prefix and not entry.lower().startswith(prefix_lower):
                         continue
-                    if count >= limit:
-                        break
                     full_path = os.path.join(search_dir, entry)
                     is_dir = os.path.isdir(full_path)
+                    # `@folder:` must only surface directories; `@file:` only
+                    # regular files.  Without this filter `@folder:` listed
+                    # every .env / .gitignore in the cwd, defeating the
+                    # explicit prefix and confusing users expecting a
+                    # directory picker.
+                    if want_dir != is_dir:
+                        continue
+                    if count >= limit:
+                        break
                     display_path = os.path.relpath(full_path)
                     suffix = "/" if is_dir else ""
-                    kind = "folder" if is_dir else "file"
                     meta = "dir" if is_dir else _file_size_label(full_path)
-                    completion = f"@{kind}:{display_path}{suffix}"
+                    completion = f"{prefix}{display_path}{suffix}"
                     yield Completion(
                         completion,
                         start_position=-len(word),

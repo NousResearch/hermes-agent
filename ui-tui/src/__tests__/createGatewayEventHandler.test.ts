@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
-import { resetOverlayState } from '../app/overlayStore.js'
+import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
-import { resetTurnState } from '../app/turnStore.js'
+import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
@@ -143,6 +143,117 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(fromServer))
   })
 
+  it('attaches inline_diff to the assistant completion body', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '\u001b[31m--- a/foo.ts\u001b[0m\n\u001b[32m+++ b/foo.ts\u001b[0m\n@@\n-old\n+new'
+    const cleaned = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { inline_diff: diff, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+
+    // Diff is buffered for message.complete and sanitized (ANSI stripped).
+    expect(appended).toHaveLength(0)
+    expect(turnController.pendingInlineDiffs).toEqual([cleaned])
+
+    onEvent({
+      payload: { text: 'patch applied' },
+      type: 'message.complete'
+    } as any)
+
+    // Diff is rendered in the same assistant message body as the completion.
+    expect(appended).toHaveLength(1)
+    expect(appended[0]).toMatchObject({ role: 'assistant' })
+    expect(appended[0]?.text).toContain('patch applied')
+    expect(appended[0]?.text).toContain('```diff')
+    expect(appended[0]?.text).toContain(cleaned)
+  })
+
+  it('does not append inline_diff twice when assistant text already contains it', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const cleaned = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+    const assistantText = `Done. Here's the inline diff:\n\n\`\`\`diff\n${cleaned}\n\`\`\``
+
+    onEvent({
+      payload: { inline_diff: cleaned, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({
+      payload: { text: assistantText },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).toBe(assistantText)
+    expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
+  })
+
+  it('strips the CLI "┊ review diff" header from queued inline diffs', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const raw = '  \u001b[33m┊ review diff\u001b[0m\n--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { inline_diff: raw, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({
+      payload: { text: 'done' },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).not.toContain('┊ review diff')
+    expect(appended[0]?.text).toContain('--- a/foo.ts')
+  })
+
+  it('suppresses inline_diff when assistant already wrote a diff fence', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const inlineDiff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+    const assistantText = 'Done. Clean swap:\n\n```diff\n-old\n+new\n```'
+
+    onEvent({
+      payload: { inline_diff: inlineDiff, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({
+      payload: { text: assistantText },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).toBe(assistantText)
+    expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
+  })
+
+  it('keeps tool trail terse when inline_diff is present', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { inline_diff: diff, name: 'review_diff', summary: diff, tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({
+      payload: { text: 'done' },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.tools?.[0]).toContain('Review Diff')
+    expect(appended[0]?.tools?.[0]).not.toContain('--- a/foo.ts')
+    expect(appended[0]?.text).toContain('```diff')
+  })
+
   it('shows setup panel for missing provider startup error', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -161,5 +272,43 @@ describe('createGatewayEventHandler', () => {
       panelData: { title: 'Setup Required' },
       role: 'system'
     })
+  })
+
+  it('keeps gateway noise informational and approval out of Activity', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.gateway.rpc = vi.fn(async () => {
+      throw new Error('cold start')
+    })
+
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { line: 'Traceback: noisy but non-fatal' }, type: 'gateway.stderr' } as any)
+    onEvent({ payload: { preview: 'bad framing' }, type: 'gateway.protocol_error' } as any)
+    onEvent({
+      payload: { command: 'rm -rf /tmp/nope', description: 'dangerous command' },
+      type: 'approval.request'
+    } as any)
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(getOverlayState().approval).toMatchObject({ description: 'dangerous command' })
+    expect(getTurnState().activity).toMatchObject([
+      { text: 'Traceback: noisy but non-fatal', tone: 'info' },
+      { text: 'protocol noise detected · /logs to inspect', tone: 'info' },
+      { text: 'protocol noise: bad framing', tone: 'info' },
+      { text: 'command catalog unavailable: cold start', tone: 'info' }
+    ])
+  })
+
+  it('still surfaces terminal turn failures as errors', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { message: 'boom' }, type: 'error' } as any)
+
+    expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
 })

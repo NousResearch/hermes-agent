@@ -272,6 +272,45 @@ Put the most common workflow first. Edge cases and advanced usage go at the bott
 
 For XML/JSON parsing or complex logic, include helper scripts in `scripts/` — don't expect the LLM to write parsers inline every time.
 
+#### Referencing bundled scripts from SKILL.md
+
+When a skill is loaded, the activation message exposes the absolute skill directory as `[Skill directory: /abs/path]` and also substitutes two template tokens anywhere in the SKILL.md body:
+
+| Token | Replaced with |
+|---|---|
+| `${HERMES_SKILL_DIR}` | Absolute path to the skill's directory |
+| `${HERMES_SESSION_ID}` | The active session id (left in place if there is no session) |
+
+So a SKILL.md can tell the agent to run a bundled script directly with:
+
+```markdown
+To analyse the input, run:
+
+    node ${HERMES_SKILL_DIR}/scripts/analyse.js <input>
+```
+
+The agent sees the substituted absolute path and invokes the `terminal` tool with a ready-to-run command — no path math, no extra `skill_view` round-trip. Disable substitution globally with `skills.template_vars: false` in `config.yaml`.
+
+#### Inline shell snippets (opt-in)
+
+Skills can also embed inline shell snippets written as `` !`cmd` `` in the SKILL.md body. When enabled, each snippet's stdout is inlined into the message before the agent reads it, so skills can inject dynamic context:
+
+```markdown
+Current date: !`date -u +%Y-%m-%d`
+Git branch: !`git -C ${HERMES_SKILL_DIR} rev-parse --abbrev-ref HEAD`
+```
+
+This is **off by default** — any snippet in a SKILL.md runs on the host without approval, so only enable it for skill sources you trust:
+
+```yaml
+# config.yaml
+skills:
+  inline_shell: true
+  inline_shell_timeout: 10   # seconds per snippet
+```
+
+Snippets run with the skill directory as their working directory, and output is capped at 4000 characters. Failures (timeouts, non-zero exits) show up as a short `[inline-shell error: ...]` marker instead of breaking the whole skill.
+
 ### Test It
 
 Run the skill and verify the agent follows the instructions correctly:

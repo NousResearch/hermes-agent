@@ -78,6 +78,7 @@ class HonchoSessionManager:
         honcho: Honcho | None = None,
         context_tokens: int | None = None,
         config: Any | None = None,
+        runtime_user_peer_name: str | None = None,
     ):
         """
         Initialize the session manager.
@@ -87,10 +88,12 @@ class HonchoSessionManager:
             context_tokens: Max tokens for context() calls (None = Honcho default).
             config: HonchoClientConfig from global config (provides peer_name, ai_peer,
                     write_frequency, observation, etc.).
+            runtime_user_peer_name: Gateway user identity for per-user memory scoping.
         """
         self._honcho = honcho
         self._context_tokens = context_tokens
         self._config = config
+        self._runtime_user_peer_name = runtime_user_peer_name
         self._cache: dict[str, HonchoSession] = {}
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
@@ -100,9 +103,11 @@ class HonchoSessionManager:
         self._write_frequency = write_frequency
         self._turn_counter: int = 0
 
-        # Prefetch caches: session_key → last result (consumed once per turn)
+        # Prefetch cache: session_key → last context result (consumed once per turn).
+        # Dialectic results are cached on the plugin side (HonchoMemoryProvider
+        # ._prefetch_result) so session-start prewarm and turn-driven fires share
+        # one source of truth; see __init__.py _do_session_init for the prewarm.
         self._context_cache: dict[str, dict] = {}
-        self._dialectic_cache: dict[str, str] = {}
         self._prefetch_cache_lock = threading.Lock()
         self._dialectic_reasoning_level: str = (
             config.dialectic_reasoning_level if config else "low"
@@ -272,8 +277,10 @@ class HonchoSessionManager:
             logger.debug("Local session cache hit: %s", key)
             return self._cache[key]
 
-        # Use peer names from global config when available
-        if self._config and self._config.peer_name:
+        # Gateway sessions should use the runtime user identity when available.
+        if self._runtime_user_peer_name:
+            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
+        elif self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)
         else:
             # Fallback: derive from session key
@@ -499,8 +506,8 @@ class HonchoSessionManager:
         Query Honcho's dialectic endpoint about a peer.
 
         Runs an LLM on Honcho's backend against the target peer's full
-        representation. Higher latency than context() — call async via
-        prefetch_dialectic() to avoid blocking the response.
+        representation. Higher latency than context() — callers run this in
+        a background thread (see HonchoMemoryProvider) to avoid blocking.
 
         Args:
             session_key: The session key to query against.
@@ -554,42 +561,6 @@ class HonchoSessionManager:
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)
             return ""
-
-    def prefetch_dialectic(self, session_key: str, query: str) -> None:
-        """
-        Fire a dialectic_query in a background thread, caching the result.
-
-        Non-blocking. The result is available via pop_dialectic_result()
-        on the next call (typically the following turn). Reasoning level
-        is selected dynamically based on query complexity.
-
-        Args:
-            session_key: The session key to query against.
-            query: The user's current message, used as the query.
-        """
-        def _run():
-            result = self.dialectic_query(session_key, query)
-            if result:
-                self.set_dialectic_result(session_key, result)
-
-        t = threading.Thread(target=_run, name="honcho-dialectic-prefetch", daemon=True)
-        t.start()
-
-    def set_dialectic_result(self, session_key: str, result: str) -> None:
-        """Store a prefetched dialectic result in a thread-safe way."""
-        if not result:
-            return
-        with self._prefetch_cache_lock:
-            self._dialectic_cache[session_key] = result
-
-    def pop_dialectic_result(self, session_key: str) -> str:
-        """
-        Return and clear the cached dialectic result for this session.
-
-        Returns empty string if no result is ready yet.
-        """
-        with self._prefetch_cache_lock:
-            return self._dialectic_cache.pop(session_key, "")
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
         """

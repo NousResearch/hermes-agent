@@ -192,23 +192,23 @@ class TestUnifiedCronjobTool:
         result = json.loads(
             cronjob(
                 action="create",
-                skills=["blogwatcher", "find-nearby"],
+                skills=["blogwatcher", "maps"],
                 prompt="Use both skills and combine the result.",
                 schedule="every 1h",
                 name="Combo job",
             )
         )
         assert result["success"] is True
-        assert result["skills"] == ["blogwatcher", "find-nearby"]
+        assert result["skills"] == ["blogwatcher", "maps"]
 
         listing = json.loads(cronjob(action="list"))
-        assert listing["jobs"][0]["skills"] == ["blogwatcher", "find-nearby"]
+        assert listing["jobs"][0]["skills"] == ["blogwatcher", "maps"]
 
     def test_multi_skill_default_name_prefers_prompt_when_present(self):
         result = json.loads(
             cronjob(
                 action="create",
-                skills=["blogwatcher", "find-nearby"],
+                skills=["blogwatcher", "maps"],
                 prompt="Use both skills and combine the result.",
                 schedule="every 1h",
             )
@@ -220,7 +220,7 @@ class TestUnifiedCronjobTool:
         created = json.loads(
             cronjob(
                 action="create",
-                skills=["blogwatcher", "find-nearby"],
+                skills=["blogwatcher", "maps"],
                 prompt="Use both skills and combine the result.",
                 schedule="every 1h",
             )

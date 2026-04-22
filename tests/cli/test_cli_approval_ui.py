@@ -254,3 +254,88 @@ class TestCliApprovalUi:
 
         # Command got truncated with a marker.
         assert "(command truncated" in rendered
+
+
+class TestApprovalCallbackThreadLocalWiring:
+    """Regression guard for the thread-local callback freeze (#13617 / #13618).
+
+    After 62348cff made _approval_callback / _sudo_password_callback thread-local
+    (ACP GHSA-qg5c-hvr5-hjgr), the CLI agent thread could no longer see callbacks
+    registered in the main thread — the dangerous-command prompt silently fell
+    back to stdin input() and deadlocked against prompt_toolkit. The fix is to
+    register the callbacks INSIDE the agent worker thread (matching the ACP
+    pattern). These tests lock in that invariant.
+    """
+
+    def test_main_thread_registration_is_invisible_to_child_thread(self):
+        """Confirms the underlying threading.local semantics that drove the bug.
+
+        If this ever starts passing as "visible", the thread-local isolation
+        is gone and the ACP race GHSA-qg5c-hvr5-hjgr may be back.
+        """
+        from tools.terminal_tool import (
+            set_approval_callback,
+            _get_approval_callback,
+        )
+
+        def main_cb(_cmd, _desc):
+            return "once"
+
+        set_approval_callback(main_cb)
+        try:
+            seen = {}
+
+            def _child():
+                seen["value"] = _get_approval_callback()
+
+            t = threading.Thread(target=_child, daemon=True)
+            t.start()
+            t.join(timeout=2)
+            assert seen["value"] is None
+        finally:
+            set_approval_callback(None)
+
+    def test_child_thread_registration_is_visible_and_cleared_in_finally(self):
+        """The fix pattern: register INSIDE the worker thread, clear in finally.
+
+        This is exactly what cli.py's run_agent() closure does. If this test
+        fails, the CLI approval prompt freeze (#13617) has regressed.
+        """
+        from tools.terminal_tool import (
+            set_approval_callback,
+            set_sudo_password_callback,
+            _get_approval_callback,
+            _get_sudo_password_callback,
+        )
+
+        def approval_cb(_cmd, _desc):
+            return "once"
+
+        def sudo_cb():
+            return "hunter2"
+
+        seen = {}
+
+        def _worker():
+            # Mimic cli.py's run_agent() thread target.
+            set_approval_callback(approval_cb)
+            set_sudo_password_callback(sudo_cb)
+            try:
+                seen["approval"] = _get_approval_callback()
+                seen["sudo"] = _get_sudo_password_callback()
+            finally:
+                set_approval_callback(None)
+                set_sudo_password_callback(None)
+                seen["approval_after"] = _get_approval_callback()
+                seen["sudo_after"] = _get_sudo_password_callback()
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(timeout=2)
+
+        assert seen["approval"] is approval_cb
+        assert seen["sudo"] is sudo_cb
+        # Finally block must clear both slots — otherwise a reused thread
+        # would hold a stale reference to a disposed CLI instance.
+        assert seen["approval_after"] is None
+        assert seen["sudo_after"] is None

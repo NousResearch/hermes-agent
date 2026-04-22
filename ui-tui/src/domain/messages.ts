@@ -12,6 +12,13 @@ export const imageTokenMeta = (info?: ImageMeta | null) => {
     .join(' · ')
 }
 
+export const attachedImageNotice = (info?: ({ name?: string } & ImageMeta) | null) => {
+  const meta = imageTokenMeta(info)
+  const label = info?.name ? `📎 Attached image: ${info.name}` : '📎 Attached image'
+
+  return `${label}${meta ? ` · ${meta}` : ''}`
+}
+
 export const userDisplay = (text: string) => {
   if (text.length <= LONG_MSG) {
     return text

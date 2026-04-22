@@ -10,6 +10,7 @@ from hermes_cli.auth import get_nous_auth_status
 from hermes_cli.config import get_env_value, load_config
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from tools.tool_backend_helpers import (
+    fal_key_is_configured,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
     normalize_browser_cloud_provider,
@@ -271,7 +272,7 @@ def get_nous_subscription_features(
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
-    direct_fal = bool(get_env_value("FAL_KEY"))
+    direct_fal = fal_key_is_configured()
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
     direct_camofox = bool(get_env_value("CAMOFOX_URL"))
@@ -520,7 +521,7 @@ def apply_nous_managed_defaults(
         browser_cfg["cloud_provider"] = "browser-use"
         changed.add("browser")
 
-    if "image_gen" in selected_toolsets and not get_env_value("FAL_KEY"):
+    if "image_gen" in selected_toolsets and not fal_key_is_configured():
         changed.add("image_gen")
 
     return changed
@@ -548,7 +549,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
             or get_env_value("TAVILY_API_KEY")
             or get_env_value("EXA_API_KEY")
         ),
-        "image_gen": bool(get_env_value("FAL_KEY")),
+        "image_gen": fal_key_is_configured(),
         "tts": bool(
             resolve_openai_audio_api_key()
             or get_env_value("ELEVENLABS_API_KEY")
@@ -586,7 +587,6 @@ def get_gateway_eligible_tools(
         return [], [], []
 
     if config is None:
-        from hermes_cli.config import load_config
         config = load_config() or {}
 
     # Quick provider check without the heavy get_nous_subscription_features call

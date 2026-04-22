@@ -405,3 +405,191 @@ class TestPlanSkillHelpers:
         assert "Add a /plan command" in msg
         assert ".hermes/plans/plan.md" in msg
         assert "Runtime note:" in msg
+
+
+class TestSkillDirectoryHeader:
+    """The activation message must expose the absolute skill directory and
+    explain how to resolve relative paths, so skills with bundled scripts
+    don't force the agent into a second ``skill_view()`` round-trip."""
+
+    def test_header_contains_absolute_skill_dir(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "abs-dir-skill")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/abs-dir-skill", "go")
+
+        assert msg is not None
+        assert f"[Skill directory: {skill_dir}]" in msg
+        assert "Resolve any relative paths" in msg
+
+    def test_supporting_files_shown_with_absolute_paths(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "scripted-skill")
+            (skill_dir / "scripts").mkdir()
+            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/scripted-skill")
+
+        assert msg is not None
+        # The supporting-files block must emit both the relative form (so the
+        # agent can call skill_view on it) and the absolute form (so it can
+        # run the script directly via terminal).
+        assert "scripts/run.js" in msg
+        assert str(skill_dir / "scripts" / "run.js") in msg
+        assert f"node {skill_dir}/scripts/foo.js" in msg
+
+
+class TestTemplateVarSubstitution:
+    """``${HERMES_SKILL_DIR}`` and ``${HERMES_SESSION_ID}`` in SKILL.md body
+    are replaced before the agent sees the content."""
+
+    def test_substitutes_skill_dir(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(
+                tmp_path,
+                "templated",
+                body="Run: node ${HERMES_SKILL_DIR}/scripts/foo.js",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/templated")
+
+        assert msg is not None
+        assert f"node {skill_dir}/scripts/foo.js" in msg
+        # The literal template token must not leak through.
+        assert "${HERMES_SKILL_DIR}" not in msg.split("[Skill directory:")[0]
+
+    def test_substitutes_session_id_when_available(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "sess-templated",
+                body="Session: ${HERMES_SESSION_ID}",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message(
+                "/sess-templated", task_id="abc-123"
+            )
+
+        assert msg is not None
+        assert "Session: abc-123" in msg
+
+    def test_leaves_session_id_token_when_missing(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "sess-missing",
+                body="Session: ${HERMES_SESSION_ID}",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/sess-missing", task_id=None)
+
+        assert msg is not None
+        # No session — token left intact so the author can spot it.
+        assert "Session: ${HERMES_SESSION_ID}" in msg
+
+    def test_disable_template_vars_via_config(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": False},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "no-sub",
+                body="Run: node ${HERMES_SKILL_DIR}/scripts/foo.js",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/no-sub")
+
+        assert msg is not None
+        # Template token must survive when substitution is disabled.
+        assert "${HERMES_SKILL_DIR}/scripts/foo.js" in msg
+
+
+class TestInlineShellExpansion:
+    """Inline ``!`cmd`` snippets in SKILL.md run before the agent sees the
+    content — but only when the user has opted in via config."""
+
+    def test_inline_shell_is_off_by_default(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "dyn-default-off",
+                body="Today is !`echo INLINE_RAN`.",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-default-off")
+
+        assert msg is not None
+        # Default config has inline_shell=False — snippet must stay literal.
+        assert "!`echo INLINE_RAN`" in msg
+        assert "Today is INLINE_RAN." not in msg
+
+    def test_inline_shell_runs_when_enabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": True, "inline_shell": True,
+                              "inline_shell_timeout": 5},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "dyn-on",
+                body="Marker: !`echo INLINE_RAN`.",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-on")
+
+        assert msg is not None
+        assert "Marker: INLINE_RAN." in msg
+        assert "!`echo INLINE_RAN`" not in msg
+
+    def test_inline_shell_runs_in_skill_directory(self, tmp_path):
+        """Inline snippets get the skill dir as CWD so relative paths work."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": True, "inline_shell": True,
+                              "inline_shell_timeout": 5},
+            ),
+        ):
+            skill_dir = _make_skill(
+                tmp_path,
+                "dyn-cwd",
+                body="Here: !`pwd`",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-cwd")
+
+        assert msg is not None
+        assert f"Here: {skill_dir}" in msg
+
+    def test_inline_shell_timeout_does_not_break_message(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": True, "inline_shell": True,
+                              "inline_shell_timeout": 1},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "dyn-slow",
+                body="Slow: !`sleep 5 && printf DYN_MARKER`",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-slow")
+
+        assert msg is not None
+        # Timeout is surfaced as a marker instead of propagating as an error,
+        # and the rest of the skill message still renders.
+        assert "inline-shell timeout" in msg
+        # The command's intended stdout never made it through — only the
+        # timeout marker (which echoes the command text) survives.
+        assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")

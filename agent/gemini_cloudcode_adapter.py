@@ -39,6 +39,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent import google_oauth
+from agent.gemini_schema import sanitize_gemini_tool_parameters
 from agent.google_code_assist import (
     CODE_ASSIST_ENDPOINT,
     FREE_TIER_ID,
@@ -205,7 +206,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
             decl["description"] = str(fn["description"])
         params = fn.get("parameters")
         if isinstance(params, dict):
-            decl["parameters"] = params
+            decl["parameters"] = sanitize_gemini_tool_parameters(params)
         declarations.append(decl)
     if not declarations:
         return []
@@ -504,9 +505,16 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
 def _translate_stream_event(
     event: Dict[str, Any],
     model: str,
-    tool_call_indices: Dict[str, int],
+    tool_call_counter: List[int],
 ) -> List[_GeminiStreamChunk]:
-    """Unwrap Code Assist envelope and emit OpenAI-shaped chunk(s)."""
+    """Unwrap Code Assist envelope and emit OpenAI-shaped chunk(s).
+
+    ``tool_call_counter`` is a single-element list used as a mutable counter
+    across events in the same stream. Each ``functionCall`` part gets a
+    fresh, unique OpenAI ``index`` — keying by function name would collide
+    whenever the model issues parallel calls to the same tool (e.g. reading
+    three files in one turn).
+    """
     inner = event.get("response") if isinstance(event.get("response"), dict) else event
     candidates = inner.get("candidates") or []
     if not candidates:
@@ -532,7 +540,8 @@ def _translate_stream_event(
         fc = part.get("functionCall")
         if isinstance(fc, dict) and fc.get("name"):
             name = str(fc["name"])
-            idx = tool_call_indices.setdefault(name, len(tool_call_indices))
+            idx = tool_call_counter[0]
+            tool_call_counter[0] += 1
             try:
                 args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
             except (TypeError, ValueError):
@@ -549,7 +558,7 @@ def _translate_stream_event(
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
         mapped = _map_gemini_finish_reason(finish_reason_raw)
-        if tool_call_indices:
+        if tool_call_counter[0] > 0:
             mapped = "tool_calls"
         chunks.append(_make_stream_chunk(model=model, finish_reason=mapped))
     return chunks
@@ -733,9 +742,9 @@ class GeminiCloudCodeClient:
                         # Materialize error body for better diagnostics
                         response.read()
                         raise _gemini_http_error(response)
-                    tool_call_indices: Dict[str, int] = {}
+                    tool_call_counter: List[int] = [0]
                     for event in _iter_sse_events(response):
-                        for chunk in _translate_stream_event(event, model, tool_call_indices):
+                        for chunk in _translate_stream_event(event, model, tool_call_counter):
                             yield chunk
             except httpx.HTTPError as exc:
                 raise CodeAssistError(
@@ -790,7 +799,8 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
         err_obj = {}
     err_status = str(err_obj.get("status") or "").strip()
     err_message = str(err_obj.get("message") or "").strip()
-    err_details_list = err_obj.get("details") if isinstance(err_obj.get("details"), list) else []
+    _raw_details = err_obj.get("details")
+    err_details_list = _raw_details if isinstance(_raw_details, list) else []
 
     # Extract google.rpc.ErrorInfo reason + metadata.  There may be more
     # than one ErrorInfo (rare), so we pick the first one with a reason.

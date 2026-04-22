@@ -161,16 +161,16 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
         </Text>
 
         {typeof info.update_behind === 'number' && info.update_behind > 0 && (
-          <Text bold color="yellow">
+          <Text bold color={t.color.warn}>
             ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
-            <Text bold={false} color="yellow" dimColor>
+            <Text bold={false} color={t.color.warn} dimColor>
               {' '}
               - run{' '}
             </Text>
-            <Text bold color="yellow">
+            <Text bold color={t.color.warn}>
               {info.update_command || 'hermes update'}
             </Text>
-            <Text bold={false} color="yellow" dimColor>
+            <Text bold={false} color={t.color.warn} dimColor>
               {' '}
               to update
             </Text>

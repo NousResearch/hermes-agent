@@ -124,6 +124,7 @@ class InsightsEngine:
         # Gather raw data
         sessions = self._get_sessions(cutoff, source)
         tool_usage = self._get_tool_usage(cutoff, source)
+        skill_usage = self._get_skill_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
 
         if not sessions:
@@ -135,6 +136,15 @@ class InsightsEngine:
                 "models": [],
                 "platforms": [],
                 "tools": [],
+                "skills": {
+                    "summary": {
+                        "total_skill_loads": 0,
+                        "total_skill_edits": 0,
+                        "total_skill_actions": 0,
+                        "distinct_skills_used": 0,
+                    },
+                    "top_skills": [],
+                },
                 "activity": {},
                 "top_sessions": [],
             }
@@ -144,6 +154,7 @@ class InsightsEngine:
         models = self._compute_model_breakdown(sessions)
         platforms = self._compute_platform_breakdown(sessions)
         tools = self._compute_tool_breakdown(tool_usage)
+        skills = self._compute_skill_breakdown(skill_usage)
         activity = self._compute_activity_patterns(sessions)
         top_sessions = self._compute_top_sessions(sessions)
 
@@ -156,6 +167,7 @@ class InsightsEngine:
             "models": models,
             "platforms": platforms,
             "tools": tools,
+            "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
         }
@@ -283,6 +295,82 @@ class InsightsEngine:
             {"tool_name": name, "count": count}
             for name, count in tool_counts.most_common()
         ]
+
+    def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Extract per-skill usage from assistant tool calls."""
+        skill_counts: Dict[str, Dict[str, Any]] = {}
+
+        if source:
+            cursor = self._conn.execute(
+                """SELECT m.tool_calls, m.timestamp
+                   FROM messages m
+                   JOIN sessions s ON s.id = m.session_id
+                   WHERE s.started_at >= ? AND s.source = ?
+                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+                (cutoff, source),
+            )
+        else:
+            cursor = self._conn.execute(
+                """SELECT m.tool_calls, m.timestamp
+                   FROM messages m
+                   JOIN sessions s ON s.id = m.session_id
+                   WHERE s.started_at >= ?
+                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+                (cutoff,),
+            )
+
+        for row in cursor.fetchall():
+            try:
+                calls = row["tool_calls"]
+                if isinstance(calls, str):
+                    calls = json.loads(calls)
+                if not isinstance(calls, list):
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            timestamp = row["timestamp"]
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                func = call.get("function", {})
+                tool_name = func.get("name")
+                if tool_name not in {"skill_view", "skill_manage"}:
+                    continue
+
+                args = func.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                if not isinstance(args, dict):
+                    continue
+
+                skill_name = args.get("name")
+                if not isinstance(skill_name, str) or not skill_name.strip():
+                    continue
+
+                entry = skill_counts.setdefault(
+                    skill_name,
+                    {
+                        "skill": skill_name,
+                        "view_count": 0,
+                        "manage_count": 0,
+                        "last_used_at": None,
+                    },
+                )
+                if tool_name == "skill_view":
+                    entry["view_count"] += 1
+                else:
+                    entry["manage_count"] += 1
+
+                if timestamp is not None and (
+                    entry["last_used_at"] is None or timestamp > entry["last_used_at"]
+                ):
+                    entry["last_used_at"] = timestamp
+
+        return list(skill_counts.values())
 
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
         """Get aggregate message statistics."""
@@ -474,6 +562,46 @@ class InsightsEngine:
                 "percentage": pct,
             })
         return result
+
+    def _compute_skill_breakdown(self, skill_usage: List[Dict]) -> Dict[str, Any]:
+        """Process per-skill usage into summary + ranked list."""
+        total_skill_loads = sum(s["view_count"] for s in skill_usage) if skill_usage else 0
+        total_skill_edits = sum(s["manage_count"] for s in skill_usage) if skill_usage else 0
+        total_skill_actions = total_skill_loads + total_skill_edits
+
+        top_skills = []
+        for skill in skill_usage:
+            total_count = skill["view_count"] + skill["manage_count"]
+            percentage = (total_count / total_skill_actions * 100) if total_skill_actions else 0
+            top_skills.append({
+                "skill": skill["skill"],
+                "view_count": skill["view_count"],
+                "manage_count": skill["manage_count"],
+                "total_count": total_count,
+                "percentage": percentage,
+                "last_used_at": skill.get("last_used_at"),
+            })
+
+        top_skills.sort(
+            key=lambda s: (
+                s["total_count"],
+                s["view_count"],
+                s["manage_count"],
+                s["last_used_at"] or 0,
+                s["skill"],
+            ),
+            reverse=True,
+        )
+
+        return {
+            "summary": {
+                "total_skill_loads": total_skill_loads,
+                "total_skill_edits": total_skill_edits,
+                "total_skill_actions": total_skill_actions,
+                "distinct_skills_used": len(skill_usage),
+            },
+            "top_skills": top_skills,
+        }
 
     def _compute_activity_patterns(self, sessions: List[Dict]) -> Dict:
         """Analyze activity patterns by day of week and hour."""
@@ -670,6 +798,28 @@ class InsightsEngine:
                 lines.append(f"  ... and {len(report['tools']) - 15} more tools")
             lines.append("")
 
+        # Skill usage
+        skills = report.get("skills", {})
+        top_skills = skills.get("top_skills", [])
+        if top_skills:
+            lines.append("  🧠 Top Skills")
+            lines.append("  " + "─" * 56)
+            lines.append(f"  {'Skill':<28} {'Loads':>7} {'Edits':>7} {'Last used':>11}")
+            for skill in top_skills[:10]:
+                last_used = "—"
+                if skill.get("last_used_at"):
+                    last_used = datetime.fromtimestamp(skill["last_used_at"]).strftime("%b %d")
+                lines.append(
+                    f"  {skill['skill'][:28]:<28} {skill['view_count']:>7,} {skill['manage_count']:>7,} {last_used:>11}"
+                )
+            summary = skills.get("summary", {})
+            lines.append(
+                f"  Distinct skills: {summary.get('distinct_skills_used', 0)}  "
+                f"Loads: {summary.get('total_skill_loads', 0):,}  "
+                f"Edits: {summary.get('total_skill_edits', 0):,}"
+            )
+            lines.append("")
+
         # Activity patterns
         act = report.get("activity", {})
         if act.get("by_day"):
@@ -751,6 +901,18 @@ class InsightsEngine:
             lines.append("**🔧 Top Tools:**")
             for t in report["tools"][:8]:
                 lines.append(f"  {t['tool']} — {t['count']:,} calls ({t['percentage']:.1f}%)")
+            lines.append("")
+
+        skills = report.get("skills", {})
+        if skills.get("top_skills"):
+            lines.append("**🧠 Top Skills:**")
+            for skill in skills["top_skills"][:5]:
+                suffix = ""
+                if skill.get("last_used_at"):
+                    suffix = f", last used {datetime.fromtimestamp(skill['last_used_at']).strftime('%b %d')}"
+                lines.append(
+                    f"  {skill['skill']} — {skill['view_count']:,} loads, {skill['manage_count']:,} edits{suffix}"
+                )
             lines.append("")
 
         # Activity summary

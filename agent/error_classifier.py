@@ -290,7 +290,7 @@ def classify_api_error(
     if isinstance(body, dict):
         _err_obj = body.get("error", {})
         if isinstance(_err_obj, dict):
-            _body_msg = (_err_obj.get("message") or "").lower()
+            _body_msg = str(_err_obj.get("message") or "").lower()
             # Parse metadata.raw for wrapped provider errors
             _metadata = _err_obj.get("metadata", {})
             if isinstance(_metadata, dict):
@@ -302,11 +302,11 @@ def classify_api_error(
                         if isinstance(_inner, dict):
                             _inner_err = _inner.get("error", {})
                             if isinstance(_inner_err, dict):
-                                _metadata_msg = (_inner_err.get("message") or "").lower()
+                                _metadata_msg = str(_inner_err.get("message") or "").lower()
                     except (json.JSONDecodeError, TypeError):
                         pass
         if not _body_msg:
-            _body_msg = (body.get("message") or "").lower()
+            _body_msg = str(body.get("message") or "").lower()
     # Combine all message sources for pattern matching
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
@@ -470,11 +470,16 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
-        # Generic 404 — could be model or endpoint
+        # Generic 404 with no "model not found" signal — could be a wrong
+        # endpoint path (common with local llama.cpp / Ollama / vLLM when
+        # the URL is slightly misconfigured), a proxy routing glitch, or
+        # a transient backend issue.  Classifying these as model_not_found
+        # silently falls back to a different provider and tells the model
+        # the model is missing, which is wrong and wastes a turn.  Treat
+        # as unknown so the retry loop surfaces the real error instead.
         return result_fn(
-            FailoverReason.model_not_found,
-            retryable=False,
-            should_fallback=True,
+            FailoverReason.unknown,
+            retryable=True,
         )
 
     if status_code == 413:
@@ -606,10 +611,10 @@ def _classify_400(
     if isinstance(body, dict):
         err_obj = body.get("error", {})
         if isinstance(err_obj, dict):
-            err_body_msg = (err_obj.get("message") or "").strip().lower()
+            err_body_msg = str(err_obj.get("message") or "").strip().lower()
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
-            err_body_msg = (body.get("message") or "").strip().lower()
+            err_body_msg = str(body.get("message") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
     is_large = approx_tokens > context_length * 0.4 or approx_tokens > 80000 or num_messages > 80
 

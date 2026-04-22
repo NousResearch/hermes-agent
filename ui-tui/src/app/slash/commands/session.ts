@@ -1,4 +1,4 @@
-import { imageTokenMeta, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import type {
   BackgroundStartResponse,
   BtwStartResponse,
@@ -92,9 +92,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
         ctx.guarded<ImageAttachResponse>(r => {
-          const meta = imageTokenMeta(r)
-
-          ctx.transcript.sys(`attached image: ${r.name ?? ''}${meta ? ` · ${meta}` : ''}`)
+          ctx.transcript.sys(attachedImageNotice(r))
 
           if (r.remainder) {
             ctx.composer.setInput(r.remainder)

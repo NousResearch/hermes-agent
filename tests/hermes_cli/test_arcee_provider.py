@@ -115,12 +115,12 @@ class TestArceeCredentials:
 
 class TestArceeModelCatalog:
     def test_static_model_list(self):
+        """Arcee has a static _PROVIDER_MODELS catalog entry. Specific model
+        names change with releases and don't belong in tests.
+        """
         from hermes_cli.models import _PROVIDER_MODELS
         assert "arcee" in _PROVIDER_MODELS
-        models = _PROVIDER_MODELS["arcee"]
-        assert "trinity-large-thinking" in models
-        assert "trinity-large-preview" in models
-        assert "trinity-mini" in models
+        assert len(_PROVIDER_MODELS["arcee"]) >= 1
 
     def test_canonical_provider_entry(self):
         from hermes_cli.models import CANONICAL_PROVIDERS

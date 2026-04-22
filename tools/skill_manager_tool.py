@@ -449,9 +449,15 @@ def _patch_skill(
     if match_error:
         # Show a short preview of the file so the model can self-correct
         preview = content[:500] + ("..." if len(content) > 500 else "")
+        err_msg = match_error
+        try:
+            from tools.fuzzy_match import format_no_match_hint
+            err_msg += format_no_match_hint(match_error, match_count, old_string, content)
+        except Exception:
+            pass
         return {
             "success": False,
-            "error": match_error,
+            "error": err_msg,
             "file_preview": preview,
         }
 

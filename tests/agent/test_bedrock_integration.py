@@ -267,3 +267,174 @@ class TestPackaging:
         from pathlib import Path
         content = (Path(__file__).parent.parent.parent / "pyproject.toml").read_text()
         assert '"hermes-agent[bedrock]"' in content
+
+
+# ---------------------------------------------------------------------------
+# Model ID dot preservation — regression for #11976
+# ---------------------------------------------------------------------------
+# AWS Bedrock inference-profile model IDs embed structural dots:
+#
+#   global.anthropic.claude-opus-4-7
+#   us.anthropic.claude-sonnet-4-5-20250929-v1:0
+#   apac.anthropic.claude-haiku-4-5
+#
+# ``agent.anthropic_adapter.normalize_model_name`` converts dots to hyphens
+# unless the caller opts in via ``preserve_dots=True``.  Before this fix,
+# ``AIAgent._anthropic_preserve_dots`` returned False for the ``bedrock``
+# provider, so Claude-on-Bedrock requests went out with
+# ``global-anthropic-claude-opus-4-7`` (all dots mangled to hyphens) and
+# Bedrock rejected them with:
+#
+#   HTTP 400: The provided model identifier is invalid.
+#
+# The fix adds ``bedrock`` to the preserve-dots provider allowlist and
+# ``bedrock-runtime.`` to the base-URL heuristic, mirroring the shape of
+# the opencode-go fix for #5211 (commit f77be22c), which extended this
+# same allowlist.
+
+
+class TestBedrockPreserveDotsFlag:
+    """``AIAgent._anthropic_preserve_dots`` must return True on Bedrock so
+    inference-profile IDs survive the normalize step intact."""
+
+    def test_bedrock_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="bedrock", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bedrock_runtime_us_east_1_url_preserves_dots(self):
+        """Defense-in-depth: even without an explicit ``provider="bedrock"``,
+        a ``bedrock-runtime.us-east-1.amazonaws.com`` base URL must not
+        mangle dots."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bedrock_runtime_ap_northeast_2_url_preserves_dots(self):
+        """Reporter-reported region (ap-northeast-2) exercises the same
+        base-URL heuristic."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://bedrock-runtime.ap-northeast-2.amazonaws.com",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_non_bedrock_aws_url_does_not_preserve_dots(self):
+        """Unrelated AWS endpoints (e.g. ``s3.us-east-1.amazonaws.com``)
+        must not accidentally activate the dot-preservation heuristic —
+        the heuristic is scoped to the ``bedrock-runtime.`` substring
+        specifically."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(
+            provider="custom",
+            base_url="https://s3.us-east-1.amazonaws.com",
+        )
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is False
+
+    def test_anthropic_native_still_does_not_preserve_dots(self):
+        """Canary: adding Bedrock to the allowlist must not weaken the
+        existing Anthropic native behaviour — ``claude-sonnet-4.6`` still
+        becomes ``claude-sonnet-4-6`` for the Anthropic API."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is False
+
+
+class TestBedrockModelNameNormalization:
+    """End-to-end: ``normalize_model_name`` + the preserve-dots flag
+    reproduce the exact production request shape for each Bedrock model
+    family, confirming the fix resolves the reporter's HTTP 400."""
+
+    def test_global_anthropic_inference_profile_preserved(self):
+        """The reporter's exact model ID."""
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name(
+            "global.anthropic.claude-opus-4-7", preserve_dots=True
+        ) == "global.anthropic.claude-opus-4-7"
+
+    def test_us_anthropic_dated_inference_profile_preserved(self):
+        """Regional + dated Sonnet inference profile."""
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            preserve_dots=True,
+        ) == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+    def test_apac_anthropic_haiku_inference_profile_preserved(self):
+        """APAC inference profile — same structural-dot shape."""
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name(
+            "apac.anthropic.claude-haiku-4-5", preserve_dots=True
+        ) == "apac.anthropic.claude-haiku-4-5"
+
+    def test_preserve_false_mangles_as_documented(self):
+        """Canary: with ``preserve_dots=False`` the function still
+        produces the broken all-hyphen form — this is the shape that
+        Bedrock rejected and that the fix avoids.  Keeping this test
+        locks in the existing behaviour of ``normalize_model_name`` so a
+        future refactor doesn't accidentally decouple the knob from its
+        effect."""
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name(
+            "global.anthropic.claude-opus-4-7", preserve_dots=False
+        ) == "global-anthropic-claude-opus-4-7"
+
+    def test_bare_foundation_model_id_preserved(self):
+        """Non-inference-profile Bedrock IDs
+        (e.g. ``anthropic.claude-3-5-sonnet-20241022-v2:0``) use dots as
+        vendor separators and must also survive intact under
+        ``preserve_dots=True``."""
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name(
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            preserve_dots=True,
+        ) == "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+
+class TestBedrockBuildAnthropicKwargsEndToEnd:
+    """Integration: calling ``build_anthropic_kwargs`` with a Bedrock-
+    shaped model ID and ``preserve_dots=True`` produces the unmangled
+    model string in the outgoing kwargs — the exact body sent to the
+    ``bedrock-runtime.`` endpoint.  This is the integration-level
+    regression for the reporter's HTTP 400."""
+
+    def test_bedrock_inference_profile_survives_build_kwargs(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        kwargs = build_anthropic_kwargs(
+            model="global.anthropic.claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            preserve_dots=True,
+        )
+        assert kwargs["model"] == "global.anthropic.claude-opus-4-7", (
+            "Bedrock inference-profile ID was mangled in build_anthropic_kwargs: "
+            f"{kwargs['model']!r}"
+        )
+
+    def test_bedrock_model_mangled_without_preserve_dots(self):
+        """Inverse canary: without the flag, ``build_anthropic_kwargs``
+        still produces the broken form — so the fix in
+        ``_anthropic_preserve_dots`` is the load-bearing piece that
+        wires ``preserve_dots=True`` through to this builder for the
+        Bedrock case."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        kwargs = build_anthropic_kwargs(
+            model="global.anthropic.claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            preserve_dots=False,
+        )
+        assert kwargs["model"] == "global-anthropic-claude-opus-4-7"

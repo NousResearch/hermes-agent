@@ -147,6 +147,37 @@ class TestEscapedSpaces:
         assert result["path"] == tmp_image_with_spaces
         assert result["remainder"] == "what is this?"
 
+    def test_unquoted_spaces_in_path(self, tmp_image_with_spaces):
+        result = _detect_file_drop(str(tmp_image_with_spaces))
+        assert result is not None
+        assert result["path"] == tmp_image_with_spaces
+        assert result["is_image"] is True
+        assert result["remainder"] == ""
+
+    def test_unquoted_spaces_with_trailing_text(self, tmp_image_with_spaces):
+        user_input = f"{tmp_image_with_spaces} what is this?"
+        result = _detect_file_drop(user_input)
+        assert result is not None
+        assert result["path"] == tmp_image_with_spaces
+        assert result["remainder"] == "what is this?"
+
+    def test_mixed_escaped_and_literal_spaces_in_path(self, tmp_path):
+        img = tmp_path / "Screenshot 2026-04-21 at 1.04.43 PM.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        mixed = str(img).replace("Screenshot ", "Screenshot\\ ").replace("2026-04-21 ", "2026-04-21\\ ").replace("at ", "at\\ ")
+        result = _detect_file_drop(mixed)
+        assert result is not None
+        assert result["path"] == img
+        assert result["is_image"] is True
+        assert result["remainder"] == ""
+
+    def test_file_uri_image_path(self, tmp_image_with_spaces):
+        uri = tmp_image_with_spaces.as_uri()
+        result = _detect_file_drop(uri)
+        assert result is not None
+        assert result["path"] == tmp_image_with_spaces
+        assert result["is_image"] is True
+
     def test_tilde_prefixed_path(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         img = home / "storage" / "shared" / "Pictures" / "cat.png"

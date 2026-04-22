@@ -6,11 +6,15 @@ retrieval. Supports cloud (API key) and local modes.
 Original PR #1811 by benfrank241, adapted to MemoryProvider ABC.
 
 Config via environment variables:
-  HINDSIGHT_API_KEY   — API key for Hindsight Cloud
-  HINDSIGHT_BANK_ID   — memory bank identifier (default: hermes)
-  HINDSIGHT_BUDGET    — recall budget: low/mid/high (default: mid)
-  HINDSIGHT_API_URL   — API endpoint
-  HINDSIGHT_MODE      — cloud or local (default: cloud)
+  HINDSIGHT_API_KEY                — API key for Hindsight Cloud
+  HINDSIGHT_BANK_ID                — memory bank identifier (default: hermes)
+  HINDSIGHT_BUDGET                 — recall budget: low/mid/high (default: mid)
+  HINDSIGHT_API_URL                — API endpoint
+  HINDSIGHT_MODE                   — cloud or local (default: cloud)
+  HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
+  HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
+  HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
+  HINDSIGHT_RETAIN_ASSISTANT_PREFIX — label used before assistant turns in retained transcripts
 
 Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
 ~/.hindsight/config.json (legacy, shared) for backward compatibility.
@@ -24,7 +28,7 @@ import logging
 import os
 import threading
 
-from hermes_constants import get_hermes_home
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -99,6 +103,11 @@ RETAIN_SCHEMA = {
         "properties": {
             "content": {"type": "string", "description": "The information to store."},
             "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional per-call tags to merge with configured default retain tags.",
+            },
         },
         "required": ["content"],
     },
@@ -168,6 +177,10 @@ def _load_config() -> dict:
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
         "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
+        "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
+        "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
+        "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
+        "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
         "banks": {
             "hermes": {
                 "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
@@ -176,6 +189,48 @@ def _load_config() -> dict:
             }
         },
     }
+
+
+def _normalize_retain_tags(value: Any) -> List[str]:
+    """Normalize tag config/tool values to a deduplicated list of strings."""
+    if value is None:
+        return []
+
+    raw_items: list[Any]
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                raw_items = parsed
+            else:
+                raw_items = text.split(",")
+        else:
+            raw_items = text.split(",")
+    else:
+        raw_items = [value]
+
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        tag = str(item).strip()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        normalized.append(tag)
+    return normalized
+
+
+def _utc_timestamp() -> str:
+    """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +250,19 @@ class HindsightMemoryProvider(MemoryProvider):
         self._llm_base_url = ""
         self._memory_mode = "hybrid"  # "context", "tools", or "hybrid"
         self._prefetch_method = "recall"  # "recall" or "reflect"
+        self._retain_tags: List[str] = []
+        self._retain_source = ""
+        self._retain_user_prefix = "User"
+        self._retain_assistant_prefix = "Assistant"
+        self._platform = ""
+        self._user_id = ""
+        self._user_name = ""
+        self._chat_id = ""
+        self._chat_name = ""
+        self._chat_type = ""
+        self._thread_id = ""
+        self._agent_identity = ""
+        self._turn_index = 0
         self._client = None
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -210,6 +278,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Retain controls
         self._auto_retain = True
         self._retain_every_n_turns = 1
+        self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
@@ -224,7 +293,6 @@ class HindsightMemoryProvider(MemoryProvider):
         # Bank
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
-        self._retain_async = True
 
     @property
     def name(self) -> str:
@@ -423,7 +491,10 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
-            {"key": "tags", "description": "Tags applied when storing memories (comma-separated)", "default": ""},
+            {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
+            {"key": "retain_source", "description": "Metadata source value attached to retained memories", "default": ""},
+            {"key": "retain_user_prefix", "description": "Label used before user turns in retained transcripts", "default": "User"},
+            {"key": "retain_assistant_prefix", "description": "Label used before assistant turns in retained transcripts", "default": "Assistant"},
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
@@ -467,7 +538,7 @@ class HindsightMemoryProvider(MemoryProvider):
         return self._client
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        self._session_id = session_id
+        self._session_id = str(session_id or "").strip()
 
         # Check client version and auto-upgrade if needed
         try:
@@ -496,6 +567,16 @@ class HindsightMemoryProvider(MemoryProvider):
             pass  # packaging not available or other issue — proceed anyway
 
         self._config = _load_config()
+        self._platform = str(kwargs.get("platform") or "").strip()
+        self._user_id = str(kwargs.get("user_id") or "").strip()
+        self._user_name = str(kwargs.get("user_name") or "").strip()
+        self._chat_id = str(kwargs.get("chat_id") or "").strip()
+        self._chat_name = str(kwargs.get("chat_name") or "").strip()
+        self._chat_type = str(kwargs.get("chat_type") or "").strip()
+        self._thread_id = str(kwargs.get("thread_id") or "").strip()
+        self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
+        self._turn_index = 0
+        self._session_turns = []
         self._mode = self._config.get("mode", "cloud")
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
@@ -513,7 +594,7 @@ class HindsightMemoryProvider(MemoryProvider):
         memory_mode = self._config.get("memory_mode", "hybrid")
         self._memory_mode = memory_mode if memory_mode in ("context", "tools", "hybrid") else "hybrid"
 
-        prefetch_method = self._config.get("recall_prefetch_method", "recall")
+        prefetch_method = self._config.get("recall_prefetch_method") or self._config.get("prefetch_method", "recall")
         self._prefetch_method = prefetch_method if prefetch_method in ("recall", "reflect") else "recall"
 
         # Bank options
@@ -521,9 +602,22 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_retain_mission = self._config.get("bank_retain_mission") or None
 
         # Tags
-        self._tags = self._config.get("tags") or None
+        self._retain_tags = _normalize_retain_tags(
+            self._config.get("retain_tags")
+            or os.environ.get("HINDSIGHT_RETAIN_TAGS", "")
+        )
+        self._tags = self._retain_tags or None
         self._recall_tags = self._config.get("recall_tags") or None
         self._recall_tags_match = self._config.get("recall_tags_match", "any")
+        self._retain_source = str(
+            self._config.get("retain_source") or os.environ.get("HINDSIGHT_RETAIN_SOURCE", "")
+        ).strip()
+        self._retain_user_prefix = str(
+            self._config.get("retain_user_prefix") or os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User")
+        ).strip() or "User"
+        self._retain_assistant_prefix = str(
+            self._config.get("retain_assistant_prefix") or os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant")
+        ).strip() or "Assistant"
 
         # Retain controls
         self._auto_retain = self._config.get("auto_retain", True)
@@ -547,11 +641,9 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",
                      self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method, _client_version)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, "
-                     "recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_context,
-                     self._recall_max_tokens, self._recall_max_input_chars,
+                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -712,6 +804,78 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
+    def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
+        now = datetime.now(timezone.utc).isoformat()
+        return [
+            {
+                "role": "user",
+                "content": f"{self._retain_user_prefix}: {user_content}",
+                "timestamp": now,
+            },
+            {
+                "role": "assistant",
+                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "timestamp": now,
+            },
+        ]
+
+    def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
+        metadata: Dict[str, str] = {
+            "retained_at": _utc_timestamp(),
+            "message_count": str(message_count),
+            "turn_index": str(turn_index),
+        }
+        if self._retain_source:
+            metadata["source"] = self._retain_source
+        if self._session_id:
+            metadata["session_id"] = self._session_id
+        if self._platform:
+            metadata["platform"] = self._platform
+        if self._user_id:
+            metadata["user_id"] = self._user_id
+        if self._user_name:
+            metadata["user_name"] = self._user_name
+        if self._chat_id:
+            metadata["chat_id"] = self._chat_id
+        if self._chat_name:
+            metadata["chat_name"] = self._chat_name
+        if self._chat_type:
+            metadata["chat_type"] = self._chat_type
+        if self._thread_id:
+            metadata["thread_id"] = self._thread_id
+        if self._agent_identity:
+            metadata["agent_identity"] = self._agent_identity
+        return metadata
+
+    def _build_retain_kwargs(
+        self,
+        content: str,
+        *,
+        context: str | None = None,
+        document_id: str | None = None,
+        metadata: Dict[str, str] | None = None,
+        tags: List[str] | None = None,
+        retain_async: bool | None = None,
+    ) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "bank_id": self._bank_id,
+            "content": content,
+            "metadata": metadata or self._build_metadata(message_count=1, turn_index=self._turn_index),
+        }
+        if context is not None:
+            kwargs["context"] = context
+        if document_id:
+            kwargs["document_id"] = document_id
+        if retain_async is not None:
+            kwargs["retain_async"] = retain_async
+        merged_tags = _normalize_retain_tags(self._retain_tags)
+        for tag in _normalize_retain_tags(tags):
+            if tag not in merged_tags:
+                merged_tags.append(tag)
+        if merged_tags:
+            kwargs["tags"] = merged_tags
+        return kwargs
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Retain conversation turn in background (non-blocking).
 
@@ -721,19 +885,14 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("sync_turn: skipped (auto_retain disabled)")
             return
 
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        if session_id:
+            self._session_id = str(session_id).strip()
 
-        messages = [
-            {"role": "user", "content": user_content, "timestamp": now},
-            {"role": "assistant", "content": assistant_content, "timestamp": now},
-        ]
-
-        turn = json.dumps(messages)
+        turn = json.dumps(self._build_turn_messages(user_content, assistant_content))
         self._session_turns.append(turn)
         self._turn_counter += 1
+        self._turn_index = self._turn_counter
 
-        # Only retain every N turns
         if self._turn_counter % self._retain_every_n_turns != 0:
             logger.debug("sync_turn: buffered turn %d (will retain at turn %d)",
                          self._turn_counter, self._turn_counter + (self._retain_every_n_turns - self._turn_counter % self._retain_every_n_turns))
@@ -741,19 +900,21 @@ class HindsightMemoryProvider(MemoryProvider):
 
         logger.debug("sync_turn: retaining %d turns, total session content %d chars",
                      len(self._session_turns), sum(len(t) for t in self._session_turns))
-        # Send the ENTIRE session as a single JSON array (document_id deduplicates).
-        # Each element in _session_turns is a JSON string of that turn's messages.
         content = "[" + ",".join(self._session_turns) + "]"
 
         def _sync():
             try:
                 client = self._get_client()
-                item: dict = {
-                    "content": content,
-                    "context": self._retain_context,
-                }
-                if self._tags:
-                    item["tags"] = self._tags
+                item = self._build_retain_kwargs(
+                    content,
+                    context=self._retain_context,
+                    metadata=self._build_metadata(
+                        message_count=len(self._session_turns) * 2,
+                        turn_index=self._turn_index,
+                    ),
+                )
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
                 logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d",
                              self._bank_id, self._session_id, self._retain_async, len(content), len(self._session_turns))
                 _run_sync(client.aretain_batch(
@@ -789,11 +950,11 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
-                retain_kwargs: dict = {
-                    "bank_id": self._bank_id, "content": content, "context": context,
-                }
-                if self._tags:
-                    retain_kwargs["tags"] = self._tags
+                retain_kwargs = self._build_retain_kwargs(
+                    content,
+                    context=context,
+                    tags=args.get("tags"),
+                )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
                 _run_sync(client.aretain(**retain_kwargs))

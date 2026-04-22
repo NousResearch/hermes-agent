@@ -217,11 +217,13 @@ class FileToolsIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         file_state.get_registry().clear()
         self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_")
+        os.environ["TERMINAL_ENV"] = "local"
 
     def tearDown(self) -> None:
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
         file_state.get_registry().clear()
+        os.environ.pop("TERMINAL_ENV", None)
 
     def _write_seed(self, name: str, content: str = "seed\n") -> str:
         p = os.path.join(self._tmpdir, name)

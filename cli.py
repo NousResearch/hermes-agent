@@ -9464,33 +9464,43 @@ class HermesCLI:
                 event.app.invalidate()
                 return
 
+            # Clear all active overlay states first.  Each state's response_queue
+            # gets a terminal value so blocked threads unblock cleanly.
+            # We do NOT return early after each one — instead we fall through so
+            # that if the agent is also running we fire the interrupt in the same
+            # Ctrl+C press.  This fixes the case where a stale/orphaned overlay
+            # (left behind by a previous interrupt) consumes the Ctrl+C press
+            # without ever reaching the agent-interrupt branch, leaving the chat
+            # permanently frozen.
+            _overlay_cleared = False
+
             # Cancel sudo prompt
             if self._sudo_state:
                 self._sudo_state["response_queue"].put("")
                 self._sudo_state = None
                 event.app.invalidate()
-                return
+                _overlay_cleared = True
 
             # Cancel secret prompt
             if self._secret_state:
                 self._cancel_secret_capture()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
-                return
+                _overlay_cleared = True
 
             # Cancel approval prompt (deny)
             if self._approval_state:
                 self._approval_state["response_queue"].put("deny")
                 self._approval_state = None
                 event.app.invalidate()
-                return
+                _overlay_cleared = True
 
             # Cancel /model picker
             if self._model_picker_state:
                 self._close_model_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
-                return
+                _overlay_cleared = True
 
             # Cancel clarify prompt
             if self._clarify_state:
@@ -9501,6 +9511,11 @@ class HermesCLI:
                 self._clarify_freetext = False
                 event.app.current_buffer.reset()
                 event.app.invalidate()
+                _overlay_cleared = True
+
+            # If we only cleared overlays and the agent is NOT running, stop here
+            # (don't accidentally fall through to the exit path).
+            if _overlay_cleared and not self._agent_running:
                 return
 
             if self._agent_running and self.agent:

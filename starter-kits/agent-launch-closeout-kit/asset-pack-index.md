@@ -51,6 +51,7 @@ Required fields:
 - Screenshot or still source: proof-artifact still showing **1.74 minutes**
 
 ### Media
+- Demo readiness packet: `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md`
 - Demo outline: `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`
 - Demo capture runbook: `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
 - Captions file: `starter-kits/agentic-cron-orchestration-kit/launch/demo-captions.srt`

@@ -26,8 +26,10 @@ Proof reference:
 Run from repo root:
 
 ```bash
-bash starter-kits/agentic-cron-orchestration-kit/scripts/preflight.sh
+bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-preflight.sh
 ```
+
+This refreshes `demo-artifacts/latest-demo-capture-readiness.md` and reruns the underlying product preflight so the walkthrough starts from a fresh readiness packet instead of stale assumptions.
 
 Then show the proof artifact:
 

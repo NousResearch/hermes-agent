@@ -36,6 +36,7 @@ Track launch execution separately from product proof so the operator can close t
 
 ## Demo walkthrough
 - Status: pending capture
+- Readiness packet: `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md`
 - Source files:
   - `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`
   - `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`

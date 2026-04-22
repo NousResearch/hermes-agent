@@ -470,11 +470,16 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
-        # Generic 404 — could be model or endpoint
+        # Generic 404 with no "model not found" signal — could be a wrong
+        # endpoint path (common with local llama.cpp / Ollama / vLLM when
+        # the URL is slightly misconfigured), a proxy routing glitch, or
+        # a transient backend issue.  Classifying these as model_not_found
+        # silently falls back to a different provider and tells the model
+        # the model is missing, which is wrong and wastes a turn.  Treat
+        # as unknown so the retry loop surfaces the real error instead.
         return result_fn(
-            FailoverReason.model_not_found,
-            retryable=False,
-            should_fallback=True,
+            FailoverReason.unknown,
+            retryable=True,
         )
 
     if status_code == 413:

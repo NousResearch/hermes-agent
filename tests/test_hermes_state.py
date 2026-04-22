@@ -93,6 +93,27 @@ class TestSessionLifecycle:
         assert session["input_tokens"] == 300
         assert session["output_tokens"] == 150
 
+    def test_update_token_counts_tracks_api_call_count(self, db):
+        """api_call_count increments with each update_token_counts call."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+
+        session = db.get_session("s1")
+        assert session["api_call_count"] == 3
+
+    def test_update_token_counts_api_call_count_absolute(self, db):
+        """absolute mode sets api_call_count directly."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=300, output_tokens=150,
+                               api_call_count=5, absolute=True)
+
+        session = db.get_session("s1")
+        assert session["api_call_count"] == 5
+        assert session["input_tokens"] == 300
+
     def test_update_token_counts_backfills_model_when_null(self, db):
         db.create_session(session_id="s1", source="telegram")
         db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
@@ -1152,7 +1173,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 7
+        assert version == 8
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1208,17 +1229,23 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v7
+        # Open with SessionDB — should migrate to v8
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 7
+        assert cursor.fetchone()[0] == 8
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
         assert session is not None
         assert session["title"] is None
+
+        # Verify api_call_count column was added with default 0
+        cursor = migrated_db._conn.execute(
+            "SELECT api_call_count FROM sessions WHERE id = 'existing'"
+        )
+        assert cursor.fetchone()[0] == 0
 
         # Verify we can set title on migrated session
         assert migrated_db.set_session_title("existing", "Migrated Title") is True

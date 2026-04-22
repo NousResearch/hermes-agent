@@ -3132,7 +3132,8 @@ def _setup_qqbot():
     if method_idx == 0:
         # ── QR scan-to-configure ──
         try:
-            credentials = _qqbot_qr_flow()
+            from gateway.platforms.qqbot import qr_register
+            credentials = qr_register()
         except KeyboardInterrupt:
             print()
             print_warning("  QQ Bot setup cancelled.")
@@ -3212,106 +3213,6 @@ def _setup_qqbot():
     print()
     print_success("🐧 QQ Bot configured!")
     print_info(f"  App ID: {credentials['app_id']}")
-
-
-def _qqbot_render_qr(url: str) -> bool:
-    """Try to render a QR code in the terminal. Returns True if successful."""
-    try:
-        import qrcode as _qr
-        qr = _qr.QRCode(border=1,error_correction=_qr.constants.ERROR_CORRECT_L)
-        qr.add_data(url)
-        qr.make(fit=True)
-        qr.print_ascii(invert=True)
-        return True
-    except Exception:
-        return False
-
-
-def _qqbot_qr_flow():
-    """Run the QR-code scan-to-configure flow.
-
-    Returns a dict with app_id, client_secret, user_openid on success,
-    or None on failure/cancel.
-    """
-    try:
-        from gateway.platforms.qqbot import (
-            create_bind_task, poll_bind_result, build_connect_url,
-            decrypt_secret, BindStatus,
-        )
-        from gateway.platforms.qqbot.constants import ONBOARD_POLL_INTERVAL
-    except Exception as exc:
-        print_error(f"  QQBot onboard import failed: {exc}")
-        return None
-
-    import asyncio
-    import time
-
-    MAX_REFRESHES = 3
-    refresh_count = 0
-
-    while refresh_count <= MAX_REFRESHES:
-        loop = asyncio.new_event_loop()
-
-        # ── Create bind task ──
-        try:
-            task_id, aes_key = loop.run_until_complete(create_bind_task())
-        except Exception as e:
-            print_warning(f"  Failed to create bind task: {e}")
-            loop.close()
-            return None
-
-        url = build_connect_url(task_id)
-
-        # ── Display QR code + URL ──
-        print()
-        if _qqbot_render_qr(url):
-            print(f"  Scan the QR code above, or open this URL directly:\n  {url}")
-        else:
-            print(f"  Open this URL in QQ on your phone:\n  {url}")
-            print_info("  Tip: pip install qrcode  to show a scannable QR code here")
-
-        # ── Poll loop (silent — keep QR visible at bottom) ──
-        try:
-            while True:
-                try:
-                    status, app_id, encrypted_secret, user_openid = loop.run_until_complete(
-                        poll_bind_result(task_id)
-                    )
-                except Exception:
-                    time.sleep(ONBOARD_POLL_INTERVAL)
-                    continue
-
-                if status == BindStatus.COMPLETED:
-                    client_secret = decrypt_secret(encrypted_secret, aes_key)
-                    print()
-                    print_success(f"  QR scan complete! (App ID: {app_id})")
-                    if user_openid:
-                        print_info(f"  Scanner's OpenID: {user_openid}")
-                    return {
-                        "app_id": app_id,
-                        "client_secret": client_secret,
-                        "user_openid": user_openid,
-                    }
-
-                if status == BindStatus.EXPIRED:
-                    refresh_count += 1
-                    if refresh_count > MAX_REFRESHES:
-                        print()
-                        print_warning(f"  QR code expired {MAX_REFRESHES} times — giving up.")
-                        return None
-                    print()
-                    print_warning(f"  QR code expired, refreshing... ({refresh_count}/{MAX_REFRESHES})")
-                    loop.close()
-                    break  # outer while creates a new task
-
-                time.sleep(ONBOARD_POLL_INTERVAL)
-        except KeyboardInterrupt:
-            loop.close()
-            raise
-        finally:
-            loop.close()
-
-    return None
 
 
 def _setup_signal():

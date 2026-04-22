@@ -734,6 +734,30 @@ class PluginManager:
                 )
                 kind = "standalone"
 
+            # Auto-coerce user-installed memory providers to kind="exclusive"
+            # so they're routed to plugins/memory discovery instead of being
+            # loaded by the general PluginManager (which has no
+            # register_memory_provider on PluginContext). Mirrors the
+            # heuristic in plugins/memory/__init__.py:_is_memory_provider_dir.
+            # Bundled memory providers are already skipped via skip_names.
+            if kind == "standalone" and "kind" not in data:
+                init_file = plugin_dir / "__init__.py"
+                if init_file.exists():
+                    try:
+                        source_text = init_file.read_text(errors="replace")[:8192]
+                        if (
+                            "register_memory_provider" in source_text
+                            or "MemoryProvider" in source_text
+                        ):
+                            kind = "exclusive"
+                            logger.debug(
+                                "Plugin %s: detected memory provider, "
+                                "treating as kind='exclusive'",
+                                key,
+                            )
+                    except Exception:
+                        pass
+
             return PluginManifest(
                 name=name,
                 version=str(data.get("version", "")),

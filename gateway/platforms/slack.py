@@ -38,6 +38,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     safe_url_for_log,
@@ -113,6 +114,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        # Track message IDs that should get reaction lifecycle (DMs / @mentions).
+        self._reacting_message_ids: set = set()
+        # Track active assistant thread status indicators so stop_typing can
+        # clear them (chat_id → thread_ts).
+        self._active_status_threads: Dict[str, str] = {}
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -362,6 +368,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
+        self._active_status_threads[chat_id] = thread_ts
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -372,6 +379,22 @@ class SlackAdapter(BasePlatformAdapter):
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the assistant thread status indicator."""
+        if not self._app:
+            return
+        thread_ts = self._active_status_threads.pop(chat_id, None)
+        if not thread_ts:
+            return
+        try:
+            await self._get_client(chat_id).assistant_threads_setStatus(
+                channel_id=chat_id,
+                thread_ts=thread_ts,
+                status="",
+            )
+        except Exception as e:
+            logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Whether top-level Slack DMs get per-message session threads.
@@ -583,6 +606,38 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
             return False
+
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        ts = getattr(event, "message_id", None)
+        if not ts or ts not in self._reacting_message_ids:
+            return
+        channel_id = getattr(event.source, "chat_id", None)
+        if channel_id:
+            await self._add_reaction(channel_id, ts, "eyes")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction."""
+        if not self._reactions_enabled():
+            return
+        ts = getattr(event, "message_id", None)
+        if not ts or ts not in self._reacting_message_ids:
+            return
+        self._reacting_message_ids.discard(ts)
+        channel_id = getattr(event.source, "chat_id", None)
+        if not channel_id:
+            return
+        await self._remove_reaction(channel_id, ts, "eyes")
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._add_reaction(channel_id, ts, "white_check_mark")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._add_reaction(channel_id, ts, "x")
 
     # ----- User identity resolution -----
 
@@ -1213,16 +1268,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Only react when bot is directly addressed (DM or @mention).
         # In listen-all channels (require_mention=false), reacting to every
         # casual message would be noisy.
-        _should_react = is_dm or is_mentioned
-
+        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
-            await self._add_reaction(channel_id, ts, "eyes")
+            self._reacting_message_ids.add(ts)
 
         await self.handle_message(msg_event)
-
-        if _should_react:
-            await self._remove_reaction(channel_id, ts, "eyes")
-            await self._add_reaction(channel_id, ts, "white_check_mark")
 
     # ----- Approval button support (Block Kit) -----
 

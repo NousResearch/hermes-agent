@@ -167,9 +167,14 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
 }
 
-function cursorLayout(value: string, cursor: number, cols: number) {
+// Cursor layout mirrors `wrap-ansi(text, cols, { wordWrap: false, hard: true })`
+// which is what `<Text wrap="wrap-char">` ends up feeding to the renderer.
+// Char-granularity wrap keeps wrap boundaries deterministic as the user
+// types — word-wrap's whitespace-preferring reshuffle causes the cursor
+// to flicker as each keystroke moves a word across a line break (blitz #9).
+export function cursorLayout(value: string, cursor: number, cols: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
-  const w = Math.max(1, cols - 1)
+  const w = Math.max(1, cols)
 
   let col = 0,
     line = 0
@@ -200,17 +205,27 @@ function cursorLayout(value: string, cursor: number, cols: number) {
     col += sw
   }
 
+  // The cursor renders as an inverted cell AFTER the character at `pos`
+  // (or as a standalone trailing cell when `pos === value.length`). If
+  // col has reached the wrap column, that cell overflows to the next row
+  // — match wrap-ansi's behavior so the declared cursor doesn't sit past
+  // the visual edge.
+  if (col >= w) {
+    line++
+    col = 0
+  }
+
   return { column: col, line }
 }
 
-function offsetFromPosition(value: string, row: number, col: number, cols: number) {
+export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
   if (!value.length) {
     return 0
   }
 
   const targetRow = Math.max(0, Math.floor(row))
   const targetCol = Math.max(0, Math.floor(col))
-  const w = Math.max(1, cols - 1)
+  const w = Math.max(1, cols)
 
   let line = 0
   let column = 0
@@ -800,7 +815,7 @@ export function TextInput({
       }}
       ref={boxRef}
     >
-      <Text wrap="wrap">{rendered}</Text>
+      <Text wrap="wrap-char">{rendered}</Text>
     </Box>
   )
 }

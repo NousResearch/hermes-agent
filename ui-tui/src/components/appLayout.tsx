@@ -184,24 +184,6 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <Box flexDirection="column" position="relative">
-        {ui.statusBar && (
-          <StatusRule
-            bgCount={ui.bgTasks.size}
-            busy={ui.busy}
-            cols={composer.cols}
-            cwdLabel={status.cwdLabel}
-            model={ui.info?.model?.split('/').pop() ?? ''}
-            sessionStartedAt={status.sessionStartedAt}
-            showCost={ui.showCost}
-            status={ui.status}
-            statusColor={status.statusColor}
-            t={ui.theme}
-            turnStartedAt={status.turnStartedAt}
-            usage={ui.usage}
-            voiceLabel={status.voiceLabel}
-          />
-        )}
-
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
@@ -273,6 +255,32 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
   )
 })
 
+const StatusRulePane = memo(function StatusRulePane({ composer, status }: Pick<AppLayoutProps, 'composer' | 'status'>) {
+  const ui = useStore($uiState)
+
+  if (!ui.statusBar) {
+    return null
+  }
+
+  return (
+    <StatusRule
+      bgCount={ui.bgTasks.size}
+      busy={ui.busy}
+      cols={composer.cols}
+      cwdLabel={status.cwdLabel}
+      model={ui.info?.model?.split('/').pop() ?? ''}
+      sessionStartedAt={status.sessionStartedAt}
+      showCost={ui.showCost}
+      status={ui.status}
+      statusColor={status.statusColor}
+      t={ui.theme}
+      turnStartedAt={status.turnStartedAt}
+      usage={ui.usage}
+      voiceLabel={status.voiceLabel}
+    />
+  )
+})
+
 export const AppLayout = memo(function AppLayout({
   actions,
   composer,
@@ -305,6 +313,8 @@ export const AppLayout = memo(function AppLayout({
         )}
 
         {!overlay.agents && <ComposerPane actions={actions} composer={composer} status={status} />}
+
+        {!overlay.agents && <StatusRulePane composer={composer} status={status} />}
       </Box>
     </AlternateScreen>
   )

@@ -2687,8 +2687,9 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("SessionDB close error: %s", _e)
 
-            from gateway.status import remove_pid_file
+            from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
+            release_gateway_runtime_lock()
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
@@ -10845,7 +10846,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # The PID file is scoped to HERMES_HOME, so future multi-profile
     # setups (each profile using a distinct HERMES_HOME) will naturally
     # allow concurrent instances without tripping this guard.
-    from gateway.status import get_running_pid, remove_pid_file, terminate_pid
+    from gateway.status import (
+        acquire_gateway_runtime_lock,
+        get_running_pid,
+        release_gateway_runtime_lock,
+        remove_pid_file,
+        terminate_pid,
+    )
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
@@ -11058,14 +11065,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "Exiting to avoid double-running.", _current_pid
         )
         return False
+    if not acquire_gateway_runtime_lock():
+        logger.error(
+            "Gateway runtime lock is already held by another instance. Exiting."
+        )
+        return False
     try:
         write_pid_file()
     except FileExistsError:
+        release_gateway_runtime_lock()
         logger.error(
             "PID file race lost to another gateway instance. Exiting."
         )
         return False
     atexit.register(remove_pid_file)
+    atexit.register(release_gateway_runtime_lock)
 
     # Start the gateway
     success = await runner.start()

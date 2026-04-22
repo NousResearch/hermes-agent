@@ -455,6 +455,20 @@ def _write_config_key(key_path: str, value):
     _save_cfg(cfg)
 
 
+# Legacy configs stored display.tui_statusbar as a bool. Coerce both bool and
+# string forms to the string enum so rollouts don't require a manual migration.
+def _coerce_statusbar(raw) -> str:
+    if raw is True:
+        return "on"
+    if raw is False:
+        return "off"
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in {"on", "off", "bottom", "top"}:
+            return s
+    return "on"
+
+
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
@@ -2499,12 +2513,11 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"key": key, "value": nv})
 
-    if key in ("compact", "statusbar"):
+    if key == "compact":
         raw = str(value or "").strip().lower()
         cfg0 = _load_cfg()
         d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
-        def_key = "tui_compact" if key == "compact" else "tui_statusbar"
-        cur_b = bool(d0.get(def_key, False if key == "compact" else True))
+        cur_b = bool(d0.get("tui_compact", False))
         if raw in ("", "toggle"):
             nv_b = not cur_b
         elif raw == "on":
@@ -2512,10 +2525,23 @@ def _(rid, params: dict) -> dict:
         elif raw == "off":
             nv_b = False
         else:
-            return _err(rid, 4002, f"unknown {key} value: {value}")
-        _write_config_key(f"display.{def_key}", nv_b)
-        out = "on" if nv_b else "off"
-        return _ok(rid, {"key": key, "value": out})
+            return _err(rid, 4002, f"unknown compact value: {value}")
+        _write_config_key("display.tui_compact", nv_b)
+        return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
+
+    if key == "statusbar":
+        raw = str(value or "").strip().lower()
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        current = _coerce_statusbar(d0.get("tui_statusbar", "on"))
+        if raw in ("", "toggle"):
+            nv = "on" if current == "off" else "off"
+        elif raw in ("on", "off", "bottom", "top"):
+            nv = raw
+        else:
+            return _err(rid, 4002, f"unknown statusbar value: {value}")
+        _write_config_key("display.tui_statusbar", nv)
+        return _ok(rid, {"key": key, "value": nv})
 
     if key in ("prompt", "personality", "skin"):
         try:
@@ -2633,8 +2659,8 @@ def _(rid, params: dict) -> dict:
         on = bool(_load_cfg().get("display", {}).get("tui_compact", False))
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "statusbar":
-        on = bool(_load_cfg().get("display", {}).get("tui_statusbar", True))
-        return _ok(rid, {"value": "on" if on else "off"})
+        raw = _load_cfg().get("display", {}).get("tui_statusbar", "on")
+        return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:

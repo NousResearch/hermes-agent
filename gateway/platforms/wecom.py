@@ -1488,6 +1488,11 @@ def qr_scan_for_bot_info(
 
     Returns ``{"bot_id": ..., "secret": ...}`` on success, ``None`` on
     failure or timeout.
+
+    Note: the ``work.weixin.qq.com/ai/qc/{generate,query_result}`` endpoints
+    used here are not part of WeCom's public developer API — they back the
+    admin-console web UI's bot-creation flow and may change without notice.
+    The same pattern is used by the feishu/dingtalk QR setup wizards.
     """
     try:
         import urllib.request
@@ -1561,8 +1566,8 @@ def qr_scan_for_bot_info(
             continue
 
         poll_count += 1
-        if poll_count % 6 == 0:
-            print(".", end="", flush=True)
+        # Print a dot on every poll so progress is visible within 3s.
+        print(".", end="", flush=True)
 
         result_data = result.get("data") or {}
         status = str(result_data.get("status") or "").lower()
@@ -1574,8 +1579,15 @@ def qr_scan_for_bot_info(
             secret = str(bot_info.get("secret") or "").strip()
             if bot_id and secret:
                 return {"bot_id": bot_id, "secret": secret}
-            logger.warning("WeCom QR: success but missing bot_info: %s", result_data)
-            print("  QR scan succeeded but bot info was not returned")
+            logger.warning(
+                "WeCom QR: scan reported success but bot_info missing or incomplete: %s",
+                result_data,
+            )
+            print(
+                "  QR scan reported success but no bot credentials were returned.\n"
+                "  This usually means the bot was not actually created on the WeCom side.\n"
+                "  Falling back to manual credential entry."
+            )
             return None
 
         time.sleep(_QR_POLL_INTERVAL)

@@ -50,6 +50,7 @@ AUTHOR_MAP = {
     "71184274+MassiveMassimo@users.noreply.github.com": "MassiveMassimo",
     "massivemassimo@users.noreply.github.com": "MassiveMassimo",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
+    "keifergu@tencent.com": "keifergu",
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "kshitijk4poor@gmail.com": "kshitijk4poor",
     "16443023+stablegenius49@users.noreply.github.com": "stablegenius49",

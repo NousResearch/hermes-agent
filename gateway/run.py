@@ -7645,13 +7645,14 @@ class GatewayRunner:
         from hermes_cli.debug import (
             _capture_dump, collect_debug_report,
             upload_to_pastebin, _schedule_auto_delete,
-            _GATEWAY_PRIVACY_NOTICE,
+            _GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
         )
 
         loop = asyncio.get_running_loop()
 
         # Run blocking I/O (dump capture, log reads, uploads) in a thread.
         def _collect_and_upload():
+            _best_effort_sweep_expired_pastes()
             dump_text = _capture_dump()
             report = collect_debug_report(log_lines=200, dump_text=dump_text)
 

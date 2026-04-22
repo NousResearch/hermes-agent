@@ -283,6 +283,44 @@ class TestCollectDebugReport:
 class TestRunDebugShare:
     """Test the run_debug_share CLI handler."""
 
+    def test_share_sweeps_expired_pastes(self, hermes_home, capsys):
+        """Slash-command path should sweep old pending deletes before uploading."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)) as mock_sweep, \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"):
+            run_debug_share(args)
+
+        mock_sweep.assert_called_once()
+        assert "Debug report uploaded" in capsys.readouterr().out
+
+    def test_share_survives_sweep_failure(self, hermes_home, capsys):
+        """Expired-paste cleanup is best-effort and must not block sharing."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch(
+                 "hermes_cli.debug._sweep_expired_pastes",
+                 side_effect=RuntimeError("offline"),
+             ), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"):
+            run_debug_share(args)
+
+        assert "https://paste.rs/test" in capsys.readouterr().out
+
     def test_local_flag_prints_full_logs(self, hermes_home, capsys):
         """--local prints the report plus full log contents."""
         from hermes_cli.debug import run_debug_share

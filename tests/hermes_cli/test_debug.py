@@ -137,46 +137,51 @@ class TestUploadToPastebin:
 # Log reading
 # ---------------------------------------------------------------------------
 
-class TestReadFullLog:
-    """Test _read_full_log for standalone log uploads."""
+class TestCaptureLogSnapshot:
+    """Test _capture_log_snapshot for log reading and truncation."""
 
     def test_reads_small_file(self, hermes_home):
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
-        content = _read_full_log("agent")
-        assert content is not None
-        assert "session started" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is not None
+        assert "session started" in snap.full_text
+        assert "session started" in snap.tail_text
 
     def test_returns_none_for_missing(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
 
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("agent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is None
+        assert snap.tail_text == "(file not found)"
 
     def test_returns_none_for_empty(self, hermes_home):
         # Truncate agent.log to empty
         (hermes_home / "logs" / "agent.log").write_text("")
 
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("agent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is None
+        assert snap.tail_text == "(file not found)"
 
     def test_truncates_large_file(self, hermes_home):
         """Files larger than max_bytes get tail-truncated."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         # Write a file larger than 1KB
         big_content = "x" * 100 + "\n"
         (hermes_home / "logs" / "agent.log").write_text(big_content * 200)
 
-        content = _read_full_log("agent", max_bytes=1024)
-        assert content is not None
-        assert "truncated" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10, max_bytes=1024)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
 
     def test_keeps_first_line_when_truncation_on_boundary(self, hermes_home):
         """When truncation lands on a line boundary, keep the first full line."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         # File must exceed the initial chunk_size (8192) used by the
         # backward-reading loop so the truncation path actually fires.
@@ -186,37 +191,38 @@ class TestReadFullLog:
 
         # max_bytes = 1000 = 100 * 10 → cut at byte 20000 - 1000 = 19000,
         # and byte 19000 - 1 is '\n'.  Boundary hit → keep all 10 lines.
-        content = _read_full_log("agent", max_bytes=1000)
-        assert content is not None
-        assert "truncated" in content
-        raw = content.split("\n", 1)[1]
+        snap = _capture_log_snapshot("agent", tail_lines=5, max_bytes=1000)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+        raw = snap.full_text.split("\n", 1)[1]
         kept = [l for l in raw.strip().splitlines() if l.startswith("A")]
         assert len(kept) == 10
 
     def test_drops_partial_when_truncation_mid_line(self, hermes_home):
         """When truncation lands mid-line, drop the partial fragment."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         line = "A" * 99 + "\n"  # 100 bytes per line
         num_lines = 200  # 20000 bytes
         (hermes_home / "logs" / "agent.log").write_text(line * num_lines)
 
         # max_bytes = 950 doesn't divide evenly into 100 → mid-line cut.
-        content = _read_full_log("agent", max_bytes=950)
-        assert content is not None
-        assert "truncated" in content
-        raw = content.split("\n", 1)[1]
+        snap = _capture_log_snapshot("agent", tail_lines=5, max_bytes=950)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+        raw = snap.full_text.split("\n", 1)[1]
         kept = [l for l in raw.strip().splitlines() if l.startswith("A")]
         # 950 / 100 = 9.5 → 9 complete lines after dropping partial
         assert len(kept) == 9
 
     def test_unknown_log_returns_none(self, hermes_home):
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("nonexistent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("nonexistent", tail_lines=10)
+        assert snap.full_text is None
 
     def test_falls_back_to_rotated_file(self, hermes_home):
         """When gateway.log doesn't exist, falls back to gateway.log.1."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         # Remove the primary (if any) and create a .1 rotation
@@ -225,33 +231,33 @@ class TestReadFullLog:
             "2026-04-12 10:00:00 INFO gateway.run: rotated content\n"
         )
 
-        content = _read_full_log("gateway")
-        assert content is not None
-        assert "rotated content" in content
+        snap = _capture_log_snapshot("gateway", tail_lines=10)
+        assert snap.full_text is not None
+        assert "rotated content" in snap.full_text
 
     def test_prefers_primary_over_rotated(self, hermes_home):
         """Primary log is used when it exists, even if .1 also exists."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         (logs_dir / "gateway.log").write_text("primary content\n")
         (logs_dir / "gateway.log.1").write_text("rotated content\n")
 
-        content = _read_full_log("gateway")
-        assert "primary content" in content
-        assert "rotated" not in content
+        snap = _capture_log_snapshot("gateway", tail_lines=10)
+        assert "primary content" in snap.full_text
+        assert "rotated" not in snap.full_text
 
     def test_falls_back_when_primary_empty(self, hermes_home):
         """Empty primary log falls back to .1 rotation."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         (logs_dir / "agent.log").write_text("")
         (logs_dir / "agent.log.1").write_text("rotated agent data\n")
 
-        content = _read_full_log("agent")
-        assert content is not None
-        assert "rotated agent data" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is not None
+        assert "rotated agent data" in snap.full_text
 
 
 # ---------------------------------------------------------------------------

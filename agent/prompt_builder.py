@@ -350,7 +350,13 @@ PLATFORM_HINTS = {
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
-        "renderable inside a terminal."
+        "renderable inside a terminal. "
+        "File delivery: there is no attachment channel — the user reads your "
+        "response directly in their terminal. Do NOT emit MEDIA:/path tags "
+        "(those are only intercepted on messaging platforms like Telegram, "
+        "Discord, Slack, etc.; on the CLI they render as literal text). "
+        "When referring to a file you created or changed, just state its "
+        "absolute path in plain text; the user can open it from there."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "

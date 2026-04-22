@@ -79,6 +79,28 @@ class TestMemoryManagerUserIdThreading:
         assert p._init_kwargs.get("platform") == "telegram"
         assert p._init_session_id == "sess-123"
 
+    def test_chat_context_forwarded_to_provider(self):
+        mgr = MemoryManager()
+        p = RecordingProvider()
+        mgr.add_provider(p)
+
+        mgr.initialize_all(
+            session_id="sess-chat",
+            platform="discord",
+            user_id="discord_u_7",
+            user_name="fakeusername",
+            chat_id="1485316232612941897",
+            chat_name="fakeassistantname-forums",
+            chat_type="thread",
+            thread_id="1491249007475949698",
+        )
+
+        assert p._init_kwargs.get("user_name") == "fakeusername"
+        assert p._init_kwargs.get("chat_id") == "1485316232612941897"
+        assert p._init_kwargs.get("chat_name") == "fakeassistantname-forums"
+        assert p._init_kwargs.get("chat_type") == "thread"
+        assert p._init_kwargs.get("thread_id") == "1491249007475949698"
+
     def test_no_user_id_when_cli(self):
         """CLI sessions should not have user_id in kwargs."""
         mgr = MemoryManager()
@@ -334,3 +356,4 @@ class TestAIAgentUserIdPropagation:
             agent = object.__new__(AIAgent)
             agent._user_id = None
             assert agent._user_id is None
+

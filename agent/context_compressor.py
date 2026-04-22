@@ -291,6 +291,10 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        recent_token_budget: int = 30000,
+        min_recent_messages: int = 3,
+        save_full_history: bool = True,
+        history_directory: str = "~/.hermes/sessions/{session_id}/history",
     ):
         self.model = model
         self.base_url = base_url
@@ -302,6 +306,11 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        # New Cursor mode parameters
+        self.recent_token_budget = recent_token_budget
+        self.min_recent_messages = min_recent_messages
+        self.save_full_history = save_full_history
+        self.history_directory = history_directory
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -1059,19 +1068,67 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return max(cut_idx, head_end + 1)
 
     # ------------------------------------------------------------------
-    # Main compression entry point
+    # Recent cut by token budget (Cursor mode)
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
-        """Compress conversation messages by summarizing middle turns.
+    def _find_recent_cut_by_tokens(
+        self, messages: List[Dict[str, Any]],
+        token_budget: int,
+        min_messages: int,
+    ) -> int:
+        """Walk backward from the end of messages, accumulating tokens until
+        the budget is reached. Returns the index where the recent tail starts.
+        
+        All messages *before* this index will be summarized, all messages from
+        this index onward are kept intact.
 
-        Algorithm:
-          1. Prune old tool results (cheap pre-pass, no LLM call)
-          2. Protect head messages (system prompt + first exchange)
-          3. Find tail boundary by token budget (~20K tokens of recent context)
-          4. Summarize middle turns with structured LLM prompt
-          5. On re-compression, iteratively update the previous summary
+        Always keeps at least ``min_messages`` messages intact, regardless
+        of token budget. If the minimal messages exceed 1.5x the budget,
+        compression still proceeds (cut at 0 = everything gets summarized).
 
+        Never cuts inside a tool_call/result group (handled later by alignment).
+        """
+        n = len(messages)
+        # Hard minimum: always keep at least min_messages messages in the recent tail
+        min_cut = n - min_messages
+        soft_ceiling = int(token_budget * 1.5)
+        accumulated = 0
+        cut_idx = n  # start from beyond the end
+
+        for i in range(n - 1, -1, -1):
+            msg = messages[i]
+            content = msg.get("content") or ""
+            msg_tokens = len(content) // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
+            # Include tool call arguments in estimate
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    args = tc.get("function", {}).get("arguments", "")
+                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+
+            if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_messages:
+                cut_idx = i
+                break
+            accumulated += msg_tokens
+            cut_idx = i
+
+        # Enforce the minimum messages guarantee
+        return max(cut_idx, min_cut)
+
+    def compress(
+        self,
+        messages: List[Dict[str, Any]],
+        focus_topic: str = None,
+        current_tokens: int = None,
+    ) -> List[Dict[str, Any]]:
+        """Compress conversation context using Cursor-style "before/now" binary split.
+        
+        Algorithm (Cursor mode):
+          1. Prune old tool results (cheap, no LLM call)
+          2. Walk backward from end accumulating tokens within recent_token_budget
+             - Always keeps at least min_recent_messages messages intact
+          3. All messages before the cut point are summarized together
+          4. On subsequent compactions, iteratively update the previous summary
+          
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
 
@@ -1082,8 +1139,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
         n_messages = len(messages)
-        # Only need head + 3 tail messages minimum (token budget decides the real tail size)
-        _min_for_compress = self.protect_first_n + 3 + 1
+        # Need at least (min_recent_messages + 1) to compress
+        # If we only have min_recent_messages or fewer, nothing to compress
+        _min_for_compress = self.min_recent_messages + 1
         if n_messages <= _min_for_compress:
             if not self.quiet_mode:
                 logger.warning(
@@ -1095,24 +1153,28 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
+        # In Cursor mode, we prune *all* old tool results before the recent tail
         messages, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n,
-            protect_tail_tokens=self.tail_token_budget,
+            messages, protect_tail_count=self.min_recent_messages,
+            protect_tail_tokens=self.recent_token_budget,
         )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
-        # Phase 2: Determine boundaries
-        compress_start = self.protect_first_n
-        compress_start = self._align_boundary_forward(messages, compress_start)
-
-        # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
-
-        if compress_start >= compress_end:
+        # Phase 2: Find compression boundary — everything before = summary, everything after = intact
+        compress_end = self._find_recent_cut_by_tokens(
+            messages, 
+            token_budget=self.recent_token_budget,
+            min_messages=self.min_recent_messages
+        )
+        # Align boundary to avoid splitting tool_call/result groups
+        compress_end = self._align_boundary_backward(messages, compress_end)
+        
+        # If everything is in the recent tail, nothing to compress
+        if compress_end <= 0:
             return messages
 
-        turns_to_summarize = messages[compress_start:compress_end]
+        turns_to_summarize = messages[:compress_end]
 
         if not self.quiet_mode:
             logger.info(
@@ -1126,36 +1188,51 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self.threshold_percent * 100,
                 self.threshold_tokens,
             )
-            tail_msgs = n_messages - compress_end
+            recent_msgs = n_messages - compress_end
             logger.info(
-                "Summarizing turns %d-%d (%d turns), protecting %d head + %d tail messages",
-                compress_start + 1,
-                compress_end,
+                "Summarizing turns 0-%d (%d turns), keeping %d recent messages intact (budget: %d tokens)",
+                compress_end - 1,
                 len(turns_to_summarize),
-                compress_start,
-                tail_msgs,
+                recent_msgs,
+                self.recent_token_budget,
             )
+
+        # Save full conversation history before compression if enabled
+        # We need session_id from somewhere — if the compressor has it saved, use it
+        # Otherwise, fall back to "unknown_session"
+        if self.save_full_history:
+            session_id = getattr(self, "session_id", "unknown_session")
+            self._save_full_history(messages, session_id)
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
         # Phase 4: Assemble compressed message list
         compressed = []
-        for i in range(compress_start):
-            msg = messages[i].copy()
-            if i == 0 and msg.get("role") == "system":
-                existing = msg.get("content") or ""
-                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
-                if _compression_note not in existing:
-                    msg["content"] = existing + "\n\n" + _compression_note
-            compressed.append(msg)
-
+        
+        # Always keep system prompt at the very beginning if it exists
+        # System prompt is never summarized — it contains core instructions
+        has_leading_system = len(messages) > 0 and messages[0].get("role") == "system"
+        if has_leading_system:
+            # Add the original system prompt
+            if self.compression_count == 0:
+                # First compression: add note about compacted context
+                msg = messages[0].copy()
+                msg["content"] = (
+                    (msg.get("content") or "")
+                    + "\n\n[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
+                )
+                compressed.append(msg)
+            else:
+                compressed.append(messages[0].copy())
         # If LLM summary failed, insert a static fallback so the model
         # knows context was lost rather than silently dropping everything.
         if not summary:
             if not self.quiet_mode:
                 logger.warning("Summary generation failed — inserting static fallback context marker")
-            n_dropped = compress_end - compress_start
+            n_dropped = compress_end
+            if has_leading_system:
+                n_dropped -= 1  # system wasn't dropped
             summary = (
                 f"{SUMMARY_PREFIX}\n"
                 f"Summary generation was unavailable. {n_dropped} conversation turns were "
@@ -1164,30 +1241,37 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 f"recent messages below and the current state of any files or resources."
             )
 
+        # Insert summary after system prompt (if any)
+        # Role selection: pick a role that avoids consecutive same-role with first recent message
+        first_recent_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
         _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-        first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in ("assistant", "tool"):
-            summary_role = "user"
+        if has_leading_system:
+            # After system, any role is fine, just avoid collision with first recent
+            last_system_role = "system"
+            summary_role = "assistant" if first_recent_role == "user" else "user"
+            # Check for collision: if both possible roles collide, merge into first recent message
+            if summary_role == first_recent_role:
+                # Flip to see if the other role avoids collision
+                flipped = "assistant" if summary_role == "user" else "user"
+                if flipped != last_system_role:
+                    summary_role = flipped
+                else:
+                    # Both roles would create consecutive same-role messages
+                    # Merge the summary into the first recent message instead
+                    _merge_summary_into_tail = True
         else:
-            summary_role = "assistant"
-        # If the chosen role collides with the tail AND flipping wouldn't
-        # collide with the head, flip it.
-        if summary_role == first_tail_role:
-            flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
-                summary_role = flipped
-            else:
-                # Both roles would create consecutive same-role messages
-                # (e.g. head=assistant, tail=user — neither role works).
-                # Merge the summary into the first tail message instead
-                # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
+            # No system, summary is first — any role is fine, just avoid collision with first recent
+            summary_role = "assistant" if first_recent_role == "user" else "user"
+            # Check for collision
+            if summary_role == first_recent_role:
+                # No previous message to conflict with, just accept it's consecutive
+                # But since summary is first, it's okay
+                pass
+        
         if not _merge_summary_into_tail:
             compressed.append({"role": summary_role, "content": summary})
 
+        # Add all recent messages intact
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
             if _merge_summary_into_tail and i == compress_end:
@@ -1227,3 +1311,99 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Compression #%d complete", self.compression_count)
 
         return compressed
+
+    # ------------------------------------------------------------------
+    # Full history saving (Cursor mode)
+    # ------------------------------------------------------------------
+
+    def _save_full_history(self, messages: List[Dict[str, Any]], session_id: str) -> None:
+        """Save full conversation history before compression to markdown file.
+        
+        Each compression saves a snapshot of the full conversation before
+        compression occurred, so you can retrieve the complete history later
+        if needed for searching or auditing.
+        """
+        import time
+        from pathlib import Path
+        from hermes_constants import get_hermes_home
+
+        # Expand user home and substitute session_id placeholder
+        history_dir = self.history_directory.replace("{session_id}", session_id)
+        history_dir = Path(history_dir).expanduser()
+        # If path is not absolute, make it relative to hermes_home
+        if not history_dir.is_absolute():
+            history_dir = get_hermes_home() / history_dir
+
+        # Create directory if it doesn't exist
+        history_dir.mkdir(parents=True, exist_ok=True)
+
+        # Filename: history_{compression_count}_{timestamp}.md
+        timestamp = int(time.time())
+        filename = f"history_{self.compression_count + 1}_{timestamp}.md"
+        filepath = history_dir / filename
+
+        # Format messages into markdown
+        lines = [
+            f"# Full Conversation History — Compression #{self.compression_count + 1}",
+            "",
+            f"- Session ID: {session_id}",
+            f"- Timestamp: {timestamp}",
+            f"- Total messages before compression: {len(messages)}",
+            "",
+            "---",
+            "",
+        ]
+
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "") or ""
+
+            lines.append(f"## Turn {i} — **{role}**")
+            lines.append("")
+
+            if content:
+                # Use code block to prevent markdown interpretation issues
+                lines.append("```")
+                lines.append(content)
+                lines.append("```")
+
+            # Include tool calls if present
+            tool_calls = msg.get("tool_calls") or []
+            if tool_calls:
+                lines.append("")
+                lines.append("**Tool calls:**")
+                lines.append("")
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        name = tc.get("function", {}).get("name", "unknown")
+                        args = tc.get("function", {}).get("arguments", "")
+                        lines.append(f"- `{name}(...)`")
+                        if args:
+                            lines.append(f"  ```json")
+                            lines.append(f"  {args}")
+                            lines.append(f"  ```")
+                lines.append("")
+
+            if role == "tool":
+                tool_id = msg.get("tool_call_id", "")
+                if tool_id:
+                    lines.append(f"**Tool call ID:** `{tool_id}`")
+                    lines.append("")
+
+            lines.append("---")
+            lines.append("")
+
+        # Write file
+        try:
+            filepath.write_text("\n".join(lines), encoding="utf-8")
+            if not self.quiet_mode:
+                logger.info(
+                    "Saved full conversation history before compression: %s",
+                    filepath,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to save full conversation history to %s: %s",
+                filepath,
+                e,
+            )

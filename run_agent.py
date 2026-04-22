@@ -1537,7 +1537,12 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+        compression_protect_first = int(_compression_cfg.get("protect_first_n", 3))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_recent_token_budget = int(_compression_cfg.get("recent_token_budget", 30000))
+        compression_min_recent_messages = int(_compression_cfg.get("min_recent_messages", 3))
+        compression_save_full_history = bool(_compression_cfg.get("save_full_history", True))
+        compression_history_directory = str(_compression_cfg.get("history_directory", "~/.hermes/sessions/{session_id}/history"))
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -1684,8 +1689,12 @@ class AIAgent:
             self.context_compressor = ContextCompressor(
                 model=self.model,
                 threshold_percent=compression_threshold,
-                protect_first_n=3,
+                protect_first_n=compression_protect_first,
                 protect_last_n=compression_protect_last,
+                recent_token_budget=compression_recent_token_budget,
+                min_recent_messages=compression_min_recent_messages,
+                save_full_history=compression_save_full_history,
+                history_directory=compression_history_directory,
                 summary_target_ratio=compression_target_ratio,
                 summary_model_override=None,
                 quiet_mode=self.quiet_mode,
@@ -1696,6 +1705,10 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
+
+        # Pass session ID to compressor for history saving
+        if hasattr(self, "session_id") and self.session_id:
+            self.context_compressor.session_id = self.session_id
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).

@@ -471,9 +471,16 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
-        "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
-        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-
+        "target_ratio": 0.20,             # fraction of threshold to preserve as recent tail
+        "protect_first_n": 3,             # (legacy) minimum starting messages to keep uncompressed
+        "protect_last_n": 20,             # (legacy) minimum recent messages to keep uncompressed
+        "recent_token_budget": 30000,     # Cursor mode: tokens budget for latest complete messages
+        "min_recent_messages": 3,         # Cursor mode: minimum number of latest messages to keep intact
+        "save_full_history": True,        # Save full conversation before compression to history
+        "history_directory": "~/.hermes/sessions/{session_id}/history",
+        "summary_model": "",              # empty = use main configured model
+        "summary_provider": "auto",
+        "summary_base_url": None,
     },
 
     # AWS Bedrock provider configuration.

@@ -19,6 +19,8 @@ from tools.file_operations import (
     BINARY_EXTENSIONS,
     IMAGE_EXTENSIONS,
     MAX_LINE_LENGTH,
+    normalize_read_pagination,
+    normalize_search_pagination,
 )
 
 
@@ -192,6 +194,17 @@ def file_ops(mock_env):
 
 
 class TestShellFileOpsHelpers:
+    def test_normalize_read_pagination_clamps_invalid_values(self):
+        assert normalize_read_pagination(offset=0, limit=0) == (1, 1)
+        assert normalize_read_pagination(offset=-10, limit=-5) == (1, 1)
+        assert normalize_read_pagination(offset="bad", limit="bad") == (1, 500)
+        assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
+
+    def test_normalize_search_pagination_clamps_invalid_values(self):
+        assert normalize_search_pagination(offset=-10, limit=-5) == (0, 1)
+        assert normalize_search_pagination(offset="bad", limit="bad") == (0, 50)
+        assert normalize_search_pagination(offset=3, limit=0) == (3, 1)
+
     def test_escape_shell_arg_simple(self, file_ops):
         assert file_ops._escape_shell_arg("hello") == "'hello'"
 

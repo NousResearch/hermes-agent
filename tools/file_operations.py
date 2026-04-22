@@ -271,6 +271,40 @@ LINTERS = {
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
+DEFAULT_READ_OFFSET = 1
+DEFAULT_READ_LIMIT = 500
+DEFAULT_SEARCH_OFFSET = 0
+DEFAULT_SEARCH_LIMIT = 50
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Best-effort integer coercion for tool pagination inputs."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
+                              limit: Any = DEFAULT_READ_LIMIT) -> tuple[int, int]:
+    """Return safe read_file pagination bounds.
+
+    Tool schemas declare minimum/maximum values, but not every caller or
+    provider enforces schemas before dispatch. Clamp here so invalid values
+    cannot leak into sed ranges like ``0,-1p``.
+    """
+    normalized_offset = max(1, _coerce_int(offset, DEFAULT_READ_OFFSET))
+    normalized_limit = _coerce_int(limit, DEFAULT_READ_LIMIT)
+    normalized_limit = max(1, min(normalized_limit, MAX_LINES))
+    return normalized_offset, normalized_limit
+
+
+def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
+                                limit: Any = DEFAULT_SEARCH_LIMIT) -> tuple[int, int]:
+    """Return safe search pagination bounds for shell head/tail pipelines."""
+    normalized_offset = max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET))
+    normalized_limit = max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
+    return normalized_offset, normalized_limit
 
 
 class ShellFileOperations(FileOperations):
@@ -461,8 +495,7 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
         
-        # Clamp limit
-        limit = min(limit, MAX_LINES)
+        offset, limit = normalize_read_pagination(offset, limit)
         
         # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
@@ -866,6 +899,8 @@ class ShellFileOperations(FileOperations):
         Returns:
             SearchResult with matches or file list
         """
+        offset, limit = normalize_search_pagination(offset, limit)
+
         # Expand ~ and other shell paths
         path = self._expand_path(path)
         

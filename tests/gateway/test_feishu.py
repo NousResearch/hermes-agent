@@ -1269,6 +1269,45 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_fetch_message_context_downloads_parent_image(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=SimpleNamespace(
+                        get=Mock(
+                            return_value=SimpleNamespace(
+                                success=lambda: True,
+                                data=SimpleNamespace(
+                                    items=[
+                                        SimpleNamespace(
+                                            msg_type="image",
+                                            body=SimpleNamespace(content='{"image_key":"img_parent"}'),
+                                        )
+                                    ]
+                                ),
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        adapter._download_feishu_image = AsyncMock(return_value=("/tmp/parent-image.jpg", "image/jpeg"))
+
+        text, media_urls, media_types = asyncio.run(adapter._fetch_message_context("om_parent"))
+
+        self.assertIsNone(text)
+        self.assertEqual(media_urls, ["/tmp/parent-image.jpg"])
+        self.assertEqual(media_types, ["image/jpeg"])
+        adapter._download_feishu_image.assert_awaited_once_with(
+            message_id="om_parent",
+            image_key="img_parent",
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_audio_message_downloads_and_caches(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -1769,7 +1808,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.chat_type, "group")
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_process_inbound_message_fetches_reply_to_text(self):
+    def test_process_inbound_message_fetches_reply_context(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -1781,7 +1820,9 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
         )
-        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+        adapter._fetch_message_context = AsyncMock(
+            return_value=("父消息内容", ["/tmp/replied-image.png"], ["image/png"])
+        )
         message = SimpleNamespace(
             chat_id="oc_chat",
             thread_id=None,
@@ -1805,6 +1846,8 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
+        self.assertEqual(event.media_urls, ["/tmp/replied-image.png"])
+        self.assertEqual(event.media_types, ["image/png"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):

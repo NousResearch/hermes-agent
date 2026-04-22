@@ -280,6 +280,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                 if any(pattern in command for pattern in patterns) and (
                     all_profiles or _matches_current_profile(command)
                 ):
+                    if _is_pid_ancestor_of_current_process(pid):
+                        continue
                     _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
         return []

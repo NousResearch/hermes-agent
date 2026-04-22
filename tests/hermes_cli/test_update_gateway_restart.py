@@ -819,6 +819,31 @@ class TestFindGatewayPidsExclude:
 
         assert pids == [100]
 
+    def test_excludes_ancestor_process_tree(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout=(
+                    "300 /usr/bin/python -m hermes_cli.main gateway run --replace\n"
+                    "200 /usr/bin/python /repo/gateway/run.py\n"
+                ),
+                stderr="",
+            )
+
+        parent_map = {500: 400, 400: 300, 300: 1}
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("os.getpid", lambda: 500)
+        monkeypatch.setattr(gateway_cli, "_get_parent_pid", lambda pid: parent_map.get(pid))
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert 300 not in pids
+        assert pids == [200]
+
 
 # ---------------------------------------------------------------------------
 # Gateway mode writes exit code before restart (#8300)

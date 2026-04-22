@@ -183,37 +183,19 @@ const ComposerPane = memo(function ComposerPane({
         <Text> </Text>
       )}
 
-      <Box flexDirection="column" position="relative">
-        {ui.statusBar && (
-          <StatusRule
-            bgCount={ui.bgTasks.size}
-            busy={ui.busy}
-            cols={composer.cols}
-            cwdLabel={status.cwdLabel}
-            model={ui.info?.model?.split('/').pop() ?? ''}
-            sessionStartedAt={status.sessionStartedAt}
-            showCost={ui.showCost}
-            status={ui.status}
-            statusColor={status.statusColor}
-            t={ui.theme}
-            turnStartedAt={status.turnStartedAt}
-            usage={ui.usage}
-            voiceLabel={status.voiceLabel}
-          />
-        )}
-
-        <FloatingOverlays
-          cols={composer.cols}
-          compIdx={composer.compIdx}
-          completions={composer.completions}
-          onModelSelect={actions.onModelSelect}
-          onPickerSelect={actions.resumeById}
-          pagerPageSize={composer.pagerPageSize}
-        />
-      </Box>
+      <StatusRulePane at="top" composer={composer} status={status} />
 
       {!isBlocked && (
-        <Box flexDirection="column" marginBottom={1}>
+        <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
+          <FloatingOverlays
+            cols={composer.cols}
+            compIdx={composer.compIdx}
+            completions={composer.completions}
+            onModelSelect={actions.onModelSelect}
+            onPickerSelect={actions.resumeById}
+            pagerPageSize={composer.pagerPageSize}
+          />
+
           {composer.inputBuf.map((line, i) => (
             <Box key={i}>
               <Box width={3}>
@@ -236,8 +218,9 @@ const ComposerPane = memo(function ComposerPane({
             </Box>
 
             <Box flexGrow={1} position="relative">
+              {/* subtract NoSelect paddingX={1} (2 cols) + pw so wrap-ansi and cursorLayout agree */}
               <TextInput
-                columns={Math.max(20, composer.cols - pw)}
+                columns={Math.max(20, composer.cols - pw - 2)}
                 onChange={composer.updateInput}
                 onPaste={composer.handleTextPaste}
                 onSubmit={composer.submit}
@@ -273,6 +256,38 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
   )
 })
 
+const StatusRulePane = memo(function StatusRulePane({
+  at,
+  composer,
+  status
+}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
+  const ui = useStore($uiState)
+
+  if (ui.statusBar !== at) {
+    return null
+  }
+
+  return (
+    <Box marginTop={at === 'top' ? 1 : 0}>
+      <StatusRule
+        bgCount={ui.bgTasks.size}
+        busy={ui.busy}
+        cols={composer.cols}
+        cwdLabel={status.cwdLabel}
+        model={ui.info?.model?.split('/').pop() ?? ''}
+        sessionStartedAt={status.sessionStartedAt}
+        showCost={ui.showCost}
+        status={ui.status}
+        statusColor={status.statusColor}
+        t={ui.theme}
+        turnStartedAt={status.turnStartedAt}
+        usage={ui.usage}
+        voiceLabel={status.voiceLabel}
+      />
+    </Box>
+  )
+})
+
 export const AppLayout = memo(function AppLayout({
   actions,
   composer,
@@ -295,16 +310,20 @@ export const AppLayout = memo(function AppLayout({
         </Box>
 
         {!overlay.agents && (
-          <PromptZone
-            cols={composer.cols}
-            onApprovalChoice={actions.answerApproval}
-            onClarifyAnswer={actions.answerClarify}
-            onSecretSubmit={actions.answerSecret}
-            onSudoSubmit={actions.answerSudo}
-          />
-        )}
+          <>
+            <PromptZone
+              cols={composer.cols}
+              onApprovalChoice={actions.answerApproval}
+              onClarifyAnswer={actions.answerClarify}
+              onSecretSubmit={actions.answerSecret}
+              onSudoSubmit={actions.answerSudo}
+            />
 
-        {!overlay.agents && <ComposerPane actions={actions} composer={composer} status={status} />}
+            <ComposerPane actions={actions} composer={composer} status={status} />
+
+            <StatusRulePane at="bottom" composer={composer} status={status} />
+          </>
+        )}
       </Box>
     </AlternateScreen>
   )

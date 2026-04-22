@@ -332,24 +332,30 @@ class LogSnapshot:
     tail_text: str
     full_text: Optional[str]
 
-def _resolve_log_path(log_name: str) -> Optional[Path]:
-    """Find the log file for *log_name*, falling back to the .1 rotation.
 
-    Returns the path if found, or None.
-    """
+def _primary_log_path(log_name: str) -> Optional[Path]:
+    """Where *log_name* would live if present. Doesn't check existence."""
     from hermes_cli.logs import LOG_FILES
 
     filename = LOG_FILES.get(log_name)
-    if not filename:
+    return (get_hermes_home() / "logs" / filename) if filename else None
+
+
+def _resolve_log_path(log_name: str) -> Optional[Path]:
+    """Find the log file for *log_name*, falling back to the .1 rotation.
+
+    Returns the first non-empty candidate (primary, then .1), or None.
+    Callers distinguish 'empty primary' from 'truly missing' via
+    :func:`_primary_log_path`.
+    """
+    primary = _primary_log_path(log_name)
+    if primary is None:
         return None
 
-    log_dir = get_hermes_home() / "logs"
-    primary = log_dir / filename
     if primary.exists() and primary.stat().st_size > 0:
         return primary
 
-    # Fall back to the most recent rotated file (.1).
-    rotated = log_dir / f"{filename}.1"
+    rotated = primary.parent / f"{primary.name}.1"
     if rotated.exists() and rotated.stat().st_size > 0:
         return rotated
 
@@ -370,12 +376,15 @@ def _capture_log_snapshot(
     """
     log_path = _resolve_log_path(log_name)
     if log_path is None:
-        return LogSnapshot(path=None, tail_text="(file not found)", full_text=None)
+        primary = _primary_log_path(log_name)
+        tail = "(file empty)" if primary and primary.exists() else "(file not found)"
+        return LogSnapshot(path=None, tail_text=tail, full_text=None)
 
     try:
         size = log_path.stat().st_size
         if size == 0:
-            return LogSnapshot(path=log_path, tail_text="(file not found)", full_text=None)
+            # race: file was truncated between _resolve_log_path and stat
+            return LogSnapshot(path=log_path, tail_text="(file empty)", full_text=None)
 
         with open(log_path, "rb") as f:
             if size <= max_bytes:

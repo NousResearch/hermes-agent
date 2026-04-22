@@ -321,11 +321,14 @@ def session_search(
     limit: int = 3,
     db=None,
     current_session_id: str = None,
+    fast: bool = True,
 ) -> str:
     """
     Search past sessions and return focused summaries of matching conversations.
 
-    Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
+    By default (fast=True), uses the term_index inverted index for instant
+    results with session metadata and match counts — no LLM calls needed.
+    Set fast=False to use FTS5 + LLM summarization for detailed summaries.
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:
@@ -348,6 +351,120 @@ def session_search(
 
     query = query.strip()
 
+    # CJK queries can't be handled by the term index (no word boundaries
+    # for extract_terms to split on).  Fall through to FTS5 + LIKE which
+    # has a CJK bigram/LIKE fallback.
+    if fast and db._contains_cjk(query):
+        fast = False
+
+    # ── Fast path: term index (no LLM, ~1ms) ──────────────────────────
+    if fast:
+        return _fast_search(query, db, limit, current_session_id)
+
+    # ── Slow path: FTS5 + LLM summarization (~5-15s) ───────────────────
+    return _full_search(query, role_filter, limit, db, current_session_id)
+
+
+def _fast_search(query: str, db, limit: int, current_session_id: str = None) -> str:
+    """Term index fast path: instant search, no LLM calls."""
+    from term_index import extract_terms
+
+    terms = extract_terms(query)
+    if not terms:
+        return json.dumps({
+            "success": True,
+            "query": query,
+            "results": [],
+            "count": 0,
+            "message": "No searchable terms in query (all stop words or empty).",
+        }, ensure_ascii=False)
+
+    # Fetch extra results so we have room after dedup/lineage exclusion
+    raw_results = db.search_by_terms(
+        terms=terms,
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+        limit=limit * 3,
+    )
+
+    # Resolve child sessions to their parent root, just like _full_search.
+    # Delegation stores detailed content in child sessions, but the user
+    # sees the parent conversation.  Without this, parent + child both
+    # containing "docker" would appear as two separate results.
+    def _resolve_to_parent(session_id: str) -> str:
+        visited = set()
+        sid = session_id
+        while sid and sid not in visited:
+            visited.add(sid)
+            try:
+                session = db.get_session(sid)
+                if not session:
+                    break
+                parent = session.get("parent_session_id")
+                if parent:
+                    sid = parent
+                else:
+                    break
+            except Exception:
+                break
+        return sid
+
+    # Determine current session lineage for exclusion
+    current_lineage = set()
+    if current_session_id:
+        # Walk parent chain AND collect all children
+        root = _resolve_to_parent(current_session_id)
+        current_lineage.add(root)
+        current_lineage.add(current_session_id)
+        # Also find any child sessions of the current root
+        try:
+            children = db.get_child_session_ids(root, current_session_id)
+            current_lineage.update(children)
+        except Exception:
+            pass
+
+    seen_sessions = {}
+    for r in raw_results:
+        raw_sid = r.get("session_id", "")
+        resolved_sid = _resolve_to_parent(raw_sid)
+        if resolved_sid in current_lineage or raw_sid in current_lineage:
+            continue
+        if resolved_sid not in seen_sessions:
+            # Sum match_count from child into parent
+            seen_sessions[resolved_sid] = dict(r)
+            seen_sessions[resolved_sid]["session_id"] = resolved_sid
+        else:
+            # Accumulate match_count from child sessions
+            seen_sessions[resolved_sid]["match_count"] = (
+                seen_sessions[resolved_sid].get("match_count", 0)
+                + r.get("match_count", 0)
+            )
+        if len(seen_sessions) >= limit:
+            break
+
+    entries = []
+    for sid, r in seen_sessions.items():
+        entries.append({
+            "session_id": sid,
+            "when": _format_timestamp(r.get("session_started")),
+            "source": r.get("source", "unknown"),
+            "model": r.get("model"),
+            "title": r.get("title"),
+            "match_count": r.get("match_count", 0),
+        })
+
+    return json.dumps({
+        "success": True,
+        "query": query,
+        "mode": "fast",
+        "results": entries,
+        "count": len(entries),
+        "message": f"Found {len(entries)} matching sessions via term index (instant, no LLM)."
+                   f" Use fast=False for LLM-summarized results.",
+    }, ensure_ascii=False)
+
+
+def _full_search(query: str, role_filter: str, limit: int, db, current_session_id: str = None) -> str:
+    """FTS5 + LLM summarization path (original behavior)."""
     try:
         # Parse role filter
         role_list = None
@@ -367,6 +484,7 @@ def session_search(
             return json.dumps({
                 "success": True,
                 "query": query,
+                "mode": "full",
                 "results": [],
                 "count": 0,
                 "message": "No matching sessions found.",
@@ -506,6 +624,7 @@ def session_search(
         return json.dumps({
             "success": True,
             "query": query,
+            "mode": "full",
             "results": summaries,
             "count": len(summaries),
             "sessions_searched": len(seen_sessions),
@@ -535,7 +654,8 @@ SESSION_SEARCH_SCHEMA = {
         "Returns titles, previews, and timestamps. Zero LLM cost, instant. "
         "Start here when the user asks what were we working on or what did we do recently.\n"
         "2. Keyword search (with query): Search for specific topics across all past sessions. "
-        "Returns LLM-generated summaries of matching sessions.\n\n"
+        "By default uses the term index for instant results (no LLM). "
+        "Set fast=False for detailed LLM-generated summaries.\n\n"
         "USE THIS PROACTIVELY when:\n"
         "- The user says 'we did this before', 'remember when', 'last time', 'as I mentioned'\n"
         "- The user asks about a topic you worked on before but don't have in current context\n"
@@ -544,11 +664,15 @@ SESSION_SEARCH_SCHEMA = {
         "- The user asks 'what did we do about X?' or 'how did we fix Y?'\n\n"
         "Don't hesitate to search when it is actually cross-session -- it's fast and cheap. "
         "Better to search and confirm than to guess or ask the user to repeat themselves.\n\n"
-        "Search syntax: keywords joined with OR for broad recall (elevenlabs OR baseten OR funding), "
-        "phrases for exact match (\"docker networking\"), boolean (python NOT java), prefix (deploy*). "
-        "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "
-        "sessions that only mention some terms. If a broad OR query returns nothing, try individual "
-        "keyword searches in parallel. Returns summaries of the top matching sessions."
+        "Search syntax depends on the mode:\n"
+        "- fast=True (default): Simple keyword search with AND semantics. Multiple words "
+        "all must appear in a session. No boolean operators or phrase matching. "
+        "Instant, zero LLM cost.\n"
+        "- fast=False: FTS5 full syntax — OR for broad recall (elevenlabs OR baseten OR funding), "
+        "phrases for exact match (\\\"docker networking\\\"), boolean (python NOT java), "
+        "prefix (deploy*). IMPORTANT: Use OR between keywords for best FTS5 results — "
+        "it defaults to AND which misses sessions that only mention some terms. "
+        "Slower (5-15s) but returns LLM-summarized results."
     ),
     "parameters": {
         "type": "object",
@@ -559,12 +683,17 @@ SESSION_SEARCH_SCHEMA = {
             },
             "role_filter": {
                 "type": "string",
-                "description": "Optional: only search messages from specific roles (comma-separated). E.g. 'user,assistant' to skip tool outputs.",
+                "description": "Optional: only search messages from specific roles (comma-separated). E.g. 'user,assistant' to skip tool outputs. Only used when fast=False.",
             },
             "limit": {
                 "type": "integer",
                 "description": "Max sessions to summarize (default: 3, max: 5).",
                 "default": 3,
+            },
+            "fast": {
+                "type": "boolean",
+                "description": "When true (default), use the term index for instant results with no LLM cost. When false, use FTS5 + LLM summarization for detailed summaries.",
+                "default": True,
             },
         },
         "required": [],
@@ -583,6 +712,7 @@ registry.register(
         query=args.get("query") or "",
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
+        fast=args.get("fast", True),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id")),
     check_fn=check_session_search_requirements,

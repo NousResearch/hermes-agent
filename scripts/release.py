@@ -182,6 +182,7 @@ AUTHOR_MAP = {
     "adavyasharma@gmail.com": "adavyas",
     "acaayush1111@gmail.com": "aayushchaudhary",
     "jason@outland.art": "jasonoutland",
+    "73175452+Magaav@users.noreply.github.com": "Magaav",
     "mrflu1918@proton.me": "SPANISHFLU",
     "morganemoss@gmai.com": "mormio",
     "kopjop926@gmail.com": "cesareth",

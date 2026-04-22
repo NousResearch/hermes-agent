@@ -153,6 +153,23 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _claude_cli_runtime_mode(model_cfg: Optional[Dict[str, Any]] = None) -> str:
+    cfg = model_cfg or _get_model_config()
+    raw = str(cfg.get("claude_cli_runtime") or "").strip().lower()
+    if raw in {"standard", "full", "default"}:
+        return "standard"
+    if raw in {"stripped", "minimal", "hermes"}:
+        return "stripped"
+
+    legacy = cfg.get("claude_cli_strip_runtime")
+    if isinstance(legacy, bool):
+        return "stripped" if legacy else "standard"
+    if isinstance(legacy, str) and legacy.strip():
+        return "stripped" if legacy.strip().lower() in {"1", "true", "yes", "on"} else "standard"
+
+    return "stripped"
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -857,6 +874,7 @@ def resolve_runtime_provider(
 
     if provider == "claude-cli":
         creds = resolve_external_process_provider_credentials(provider)
+        runtime_mode = _claude_cli_runtime_mode(model_cfg)
         return {
             "provider": "claude-cli",
             "api_mode": "chat_completions",
@@ -864,6 +882,8 @@ def resolve_runtime_provider(
             "api_key": creds.get("api_key", ""),
             "command": creds.get("command", ""),
             "args": list(creds.get("args") or []),
+            "strip_runtime": runtime_mode == "stripped",
+            "claude_cli_runtime": runtime_mode,
             "source": creds.get("source", "process"),
             "requested_provider": requested_provider,
         }

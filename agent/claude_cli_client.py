@@ -161,18 +161,29 @@ def _system_prompt_flag() -> str:
     return "--system-prompt-file"
 
 
-def _strip_runtime_enabled() -> bool:
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _strip_runtime_enabled(explicit: Any = None) -> bool:
+    if isinstance(explicit, bool):
+        return explicit
+    if isinstance(explicit, str) and explicit.strip():
+        return _truthy(explicit)
     raw = os.getenv("HERMES_CLAUDE_CLI_STRIP_RUNTIME", "").strip().lower()
     if not raw:
         return True
-    return raw in {"1", "true", "yes", "on"}
+    return _truthy(raw)
 
 
-def _apply_runtime_env_defaults() -> None:
-    if not _strip_runtime_enabled():
-        return
-    for key, value in _DEFAULT_STRIPPED_RUNTIME_ENV.items():
-        os.environ.setdefault(key, value)
+def _build_process_env(*, strip_runtime: bool) -> dict[str, str]:
+    env = dict(os.environ)
+    if strip_runtime:
+        env.update(_DEFAULT_STRIPPED_RUNTIME_ENV)
+    else:
+        for key in _DEFAULT_STRIPPED_RUNTIME_ENV:
+            env.pop(key, None)
+    return env
 
 
 @contextmanager
@@ -658,16 +669,18 @@ class ClaudeCLIClient:
         claude_command: str | None = None,
         claude_args: list[str] | None = None,
         claude_cwd: str | None = None,
+        strip_runtime: bool | None = None,
         timeout: float | None = None,
         **_: Any,
     ):
-        _apply_runtime_env_defaults()
         self.api_key = api_key or "claude-cli"
         self.base_url = base_url or CLAUDE_CLI_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._command = claude_command or command or _resolve_command()
         self._args = list(claude_args or args or _resolve_args())
         self._cwd = _resolve_cwd(claude_cwd)
+        self._strip_runtime = _strip_runtime_enabled(strip_runtime)
+        self._process_env = _build_process_env(strip_runtime=self._strip_runtime)
         self._timeout = (
             float(timeout) if isinstance(timeout, (int, float)) else _DEFAULT_TIMEOUT_SECONDS
         )
@@ -911,6 +924,7 @@ class ClaudeCLIClient:
                         stderr=subprocess.PIPE,
                         text=True,
                         cwd=self._cwd,
+                        env=self._process_env,
                         bufsize=1,
                     )
                 except Exception as exc:
@@ -1241,6 +1255,7 @@ class ClaudeCLIClient:
                     timeout=timeout_seconds,
                     check=False,
                     cwd=self._cwd,
+                    env=self._process_env,
                 )
             except subprocess.TimeoutExpired as exc:
                 _debug_log("run_prompt:timeout")

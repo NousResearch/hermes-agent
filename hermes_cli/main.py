@@ -1956,25 +1956,23 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     print(f"{display_name}: custom ({short_url})" + (f" · {model}" if model else ""))
 
 
-def _prompt_provider_choice(choices, *, default=0):
-    """Show provider selection menu with curses arrow-key navigation.
+def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
+    """Show a curses-backed single-choice menu.
 
-    Falls back to a numbered list when curses is unavailable (e.g. piped
-    stdin, non-TTY environments).  Returns the selected index, or None
-    if the user cancels.
+    Falls back to a numbered list when curses is unavailable. Returns the
+    selected index, or None if the user cancels.
     """
     try:
         from hermes_cli.setup import _curses_prompt_choice
 
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
             print()
             return idx
     except Exception:
         pass
 
-    # Fallback: numbered list
-    print("Select provider:")
+    print(title)
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
         print(f"  {marker} {i}. {c}")
@@ -3353,6 +3351,49 @@ def _model_flow_copilot_acp(config, current_model=""):
     deactivate_provider()
 
 
+def _current_claude_cli_runtime_mode(config) -> str:
+    model_cfg = config.get("model") if isinstance(config, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return "stripped"
+    raw = str(model_cfg.get("claude_cli_runtime") or "").strip().lower()
+    if raw in {"standard", "full", "default"}:
+        return "standard"
+    if raw in {"stripped", "minimal", "hermes"}:
+        return "stripped"
+    legacy = model_cfg.get("claude_cli_strip_runtime")
+    if isinstance(legacy, bool):
+        return "stripped" if legacy else "standard"
+    if isinstance(legacy, str) and legacy.strip():
+        return "stripped" if legacy.strip().lower() in {"1", "true", "yes", "on"} else "standard"
+    return "stripped"
+
+
+def _prompt_claude_cli_runtime_mode(current_mode: str) -> str | None:
+    options = [
+        (
+            "stripped",
+            "Stripped runtime (recommended for Hermes — disables Claude MDS, auto-memory, git instructions, and Claude.ai MCP)",
+        ),
+        (
+            "standard",
+            "Standard Claude Code runtime (closer to stock Claude Code; may inject extra context)",
+        ),
+        ("cancel", "Cancel"),
+    ]
+    default_idx = 0 if current_mode != "standard" else 1
+    idx = _prompt_provider_choice(
+        [label for _, label in options],
+        default=default_idx,
+        title="Select Claude Code runtime mode:",
+    )
+    if idx is None:
+        return None
+    mode = options[idx][0]
+    if mode == "cancel":
+        return None
+    return mode
+
+
 def _model_flow_claude_cli(config, current_model=""):
     """Claude Code CLI flow using the local claude command."""
     from hermes_cli.auth import (
@@ -3370,9 +3411,11 @@ def _model_flow_claude_cli(config, current_model=""):
     status = get_external_process_provider_status(provider_id)
     resolved_command = status.get("resolved_command") or status.get("command") or "claude"
     effective_base = status.get("base_url") or pconfig.inference_base_url
+    current_runtime = _current_claude_cli_runtime_mode(load_config())
 
     print("  Claude Code CLI delegates Hermes turns to `claude -p`.")
     print("  Hermes disables Claude built-in tools and reuses Hermes tool calls.")
+    print(f"  Runtime mode: {current_runtime}")
     print(f"  Command: {resolved_command}")
     if status.get("subscription_type"):
         print(f"  Subscription: {status.get('subscription_type')}")
@@ -3387,6 +3430,11 @@ def _model_flow_claude_cli(config, current_model=""):
         return
     if not status.get("logged_in"):
         print("  ⚠ Claude CLI is not logged in. Run `claude auth login` or `claude /login` first.")
+        return
+
+    selected_runtime = _prompt_claude_cli_runtime_mode(current_runtime)
+    if not selected_runtime:
+        print("No change.")
         return
 
     model_list = list(_PROVIDER_MODELS.get(provider_id) or [])
@@ -3408,10 +3456,14 @@ def _model_flow_claude_cli(config, current_model=""):
     model_cfg["api_mode"] = "chat_completions"
     model_cfg["api_key"] = "claude-cli"
     model_cfg["default"] = selected
+    model_cfg["claude_cli_runtime"] = selected_runtime
+    model_cfg.pop("claude_cli_strip_runtime", None)
     save_config(cfg)
-    print(f"  Config updated: provider={provider_id}, model={selected}")
+    print(
+        f"  Config updated: provider={provider_id}, model={selected}, runtime={selected_runtime}"
+    )
 
-    print(f"Default model set to: {selected} (via {pconfig.name})")
+    print(f"Default model set to: {selected} (via {pconfig.name}, {selected_runtime} runtime)")
 
 
 def _model_flow_kimi(config, current_model=""):

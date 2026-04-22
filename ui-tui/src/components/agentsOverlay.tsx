@@ -171,6 +171,9 @@ function OverlayScrollbar({
 }) {
   void tick // ensures re-render when the parent clock advances
 
+  const [hover, setHover] = useState(false)
+  const [grab, setGrab] = useState<null | number>(null)
+
   const s = scrollRef.current
   const vp = Math.max(0, s?.getViewportHeight() ?? 0)
 
@@ -181,31 +184,59 @@ function OverlayScrollbar({
   const total = Math.max(vp, s?.getScrollHeight() ?? vp)
   const scrollable = total > vp
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
+  const travel = Math.max(1, vp - thumb)
   const pos = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
-  const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * Math.max(1, vp - thumb)) : 0
+  const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
   const below = Math.max(0, vp - thumbTop - thumb)
 
   const trackLines = (n: number) => (n > 0 ? `${'│\n'.repeat(Math.max(0, n - 1))}│` : '')
   const thumbLines = `${'┃\n'.repeat(Math.max(0, thumb - 1))}┃`
 
+  const thumbColor = grab !== null ? t.color.gold : hover ? t.color.amber : t.color.amber
+  const trackColor = hover ? t.color.bronze : t.color.dim
+
+  // Map a local row (0..vp-1) + grab offset to a scrollTop position.
+  const jump = (row: number, offset: number) => {
+    if (!s || !scrollable) {
+      return
+    }
+
+    s.scrollTo(Math.round((Math.max(0, Math.min(travel, row - offset)) / travel) * Math.max(0, total - vp)))
+  }
+
   return (
-    <Box flexDirection="column" width={1}>
+    <Box
+      flexDirection="column"
+      onMouseDown={(e: { localRow?: number }) => {
+        const row = Math.max(0, Math.min(vp - 1, e.localRow ?? 0))
+        const off = row >= thumbTop && row < thumbTop + thumb ? row - thumbTop : Math.floor(thumb / 2)
+        setGrab(off)
+        jump(row, off)
+      }}
+      onMouseDrag={(e: { localRow?: number }) =>
+        jump(Math.max(0, Math.min(vp - 1, e.localRow ?? 0)), grab ?? Math.floor(thumb / 2))
+      }
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onMouseUp={() => setGrab(null)}
+      width={1}
+    >
       {!scrollable ? (
-        <Text color={t.color.dim} dim>
+        <Text color={trackColor} dim>
           {trackLines(vp)}
         </Text>
       ) : (
         <>
           {thumbTop > 0 ? (
-            <Text color={t.color.dim} dim>
+            <Text color={trackColor} dim={!hover}>
               {trackLines(thumbTop)}
             </Text>
           ) : null}
 
-          <Text color={t.color.amber}>{thumbLines}</Text>
+          <Text color={thumbColor}>{thumbLines}</Text>
 
           {below > 0 ? (
-            <Text color={t.color.dim} dim>
+            <Text color={trackColor} dim={!hover}>
               {trackLines(below)}
             </Text>
           ) : null}
@@ -546,11 +577,23 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
   )
 }
 
+/** Pluck the label out of `formatToolCall` output: `Read_file("…")` → `Read_file`. */
+const latestToolLabel = (tools: readonly string[]): string => {
+  const last = tools[tools.length - 1]
+
+  if (!last) {
+    return ''
+  }
+
+  const paren = last.indexOf('(')
+
+  return (paren > 0 ? last.slice(0, paren) : last).trim()
+}
+
 function ListRow({
   active,
   index,
   node,
-  now,
   peak,
   t,
   width
@@ -558,7 +601,6 @@ function ListRow({
   active: boolean
   index: number
   node: SubagentNode
-  now: number
   peak: number
   t: Theme
   width: number
@@ -568,11 +610,15 @@ function ListRow({
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
 
-  const goal = compactPreview(node.item.goal || 'subagent', width - 24 - node.item.depth * 2)
-  const tools = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
+  const goal = compactPreview(node.item.goal || 'subagent', width - 28 - node.item.depth * 2)
+  const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
-  const elSec = displayElapsedSeconds(node.item, now)
-  const elapsed = elSec != null ? fmtElapsedLabel(elSec) : ''
+
+  // Running rows replace the moving-number clock (timeline already has it)
+  // with the most recent tool label — no per-tick re-render, but changes
+  // as activity flows, so the list still conveys motion.
+  const current = node.item.status === 'running' ? latestToolLabel(node.item.tools) : ''
+  const trailing = current ? ` · ${compactPreview(current, 14)}` : ''
 
   // Selection pattern mirrors sessionPicker: inverse + amber for contrast
   // across any theme, body stays cornsilk, stats dim.
@@ -586,9 +632,9 @@ function ListRow({
       {heatMarker ? <Text color={heatMarker}>▍</Text> : null}
       <Text color={active ? fg : color}>{glyph}</Text> {goal}
       <Text color={active ? fg : t.color.dim}>
-        {tools}
+        {toolsCount}
         {kids}
-        {elapsed ? ` · ${elapsed}` : ''}
+        {trailing}
       </Text>
     </Text>
   )
@@ -912,6 +958,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         return scrollDetail(detailPageSize)
       }
 
+      // Wheel = smooth pixel scroll; arrows = 2-row nudge.  Overlay's
+      // useInput supersedes the global wheel handler so we re-bind here.
+      if (key.wheelUp) {
+        return scrollDetail(-3)
+      }
+
+      if (key.wheelDown) {
+        return scrollDetail(3)
+      }
+
       if (key.upArrow || ch === 'k') {
         return scrollDetail(-2)
       }
@@ -936,11 +992,11 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       return setMode('detail')
     }
 
-    if (key.upArrow || ch === 'k') {
+    if (key.upArrow || ch === 'k' || key.wheelUp) {
       return setCursor(c => Math.max(0, c - 1))
     }
 
-    if (key.downArrow || ch === 'j') {
+    if (key.downArrow || ch === 'j' || key.wheelDown) {
       return setCursor(c => Math.min(Math.max(0, rows.length - 1), c + 1))
     }
 
@@ -1038,7 +1094,6 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
                 index={listWindowStart + i}
                 key={node.item.id}
                 node={node}
-                now={now}
                 peak={peak}
                 t={t}
                 width={cols}

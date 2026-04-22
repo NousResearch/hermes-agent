@@ -1735,6 +1735,20 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "setting",
     },
+    "NACOS_SERVER_ADDR": {
+        "description": "Nacos 3.2 server address for the Skills Registry (e.g. http://nacos.example:8848). When set, `hermes skills nacos` subcommands become available and the Nacos source joins search.",
+        "prompt": "Nacos server address",
+        "url": "https://nacos.io/en/docs/latest/",
+        "password": False,
+        "category": "tool",
+    },
+    "NACOS_NAMESPACE": {
+        "description": "Default Nacos namespace for hermes skills (falls back to 'public' when unset)",
+        "prompt": "Nacos namespace",
+        "url": "https://nacos.io/en/docs/latest/",
+        "password": False,
+        "category": "tool",
+    },
 }
 
 # Tool Gateway env vars are always visible — they're useful for

@@ -486,3 +486,50 @@ All the same commands work with `/skills`:
 ```
 
 Official optional skills still use identifiers like `official/security/1password` and `official/migration/openclaw-migration`.
+
+## Nacos Skills Registry (shared team skills)
+
+Hermes integrates with **Nacos 3.2 Skills Registry** so multiple hermes instances — and compatible clients such as OpenClaw — can share the same skills pool. Skills stored in Nacos are namespaced and group-scoped, giving you team-level isolation and governance.
+
+### Setup
+
+```bash
+# 1. install the Node-based nacos-cli
+npm i -g @nacos-group/cli
+
+# 2. configure the Nacos server
+export NACOS_SERVER_ADDR=http://nacos.example:8848
+export NACOS_NAMESPACE=team-a          # optional; defaults to 'public'
+
+# 3. log in (credentials stay in ~/.nacos-cli.conf; hermes never reads them)
+hermes skills nacos login
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `hermes skills nacos doctor` | Verify nacos-cli installation, server address, and config file |
+| `hermes skills nacos list` | List skills in the current namespace/group |
+| `hermes skills nacos pull <name>` | Install a skill from Nacos (conflict-aware) |
+| `hermes skills nacos push <name>` | Upload a local skill to Nacos (`--bump patch\|minor\|major`) |
+| `hermes skills nacos sync` | Pull every skill in a namespace/group |
+
+Skills can also be installed via URL identifier:
+
+```bash
+hermes skills install nacos://team-a/hermes-skills/code-review@1.2.0
+```
+
+### Conflict handling on pull
+
+| Local state | Behavior |
+|---|---|
+| Not installed | Installs |
+| Installed + lock matches on-disk hash | Requires `--update` to refresh |
+| On-disk hash differs from lock (locally modified) | Refuses — use `hermes skills nacos push` first or `--force` |
+| Exists locally without a nacos lock | Requires `--force` to overwrite |
+
+### Trust levels
+
+By default, Nacos skills are treated as `community`. To mark specific namespaces as trusted (relaxing the scanner's install policy), pass `trusted_namespaces=[...]` when constructing `NacosSkillSource`. ZIP contents are still scanned by the same hub quarantine pipeline every other source uses.

@@ -7412,6 +7412,22 @@ Examples:
         help="Interactive skill configuration — enable/disable individual skills",
     )
 
+    # nacos sub-action: delegate all remaining args to the nacos subcommand parser
+    skills_nacos = skills_subparsers.add_parser(
+        "nacos",
+        help="Manage skills via Nacos 3.2 Skills Registry "
+             "(list/pull/push/sync/login/doctor)",
+        description=(
+            "Nacos 3.2 Skills Registry client. Requires the Node "
+            "`nacos-cli` binary (`npm i -g @nacos-group/cli`) and "
+            "the NACOS_SERVER_ADDR env var."
+        ),
+    )
+    skills_nacos.add_argument(
+        "nacos_args", nargs=argparse.REMAINDER,
+        help="Arguments forwarded to `hermes skills nacos` (e.g. `list`, `pull NAME`)",
+    )
+
     def cmd_skills(args):
         # Route 'config' action to skills_config module
         if getattr(args, "skills_action", None) == "config":
@@ -7419,6 +7435,12 @@ Examples:
             from hermes_cli.skills_config import skills_command as skills_config_command
 
             skills_config_command(args)
+        elif getattr(args, "skills_action", None) == "nacos":
+            from hermes_cli.skills_nacos_cmd import main as nacos_main
+
+            rc = nacos_main(args.nacos_args or [])
+            if rc:
+                raise SystemExit(rc)
         else:
             from hermes_cli.skills_hub import skills_command
 

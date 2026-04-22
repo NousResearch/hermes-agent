@@ -2936,6 +2936,14 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         LobeHubSource(),
     ]
 
+    # Optional: Nacos 3.2 Skills Registry — enabled when NACOS_SERVER_ADDR is set.
+    if os.environ.get("NACOS_SERVER_ADDR"):
+        try:
+            from tools.skills_nacos import NacosSkillSource
+            sources.append(NacosSkillSource())
+        except Exception as e:  # pragma: no cover — defensive import guard
+            logger.debug("Nacos source init failed: %s", e)
+
     return sources
 
 

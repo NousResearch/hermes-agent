@@ -183,6 +183,45 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     )
 
 
+@patch("agent.model_metadata.get_model_context_length")
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_check_uses_custom_provider_context_length(mock_get_client, mock_ctx_len):
+    """Fallback compression model should reuse custom_providers model overrides."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.65)
+    agent.model = "glm-5.1"
+    agent.base_url = "http://localhost:8317/v1"
+    agent._custom_providers = [
+        {
+            "name": "Local (localhost:8317)",
+            "base_url": "http://localhost:8317/v1",
+            "models": {
+                "glm-5.1": {"context_length": 200_000},
+            },
+        }
+    ]
+    mock_client = MagicMock()
+    mock_client.base_url = "http://localhost:8317/v1"
+    mock_client.api_key = "sk-custom"
+    mock_get_client.return_value = (mock_client, "glm-5.1")
+    mock_ctx_len.side_effect = (
+        lambda _model, *, config_context_length=None, **_kwargs:
+        config_context_length or 128_000
+    )
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    agent._check_compression_model_feasibility()
+
+    mock_ctx_len.assert_called_once_with(
+        "glm-5.1",
+        base_url="http://localhost:8317/v1",
+        api_key="sk-custom",
+        config_context_length=200_000,
+    )
+    assert messages == []
+    assert agent.context_compressor.threshold_tokens == 130_000
+
+
 @patch("agent.model_metadata.get_model_context_length", return_value=128_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_ctx_len):

@@ -1420,6 +1420,14 @@ class AIAgent:
         # needed later by the startup feasibility check.  Avoid exposing a
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+            self._custom_providers = get_compatible_custom_providers(_agent_cfg)
+        except Exception:
+            self._custom_providers = _agent_cfg.get("custom_providers")
+            if not isinstance(self._custom_providers, list):
+                self._custom_providers = []
+        self._invalid_custom_provider_context_warnings = set()
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -1601,46 +1609,14 @@ class AIAgent:
                 )
                 _config_context_length = None
 
-        # Store for reuse in switch_model (so config override persists across model switches)
-        self._config_context_length = _config_context_length
-
-        # Check custom_providers per-model context_length
         if _config_context_length is None:
-            try:
-                from hermes_cli.config import get_compatible_custom_providers
-                _custom_providers = get_compatible_custom_providers(_agent_cfg)
-            except Exception:
-                _custom_providers = _agent_cfg.get("custom_providers")
-                if not isinstance(_custom_providers, list):
-                    _custom_providers = []
-            for _cp_entry in _custom_providers:
-                if not isinstance(_cp_entry, dict):
-                    continue
-                _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
-                if _cp_url and _cp_url == self.base_url.rstrip("/"):
-                    _cp_models = _cp_entry.get("models", {})
-                    if isinstance(_cp_models, dict):
-                        _cp_model_cfg = _cp_models.get(self.model, {})
-                        if isinstance(_cp_model_cfg, dict):
-                            _cp_ctx = _cp_model_cfg.get("context_length")
-                            if _cp_ctx is not None:
-                                try:
-                                    _config_context_length = int(_cp_ctx)
-                                except (TypeError, ValueError):
-                                    logger.warning(
-                                        "Invalid context_length for model %r in "
-                                        "custom_providers: %r — must be a plain "
-                                        "integer (e.g. 256000, not '256K'). "
-                                        "Falling back to auto-detection.",
-                                        self.model, _cp_ctx,
-                                    )
-                                    print(
-                                        f"\n⚠ Invalid context_length for model {self.model!r} in custom_providers: {_cp_ctx!r}\n"
-                                        f"  Must be a plain integer (e.g. 256000, not '256K').\n"
-                                        f"  Falling back to auto-detected context window.\n",
-                                        file=sys.stderr,
-                                    )
-                    break
+            _config_context_length = self._resolve_custom_provider_context_length(
+                self.model,
+                self.base_url,
+            )
+
+        # Store for reuse in switch_model and compression feasibility checks.
+        self._config_context_length = _config_context_length
         
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
@@ -2091,6 +2067,57 @@ class AIAgent:
             return
         self._safe_print(*args, **kwargs)
 
+    def _resolve_custom_provider_context_length(self, model_name: str, base_url: str):
+        """Return a custom_providers.models context_length override, if any."""
+        normalized_base_url = (base_url or "").rstrip("/")
+        for custom_provider in getattr(self, "_custom_providers", []):
+            if not isinstance(custom_provider, dict):
+                continue
+            provider_base_url = (custom_provider.get("base_url") or "").rstrip("/")
+            if not provider_base_url or provider_base_url != normalized_base_url:
+                continue
+
+            provider_models = custom_provider.get("models", {})
+            if not isinstance(provider_models, dict):
+                break
+
+            model_cfg = provider_models.get(model_name, {})
+            if not isinstance(model_cfg, dict):
+                break
+
+            context_length = model_cfg.get("context_length")
+            if context_length is None:
+                break
+
+            try:
+                return int(context_length)
+            except (TypeError, ValueError):
+                warning_key = (normalized_base_url, model_name, str(context_length))
+                warned = getattr(
+                    self,
+                    "_invalid_custom_provider_context_warnings",
+                    set(),
+                )
+                if warning_key not in warned:
+                    warned.add(warning_key)
+                    self._invalid_custom_provider_context_warnings = warned
+                    logger.warning(
+                        "Invalid context_length for model %r in custom_providers: %r — "
+                        "must be a plain integer (e.g. 256000, not '256K'). "
+                        "Falling back to auto-detection.",
+                        model_name,
+                        context_length,
+                    )
+                    print(
+                        f"\n⚠ Invalid context_length for model {model_name!r} in custom_providers: {context_length!r}\n"
+                        f"  Must be a plain integer (e.g. 256000, not '256K').\n"
+                        f"  Falling back to auto-detected context window.\n",
+                        file=sys.stderr,
+                    )
+                break
+
+        return None
+
     def _should_start_quiet_spinner(self) -> bool:
         """Return True when quiet-mode spinner output has a safe sink.
 
@@ -2197,12 +2224,22 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+            aux_config_context_length = getattr(
+                self,
+                "_aux_compression_context_length_config",
+                None,
+            )
+            if aux_config_context_length is None:
+                aux_config_context_length = self._resolve_custom_provider_context_length(
+                    aux_model,
+                    aux_base_url,
+                )
 
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
-                config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                config_context_length=aux_config_context_length,
             )
 
             # Hard floor: the auxiliary compression model must have at least

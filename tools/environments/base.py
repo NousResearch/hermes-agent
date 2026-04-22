@@ -200,7 +200,7 @@ class _ThreadedProcessHandle:
         self._returncode: int | None = None
         self._error: Exception | None = None
 
-        # Pipe for stdout â€” drain thread in _wait_for_process reads the read end.
+        # Pipe for stdout ¡ª drain thread in _wait_for_process reads the read end.
         read_fd, write_fd = os.pipe()
         self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
         self._write_fd = write_fd
@@ -357,7 +357,7 @@ class BaseEnvironment(ABC):
             )
         except Exception as exc:
             logger.warning(
-                "init_session failed (session=%s): %s â€” "
+                "init_session failed (session=%s): %s ¡ª "
                 "falling back to bash -l per command",
                 self._session_id,
                 exc,
@@ -379,7 +379,7 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
 
-        # cd to working directory â€” let bash expand ~ natively
+        # cd to working directory ¡ª let bash expand ~ natively
         quoted_cwd = (
             shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
         )
@@ -423,7 +423,7 @@ class BaseEnvironment(ABC):
     def _wait_for_process(self, proc: ProcessHandle, timeout: int = 120) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
-        Shared across all backends â€” not overridden.
+        Shared across all backends ¡ª not overridden.
 
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
@@ -433,19 +433,19 @@ class BaseEnvironment(ABC):
         call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
         or ``SystemExit``.  Without this, the local backend (which spawns
         subprocesses with ``os.setsid`` into their own process group) leaves
-        an orphan with ``PPID=1`` when python is shut down mid-tool â€” the
+        an orphan with ``PPID=1`` when python is shut down mid-tool ¡ª the
         ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
         output_chunks: list[str] = []
 
         # Non-blocking drain via select().
         #
-        # The old pattern â€” ``for line in proc.stdout`` â€” blocks on
+        # The old pattern ¡ª ``for line in proc.stdout`` ¡ª blocks on
         # ``readline()`` until the pipe reaches EOF.  When the user's command
         # backgrounds a process (``cmd &``, ``setsid cmd & disown``, etc.),
         # that backgrounded grandchild inherits the write-end of our stdout
         # pipe via ``fork()``.  Even after ``bash`` itself exits, the pipe
-        # stays open because the grandchild still holds it â€” so the drain
+        # stays open because the grandchild still holds it ¡ª so the drain
         # thread never returns and the tool hangs for the full lifetime of
         # the grandchild (issue #8340: users reported indefinite hangs when
         # restarting uvicorn with ``setsid ... & disown``).
@@ -453,7 +453,7 @@ class BaseEnvironment(ABC):
         # The fix: select() with a short poll interval, and stop draining
         # shortly after ``bash`` exits even if the pipe hasn't EOF'd yet.
         # Any output the grandchild writes after that point goes to an
-        # orphaned pipe (harmless â€” the kernel reaps it when our end closes).
+        # orphaned pipe (harmless ¡ª the kernel reaps it when our end closes).
         #
         # Decoding: we ``os.read()`` raw bytes in fixed-size chunks (4096)
         # so a single multibyte UTF-8 character can split across reads.  An
@@ -469,23 +469,20 @@ class BaseEnvironment(ABC):
             idle_after_exit = 0
             try:
                 while True:
+                    # On Windows, select() only works on socket FDs.  It raises
+                    # OSError (WinError 10038) on anonymous pipe FDs, so we
+                    # must use time.sleep-based polling instead.
+                    time.sleep(0.05)
                     try:
-                        ready, _, _ = select.select([fd], [], [], 0.1)
+                        chunk = os.read(fd, 4096)
                     except (ValueError, OSError):
-                        break  # fd already closed
-                    if ready:
-                        try:
-                            chunk = os.read(fd, 4096)
-                        except (ValueError, OSError):
-                            break
-                        if not chunk:
-                            break  # true EOF â€” all writers closed
-                        output_chunks.append(decoder.decode(chunk))
-                        idle_after_exit = 0
-                    elif proc.poll() is not None:
-                        # bash is gone and the pipe was idle for ~100ms.  Give
-                        # it two more cycles to catch any buffered tail, then
-                        # stop â€” otherwise we wait forever on a grandchild pipe.
+                        break
+                    if not chunk:
+                        break  # true EOF ¡ª all writers closed
+                    output_chunks.append(decoder.decode(chunk))
+                    idle_after_exit = 0
+                    if proc.poll() is not None:
+                        # bash is gone ¡ª give it two more cycles to flush buffered tail.
                         idle_after_exit += 1
                         if idle_after_exit >= 3:
                             break
@@ -535,7 +532,7 @@ class BaseEnvironment(ABC):
                     if _DEBUG_INTERRUPT:
                         logger.info(
                             "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
-                            "tid=%s pid=%s iter=%d elapsed=%.1fs â€” killing process group",
+                            "tid=%s pid=%s iter=%d elapsed=%.1fs ¡ª killing process group",
                             _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
                         )
                     self._kill_process(proc)
@@ -586,7 +583,7 @@ class BaseEnvironment(ABC):
         except (KeyboardInterrupt, SystemExit):
             # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
             # while we were polling.  The local backend spawns subprocesses
-            # with os.setsid, which puts them in their own process group â€” so
+            # with os.setsid, which puts them in their own process group ¡ª so
             # if we let the interrupt propagate without killing the child,
             # python exits and the child is reparented to init (PPID=1) and
             # keeps running as an orphan.  Killing the process group here
@@ -594,7 +591,7 @@ class BaseEnvironment(ABC):
             if _DEBUG_INTERRUPT:
                 logger.info(
                     "[interrupt-debug] _wait_for_process EXCEPTION_EXIT "
-                    "tid=%s pid=%s iter=%d elapsed=%.1fs â€” killing subprocess group before re-raise",
+                    "tid=%s pid=%s iter=%d elapsed=%.1fs ¡ª killing subprocess group before re-raise",
                     _tid, _pid, _iter_count,
                     time.monotonic() - _activity_state["start"],
                 )
@@ -684,7 +681,7 @@ class BaseEnvironment(ABC):
 
         Remote backends (SSH, Modal, Daytona) override this to trigger
         their FileSyncManager.  Bind-mount backends (Docker, Singularity)
-        and Local don't need file sync â€” the host filesystem is directly
+        and Local don't need file sync ¡ª the host filesystem is directly
         visible inside the container/process.
         """
         pass
@@ -709,7 +706,7 @@ class BaseEnvironment(ABC):
         # subshell for the compound that then waits for an infinite B (a
         # server, `yes > /dev/null`, etc.), leaking the subshell forever.
         # Rewriting to `A && { B & }` runs B as a plain background in the
-        # current shell â€” no subshell wait.
+        # current shell ¡ª no subshell wait.
         from tools.terminal_tool import _rewrite_compound_background
         exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout

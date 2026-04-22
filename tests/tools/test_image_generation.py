@@ -9,6 +9,9 @@ tests/tools/test_managed_media_gateways.py.
 
 from __future__ import annotations
 
+import base64
+import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -496,3 +499,95 @@ class TestManagedGatewayErrorTranslation:
 
         with pytest.raises(ConnectionError):
             image_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "x"})
+
+
+class TestCodexFallback:
+    def test_check_requirements_accepts_codex_backend(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "check_fal_api_key", lambda: False)
+        monkeypatch.setattr(image_tool, "_codex_image_backend_available", lambda: True)
+        assert image_tool.check_image_generation_requirements() is True
+
+    def test_tool_falls_back_to_codex_when_fal_unavailable(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "_fal_backend_available", lambda: False)
+        monkeypatch.setattr(image_tool, "_codex_image_backend_available", lambda: True)
+        monkeypatch.setattr(
+            image_tool,
+            "_generate_image_via_codex",
+            lambda prompt, aspect_ratio: {
+                "path": "/tmp/codex-fallback.png",
+                "backend": "codex",
+                "model": "gpt-5.4",
+            },
+        )
+
+        result = json.loads(image_tool.image_generate_tool("hello world", "square"))
+        assert result["success"] is True
+        assert result["image"] == "/tmp/codex-fallback.png"
+        assert result["backend"] == "codex"
+        assert result["model"] == "gpt-5.4"
+
+    def test_fal_backend_available_requires_sdk(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "check_fal_api_key", lambda: True)
+        monkeypatch.setattr(image_tool, "fal_client", None)
+        assert image_tool._fal_backend_available() is False
+
+    def test_tool_falls_back_to_codex_when_fal_sdk_missing(self, image_tool, monkeypatch):
+        monkeypatch.setattr(image_tool, "check_fal_api_key", lambda: True)
+        monkeypatch.setattr(image_tool, "fal_client", None)
+        monkeypatch.setattr(image_tool, "_codex_image_backend_available", lambda: True)
+        monkeypatch.setattr(
+            image_tool,
+            "_generate_image_via_codex",
+            lambda prompt, aspect_ratio: {
+                "path": "/tmp/codex-sdk-missing-fallback.png",
+                "backend": "codex",
+                "model": "gpt-5.4",
+            },
+        )
+
+        result = json.loads(image_tool.image_generate_tool("hello world", "square"))
+        assert result["success"] is True
+        assert result["image"] == "/tmp/codex-sdk-missing-fallback.png"
+        assert result["backend"] == "codex"
+        assert result["model"] == "gpt-5.4"
+
+    def test_generate_image_via_codex_extracts_final_image(self, image_tool, monkeypatch, tmp_path):
+        png_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8n8AAAAASUVORK5CYII="
+        )
+        final_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                assert kwargs["stream"] is True
+                assert kwargs["tools"] == [{"type": "image_generation"}]
+                return iter(
+                    [
+                        SimpleNamespace(
+                            type="response.image_generation_call.partial_image",
+                            partial_image_b64="ignored-partial",
+                        ),
+                        SimpleNamespace(
+                            type="response.output_item.done",
+                            item=SimpleNamespace(
+                                type="image_generation_call",
+                                result=final_b64,
+                            ),
+                        ),
+                    ]
+                )
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        monkeypatch.setattr(
+            image_tool,
+            "resolve_provider_client",
+            lambda provider, model, raw_codex: (fake_client, model),
+        )
+
+        out_path = tmp_path / "codex.png"
+        monkeypatch.setattr(image_tool, "_cache_generated_image_bytes", lambda data: str(out_path))
+
+        result = image_tool._generate_image_via_codex("hello", "square")
+        assert result["path"] == str(out_path)
+        assert result["backend"] == "codex"
+        assert result["model"] == image_tool._CODEX_IMAGE_MODEL

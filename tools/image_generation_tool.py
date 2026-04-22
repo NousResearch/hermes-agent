@@ -20,6 +20,7 @@ Pricing shown in UI strings is as-of the initial commit; we accept drift and
 update when it's noticed.
 """
 
+import base64
 import json
 import logging
 import os
@@ -27,9 +28,16 @@ import datetime
 import threading
 import uuid
 from typing import Any, Dict, Optional, Union
+from pathlib import Path
 from urllib.parse import urlencode
 
-import fal_client
+try:
+    import fal_client
+except ImportError:  # pragma: no cover - optional when only Codex image gen is used
+    fal_client = None
+
+from agent.auxiliary_client import resolve_provider_client
+from hermes_constants import get_hermes_dir
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -314,6 +322,116 @@ _debug = DebugSession("image_tools", env_var="IMAGE_TOOLS_DEBUG")
 _managed_fal_client = None
 _managed_fal_client_config = None
 _managed_fal_client_lock = threading.Lock()
+
+_CODEX_IMAGE_MODEL = os.getenv("HERMES_CODEX_IMAGE_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+
+
+def _fal_backend_available() -> bool:
+    """True when the FAL path is actually usable in this runtime."""
+    return bool(check_fal_api_key() and fal_client is not None)
+
+
+def _codex_image_backend_available() -> bool:
+    """True when a raw OpenAI Codex client can be resolved for image generation."""
+    try:
+        client, _ = resolve_provider_client(
+            "openai-codex",
+            model=_CODEX_IMAGE_MODEL,
+            raw_codex=True,
+        )
+        return client is not None
+    except Exception as exc:
+        logger.debug("Codex image backend unavailable: %s", exc)
+        return False
+
+
+def _cache_generated_image_bytes(data: bytes) -> str:
+    """Persist generated image bytes into Hermes' image cache and return the path."""
+    cache_dir = get_hermes_dir("cache/images", "image_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = ".png"
+    if data[:3] == b"\xff\xd8\xff":
+        ext = ".jpg"
+    elif data[:6] in (b"GIF87a", b"GIF89a"):
+        ext = ".gif"
+    elif data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        ext = ".webp"
+
+    path = Path(cache_dir) / f"img_{uuid.uuid4().hex[:12]}{ext}"
+    path.write_bytes(data)
+    return str(path)
+
+
+def _generate_image_via_codex(prompt: str, aspect_ratio: str) -> Dict[str, Any]:
+    """Generate a single image through the raw Codex Responses API path."""
+    client, model = resolve_provider_client(
+        "openai-codex",
+        model=_CODEX_IMAGE_MODEL,
+        raw_codex=True,
+    )
+    if client is None:
+        raise ValueError("OpenAI Codex image generation is not configured")
+
+    aspect_notes = {
+        "landscape": "Use a wide landscape composition (roughly 16:9).",
+        "square": "Use a square 1:1 composition.",
+        "portrait": "Use a tall portrait composition (roughly 9:16).",
+    }
+    aspect_note = aspect_notes.get(
+        (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip(),
+        aspect_notes[DEFAULT_ASPECT_RATIO],
+    )
+
+    stream = client.responses.create(
+        model=model,
+        instructions="Generate exactly one image for the user's request. Prefer image output over text output.",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": f"{prompt.strip()}\n\n{aspect_note}",
+                    }
+                ],
+            }
+        ],
+        tools=[{"type": "image_generation"}],
+        tool_choice="auto",
+        parallel_tool_calls=True,
+        store=False,
+        stream=True,
+    )
+
+    final_b64: Optional[str] = None
+    partial_b64: Optional[str] = None
+    for event in stream:
+        event_type = getattr(event, "type", "")
+        if event_type == "response.image_generation_call.partial_image":
+            chunk = getattr(event, "partial_image_b64", None)
+            if isinstance(chunk, str) and chunk.strip():
+                partial_b64 = chunk.strip()
+            continue
+        if event_type != "response.output_item.done":
+            continue
+        item = getattr(event, "item", None)
+        if getattr(item, "type", None) != "image_generation_call":
+            continue
+        result_b64 = getattr(item, "result", None)
+        if isinstance(result_b64, str) and result_b64.strip():
+            final_b64 = result_b64.strip()
+
+    image_b64 = final_b64 or partial_b64
+    if not image_b64:
+        raise ValueError("Codex image generation returned no image bytes")
+
+    image_bytes = base64.b64decode(image_b64)
+    return {
+        "path": _cache_generated_image_bytes(image_bytes),
+        "backend": "codex",
+        "model": model,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -659,12 +777,6 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
-            message = "FAL_KEY environment variable not set"
-            if managed_nous_tools_enabled():
-                message += " and managed FAL gateway is unavailable"
-            raise ValueError(message)
-
         aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
         if aspect_lc not in VALID_ASPECT_RATIOS:
             logger.warning(
@@ -672,6 +784,33 @@ def image_generate_tool(
                 aspect_ratio, DEFAULT_ASPECT_RATIO,
             )
             aspect_lc = DEFAULT_ASPECT_RATIO
+
+        fal_available = _fal_backend_available()
+        codex_available = _codex_image_backend_available()
+        if not fal_available and not codex_available:
+            message = "No image generation backend is available"
+            if managed_nous_tools_enabled():
+                message += " (managed FAL gateway unavailable)"
+            raise ValueError(message)
+
+        if not fal_available:
+            codex_result = _generate_image_via_codex(prompt=prompt, aspect_ratio=aspect_lc)
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
+            response_data = {
+                "success": True,
+                "image": codex_result["path"],
+                "backend": codex_result["backend"],
+                "model": codex_result["model"],
+            }
+
+            debug_call_data["success"] = True
+            debug_call_data["images_generated"] = 1
+            debug_call_data["generation_time"] = generation_time
+            debug_call_data["model"] = codex_result["model"]
+            debug_call_data["backend"] = codex_result["backend"]
+            _debug.log_call("image_generate_tool", debug_call_data)
+            _debug.save()
+            return json.dumps(response_data, indent=2, ensure_ascii=False)
 
         overrides: Dict[str, Any] = {}
         if num_inference_steps is not None:
@@ -774,14 +913,14 @@ def check_fal_api_key() -> bool:
 
 
 def check_image_generation_requirements() -> bool:
-    """True if FAL credentials and fal_client SDK are both available."""
+    """True if either the FAL backend or the Codex image backend is available."""
     try:
-        if not check_fal_api_key():
-            return False
-        fal_client  # noqa: F401 — SDK presence check
-        return True
+        fal_ready = False
+        if check_fal_api_key() and fal_client is not None:
+            fal_ready = True
+        return fal_ready or _codex_image_backend_available()
     except ImportError:
-        return False
+        return _codex_image_backend_available()
 
 
 # ---------------------------------------------------------------------------
@@ -827,10 +966,9 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts using FAL.ai. "
-        "The underlying model is user-configured (default: FLUX 2 Klein 9B, "
-        "sub-1s generation) and is not selectable by the agent. Returns a "
-        "single image URL. Display it using markdown: ![description](URL)"
+        "Generate high-quality images from text prompts. Hermes prefers the configured FAL.ai backend, "
+        "but automatically falls back to OpenAI Codex image generation when FAL is unavailable. Returns "
+        "a single image URL or absolute local image path. For local paths, display it with MEDIA:/absolute/path/to/file."
     ),
     "parameters": {
         "type": "object",

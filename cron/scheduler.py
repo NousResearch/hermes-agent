@@ -375,7 +375,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
-        if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        loop_running = bool(loop is not None and getattr(loop, "is_running", lambda: False)())
+        loop_closed = bool(loop is not None and getattr(loop, "is_closed", lambda: False)())
+        if runtime_adapter is not None and loop_running and not loop_closed:
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
@@ -416,6 +418,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = config.platforms.get(platform)
             if not pconfig or not pconfig.enabled:
                 msg = f"platform '{platform_name}' not configured/enabled"
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+
+            if sys.is_finalizing():
+                msg = (
+                    f"delivery to {platform_name}:{chat_id} skipped during interpreter shutdown"
+                )
                 logger.warning("Job '%s': %s", job["id"], msg)
                 delivery_errors.append(msg)
                 continue

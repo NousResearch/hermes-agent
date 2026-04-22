@@ -193,7 +193,7 @@ DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_CHILD_TIMEOUT = 300  # seconds before a child agent is considered stuck
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 _HEARTBEAT_STALE_CYCLES = 5  # mark child stale after this many heartbeats with no iteration progress
-DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+DEFAULT_TOOLSETS = ["terminal", "file", "web", "image_gen"]
 
 
 # ---------------------------------------------------------------------------

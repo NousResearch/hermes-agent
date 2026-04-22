@@ -230,14 +230,33 @@ def write_pid_file() -> None:
     Uses atomic O_CREAT | O_EXCL creation so that concurrent --replace
     invocations race: exactly one process wins and the rest get
     FileExistsError.
+
+    If the file already exists but only contains stale/invalid state, clean it up
+    and retry once. This closes the gap where a previous crashed gateway left a
+    dead PID record behind: start_gateway() may decide the old PID is stale, but
+    another concurrent observer can recreate or preserve the stale file before we
+    reach the atomic create below.
     """
     path = _get_pid_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     record = json.dumps(_build_pid_record())
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        raise  # Let caller decide: another gateway is racing us
+
+    for _attempt in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            existing_pid = get_running_pid(path, cleanup_stale=True)
+            if existing_pid is None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            raise  # Let caller decide: another live gateway is racing us
+    else:
+        raise FileExistsError(path)
+
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(record)

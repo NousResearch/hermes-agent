@@ -390,6 +390,10 @@ export default function SessionsPage() {
       .then((resp) => {
         setSessions(resp.sessions);
         setTotal(resp.total);
+        const maxPage = Math.max(0, Math.ceil(resp.total / PAGE_SIZE) - 1);
+        if (p > maxPage) {
+          setPage(maxPage);
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -426,8 +430,14 @@ export default function SessionsPage() {
   const handleDelete = async (id: string) => {
     try {
       await api.deleteSession(id);
-      setSessions((prev) => prev.filter((s) => s.id !== id));
       setTotal((prev) => prev - 1);
+      setSessions((prev) => {
+        const next = prev.filter((s) => s.id !== id);
+        if (next.length === 0 && page > 0) {
+          setPage((p) => Math.max(0, p - 1));
+        }
+        return next;
+      });
       if (expandedId === id) setExpandedId(null);
     } catch {
       // ignore
@@ -441,6 +451,8 @@ export default function SessionsPage() {
       snippetMap.set(r.session_id, r.snippet);
     }
   }
+
+  const searchActive = search.trim().length > 0;
 
   // When searching, filter sessions to those with FTS matches;
   // when not searching, show all sessions
@@ -495,9 +507,9 @@ export default function SessionsPage() {
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <Clock className="h-8 w-8 mb-3 opacity-40" />
           <p className="text-sm font-medium">
-            {search ? t.sessions.noMatch : t.sessions.noSessions}
+            {searchActive ? t.sessions.noMatch : t.sessions.noSessions}
           </p>
-          {!search && (
+          {!searchActive && (
             <p className="text-xs mt-1 text-muted-foreground/60">
               {t.sessions.startConversation}
             </p>
@@ -522,7 +534,7 @@ export default function SessionsPage() {
           </div>
 
           {/* Pagination — hidden during search */}
-          {!searchResults && total > PAGE_SIZE && (
+          {!searchActive && total > PAGE_SIZE && (
             <div className="flex items-center justify-between pt-2">
               <span className="text-xs text-muted-foreground">
                 {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}{" "}

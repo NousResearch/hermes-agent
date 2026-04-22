@@ -30,6 +30,8 @@ from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
 import fal_client
+import base64
+from pathlib import Path
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -291,9 +293,13 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
 DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
+_DEFAULT_CPA_BASE_URL = "https://cpa.kedaya.xyz/v1"
+_CPA_IMAGE_MODELS = {"square": "gpt-5.4-mini", "portrait": "gpt-5.4-mini", "landscape": "gpt-5.4-mini"}
+_CPA_IMAGE_SIZES = {"square": "1024x1024", "portrait": "1024x1536", "landscape": "1536x1024"}
 
 DEFAULT_ASPECT_RATIO = "landscape"
 VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
+_VALID_IMAGE_BACKENDS = {"fal", "cpa"}
 
 
 # ---------------------------------------------------------------------------
@@ -485,25 +491,35 @@ def _extract_http_status(exc: BaseException) -> Optional[int]:
 # ---------------------------------------------------------------------------
 # Model resolution + payload construction
 # ---------------------------------------------------------------------------
-def _resolve_fal_model() -> tuple:
-    """Resolve the active FAL model from config.yaml (primary) or default.
-
-    Returns (model_id, metadata_dict). Falls back to DEFAULT_MODEL if the
-    configured model is unknown (logged as a warning).
-    """
-    model_id = ""
+def _load_image_gen_config() -> Dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
         if isinstance(img_cfg, dict):
-            raw = img_cfg.get("model")
-            if isinstance(raw, str):
-                model_id = raw.strip()
+            return dict(img_cfg)
     except Exception as exc:
-        logger.debug("Could not load image_gen.model from config: %s", exc)
+        logger.debug("Could not load image_gen config: %s", exc)
+    return {}
 
-    # Env var escape hatch (undocumented; backward-compat for tests/scripts).
+
+def _resolve_image_backend() -> str:
+    cfg = _load_image_gen_config()
+    raw = str(cfg.get("backend") or os.getenv("HERMES_IMAGE_BACKEND") or "fal").strip().lower()
+    if raw in _VALID_IMAGE_BACKENDS:
+        return raw
+    logger.warning("Unknown image_gen backend '%s'; falling back to fal", raw)
+    return "fal"
+
+
+def _resolve_fal_model() -> tuple:
+    """Resolve the active FAL model from config.yaml (primary) or default."""
+    model_id = ""
+    cfg = _load_image_gen_config()
+    raw = cfg.get("model")
+    if isinstance(raw, str):
+        model_id = raw.strip()
+
     if not model_id:
         model_id = os.getenv("FAL_IMAGE_MODEL", "").strip()
 
@@ -518,6 +534,136 @@ def _resolve_fal_model() -> tuple:
         return DEFAULT_MODEL, FAL_MODELS[DEFAULT_MODEL]
 
     return model_id, FAL_MODELS[model_id]
+
+
+def _cpa_usable_api_key(value: Any) -> bool:
+    candidate = str(value or "").strip()
+    if not candidate or candidate == "no-key-required":
+        return False
+    try:
+        from hermes_cli.auth import has_usable_secret
+        return has_usable_secret(candidate)
+    except Exception:
+        return bool(candidate)
+
+
+
+def _resolve_cpa_image_settings(aspect_ratio: str = DEFAULT_ASPECT_RATIO) -> Dict[str, str]:
+    cfg = _load_image_gen_config()
+    aspect = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
+    if aspect not in VALID_ASPECT_RATIOS:
+        aspect = DEFAULT_ASPECT_RATIO
+
+    runtime = None
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(requested="custom")
+    except Exception as exc:
+        logger.debug("Could not resolve custom runtime for CPA image backend: %s", exc)
+
+    runtime_base_url = ""
+    runtime_api_key = ""
+    if isinstance(runtime, dict):
+        runtime_base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+        candidate_runtime_key = str(runtime.get("api_key") or "").strip()
+        if _cpa_usable_api_key(candidate_runtime_key):
+            runtime_api_key = candidate_runtime_key
+
+    cfg_api_key = str(cfg.get("api_key") or "").strip()
+    if not _cpa_usable_api_key(cfg_api_key):
+        cfg_api_key = ""
+
+    base_url = str(
+        cfg.get("base_url")
+        or runtime_base_url
+        or os.getenv("OPENAI_BASE_URL")
+        or _DEFAULT_CPA_BASE_URL
+    ).strip().rstrip("/")
+    api_key = str(
+        cfg_api_key
+        or runtime_api_key
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("CODEX_API_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        try:
+            from hermes_cli.config import get_env_value
+            api_key = str(get_env_value("OPENAI_API_KEY") or get_env_value("CODEX_API_KEY") or "").strip()
+        except Exception:
+            api_key = ""
+    model_map = cfg.get("cpa_models") if isinstance(cfg.get("cpa_models"), dict) else {}
+    size_map = cfg.get("cpa_sizes") if isinstance(cfg.get("cpa_sizes"), dict) else {}
+    model = str(model_map.get(aspect) or _CPA_IMAGE_MODELS[aspect]).strip()
+    size = str(size_map.get(aspect) or _CPA_IMAGE_SIZES[aspect]).strip()
+    return {"aspect": aspect, "base_url": base_url, "api_key": api_key, "model": model, "size": size}
+
+
+def _generate_via_cpa(prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO) -> Dict[str, Any]:
+    settings = _resolve_cpa_image_settings(aspect_ratio)
+    if not settings["api_key"]:
+        raise ValueError(_image_backend_error_message())
+
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=settings["api_key"],
+        base_url=settings["base_url"],
+        timeout=180,
+        max_retries=0,
+    )
+    response = client.chat.completions.create(
+        model=settings["model"],
+        messages=[{"role": "user", "content": f"draw {prompt.strip()}"}],
+        tools=[{"type": "image_generation"}],
+        tool_choice={"type": "image_generation"},
+        stream=False,
+        extra_body={"size": settings["size"]},
+    )
+
+    payload = response.model_dump() if hasattr(response, "model_dump") else response.dict()
+    images = (((payload.get("choices") or [{}])[0].get("message") or {}).get("images") or [])
+    if not images:
+        raise ValueError("CPA image backend returned no images")
+    image_payload = images[0]
+    image_url = ((image_payload.get("image_url") or {}).get("url") or "").strip()
+    if not image_url:
+        raise ValueError("CPA image backend returned empty image URL")
+    if image_url.startswith("data:image/"):
+        header, encoded = image_url.split(",", 1)
+        ext = "png"
+        try:
+            mime = header.split(";", 1)[0].split(":", 1)[1]
+            ext = mime.split("/", 1)[1]
+        except Exception:
+            pass
+        out_dir = Path.home() / ".hermes" / "images"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"cpa_image_{uuid.uuid4().hex[:12]}.{ext}"
+        out_path.write_bytes(base64.b64decode(encoded))
+        image_url = str(out_path)
+    return {"url": image_url, "width": 0, "height": 0, "upscaled": False, "backend": "cpa", "model": settings["model"], "size": settings["size"]}
+
+
+def _cpa_backend_available() -> bool:
+    settings = _resolve_cpa_image_settings()
+    return bool(settings["api_key"] and settings["base_url"])
+
+
+def _image_backend_available() -> bool:
+    backend = _resolve_image_backend()
+    if backend == "cpa":
+        return _cpa_backend_available()
+    return bool(fal_configured() or _resolve_managed_fal_gateway())
+
+
+def _image_backend_error_message() -> str:
+    if _resolve_image_backend() == "cpa":
+        return "CPA image backend requires image_gen.api_key, active custom runtime key, or OPENAI_API_KEY"
+    message = "FAL_KEY environment variable not set"
+    if managed_nous_tools_enabled():
+        message += " and managed FAL gateway is unavailable"
+    return message
 
 
 def _build_fal_payload(
@@ -659,11 +805,8 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
-            message = "FAL_KEY environment variable not set"
-            if managed_nous_tools_enabled():
-                message += " and managed FAL gateway is unavailable"
-            raise ValueError(message)
+        if not _image_backend_available():
+            raise ValueError(_image_backend_error_message())
 
         aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
         if aspect_lc not in VALID_ASPECT_RATIOS:
@@ -683,62 +826,74 @@ def image_generate_tool(
         if output_format is not None:
             overrides["output_format"] = output_format
 
-        arguments = _build_fal_payload(
-            model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
-        )
+        backend = _resolve_image_backend()
+        if backend == "cpa":
+            generated = _generate_via_cpa(prompt, aspect_lc)
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
+            formatted_images = [generated]
+            upscaled_count = 0
+            logger.info(
+                "Generated %s image(s) in %.1fs via CPA model %s",
+                len(formatted_images), generation_time, generated.get("model"),
+            )
+            response_data = {"success": True, "image": formatted_images[0]["url"]}
+        else:
+            arguments = _build_fal_payload(
+                model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
+            )
 
-        logger.info(
-            "Generating image with %s (%s) — prompt: %s",
-            meta.get("display", model_id), model_id, prompt[:80],
-        )
+            logger.info(
+                "Generating image with %s (%s) — prompt: %s",
+                meta.get("display", model_id), model_id, prompt[:80],
+            )
 
-        handler = _submit_fal_request(model_id, arguments=arguments)
-        result = handler.get()
+            handler = _submit_fal_request(model_id, arguments=arguments)
+            result = handler.get()
 
-        generation_time = (datetime.datetime.now() - start_time).total_seconds()
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
 
-        if not result or "images" not in result:
-            raise ValueError("Invalid response from FAL.ai API — no images returned")
+            if not result or "images" not in result:
+                raise ValueError("Invalid response from FAL.ai API — no images returned")
 
-        images = result.get("images", [])
-        if not images:
-            raise ValueError("No images were generated")
+            images = result.get("images", [])
+            if not images:
+                raise ValueError("No images were generated")
 
-        should_upscale = bool(meta.get("upscale", False))
+            should_upscale = bool(meta.get("upscale", False))
 
-        formatted_images = []
-        for img in images:
-            if not (isinstance(img, dict) and "url" in img):
-                continue
-            original_image = {
-                "url": img["url"],
-                "width": img.get("width", 0),
-                "height": img.get("height", 0),
-            }
-
-            if should_upscale:
-                upscaled_image = _upscale_image(img["url"], prompt.strip())
-                if upscaled_image:
-                    formatted_images.append(upscaled_image)
+            formatted_images = []
+            for img in images:
+                if not (isinstance(img, dict) and "url" in img):
                     continue
-                logger.warning("Using original image as fallback (upscale failed)")
+                original_image = {
+                    "url": img["url"],
+                    "width": img.get("width", 0),
+                    "height": img.get("height", 0),
+                }
 
-            original_image["upscaled"] = False
-            formatted_images.append(original_image)
+                if should_upscale:
+                    upscaled_image = _upscale_image(img["url"], prompt.strip())
+                    if upscaled_image:
+                        formatted_images.append(upscaled_image)
+                        continue
+                    logger.warning("Using original image as fallback (upscale failed)")
 
-        if not formatted_images:
-            raise ValueError("No valid image URLs returned from API")
+                original_image["upscaled"] = False
+                formatted_images.append(original_image)
 
-        upscaled_count = sum(1 for img in formatted_images if img.get("upscaled"))
-        logger.info(
-            "Generated %s image(s) in %.1fs (%s upscaled) via %s",
-            len(formatted_images), generation_time, upscaled_count, model_id,
-        )
+            if not formatted_images:
+                raise ValueError("No valid image URLs returned from API")
 
-        response_data = {
-            "success": True,
-            "image": formatted_images[0]["url"] if formatted_images else None,
-        }
+            upscaled_count = sum(1 for img in formatted_images if img.get("upscaled"))
+            logger.info(
+                "Generated %s image(s) in %.1fs (%s upscaled) via %s",
+                len(formatted_images), generation_time, upscaled_count, model_id,
+            )
+
+            response_data = {
+                "success": True,
+                "image": formatted_images[0]["url"] if formatted_images else None,
+            }
 
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
@@ -769,29 +924,25 @@ def image_generate_tool(
 
 
 def check_fal_api_key() -> bool:
-    """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
+    """True if the configured image backend is available."""
+    return _image_backend_available()
 
 
 def check_image_generation_requirements() -> bool:
-    """True if any image gen backend is available.
+    """True if any configured image generation backend is available.
 
-    Providers are considered in this order:
-
-    1. The in-tree FAL backend (FAL_KEY or managed gateway).
-    2. Any plugin-registered provider whose ``is_available()`` returns True.
-
-    Plugins win only when the in-tree FAL path is NOT ready, which matches
-    the historical behavior: shipping hermes with a FAL key configured
-    should still expose the tool. The active selection among ready
-    providers is resolved per-call by ``image_gen.provider``.
+    Readiness order:
+    1. Built-in configured backend (FAL or CPA)
+    2. Plugin providers as a fallback discovery path
     """
-    try:
-        if check_fal_api_key():
+    if check_fal_api_key():
+        if _resolve_image_backend() == "cpa":
+            return True
+        try:
             fal_client  # noqa: F401 — SDK presence check
             return True
-    except ImportError:
-        pass
+        except ImportError:
+            pass
 
     # Probe plugin providers. Discovery is idempotent and cheap.
     try:

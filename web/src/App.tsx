@@ -22,7 +22,7 @@ import {
   Code,
   Eye,
 } from "lucide-react";
-import { Cell, Grid, SelectionSwitcher, Typography } from "@nous-research/ui";
+import { SelectionSwitcher } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import StatusPage from "@/pages/StatusPage";
@@ -35,6 +35,7 @@ import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
+import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { useI18n } from "@/i18n";
 import { usePlugins } from "@/plugins";
 import type { RegisteredPlugin } from "@/plugins";
@@ -133,101 +134,56 @@ export default function App() {
   );
 
   return (
-    <div className="text-midground font-mondwest bg-black min-h-screen flex flex-col uppercase antialiased overflow-x-hidden">
+    <div className="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
       <SelectionSwitcher />
       <Backdrop />
 
-      <header
-        className={cn(
-          "fixed top-0 left-0 right-0 z-40",
-          "border-b border-current/20",
-          "bg-background-base/90 backdrop-blur-sm",
-        )}
-      >
-        <div className="mx-auto flex h-12 max-w-[1600px]">
-          <div className="min-w-0 flex-1 overflow-x-auto scrollbar-none">
-            <Grid
-              className="h-full !border-t-0 !border-b-0"
-              style={{
-                gridTemplateColumns: `auto repeat(${navItems.length}, auto)`,
-              }}
-            >
-              <Cell className="flex items-center !p-0 !px-3 sm:!px-5">
-                <Typography
-                  className="font-bold text-[1.0625rem] sm:text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-                  style={{ mixBlendMode: "plus-lighter" }}
-                >
-                  Hermes
-                  <br />
-                  Agent
-                </Typography>
-              </Cell>
-
-              {navItems.map(({ path, label, labelKey, icon: Icon }) => (
-                <Cell key={path} className="relative !p-0">
-                  <NavLink
-                    to={path}
-                    end={path === "/"}
-                    className={({ isActive }) =>
-                      cn(
-                        "group relative flex h-full w-full items-center gap-1.5",
-                        "px-2.5 sm:px-4 py-2",
-                        "font-mondwest text-[0.65rem] sm:text-[0.8rem] tracking-[0.12em]",
-                        "whitespace-nowrap transition-colors cursor-pointer",
-                        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                        isActive
-                          ? "text-midground"
-                          : "opacity-60 hover:opacity-100",
-                      )
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <Icon className="h-3.5 w-3.5 shrink-0" />
-                        <span className="hidden sm:inline">
-                          {labelKey
-                            ? ((t.app.nav as Record<string, string>)[
-                                labelKey
-                              ] ?? label)
-                            : label}
-                        </span>
-
-                        <span
-                          aria-hidden
-                          className="absolute inset-1 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                        />
-
-                        {isActive && (
-                          <span
-                            aria-hidden
-                            className="absolute bottom-0 left-0 right-0 h-px bg-midground"
-                            style={{ mixBlendMode: "plus-lighter" }}
-                          />
-                        )}
-                      </>
-                    )}
-                  </NavLink>
-                </Cell>
-              ))}
-            </Grid>
+      <header className="fixed inset-x-0 top-0 z-40 border-b border-border/80 bg-background/92 backdrop-blur-xl">
+        <div className="mx-auto flex h-14 max-w-[1600px] items-center gap-3 px-3 sm:h-16 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3 pr-1 sm:pr-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-card shadow-sm">
+              <Sparkles className="h-4 w-4 text-primary" />
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold tracking-tight sm:text-base">Hermes Agent</div>
+              <div className="hidden text-xs text-muted-foreground sm:block">{t.app.webUi}</div>
+            </div>
           </div>
 
-          <Grid className="h-full shrink-0 !border-t-0 !border-b-0">
-            <Cell className="flex items-center gap-2 !p-0 !px-2 sm:!px-4">
-              <ThemeSwitcher />
-              <LanguageSwitcher />
-              <Typography
-                mondwest
-                className="hidden sm:inline text-[0.7rem] tracking-[0.15em] opacity-50"
-              >
-                {t.app.webUi}
-              </Typography>
-            </Cell>
-          </Grid>
+          <div className="min-w-0 flex-1 overflow-x-auto scrollbar-none">
+            <nav className="flex min-w-max items-center gap-1 py-2">
+              {navItems.map(({ path, label, labelKey, icon: Icon }) => (
+                <NavLink
+                  key={path}
+                  to={path}
+                  end={path === "/"}
+                  className={({ isActive }) =>
+                    cn(
+                      "flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-medium transition-colors",
+                      "whitespace-nowrap border border-transparent",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                      isActive
+                        ? "border-border bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                    )
+                  }
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span>{labelKey ? ((t.app.nav as Record<string, string>)[labelKey] ?? label) : label}</span>
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+            <ProfileSwitcher />
+            <ThemeSwitcher />
+            <LanguageSwitcher />
+          </div>
         </div>
       </header>
 
-      <main className="relative z-2 mx-auto w-full max-w-[1600px] flex-1 px-3 sm:px-6 pt-16 sm:pt-20 pb-4 sm:pb-8">
+      <main className="relative z-10 mx-auto w-full max-w-[1600px] px-3 pb-6 pt-20 sm:px-6 sm:pb-8 sm:pt-24">
         <Routes>
           <Route path="/" element={<StatusPage />} />
           <Route path="/sessions" element={<SessionsPage />} />
@@ -250,26 +206,11 @@ export default function App() {
         </Routes>
       </main>
 
-      <footer className="relative z-2 border-t border-current/20">
-        <Grid className="mx-auto max-w-[1600px] !border-t-0 !border-b-0">
-          <Cell className="flex items-center !px-3 sm:!px-6 !py-3">
-            <Typography
-              mondwest
-              className="text-[0.7rem] sm:text-[0.8rem] tracking-[0.12em] opacity-60"
-            >
-              {t.app.footer.name}
-            </Typography>
-          </Cell>
-          <Cell className="flex items-center justify-end !px-3 sm:!px-6 !py-3">
-            <Typography
-              mondwest
-              className="text-[0.6rem] sm:text-[0.7rem] tracking-[0.15em] text-midground"
-              style={{ mixBlendMode: "plus-lighter" }}
-            >
-              {t.app.footer.org}
-            </Typography>
-          </Cell>
-        </Grid>
+      <footer className="relative z-10 border-t border-border/80 bg-background/70">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3 px-3 py-4 text-xs text-muted-foreground sm:px-6">
+          <span>{t.app.footer.name} · v0.6</span>
+          <span className="hidden sm:inline">{t.app.footer.org}</span>
+        </div>
       </footer>
     </div>
   );

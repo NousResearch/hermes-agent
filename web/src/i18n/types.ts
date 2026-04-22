@@ -136,6 +136,9 @@ export interface Translations {
     lastUsed: string;
     input: string;
     output: string;
+    cacheRead: string;
+    cacheWrite: string;
+    reasoning: string;
     total: string;
     noUsageData: string;
     startSession: string;

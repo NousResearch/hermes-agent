@@ -29,6 +29,12 @@ class TestGatewayPidState:
         import pytest
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status.sys, "argv", ["python", "-m", "hermes_cli.main", "gateway", "run"])
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "python -m hermes_cli.main gateway run",
+        )
 
         # First write wins.
         status.write_pid_file()
@@ -42,6 +48,30 @@ class TestGatewayPidState:
         # Original record is preserved.
         payload = json.loads((tmp_path / "gateway.pid").read_text())
         assert payload["pid"] == os.getpid()
+
+    def test_write_pid_file_replaces_stale_pid_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": 424242,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 111,
+        }))
+
+        kill_calls: list[tuple[int, int]] = []
+
+        def _mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
+            raise ProcessLookupError
+
+        monkeypatch.setattr(status.os, "kill", _mock_kill)
+
+        status.write_pid_file()
+
+        payload = json.loads(pid_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert kill_calls == [(424242, 0)]
 
     def test_get_running_pid_rejects_live_non_gateway_pid(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

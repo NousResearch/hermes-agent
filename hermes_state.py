@@ -31,6 +31,11 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
+
+def get_default_db_path() -> Path:
+    """Resolve the default state DB path at call time, not import time."""
+    return get_hermes_home() / "state.db"
+
 SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
@@ -143,7 +148,7 @@ class SessionDB:
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or get_default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.Lock()

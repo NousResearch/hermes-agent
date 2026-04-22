@@ -17,11 +17,11 @@ export const defaultTheme: DashboardTheme = {
   label: "Hermes Teal",
   description: "Classic dark teal — the canonical Hermes look",
   palette: {
-    background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 189, 56, 0.35)",
-    noiseOpacity: 1,
+    background: { hex: "#0f172a", alpha: 1 },
+    midground: { hex: "#e2e8f0", alpha: 1 },
+    foreground: { hex: "#f8fafc", alpha: 1 },
+    warmGlow: "rgba(59, 130, 246, 0.16)",
+    noiseOpacity: 0.12,
   },
 };
 
@@ -32,7 +32,7 @@ export const midnightTheme: DashboardTheme = {
   palette: {
     background: { hex: "#0a0a1f", alpha: 1 },
     midground: { hex: "#d4c8ff", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
+    foreground: { hex: "#f8fafc", alpha: 1 },
     warmGlow: "rgba(167, 139, 250, 0.32)",
     noiseOpacity: 0.8,
   },
@@ -45,7 +45,7 @@ export const emberTheme: DashboardTheme = {
   palette: {
     background: { hex: "#1a0a06", alpha: 1 },
     midground: { hex: "#ffd8b0", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
+    foreground: { hex: "#f8fafc", alpha: 1 },
     warmGlow: "rgba(249, 115, 22, 0.38)",
     noiseOpacity: 1,
   },
@@ -56,11 +56,11 @@ export const monoTheme: DashboardTheme = {
   label: "Mono",
   description: "Clean grayscale — minimal and focused",
   palette: {
-    background: { hex: "#0e0e0e", alpha: 1 },
-    midground: { hex: "#eaeaea", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 255, 255, 0.1)",
-    noiseOpacity: 0.6,
+    background: { hex: "#111827", alpha: 1 },
+    midground: { hex: "#d1d5db", alpha: 1 },
+    foreground: { hex: "#f9fafb", alpha: 1 },
+    warmGlow: "rgba(148, 163, 184, 0.12)",
+    noiseOpacity: 0.08,
   },
 };
 
@@ -71,7 +71,7 @@ export const cyberpunkTheme: DashboardTheme = {
   palette: {
     background: { hex: "#040608", alpha: 1 },
     midground: { hex: "#9bffcf", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
+    foreground: { hex: "#f8fafc", alpha: 1 },
     warmGlow: "rgba(0, 255, 136, 0.22)",
     noiseOpacity: 1.2,
   },
@@ -84,7 +84,7 @@ export const roseTheme: DashboardTheme = {
   palette: {
     background: { hex: "#1a0f15", alpha: 1 },
     midground: { hex: "#ffd4e1", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
+    foreground: { hex: "#f8fafc", alpha: 1 },
     warmGlow: "rgba(249, 168, 212, 0.3)",
     noiseOpacity: 0.9,
   },

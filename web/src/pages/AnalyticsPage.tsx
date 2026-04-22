@@ -21,10 +21,84 @@ const PERIODS = [
 
 const CHART_HEIGHT_PX = 160;
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+function toSafeNumber(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatTokens(n: unknown): string {
+  const value = toSafeNumber(n);
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
+}
+
+function entryTotalTokens(entry: Pick<AnalyticsDailyEntry, "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens" | "reasoning_tokens">): number {
+  return (
+    toSafeNumber(entry.input_tokens) +
+    toSafeNumber(entry.output_tokens) +
+    toSafeNumber(entry.cache_read_tokens) +
+    toSafeNumber(entry.cache_write_tokens) +
+    toSafeNumber(entry.reasoning_tokens)
+  );
+}
+
+function totalsGrandTotal(totals: AnalyticsResponse["totals"]): number {
+  return (
+    toSafeNumber(totals.total_input) +
+    toSafeNumber(totals.total_output) +
+    toSafeNumber(totals.total_cache_read) +
+    toSafeNumber(totals.total_cache_write) +
+    toSafeNumber(totals.total_reasoning)
+  );
+}
+
+function normalizeAnalytics(data: AnalyticsResponse): AnalyticsResponse {
+  return {
+    ...data,
+    daily: (data.daily ?? []).map((entry) => ({
+      ...entry,
+      input_tokens: toSafeNumber(entry.input_tokens),
+      output_tokens: toSafeNumber(entry.output_tokens),
+      cache_read_tokens: toSafeNumber(entry.cache_read_tokens),
+      cache_write_tokens: toSafeNumber(entry.cache_write_tokens),
+      reasoning_tokens: toSafeNumber(entry.reasoning_tokens),
+      estimated_cost: toSafeNumber(entry.estimated_cost),
+      actual_cost: toSafeNumber(entry.actual_cost),
+      sessions: toSafeNumber(entry.sessions),
+    })),
+    by_model: (data.by_model ?? []).map((entry) => ({
+      ...entry,
+      input_tokens: toSafeNumber(entry.input_tokens),
+      output_tokens: toSafeNumber(entry.output_tokens),
+      cache_read_tokens: toSafeNumber(entry.cache_read_tokens),
+      cache_write_tokens: toSafeNumber(entry.cache_write_tokens),
+      reasoning_tokens: toSafeNumber(entry.reasoning_tokens),
+      estimated_cost: toSafeNumber(entry.estimated_cost),
+      sessions: toSafeNumber(entry.sessions),
+    })),
+    totals: {
+      ...data.totals,
+      total_input: toSafeNumber(data.totals?.total_input),
+      total_output: toSafeNumber(data.totals?.total_output),
+      total_cache_read: toSafeNumber(data.totals?.total_cache_read),
+      total_cache_write: toSafeNumber(data.totals?.total_cache_write),
+      total_reasoning: toSafeNumber(data.totals?.total_reasoning),
+      total_estimated_cost: toSafeNumber(data.totals?.total_estimated_cost),
+      total_actual_cost: toSafeNumber(data.totals?.total_actual_cost),
+      total_sessions: toSafeNumber(data.totals?.total_sessions),
+    },
+  };
+}
+
+function totalsBreakdownLabel(t: ReturnType<typeof useI18n>["t"], totals: AnalyticsResponse["totals"]): string {
+  return [
+    `${t.analytics.input} ${formatTokens(totals.total_input)}`,
+    `${t.analytics.output} ${formatTokens(totals.total_output)}`,
+    `${t.analytics.cacheRead} ${formatTokens(totals.total_cache_read)}`,
+    `${t.analytics.cacheWrite} ${formatTokens(totals.total_cache_write)}`,
+    `${t.analytics.reasoning} ${formatTokens(totals.total_reasoning)}`,
+  ].join(" · ");
 }
 
 function formatDate(day: string): string {
@@ -65,7 +139,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
   const { t } = useI18n();
   if (daily.length === 0) return null;
 
-  const maxTokens = Math.max(...daily.map((d) => d.input_tokens + d.output_tokens), 1);
+  const maxTokens = Math.max(...daily.map((d) => entryTotalTokens(d)), 1);
 
   return (
     <Card>
@@ -83,14 +157,29 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
             <div className="h-2.5 w-2.5 bg-emerald-500" />
             {t.analytics.output}
           </div>
+          <div className="flex items-center gap-1.5">
+            <div className="h-2.5 w-2.5 bg-sky-400" />
+            {t.analytics.cacheRead}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="h-2.5 w-2.5 bg-violet-400" />
+            {t.analytics.cacheWrite}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="h-2.5 w-2.5 bg-amber-400" />
+            {t.analytics.reasoning}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
         <div className="flex items-end gap-[2px]" style={{ height: CHART_HEIGHT_PX }}>
           {daily.map((d) => {
-            const total = d.input_tokens + d.output_tokens;
+            const total = entryTotalTokens(d);
             const inputH = Math.round((d.input_tokens / maxTokens) * CHART_HEIGHT_PX);
             const outputH = Math.round((d.output_tokens / maxTokens) * CHART_HEIGHT_PX);
+            const cacheReadH = Math.round((d.cache_read_tokens / maxTokens) * CHART_HEIGHT_PX);
+            const cacheWriteH = Math.round((d.cache_write_tokens / maxTokens) * CHART_HEIGHT_PX);
+            const reasoningH = Math.round((d.reasoning_tokens / maxTokens) * CHART_HEIGHT_PX);
             return (
               <div
                 key={d.day}
@@ -103,6 +192,9 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>{t.analytics.input}: {formatTokens(d.input_tokens)}</div>
                     <div>{t.analytics.output}: {formatTokens(d.output_tokens)}</div>
+                    <div>{t.analytics.cacheRead}: {formatTokens(d.cache_read_tokens)}</div>
+                    <div>{t.analytics.cacheWrite}: {formatTokens(d.cache_write_tokens)}</div>
+                    <div>{t.analytics.reasoning}: {formatTokens(d.reasoning_tokens)}</div>
                     <div>{t.analytics.total}: {formatTokens(total)}</div>
                   </div>
                 </div>
@@ -115,6 +207,21 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <div
                   className="w-full bg-emerald-500/70"
                   style={{ height: Math.max(outputH, d.output_tokens > 0 ? 1 : 0) }}
+                />
+                {/* Cache read bar */}
+                <div
+                  className="w-full bg-sky-400/70"
+                  style={{ height: Math.max(cacheReadH, d.cache_read_tokens > 0 ? 1 : 0) }}
+                />
+                {/* Cache write bar */}
+                <div
+                  className="w-full bg-violet-400/70"
+                  style={{ height: Math.max(cacheWriteH, d.cache_write_tokens > 0 ? 1 : 0) }}
+                />
+                {/* Reasoning bar */}
+                <div
+                  className="w-full bg-amber-400/70"
+                  style={{ height: Math.max(reasoningH, d.reasoning_tokens > 0 ? 1 : 0) }}
                 />
               </div>
             );
@@ -215,9 +322,12 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                   </td>
                   <td className="text-right py-2 px-4 text-muted-foreground">{m.sessions}</td>
                   <td className="text-right py-2 pl-4">
-                    <span className="text-[#ffe6cb]">{formatTokens(m.input_tokens)}</span>
-                    {" / "}
-                    <span className="text-emerald-400">{formatTokens(m.output_tokens)}</span>
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span>{formatTokens(entryTotalTokens(m))}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {t.analytics.input} {formatTokens(m.input_tokens)} · {t.analytics.output} {formatTokens(m.output_tokens)} · {t.analytics.cacheRead} {formatTokens(m.cache_read_tokens)} · {t.analytics.cacheWrite} {formatTokens(m.cache_write_tokens)} · {t.analytics.reasoning} {formatTokens(m.reasoning_tokens)}
+                      </span>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -287,7 +397,7 @@ export default function AnalyticsPage() {
     setError(null);
     api
       .getAnalytics(days)
-      .then(setData)
+      .then((resp) => setData(normalizeAnalytics(resp)))
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   }, [days]);
@@ -335,8 +445,8 @@ export default function AnalyticsPage() {
             <SummaryCard
               icon={Hash}
               label={t.analytics.totalTokens}
-              value={formatTokens(data.totals.total_input + data.totals.total_output)}
-              sub={t.analytics.inOut.replace("{input}", formatTokens(data.totals.total_input)).replace("{output}", formatTokens(data.totals.total_output))}
+              value={formatTokens(totalsGrandTotal(data.totals))}
+              sub={totalsBreakdownLabel(t, data.totals)}
             />
             <SummaryCard
               icon={BarChart3}

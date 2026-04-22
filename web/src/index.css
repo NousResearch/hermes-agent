@@ -13,28 +13,23 @@
 /* ------------------------------------------------------------------ */
 
 :root {
-  /* LENS_0 — from design-language/src/ui/components/overlays/index.tsx.
-     These are the defaults for the `default` (Hermes Teal) dashboard theme;
-     ThemeProvider rewrites them as inline styles when a user switches themes. */
-  --foreground: color-mix(in srgb, #ffffff 0%, transparent);
-  --foreground-base: #ffffff;
-  --foreground-alpha: 0;
-  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
-  --midground-base: #ffe6cb;
+  --foreground: color-mix(in srgb, #f8fafc 100%, transparent);
+  --foreground-base: #f8fafc;
+  --foreground-alpha: 1;
+  --midground: color-mix(in srgb, #e2e8f0 100%, transparent);
+  --midground-base: #e2e8f0;
   --midground-alpha: 1;
-  --background: color-mix(in srgb, #041c1c 100%, transparent);
-  --background-base: #041c1c;
+  --background: color-mix(in srgb, #0f172a 100%, transparent);
+  --background-base: #0f172a;
   --background-alpha: 1;
-
-  /* Consumed by <Backdrop />; also theme-switchable. */
-  --warm-glow: rgba(255, 189, 56, 0.35);
-  --noise-opacity-mul: 1;
+  --warm-glow: rgba(59, 130, 246, 0.16);
+  --noise-opacity-mul: 0.12;
 }
 
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
    dashboard sizes. Keep in sync. */
-small { font-size: 1.0625rem; }
-code { font-size: 0.875rem; }
+small { font-size: 0.875rem; }
+code { font-size: 0.8125rem; }
 
 /* Shadcn-compat tokens.
    The dashboard's page code predates the Nous DS and uses shadcn-style
@@ -42,29 +37,27 @@ code { font-size: 0.875rem; }
    extensively. Rather than rewrite every call site, we expose those
    tokens on top of the Nous palette so classes continue to resolve. */
 @theme inline {
-  /* Remap foreground to midground so `text-foreground` / `bg-foreground`
-     stay visible — in LENS_0, `--foreground` itself has alpha 0. */
-  --color-foreground: var(--midground);
+  --color-foreground: var(--foreground);
 
-  --color-card: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
-  --color-card-foreground: var(--midground);
-  --color-primary: var(--midground);
-  --color-primary-foreground: var(--background-base);
-  --color-secondary: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
-  --color-secondary-foreground: var(--midground);
-  --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
-  --color-muted-foreground: color-mix(in srgb, var(--midground-base) 55%, transparent);
-  --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
-  --color-accent-foreground: var(--midground);
-  --color-destructive: #fb2c36;
+  --color-card: color-mix(in srgb, var(--background-base) 88%, white 12%);
+  --color-card-foreground: var(--foreground);
+  --color-primary: #60a5fa;
+  --color-primary-foreground: #08111f;
+  --color-secondary: color-mix(in srgb, var(--background-base) 78%, white 22%);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: color-mix(in srgb, var(--background-base) 84%, white 16%);
+  --color-muted-foreground: color-mix(in srgb, var(--foreground-base) 62%, transparent);
+  --color-accent: color-mix(in srgb, var(--background-base) 74%, white 26%);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: #ef4444;
   --color-destructive-foreground: #ffffff;
-  --color-success: #4ade80;
-  --color-warning: #ffbd38;
-  --color-border: color-mix(in srgb, var(--midground-base) 15%, transparent);
-  --color-input: color-mix(in srgb, var(--midground-base) 15%, transparent);
-  --color-ring: var(--midground);
-  --color-popover: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
-  --color-popover-foreground: var(--midground);
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-border: color-mix(in srgb, var(--foreground-base) 12%, transparent);
+  --color-input: color-mix(in srgb, var(--foreground-base) 12%, transparent);
+  --color-ring: #60a5fa;
+  --color-popover: color-mix(in srgb, var(--background-base) 92%, white 8%);
+  --color-popover-foreground: var(--foreground);
 }
 
 
@@ -87,29 +80,17 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
-/* Plus-lighter blend used by logos/titles for a subtle glow. */
-.blend-lighter {
-  mix-blend-mode: plus-lighter;
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
-/* System UI-monospace stack — distinct from `font-courier` (Courier
-   Prime), used for dense data readouts where the display font would
-   break the grid. */
+#root {
+  min-height: 100vh;
+}
+
 .font-mono-ui {
-  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
-}
-
-/* Subtle grain overlay for badges. */
-.grain {
-  position: relative;
-}
-.grain::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  opacity: 0.12;
-  pointer-events: none;
-  background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 /
-    2px 2px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
 }
 

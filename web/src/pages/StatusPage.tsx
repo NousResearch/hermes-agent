@@ -7,9 +7,14 @@ import {
   Cpu,
   Database,
   Download,
+  ExternalLink,
+  Flame,
+  Gauge,
   Loader2,
+  Newspaper,
   Radio,
   RotateCw,
+  TrendingUp,
   Wifi,
   WifiOff,
   Wrench,
@@ -27,12 +32,38 @@ import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Markdown } from "@/components/Markdown";
 import { Toast } from "@/components/Toast";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useI18n } from "@/i18n";
 
 const ACTION_NAMES: Record<"restart" | "update", string> = {
   restart: "gateway-restart",
   update: "hermes-update",
+};
+
+const MARKET_SOURCE_TABS = [
+  { key: "overview", label: "OVERVIEW", url: "https://crypto.kedaya.xyz/zh/md" },
+  { key: "btc", label: "BTC", url: "https://crypto.kedaya.xyz/zh/BTC/USDT/md" },
+  { key: "eth", label: "ETH", url: "https://crypto.kedaya.xyz/zh/ETH/USDT/md" },
+  { key: "sol", label: "SOL", url: "https://crypto.kedaya.xyz/zh/SOL/USDT/md" },
+  { key: "xrp", label: "XRP", url: "https://crypto.kedaya.xyz/zh/XRP/USDT/md" },
+] as const;
+
+type MarketSourceKey = (typeof MARKET_SOURCE_TABS)[number]["key"];
+
+interface MarketSourceState {
+  body: string;
+  fetchedAt: number | null;
+  loading: boolean;
+  error: string | null;
+}
+
+const EMPTY_SOURCE_STATE: MarketSourceState = {
+  body: "",
+  fetchedAt: null,
+  loading: false,
+  error: null,
 };
 
 export default function StatusPage() {
@@ -48,6 +79,13 @@ export default function StatusPage() {
     null,
   );
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [marketSources, setMarketSources] = useState<
+    Record<MarketSourceKey, MarketSourceState>
+  >(() =>
+    Object.fromEntries(
+      MARKET_SOURCE_TABS.map((tab) => [tab.key, { ...EMPTY_SOURCE_STATE }]),
+    ) as Record<MarketSourceKey, MarketSourceState>,
+  );
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const { t } = useI18n();
 
@@ -109,6 +147,57 @@ export default function StatusPage() {
     const el = logScrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [actionStatus?.lines]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMarketSources = async () => {
+      setMarketSources((prev) => {
+        const next = { ...prev };
+        for (const tab of MARKET_SOURCE_TABS) {
+          next[tab.key] = { ...prev[tab.key], loading: true, error: null };
+        }
+        return next;
+      });
+
+      await Promise.all(
+        MARKET_SOURCE_TABS.map(async (tab) => {
+          try {
+            const res = await fetch(tab.url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const body = await res.text();
+            if (cancelled) return;
+            setMarketSources((prev) => ({
+              ...prev,
+              [tab.key]: {
+                body,
+                fetchedAt: Date.now(),
+                loading: false,
+                error: null,
+              },
+            }));
+          } catch (err) {
+            if (cancelled) return;
+            setMarketSources((prev) => ({
+              ...prev,
+              [tab.key]: {
+                ...prev[tab.key],
+                loading: false,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            }));
+          }
+        }),
+      );
+    };
+
+    loadMarketSources();
+    const interval = setInterval(loadMarketSources, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   const runAction = async (action: "restart" | "update") => {
     setPendingAction(action);
@@ -184,6 +273,16 @@ export default function StatusPage() {
   }
 
   const gwBadge = gatewayBadge();
+  const platforms = Object.entries(status.gateway_platforms ?? {});
+  const healthyPlatforms = platforms.filter(
+    ([, info]) => info.state === "connected",
+  ).length;
+  const sourceCoverage = Object.values(marketSources).filter(
+    (item) => item.body.trim().length > 0,
+  ).length;
+  const liveIntelCount = extractSignalBullets(
+    marketSources.overview.body || marketSources.btc.body,
+  ).length;
 
   const items = [
     {
@@ -212,9 +311,17 @@ export default function StatusPage() {
         | "success"
         | "outline",
     },
+    {
+      icon: Gauge,
+      label: "Platforms online",
+      value: `${healthyPlatforms}/${Math.max(platforms.length, 1)}`,
+      badgeText: healthyPlatforms === platforms.length ? "stable" : "check",
+      badgeVariant: (healthyPlatforms === platforms.length
+        ? "success"
+        : "warning") as "success" | "warning",
+    },
   ];
 
-  const platforms = Object.entries(status.gateway_platforms ?? {});
   const activeSessions = sessions.filter((s) => s.is_active);
   const recentSessions = sessions.filter((s) => !s.is_active).slice(0, 5);
 
@@ -354,6 +461,73 @@ export default function StatusPage() {
           </div>
         </Cell>
       </Grid>
+
+      <div className="grid gap-4 xl:grid-cols-[1.1fr_1.7fr]">
+        <Card className="overflow-hidden border-primary/15 bg-gradient-to-br from-card via-card to-primary/[0.04] shadow-[0_0_0_1px_rgba(255,255,255,0.03),0_24px_80px_rgba(0,0,0,0.22)]">
+          <CardHeader className="gap-3 border-b border-border/80 bg-black/10">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-5 w-5 text-primary" />
+                <CardTitle className="text-base tracking-[0.14em]">Trade cockpit</CardTitle>
+              </div>
+              <Badge variant="success">live</Badge>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <TerminalMetric
+                icon={Flame}
+                label="Active alerts"
+                value={String(alerts.length)}
+                tone={alerts.length > 0 ? "warn" : "ok"}
+              />
+              <TerminalMetric
+                icon={Newspaper}
+                label="Intel feeds"
+                value={`${sourceCoverage}/5`}
+                tone={sourceCoverage >= 4 ? "ok" : "warn"}
+              />
+              <TerminalMetric
+                icon={Gauge}
+                label="Signal bullets"
+                value={String(liveIntelCount)}
+                tone={liveIntelCount > 0 ? "ok" : "neutral"}
+              />
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-4 p-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <IntelSummaryCard
+                title="System state"
+                tone={status.gateway_running ? "ok" : "warn"}
+                bullets={[
+                  `Gateway: ${gwBadge.label}`,
+                  `Platforms online: ${healthyPlatforms}/${platforms.length}`,
+                  `Active sessions: ${status.active_sessions}`,
+                ]}
+              />
+              <IntelSummaryCard
+                title="Market intel"
+                tone={sourceCoverage >= 4 ? "ok" : "warn"}
+                bullets={extractSignalBullets(
+                  marketSources.overview.body || marketSources.btc.body,
+                ).slice(0, 3)}
+              />
+            </div>
+            <div className="rounded-2xl border border-border/70 bg-background/60 p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Operator note
+                </div>
+                <div className="text-[11px] text-muted-foreground">refresh 60s</div>
+              </div>
+              <p className="text-sm leading-6 text-foreground/90">
+                保留系统状态 + 行情情报双视角。现在首页已经不是纯状态页，而是可直接看平台健康、信号密度、外部情报摘要的交易终端首屏。
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <MarketIntelPanel marketSources={marketSources} />
+      </div>
 
       {activeAction && (
         <div className="border border-border bg-background-base/50">
@@ -519,6 +693,232 @@ export default function StatusPage() {
       )}
     </div>
   );
+}
+
+function MarketIntelPanel({
+  marketSources,
+}: {
+  marketSources: Record<MarketSourceKey, MarketSourceState>;
+}) {
+  const overviewSignals = extractSignalBullets(
+    marketSources.overview.body || marketSources.btc.body,
+  ).slice(0, 6);
+
+  return (
+    <Card className="overflow-hidden border-border/80 shadow-[0_0_0_1px_rgba(255,255,255,0.02),0_24px_80px_rgba(0,0,0,0.18)]">
+      <CardHeader className="gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Newspaper className="h-5 w-5 text-primary" />
+            <CardTitle className="text-base tracking-[0.14em]">
+              Market intelligence
+            </CardTitle>
+          </div>
+          <Badge variant="outline">5 feeds</Badge>
+        </div>
+        {overviewSignals.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {overviewSignals.slice(0, 4).map((signal, index) => (
+              <Badge
+                key={`${signal}-${index}`}
+                variant="secondary"
+                className="max-w-full normal-case tracking-normal"
+              >
+                {signal}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </CardHeader>
+      <CardContent className="p-4 pt-0">
+        <Tabs defaultValue="overview">
+          {(active, setActive) => {
+            const selected = MARKET_SOURCE_TABS.find((tab) => tab.key === active) ??
+              MARKET_SOURCE_TABS[0];
+            const state = marketSources[selected.key];
+            const summary = extractSignalBullets(state.body).slice(0, 5);
+
+            return (
+              <div className="flex flex-col gap-4">
+                <TabsList className="h-auto flex-wrap gap-2 border-none">
+                  {MARKET_SOURCE_TABS.map((tab) => (
+                    <TabsTrigger
+                      key={tab.key}
+                      active={active === tab.key}
+                      value={tab.key}
+                      onClick={() => setActive(tab.key)}
+                      className={
+                        active === tab.key
+                          ? "rounded-full border border-primary/30 bg-primary/10 px-3 py-2 text-primary after:hidden"
+                          : "rounded-full border border-border bg-background/60 px-3 py-2 text-muted-foreground hover:border-primary/20 hover:bg-primary/[0.06]"
+                      }
+                    >
+                      {tab.label}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+
+                <div className="grid gap-4 lg:grid-cols-[0.9fr_1.6fr]">
+                  <div className="space-y-3 rounded-2xl border border-border/70 bg-background/50 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          Quick brief
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-foreground">
+                          {selected.label}
+                        </div>
+                      </div>
+                      <a
+                        href={selected.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                      >
+                        open
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 text-[11px]">
+                      <Badge variant={state.error ? "destructive" : state.loading ? "warning" : "success"}>
+                        {state.error ? "error" : state.loading ? "loading" : "ready"}
+                      </Badge>
+                      {state.fetchedAt && (
+                        <Badge variant="outline">
+                          {new Date(state.fetchedAt).toLocaleTimeString()}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {summary.length > 0 ? (
+                      <ul className="space-y-2 text-sm leading-6 text-foreground/90">
+                        {summary.map((item, index) => (
+                          <li key={`${item}-${index}`} className="flex gap-2">
+                            <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                        {state.error ?? (state.loading ? "正在拉取情报源…" : "暂无可提炼摘要")}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="min-h-[420px] rounded-2xl border border-border/70 bg-background/40 p-4">
+                    {state.body ? (
+                      <div className="max-h-[620px] overflow-auto pr-1">
+                        <Markdown content={state.body} />
+                      </div>
+                    ) : (
+                      <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-muted-foreground">
+                        {state.error ?? (state.loading ? "加载中…" : "暂无数据")}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          }}
+        </Tabs>
+      </CardContent>
+    </Card>
+  );
+}
+
+function TerminalMetric({
+  icon: Icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  value: string;
+  tone: "ok" | "warn" | "neutral";
+}) {
+  const toneClass =
+    tone === "ok"
+      ? "border-emerald-500/20 bg-emerald-500/[0.08] text-emerald-300"
+      : tone === "warn"
+        ? "border-amber-500/20 bg-amber-500/[0.08] text-amber-200"
+        : "border-border/80 bg-background/60 text-foreground";
+
+  return (
+    <div className={`rounded-2xl border p-3 ${toneClass}`}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] uppercase tracking-[0.18em] opacity-70">
+          {label}
+        </span>
+        <Icon className="h-4 w-4 opacity-80" />
+      </div>
+      <div className="text-2xl font-semibold tracking-tight text-foreground">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function IntelSummaryCard({
+  title,
+  bullets,
+  tone,
+}: {
+  title: string;
+  bullets: string[];
+  tone: "ok" | "warn";
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-2xl border p-3",
+        tone === "ok"
+          ? "border-emerald-500/20 bg-emerald-500/[0.05]"
+          : "border-amber-500/20 bg-amber-500/[0.05]",
+      )}
+    >
+      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        {title}
+      </div>
+      <div className="space-y-2 text-sm leading-6">
+        {bullets.length > 0 ? (
+          bullets.map((bullet, index) => (
+            <div key={`${bullet}-${index}`} className="flex gap-2 text-foreground/90">
+              <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+              <span>{bullet}</span>
+            </div>
+          ))
+        ) : (
+          <div className="text-muted-foreground">暂无可提炼要点</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function extractSignalBullets(markdown: string): string[] {
+  return markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter(
+      (line) =>
+        /^[-*+]\s+/.test(line) ||
+        /^\d+[.)]\s+/.test(line) ||
+        /^#{1,4}\s+/.test(line) ||
+        /BTC|ETH|SOL|XRP|偏强|偏弱|突破|回踩|支撑|阻力|funding|OI|费率/i.test(line),
+    )
+    .map((line) =>
+      line
+        .replace(/^[-*+]\s+/, "")
+        .replace(/^\d+[.)]\s+/, "")
+        .replace(/^#{1,4}\s+/, "")
+        .trim(),
+    )
+    .filter((line, index, arr) => arr.indexOf(line) === index)
+    .slice(0, 12);
 }
 
 function PlatformsCard({ platforms, platformStateBadge }: PlatformsCardProps) {

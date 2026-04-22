@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Palette, Check } from "lucide-react";
-import { Typography } from "@nous-research/ui";
 import { BUILTIN_THEMES, useTheme } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -50,22 +49,17 @@ export function ThemeSwitcher() {
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "group relative inline-flex items-center gap-1.5 px-2 py-1 text-xs",
-          "text-muted-foreground hover:text-foreground transition-colors cursor-pointer",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+          "inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5",
+          "text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-secondary",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         )}
         title={t.theme?.switchTheme ?? "Switch theme"}
         aria-label={t.theme?.switchTheme ?? "Switch theme"}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        <Palette className="h-3.5 w-3.5" />
-        <Typography
-          mondwest
-          className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
-        >
-          {label}
-        </Typography>
+        <Palette className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="hidden sm:inline">{label}</span>
       </button>
 
       {open && (
@@ -73,18 +67,12 @@ export function ThemeSwitcher() {
           role="listbox"
           aria-label={t.theme?.title ?? "Theme"}
           className={cn(
-            "absolute right-0 top-full mt-1 z-50 min-w-[240px]",
-            "border border-current/20 bg-background-base/95 backdrop-blur-sm",
-            "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",
+            "absolute right-0 top-full z-50 mt-2 min-w-[260px] overflow-hidden rounded-xl",
+            "border border-border bg-background shadow-xl backdrop-blur-xl",
           )}
         >
-          <div className="border-b border-current/20 px-3 py-2">
-            <Typography
-              mondwest
-              className="text-[0.65rem] tracking-[0.15em] uppercase text-midground/70"
-            >
-              {t.theme?.title ?? "Theme"}
-            </Typography>
+          <div className="border-b border-border px-3 py-2 text-xs font-semibold text-muted-foreground">
+            {t.theme?.title ?? "Theme"}
           </div>
 
           {availableThemes.map((th) => {
@@ -102,9 +90,9 @@ export function ThemeSwitcher() {
                   close();
                 }}
                 className={cn(
-                  "flex w-full items-center gap-3 px-3 py-2 text-left transition-colors cursor-pointer",
-                  "hover:bg-midground/10",
-                  isActive ? "text-midground" : "text-midground/60",
+                  "flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors cursor-pointer",
+                  "hover:bg-secondary",
+                  isActive ? "bg-secondary text-foreground" : "text-foreground",
                 )}
               >
                 {preset ? (
@@ -114,22 +102,17 @@ export function ThemeSwitcher() {
                 )}
 
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <Typography
-                    mondwest
-                    className="truncate text-[0.75rem] tracking-wide uppercase"
-                  >
-                    {th.label}
-                  </Typography>
+                  <div className="truncate text-sm font-medium">{th.label}</div>
                   {th.description && (
-                    <Typography className="truncate text-[0.65rem] normal-case tracking-normal text-midground/50">
+                    <div className="truncate text-xs text-muted-foreground">
                       {th.description}
-                    </Typography>
+                    </div>
                   )}
                 </div>
 
                 <Check
                   className={cn(
-                    "h-3 w-3 shrink-0 text-midground",
+                    "h-3.5 w-3.5 shrink-0 text-primary",
                     isActive ? "opacity-100" : "opacity-0",
                   )}
                 />

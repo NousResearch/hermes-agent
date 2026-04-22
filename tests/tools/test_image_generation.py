@@ -9,7 +9,7 @@ tests/tools/test_managed_media_gateways.py.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -304,10 +304,122 @@ class TestGptQualityPinnedToMedium:
 # Model resolution
 # ---------------------------------------------------------------------------
 
+class TestCpaBackend:
+
+    def test_resolve_image_backend_defaults_to_fal(self, image_tool):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert image_tool._resolve_image_backend() == "fal"
+
+    def test_resolve_image_backend_uses_cpa(self, image_tool):
+        with patch("hermes_cli.config.load_config", return_value={"image_gen": {"backend": "cpa"}}):
+            assert image_tool._resolve_image_backend() == "cpa"
+
+    def test_resolve_cpa_image_settings_per_aspect(self, image_tool):
+        cfg = {
+            "image_gen": {
+                "backend": "cpa",
+                "base_url": "https://cpa.kedaya.xyz/v1",
+                "api_key": "sk-test",
+                "cpa_models": {
+                    "square": "gpt-5.4-mini",
+                    "portrait": "gpt-5.4-mini",
+                    "landscape": "gpt-5.4-mini",
+                },
+                "cpa_sizes": {
+                    "square": "1024x1024",
+                    "portrait": "1024x1536",
+                    "landscape": "1536x1024",
+                },
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            square = image_tool._resolve_cpa_image_settings("square")
+            portrait = image_tool._resolve_cpa_image_settings("portrait")
+            landscape = image_tool._resolve_cpa_image_settings("landscape")
+        assert square["size"] == "1024x1024"
+        assert portrait["size"] == "1024x1536"
+        assert landscape["size"] == "1536x1024"
+        assert square["model"] == portrait["model"] == landscape["model"] == "gpt-5.4-mini"
+
+    def test_cpa_backend_availability_uses_api_key_and_base_url(self, image_tool):
+        cfg = {"image_gen": {"backend": "cpa", "base_url": "https://cpa.kedaya.xyz/v1", "api_key": "sk-test-key"}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert image_tool._cpa_backend_available() is True
+            assert image_tool.check_image_generation_requirements() is True
+
+    def test_resolve_cpa_image_settings_falls_back_to_custom_runtime(self, image_tool):
+        cfg = {"image_gen": {"backend": "cpa"}}
+        runtime = {"base_url": "https://cpa.kedaya.xyz/v1", "api_key": "runtime-key"}
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime
+        ):
+            settings = image_tool._resolve_cpa_image_settings("square")
+        assert settings["base_url"] == "https://cpa.kedaya.xyz/v1"
+        assert settings["api_key"] == "runtime-key"
+
+    def test_image_gen_config_overrides_runtime_provider_for_cpa(self, image_tool):
+        cfg = {
+            "image_gen": {
+                "backend": "cpa",
+                "base_url": "https://override.example/v1",
+                "api_key": "cfg-key",
+            }
+        }
+        runtime = {"base_url": "https://cpa.kedaya.xyz/v1", "api_key": "runtime-key"}
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime
+        ):
+            settings = image_tool._resolve_cpa_image_settings("square")
+        assert settings["base_url"] == "https://override.example/v1"
+        assert settings["api_key"] == "cfg-key"
+
+    def test_resolve_cpa_image_settings_ignores_placeholder_runtime_key(self, image_tool, monkeypatch):
+        cfg = {"image_gen": {"backend": "cpa"}}
+        runtime = {"base_url": "https://cpa.kedaya.xyz/v1", "api_key": "***"}
+        monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime
+        ):
+            settings = image_tool._resolve_cpa_image_settings("square")
+        assert settings["api_key"] == "env-key"
+
+    def test_generate_via_cpa_sends_size_via_extra_body(self, image_tool):
+        with patch.object(image_tool, "_resolve_cpa_image_settings", return_value={
+            "aspect": "portrait",
+            "base_url": "https://cpa.kedaya.xyz/v1",
+            "api_key": "runtime-key",
+            "model": "gpt-5.4-mini",
+            "size": "1024x1536",
+        }):
+            mock_response = MagicMock()
+            mock_response.model_dump.return_value = {
+                "choices": [{"message": {"images": [{"image_url": {"url": "https://example.com/test.png"}}]}}]
+            }
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = mock_response
+            with patch("openai.OpenAI", return_value=mock_client) as openai_cls:
+                result = image_tool._generate_via_cpa("test prompt", "portrait")
+        openai_cls.assert_called_once_with(
+            api_key="runtime-key",
+            base_url="https://cpa.kedaya.xyz/v1",
+            timeout=180,
+            max_retries=0,
+        )
+        mock_client.chat.completions.create.assert_called_once_with(
+            model="gpt-5.4-mini",
+            messages=[{"role": "user", "content": "draw test prompt"}],
+            tools=[{"type": "image_generation"}],
+            tool_choice={"type": "image_generation"},
+            stream=False,
+            extra_body={"size": "1024x1536"},
+        )
+        assert result["size"] == "1024x1536"
+
+
 class TestModelResolution:
 
     def test_no_config_falls_back_to_default(self, image_tool):
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_cli.config.load_config", return_value={"image_gen": {"backend": "fal"}}):
             mid, meta = image_tool._resolve_fal_model()
         assert mid == "fal-ai/flux-2/klein/9b"
 

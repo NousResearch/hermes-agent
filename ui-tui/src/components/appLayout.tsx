@@ -216,8 +216,15 @@ const ComposerPane = memo(function ComposerPane({
             </Box>
 
             <Box flexGrow={1} position="relative">
+              {/*
+                Subtract the NoSelect paddingX={1} (2 cols total) and the
+                prompt-glyph column (pw) so cursorLayout agrees with the
+                width wrap-ansi actually uses at render time. Off-by-one/
+                two here manifests as the final letter flickering
+                in/out when a sentence crosses the wrap boundary.
+              */}
               <TextInput
-                columns={Math.max(20, composer.cols - pw)}
+                columns={Math.max(20, composer.cols - pw - 2)}
                 onChange={composer.updateInput}
                 onPaste={composer.handleTextPaste}
                 onSubmit={composer.submit}

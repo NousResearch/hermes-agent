@@ -108,9 +108,15 @@ def _run_async(coro):
     if loop and loop.is_running():
         # Inside an async context (gateway, RL env) — run in a fresh thread.
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(asyncio.run, coro)
+        try:
             return future.result(timeout=300)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids

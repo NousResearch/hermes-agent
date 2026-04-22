@@ -299,6 +299,11 @@ class BaseEnvironment(ABC):
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
 
+    @staticmethod
+    def _quote_cwd_for_shell(cwd: str) -> str:
+        """Quote a cwd for shell ``cd`` while preserving ``~`` expansion."""
+        return shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
+
     # ------------------------------------------------------------------
     # Abstract methods
     # ------------------------------------------------------------------
@@ -335,6 +340,7 @@ class BaseEnvironment(ABC):
         instead of running with ``bash -l``.
         """
         # Full capture: env vars, functions (filtered), aliases, shell options.
+        quoted_cwd = self._quote_cwd_for_shell(self.cwd)
         bootstrap = (
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
@@ -342,6 +348,7 @@ class BaseEnvironment(ABC):
             f"echo 'shopt -s expand_aliases' >> {self._snapshot_path}\n"
             f"echo 'set +e' >> {self._snapshot_path}\n"
             f"echo 'set +u' >> {self._snapshot_path}\n"
+            f"cd {quoted_cwd} || exit 126\n"
             f"pwd -P > {self._cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
@@ -380,9 +387,7 @@ class BaseEnvironment(ABC):
             parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
 
         # cd to working directory — let bash expand ~ natively
-        quoted_cwd = (
-            shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
-        )
+        quoted_cwd = self._quote_cwd_for_shell(cwd)
         parts.append(f"cd {quoted_cwd} || exit 126")
 
         # Run the actual command

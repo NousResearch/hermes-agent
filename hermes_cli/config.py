@@ -205,7 +205,7 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_hermes_home, get_default_hermes_root  # noqa: F811,E402
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -3062,10 +3062,206 @@ def read_raw_config() -> Dict[str, Any]:
         config_path = get_config_path()
         if config_path.exists():
             with open(config_path, encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
+                data = yaml.safe_load(f) or {}
+                if isinstance(data, dict):
+                    return data
     except Exception:
         pass
     return {}
+
+
+def _coerce_model_config(model_value: Any) -> Dict[str, Any]:
+    """Return a dict-shaped model config for merge/diff operations."""
+    if isinstance(model_value, dict):
+        return copy.deepcopy(model_value)
+    if isinstance(model_value, str) and model_value:
+        return {"default": model_value}
+    return {}
+
+
+def _get_profile_root_config_path(config_path: Path) -> Optional[Path]:
+    """Return the root config path when *config_path* belongs to a named profile."""
+    config_home = config_path.parent.resolve()
+    root_home = get_default_hermes_root().resolve()
+    if config_home == root_home:
+        return None
+    if config_home.parent.name != "profiles":
+        return None
+    if config_home.parent.parent.resolve() != root_home:
+        return None
+    return root_home / "config.yaml"
+
+
+# Provider-related sections that should be inherited by named profiles from the
+# root ~/.hermes/config.yaml.  Without this, e.g. ``model.provider: custom:hub``
+# in a profile fails to resolve because ``custom_providers`` is only defined at
+# the root.
+#
+# Sections split into two groups:
+#   - REPLACE_SECTIONS: whole-value replacement. Profile fully overrides if set.
+#     (list-shaped or standalone structures)
+#   - MERGE_SECTIONS: deep-merged dict sections. Profile can override specific
+#     sub-keys while still inheriting root defaults (like the ``model`` field).
+_INHERITED_PROFILE_REPLACE_SECTIONS = (
+    "custom_providers",
+    "fallback_providers",
+    "providers",
+    "fallback_model",
+)
+_INHERITED_PROFILE_MERGE_SECTIONS = (
+    "delegation",
+)
+_INHERITED_PROFILE_PROVIDER_SECTIONS = (
+    _INHERITED_PROFILE_REPLACE_SECTIONS + _INHERITED_PROFILE_MERGE_SECTIONS
+)
+
+
+def _load_inherited_profile_root(
+    config_path: Path,
+    *,
+    expand: bool = False,
+) -> Dict[str, Any]:
+    """Return the normalized root config dict inherited by a named profile."""
+    root_config_path = _get_profile_root_config_path(config_path)
+    if root_config_path is None or not root_config_path.exists():
+        return {}
+
+    try:
+        with open(root_config_path, encoding="utf-8") as f:
+            root_config = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+    if not isinstance(root_config, dict):
+        return {}
+
+    normalized_root = _normalize_root_model_keys(root_config)
+    if expand:
+        normalized_root = _expand_env_vars(normalized_root)
+    return normalized_root
+
+
+def _load_inherited_profile_model(
+    config_path: Path,
+    *,
+    expand: bool = False,
+) -> Dict[str, Any]:
+    """Load the root-level model config inherited by a named profile."""
+    normalized_root = _load_inherited_profile_root(config_path, expand=expand)
+    if not normalized_root:
+        return {}
+    return _coerce_model_config(normalized_root.get("model"))
+
+
+def _apply_profile_model_inheritance(
+    user_config: Dict[str, Any],
+    config_path: Path,
+) -> Dict[str, Any]:
+    """Merge root-level model + provider sections into a named profile as defaults.
+
+    - ``model`` is deep-merged (profile overrides root field-by-field).
+    - ``custom_providers`` / ``fallback_providers`` / ``providers`` /
+      ``delegation`` / ``fallback_model`` are inherited as a whole when the
+      profile doesn't define them, so references like ``custom:hub`` resolve
+      correctly inside the profile scope (cron jobs, gateway, CLI).
+    """
+    normalized_root = _load_inherited_profile_root(config_path)
+    if not normalized_root:
+        return user_config
+
+    merged_config = dict(user_config)
+
+    inherited_model = _coerce_model_config(normalized_root.get("model"))
+    if inherited_model:
+        profile_model = _coerce_model_config(merged_config.get("model"))
+        if profile_model:
+            merged_config["model"] = _deep_merge(
+                copy.deepcopy(inherited_model), profile_model
+            )
+        else:
+            merged_config["model"] = copy.deepcopy(inherited_model)
+
+    for key in _INHERITED_PROFILE_REPLACE_SECTIONS:
+        if key not in normalized_root:
+            continue
+        if key in merged_config and merged_config[key] not in (None, [], {}):
+            continue
+        merged_config[key] = copy.deepcopy(normalized_root[key])
+
+    for key in _INHERITED_PROFILE_MERGE_SECTIONS:
+        if key not in normalized_root:
+            continue
+        inherited_section = normalized_root[key]
+        profile_section = merged_config.get(key)
+        if isinstance(inherited_section, dict) and isinstance(profile_section, dict):
+            # Empty strings in the profile are treated as "not set" so they
+            # don't shadow a meaningful inherited value (e.g. delegation
+            # template left blank by the user).
+            cleaned_profile = {
+                k: v for k, v in profile_section.items() if v != ""
+            }
+            merged_config[key] = _deep_merge(
+                copy.deepcopy(inherited_section), cleaned_profile
+            )
+        elif key not in merged_config or merged_config[key] in (None, [], {}):
+            merged_config[key] = copy.deepcopy(inherited_section)
+
+    return merged_config
+
+
+def _diff_nested_dict(base: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only the keys in *current* whose values differ from *base*."""
+    diff: Dict[str, Any] = {}
+    for key, value in current.items():
+        if key not in base:
+            diff[key] = copy.deepcopy(value)
+            continue
+
+        base_value = base[key]
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            nested = _diff_nested_dict(base_value, value)
+            if nested:
+                diff[key] = nested
+        elif value != base_value:
+            diff[key] = copy.deepcopy(value)
+    return diff
+
+
+def _strip_inherited_profile_model(
+    config: Dict[str, Any],
+    config_path: Path,
+) -> Dict[str, Any]:
+    """Persist only profile-specific overrides, not inherited root values.
+
+    Strips the ``model`` sub-fields that match the inherited root values, and
+    drops inherited provider-related sections entirely when the profile's copy
+    is byte-equal to the root's.
+    """
+    normalized_root = _load_inherited_profile_root(config_path, expand=True)
+    if not normalized_root:
+        return config
+
+    stripped_config = dict(config)
+
+    inherited_model = _coerce_model_config(normalized_root.get("model"))
+    if inherited_model:
+        effective_model = _coerce_model_config(stripped_config.get("model"))
+        if not effective_model:
+            stripped_config.pop("model", None)
+        else:
+            model_overrides = _diff_nested_dict(inherited_model, effective_model)
+            if model_overrides:
+                stripped_config["model"] = model_overrides
+            else:
+                stripped_config.pop("model", None)
+
+    for key in _INHERITED_PROFILE_PROVIDER_SECTIONS:
+        if key not in stripped_config or key not in normalized_root:
+            continue
+        if stripped_config[key] == normalized_root[key]:
+            stripped_config.pop(key, None)
+
+    return stripped_config
 
 
 def load_config() -> Dict[str, Any]:
@@ -3086,6 +3282,8 @@ def load_config() -> Dict[str, Any]:
                     agent_user_config["max_turns"] = user_config["max_turns"]
                 user_config["agent"] = agent_user_config
                 user_config.pop("max_turns", None)
+            user_config = _normalize_root_model_keys(user_config)
+            user_config = _apply_profile_model_inheritance(user_config, config_path)
 
             config = _deep_merge(config, user_config)
         except Exception as e:
@@ -3186,6 +3384,7 @@ def save_config(config: Dict[str, Any]):
             raw_existing,
             _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
         )
+    normalized = _strip_inherited_profile_model(normalized, config_path)
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.

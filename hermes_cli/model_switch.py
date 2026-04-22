@@ -143,7 +143,7 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
     # Z.AI / GLM
     "glm":       ModelIdentity("z-ai", "glm"),
 
-    # StepFun
+    # Step Plan (StepFun)
     "step":      ModelIdentity("stepfun", "step"),
 
     # Xiaomi

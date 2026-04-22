@@ -133,6 +133,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Google
     "gemini": 1048576,
     # Gemma (open models served via AI Studio)
+    "gemma-4": 256000,  # Gemma 4 family
+    "gemma4": 256000,  # Ollama-style naming (e.g. gemma4:31b-cloud)
     "gemma-4-31b": 256000,
     "gemma-3": 131072,
     "gemma": 8192,  # fallback for older gemma models

@@ -247,6 +247,66 @@ def _mock_response(
 # ===================================================================
 
 
+class TestZaiToolStream:
+    """Verify Z.AI / GLM endpoints get tool_stream=true to avoid api.z.ai's
+    30s server-side idle timeout when GLM batches tool_call argument output.
+    Refs: vercel/ai#12949, opencode#15350, https://docs.z.ai/guides/capabilities/stream-tool
+    """
+
+    def _make_zai_agent(self, base_url, provider="zai", model="glm-5.1"):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                model=model,
+                provider=provider,
+                base_url=base_url,
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_zai_provider_injects_tool_stream(self):
+        agent = self._make_zai_agent("https://api.z.ai/api/coding/paas/v4")
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["tool_stream"] is True
+
+    def test_zai_global_endpoint_injects_tool_stream(self):
+        agent = self._make_zai_agent(
+            "https://api.z.ai/api/paas/v4", provider="custom"
+        )
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["tool_stream"] is True
+
+    def test_bigmodel_cn_endpoint_injects_tool_stream(self):
+        agent = self._make_zai_agent(
+            "https://open.bigmodel.cn/api/coding/paas/v4", provider="custom"
+        )
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["tool_stream"] is True
+
+    def test_no_tools_omits_tool_stream(self):
+        agent = self._make_zai_agent("https://api.z.ai/api/coding/paas/v4")
+        agent.tools = []
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "tool_stream" not in kwargs.get("extra_body", {})
+
+    def test_non_zai_provider_omits_tool_stream(self):
+        agent = self._make_zai_agent(
+            "https://openrouter.ai/api/v1", provider="openrouter", model="x"
+        )
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "tool_stream" not in kwargs.get("extra_body", {})
+
+
 class TestHasContentAfterThinkBlock:
     def test_none_returns_false(self, agent):
         assert agent._has_content_after_think_block(None) is False

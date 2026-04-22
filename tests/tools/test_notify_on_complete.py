@@ -11,6 +11,8 @@ Covers:
 import json
 import os
 import queue
+import shlex
+import sys
 import threading
 import time
 import pytest
@@ -58,6 +60,15 @@ def _wait_until(predicate, timeout=5, interval=0.1):
             return True
         time.sleep(interval)
     return False
+
+
+def _drain_completion_queue(registry):
+    items = []
+    while True:
+        try:
+            items.append(registry.completion_queue.get_nowait())
+        except queue.Empty:
+            return items
 
 
 # =========================================================================
@@ -231,6 +242,81 @@ class TestEndToEndNotifyFlow:
         assert "start" in completion["output"]
         assert "middle" in completion["output"]
         assert "done" in completion["output"]
+
+
+class TestTerminalAndProcessIntegration:
+    def test_terminal_background_poll_log_wait_still_enqueues_completion(self, monkeypatch, tmp_path):
+        from tools.process_registry import _handle_process, process_registry
+        from tools.terminal_tool import cleanup_vm, terminal_tool
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        task_id = f"notify_flow_{time.time_ns()}"
+        _drain_completion_queue(process_registry)
+
+        python_code = (
+            "import time; "
+            "print('start', flush=True); "
+            "time.sleep(0.4); "
+            "print('middle', flush=True); "
+            "time.sleep(0.8); "
+            "print('done', flush=True)"
+        )
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote(python_code)}"
+
+        try:
+            start_result = json.loads(
+                terminal_tool(
+                    command=command,
+                    background=True,
+                    notify_on_complete=True,
+                    task_id=task_id,
+                    workdir=str(tmp_path),
+                )
+            )
+            session_id = start_result["session_id"]
+            assert start_result["notify_on_complete"] is True
+            assert start_result["exit_code"] == 0
+            assert process_registry.completion_queue.empty()
+
+            assert _wait_until(
+                lambda: (
+                    poll := json.loads(_handle_process({"action": "poll", "session_id": session_id}))
+                )["status"] == "running"
+                and "start" in poll["output_preview"],
+                timeout=3,
+            )
+
+            poll_result = json.loads(_handle_process({"action": "poll", "session_id": session_id}))
+            assert poll_result["status"] == "running"
+            assert "start" in poll_result["output_preview"]
+            assert process_registry.completion_queue.empty()
+
+            log_result = json.loads(_handle_process({"action": "log", "session_id": session_id}))
+            assert log_result["status"] == "running"
+            assert "start" in log_result["output"]
+            assert log_result["total_lines"] >= 1
+            assert process_registry.completion_queue.empty()
+
+            wait_result = json.loads(
+                _handle_process({"action": "wait", "session_id": session_id, "timeout": 5})
+            )
+            assert wait_result["status"] == "exited"
+            assert wait_result["exit_code"] == 0
+            assert "done" in wait_result["output"]
+
+            assert _wait_until(lambda: not process_registry.completion_queue.empty(), timeout=2)
+            completion = process_registry.completion_queue.get_nowait()
+            assert completion["session_id"] == session_id
+            assert completion["exit_code"] == 0
+            assert "start" in completion["output"]
+            assert "middle" in completion["output"]
+            assert "done" in completion["output"]
+        finally:
+            session = process_registry.get(start_result["session_id"]) if 'start_result' in locals() else None
+            if session and not session.exited:
+                process_registry.kill_process(start_result["session_id"])
+            cleanup_vm(task_id)
+            _drain_completion_queue(process_registry)
 
 
 class TestCheckpointNotify:

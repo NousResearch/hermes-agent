@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import platform
+import select
 import shlex
 import signal
 import subprocess
@@ -361,18 +362,48 @@ class ProcessRegistry:
     def _reader_loop(self, session: ProcessSession):
         """Background thread: read stdout from a local Popen process."""
         first_chunk = True
+
+        def _append_chunk(chunk: str):
+            nonlocal first_chunk
+            if not chunk:
+                return
+            if first_chunk:
+                chunk = self._clean_shell_noise(chunk)
+                first_chunk = False
+            with session._lock:
+                session.output_buffer += chunk
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
+
         try:
-            while True:
-                chunk = session.process.stdout.read(4096)
-                if not chunk:
-                    break
-                if first_chunk:
-                    chunk = self._clean_shell_noise(chunk)
-                    first_chunk = False
-                with session._lock:
-                    session.output_buffer += chunk
-                    if len(session.output_buffer) > session.max_output_chars:
-                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
+            if _IS_WINDOWS:
+                while True:
+                    chunk = session.process.stdout.readline()
+                    if chunk:
+                        _append_chunk(chunk)
+                        continue
+                    if session.process.poll() is not None:
+                        break
+                    time.sleep(0.05)
+            else:
+                fd = session.process.stdout.fileno()
+                while True:
+                    ready, _, _ = select.select([fd], [], [], 0.1)
+                    if ready:
+                        chunk = os.read(fd, 4096)
+                        if chunk:
+                            _append_chunk(chunk.decode("utf-8", errors="replace"))
+                            continue
+                    if session.process.poll() is not None:
+                        while True:
+                            ready, _, _ = select.select([fd], [], [], 0)
+                            if not ready:
+                                break
+                            chunk = os.read(fd, 4096)
+                            if not chunk:
+                                break
+                            _append_chunk(chunk.decode("utf-8", errors="replace"))
+                        break
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
 

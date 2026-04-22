@@ -1533,3 +1533,76 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestGenerateSummaryFallback:
+    """Regression tests for summary model fallback preserving focus_topic (issue #13905)."""
+
+    def _make_compressor(self, summary_model_override="fast/model"):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+                summary_model_override=summary_model_override,
+            )
+        return c
+
+    def test_fallback_preserves_focus_topic(self):
+        """When summary_model fails with 404, retry on main model must pass focus_topic through."""
+        c = self._make_compressor(summary_model_override="missing/model")
+        turns = [{"role": "user", "content": "tell me about farming"}]
+
+        captured_calls = []
+
+        not_found_err = Exception("model does not exist (404)")
+        not_found_err.status_code = 404
+
+        # First call (for summary_model) raises 404; second call (main model) succeeds.
+        call_count = [0]
+
+        def fake_call_llm(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise not_found_err
+            captured_calls.append(kwargs)
+            resp = MagicMock()
+            resp.choices[0].message.content = "## Active Task\nfarming\n## Completed Actions\n1. none"
+            return resp
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            result = c._generate_summary(turns, focus_topic="regenerative agriculture")
+
+        assert result is not None, "Expected a summary, got None"
+        assert call_count[0] == 2, f"Expected 2 call_llm calls (fail + retry), got {call_count[0]}"
+        # The focus_topic must have been injected into the retry prompt
+        assert len(captured_calls) == 1
+        retry_prompt = captured_calls[0]["messages"][0]["content"]
+        assert "regenerative agriculture" in retry_prompt, (
+            "focus_topic was lost during summary_model fallback retry"
+        )
+
+    def test_fallback_without_focus_topic_still_works(self):
+        """Fallback with no focus_topic should still succeed (non-regression)."""
+        c = self._make_compressor(summary_model_override="missing/model")
+        turns = [{"role": "user", "content": "hello"}]
+
+        not_found_err = Exception("does not exist")
+        not_found_err.status_code = 404
+        call_count = [0]
+
+        def fake_call_llm(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise not_found_err
+            resp = MagicMock()
+            resp.choices[0].message.content = "## Active Task\nhello\n## Completed Actions\n1. none"
+            return resp
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            result = c._generate_summary(turns, focus_topic=None)
+
+        assert result is not None
+        assert call_count[0] == 2

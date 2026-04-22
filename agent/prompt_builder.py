@@ -443,6 +443,21 @@ _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 _SKILLS_SNAPSHOT_VERSION = 1
 
 
+def _is_skills_lazy() -> bool:
+    """Return True if skills.loading is set to "lazy" in the user config.
+
+    When lazy, the <available_skills> block is replaced with a one-line hint
+    that instructs the agent to call skills_list() on demand.  Saves thousands
+    of tokens per turn once installed-skill count grows.  See Issue #2045.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return str((cfg.get("skills") or {}).get("loading", "eager")).lower() == "lazy"
+    except Exception:
+        return False
+
+
 def _skills_prompt_snapshot_path() -> Path:
     return get_hermes_home() / ".skills_prompt_snapshot.json"
 
@@ -768,6 +783,19 @@ def build_skills_system_prompt(
 
     if not skills_by_category:
         result = ""
+    elif _is_skills_lazy():
+        # Lazy mode (Issue #2045): skip the full skill index and emit a hint
+        # that points the agent at skills_list() for on-demand discovery.
+        result = (
+            "## Skills\n"
+            "A library of specialized skills is available (not pre-listed here to "
+            "save tokens).  When the user's request involves a specific tool, workflow, "
+            "domain, or external system (not casual chat or emotional support), call "
+            "`skills_list()` first to discover relevant skills, then `skill_view(name)` "
+            "to load the full instructions.  Err on the side of searching — one tool "
+            "call is cheap; missing a relevant skill means worse answers or reinventing "
+            "a proven workflow."
+        )
     else:
         index_lines = []
         for category in sorted(skills_by_category.keys()):

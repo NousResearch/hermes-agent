@@ -733,7 +733,23 @@ DEFAULT_CONFIG = {
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
     "skills": {
-        "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        "external_dirs": [],
+        # Controls how the skills index reaches the agent each turn:
+        #   "eager" (default): full <available_skills> block (~30-50 tokens per
+        #     skill) is injected into the system prompt on every turn.
+        #   "lazy":  the block is replaced with a one-sentence hint that
+        #     instructs the agent to call skills_list() on demand.  Saves
+        #     thousands of tokens per call once installed-skill count grows.
+        #     See Issue #2045.
+        "loading": "eager",
+        # Controls how the skills index reaches the agent each turn:
+        #   "eager" (default): full <available_skills> block (~30-50 tokens per skill)
+        #     is injected into the system prompt on every turn.
+        #   "lazy":              the block is replaced with a one-sentence hint that
+        #     instructs the agent to call skills_list() on demand.  Saves ~thousands
+        #     of tokens per call once you have 50+ skills installed.
+        #   See Issue #2045 for context.
+        "loading": "eager",   # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

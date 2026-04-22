@@ -486,3 +486,27 @@ All the same commands work with `/skills`:
 ```
 
 Official optional skills still use identifiers like `official/security/1password` and `official/migration/openclaw-migration`.
+
+## Skill-index loading mode
+
+By default, Hermes injects a `<available_skills>` block into the system prompt on every turn, listing every installed skill's name and description. This works well for small skill libraries, but with 50+ skills the index alone can cost thousands of tokens per call — regardless of whether any skill will actually be used that turn.
+
+To avoid this overhead, set:
+
+```yaml
+skills:
+  loading: lazy
+```
+
+In lazy mode, the block is replaced with a one-sentence hint telling the agent to call `skills_list()` when the user's request is domain-specific. The agent then discovers relevant skills on demand and loads them with `skill_view(name)` as usual. Casual chat / emotional support paths don't pay any skill-index cost at all.
+
+Token impact (measured on a 72-skill installation):
+
+| Mode | Skill-index size per turn |
+|------|---------------------------|
+| eager (default) | ~4,800 tokens |
+| lazy | ~120 tokens |
+
+Trade-off: the first domain-specific turn in a session spends one extra tool call (`skills_list`) before the agent picks a skill. In practice this adds ~1 round-trip and is cached for the rest of the session. For chat-heavy workloads (personal assistants, messaging bots) the saving is substantial; for short one-shot CLI sessions where every skill could plausibly be needed, `eager` is still preferable.
+
+See [Issue #2045](https://github.com/NousResearch/hermes-agent/issues/2045) for the original proposal and discussion.

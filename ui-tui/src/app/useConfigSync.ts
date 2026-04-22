@@ -10,8 +10,22 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
+import type { StatusBarMode } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
+
+const STATUSBAR_MODES = new Set<StatusBarMode>(['bottom', 'off', 'on', 'top'])
+
+// Legacy configs stored tui_statusbar as a bool; new configs write a string
+// ('on' | 'off' | 'bottom' | 'top'). Coerce both shapes so existing users
+// keep their preference without manual migration.
+export const normalizeStatusBar = (raw: unknown): StatusBarMode => {
+  if (raw === false) return 'off'
+  if (raw === true || raw == null) return 'on'
+  if (typeof raw === 'string' && STATUSBAR_MODES.has(raw as StatusBarMode)) return raw as StatusBarMode
+
+  return 'on'
+}
 
 const MTIME_POLL_MS = 5000
 
@@ -37,7 +51,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     inlineDiffs: d.inline_diffs !== false,
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
-    statusBar: d.tui_statusbar !== false,
+    statusBar: normalizeStatusBar(d.tui_statusbar),
     streaming: d.streaming !== false
   })
 }

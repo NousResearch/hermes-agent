@@ -847,6 +847,51 @@ def _configure_toolset(ts_key: str, config: dict):
         _configure_simple_requirements(ts_key)
 
 
+def _plugin_image_gen_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered image gen providers.
+
+    Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
+    row but carries an ``image_gen_plugin_name`` marker so downstream
+    code (config writing, model picker) knows to route through the
+    plugin registry instead of the in-tree FAL backend.
+
+    FAL is skipped — it's already exposed by the hardcoded
+    ``TOOL_CATEGORIES["image_gen"]`` entries. When FAL gets ported to
+    a plugin in a follow-up PR, the hardcoded entries go away and this
+    function surfaces it alongside OpenAI automatically.
+    """
+    try:
+        from agent.image_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        if getattr(provider, "name", None) == "fal":
+            # FAL has its own hardcoded rows today.
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        rows.append(
+            {
+                "name": schema.get("name", provider.display_name),
+                "badge": schema.get("badge", ""),
+                "tag": schema.get("tag", ""),
+                "env_vars": schema.get("env_vars", []),
+                "image_gen_plugin_name": provider.name,
+            }
+        )
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -857,6 +902,12 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
         if provider.get("requires_nous_auth") and not features.nous_auth_present:
             continue
         visible.append(provider)
+
+    # Inject plugin-registered image_gen backends (OpenAI today, more
+    # later) so the picker lists them alongside FAL / Nous Subscription.
+    if cat.get("name") == "Image Generation":
+        visible.extend(_plugin_image_gen_providers())
+
     return visible
 
 
@@ -876,7 +927,24 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
     if ts_key == "image_gen":
-        return not fal_key_is_configured()
+        # Satisfied when the in-tree FAL backend is configured OR any
+        # plugin-registered image gen provider is available.
+        if fal_key_is_configured():
+            return False
+        try:
+            from agent.image_gen_registry import list_providers
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            for provider in list_providers():
+                try:
+                    if provider.is_available():
+                        return False
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return True
 
     return not _toolset_has_keys(ts_key, config)
 
@@ -1095,6 +1163,88 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     _print_success(f"  Model set to: {chosen}")
 
 
+def _plugin_image_gen_catalog(plugin_name: str):
+    """Return ``(catalog_dict, default_model_id)`` for a plugin provider.
+
+    ``catalog_dict`` is shaped like the legacy ``FAL_MODELS`` table —
+    ``{model_id: {"display", "speed", "strengths", "price", ...}}`` —
+    so the existing picker code paths work without change. Returns
+    ``({}, None)`` if the provider isn't registered or has no models.
+    """
+    try:
+        from agent.image_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        provider = get_provider(plugin_name)
+    except Exception:
+        return {}, None
+    if provider is None:
+        return {}, None
+    try:
+        models = provider.list_models() or []
+        default = provider.default_model()
+    except Exception:
+        return {}, None
+    catalog = {m["id"]: m for m in models if isinstance(m, dict) and "id" in m}
+    return catalog, default
+
+
+def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None:
+    """Prompt the user to pick a model for a plugin-registered backend.
+
+    Writes selection to ``image_gen.model``. Mirrors
+    :func:`_configure_imagegen_model` but sources its catalog from the
+    plugin registry instead of :data:`IMAGEGEN_BACKENDS`.
+    """
+    catalog, default_model = _plugin_image_gen_catalog(plugin_name)
+    if not catalog:
+        return
+
+    cur_cfg = config.setdefault("image_gen", {})
+    if not isinstance(cur_cfg, dict):
+        cur_cfg = {}
+        config["image_gen"] = cur_cfg
+    current_model = cur_cfg.get("model") or default_model
+    if current_model not in catalog:
+        current_model = default_model
+
+    model_ids = list(catalog.keys())
+    ordered = [current_model] + [m for m in model_ids if m != current_model]
+
+    widths = {
+        "model": max(len(m) for m in model_ids),
+        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
+        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
+    }
+
+    print()
+    header = (
+        f"  {'Model':<{widths['model']}}  "
+        f"{'Speed':<{widths['speed']}}  "
+        f"{'Strengths':<{widths['strengths']}}  "
+        f"Price"
+    )
+    print(color(header, Colors.CYAN))
+
+    rows = []
+    for mid in ordered:
+        row = _format_imagegen_model_row(mid, catalog[mid], widths)
+        if mid == current_model:
+            row += "  ← currently in use"
+        rows.append(row)
+
+    idx = _prompt_choice(
+        f"  Choose {plugin_name} model:",
+        rows,
+        default=0,
+    )
+
+    chosen = ordered[idx]
+    cur_cfg["model"] = chosen
+    _print_success(f"  Model set to: {chosen}")
+
+
 def _configure_provider(provider: dict, config: dict):
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
@@ -1151,10 +1301,28 @@ def _configure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
+        # Plugin-registered image_gen provider: write image_gen.provider
+        # and route model selection to the plugin's own catalog.
+        plugin_name = provider.get("image_gen_plugin_name")
+        if plugin_name:
+            img_cfg = config.setdefault("image_gen", {})
+            if not isinstance(img_cfg, dict):
+                img_cfg = {}
+                config["image_gen"] = img_cfg
+            img_cfg["provider"] = plugin_name
+            _print_success(f"  image_gen.provider set to: {plugin_name}")
+            _configure_imagegen_model_for_plugin(plugin_name, config)
+            return
         # Imagegen backends prompt for model selection after backend pick.
         backend = provider.get("imagegen_backend")
         if backend:
             _configure_imagegen_model(backend, config)
+            # In-tree FAL is the only non-plugin backend today. Keep
+            # image_gen.provider clear so the dispatch shim falls through
+            # to the legacy FAL path.
+            img_cfg = config.setdefault("image_gen", {})
+            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in (None, "", "fal"):
+                img_cfg["provider"] = "fal"
         return
 
     # Prompt for each required env var
@@ -1189,10 +1357,23 @@ def _configure_provider(provider: dict, config: dict):
 
     if all_configured:
         _print_success(f"  {provider['name']} configured!")
+        plugin_name = provider.get("image_gen_plugin_name")
+        if plugin_name:
+            img_cfg = config.setdefault("image_gen", {})
+            if not isinstance(img_cfg, dict):
+                img_cfg = {}
+                config["image_gen"] = img_cfg
+            img_cfg["provider"] = plugin_name
+            _print_success(f"  image_gen.provider set to: {plugin_name}")
+            _configure_imagegen_model_for_plugin(plugin_name, config)
+            return
         # Imagegen backends prompt for model selection after env vars are in.
         backend = provider.get("imagegen_backend")
         if backend:
             _configure_imagegen_model(backend, config)
+            img_cfg = config.setdefault("image_gen", {})
+            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in (None, "", "fal"):
+                img_cfg["provider"] = "fal"
 
 
 def _configure_simple_requirements(ts_key: str):

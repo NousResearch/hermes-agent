@@ -797,7 +797,7 @@ async def get_sessions(request: Request, limit: int = 20, offset: int = 0):
             db = SessionDB()
             try:
                 sessions = db.list_sessions_rich(limit=limit, offset=offset)
-                total = db.session_count()
+                total = len(db.list_sessions_rich(limit=1000000, offset=0))
                 now = time.time()
                 for s in sessions:
                     s["is_active"] = (
@@ -2314,72 +2314,80 @@ async def update_config_raw(request: Request, body: RawConfigUpdate):
 
 
 @app.get("/api/analytics/usage")
-async def get_usage_analytics(days: int = 30):
+async def get_usage_analytics(request: Request, days: int = 30):
     from hermes_state import SessionDB
     from agent.insights import InsightsEngine
 
-    db = SessionDB()
-    try:
-        cutoff = time.time() - (days * 86400)
-        cur = db._conn.execute("""
-            SELECT date(started_at, 'unixepoch') as day,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ?
-            GROUP BY day ORDER BY day
-        """, (cutoff,))
-        daily = [dict(r) for r in cur.fetchall()]
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        db = SessionDB()
+        try:
+            cutoff = time.time() - (days * 86400)
+            cur = db._conn.execute("""
+                SELECT date(started_at, 'unixepoch') as day,
+                       COALESCE(SUM(input_tokens), 0) as input_tokens,
+                       COALESCE(SUM(output_tokens), 0) as output_tokens,
+                       COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+                       COALESCE(SUM(cache_write_tokens), 0) as cache_write_tokens,
+                       COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                       COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                       COUNT(*) as sessions,
+                       COALESCE(SUM(api_call_count), 0) as api_calls
+                FROM sessions WHERE started_at > ?
+                GROUP BY day ORDER BY day
+            """, (cutoff,))
+            daily = [dict(r) for r in cur.fetchall()]
 
-        cur2 = db._conn.execute("""
-            SELECT model,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, (cutoff,))
-        by_model = [dict(r) for r in cur2.fetchall()]
+            cur2 = db._conn.execute("""
+                SELECT model,
+                       COALESCE(SUM(input_tokens), 0) as input_tokens,
+                       COALESCE(SUM(output_tokens), 0) as output_tokens,
+                       COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+                       COALESCE(SUM(cache_write_tokens), 0) as cache_write_tokens,
+                       COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                       COUNT(*) as sessions,
+                       COALESCE(SUM(api_call_count), 0) as api_calls
+                FROM sessions WHERE started_at > ? AND model IS NOT NULL
+                GROUP BY model
+                ORDER BY SUM(input_tokens) + SUM(output_tokens) + SUM(cache_read_tokens) + SUM(cache_write_tokens) + SUM(reasoning_tokens) DESC
+            """, (cutoff,))
+            by_model = [dict(r) for r in cur2.fetchall()]
 
-        cur3 = db._conn.execute("""
-            SELECT SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
-                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ?
-        """, (cutoff,))
-        totals = dict(cur3.fetchone())
-        insights_report = InsightsEngine(db).generate(days=days)
-        skills = insights_report.get("skills", {
-            "summary": {
-                "total_skill_loads": 0,
-                "total_skill_edits": 0,
-                "total_skill_actions": 0,
-                "distinct_skills_used": 0,
-            },
-            "top_skills": [],
-        })
+            cur3 = db._conn.execute("""
+                SELECT COALESCE(SUM(input_tokens), 0) as total_input,
+                       COALESCE(SUM(output_tokens), 0) as total_output,
+                       COALESCE(SUM(cache_read_tokens), 0) as total_cache_read,
+                       COALESCE(SUM(cache_write_tokens), 0) as total_cache_write,
+                       COALESCE(SUM(reasoning_tokens), 0) as total_reasoning,
+                       COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
+                       COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
+                       COUNT(*) as total_sessions,
+                       COALESCE(SUM(api_call_count), 0) as total_api_calls
+                FROM sessions WHERE started_at > ?
+            """, (cutoff,))
+            totals = dict(cur3.fetchone())
+            insights_report = InsightsEngine(db).generate(days=days)
+            skills = insights_report.get("skills", {
+                "summary": {
+                    "total_skill_loads": 0,
+                    "total_skill_edits": 0,
+                    "total_skill_actions": 0,
+                    "distinct_skills_used": 0,
+                },
+                "top_skills": [],
+            })
 
-        return {
-            "daily": daily,
-            "by_model": by_model,
-            "totals": totals,
-            "period_days": days,
-            "skills": skills,
-        }
-    finally:
-        db.close()
+            return {
+                "daily": daily,
+                "by_model": by_model,
+                "totals": totals,
+                "period_days": days,
+                "skills": skills,
+            }
+        finally:
+            db.close()
 
 
 def mount_spa(application: FastAPI):

@@ -1085,6 +1085,12 @@ class GatewayRunner:
 
         return "stranger"
 
+    # Transports where inbound events carry caller-supplied fields and the
+    # platform doesn't enforce sender identity — user_id is suppressed from
+    # the routing context for these so a spoofed value can't match a
+    # ``match: {user_id: ...}`` route.
+    _ROUTING_CTX_UNTRUSTED_IDENTITY = frozenset({"webhook", "api_server"})
+
     def _build_routing_context(self, source) -> Dict[str, Any]:
         """Build the context dict passed to ``apply_route`` for this source."""
         if source is None:
@@ -1095,10 +1101,17 @@ class GatewayRunner:
             platform_value = str(getattr(platform, "value", "")).lower() if platform is not None else ""
         except Exception:
             platform_value = ""
-        return {
+        context: Dict[str, Any] = {
             "platform": platform_value,
             "source_kind": self._classify_source_kind(source),
         }
+        # Expose user_id so routes can match on per-sender identity — but
+        # only for trusted-identity transports (see class attribute above).
+        if platform_value and platform_value not in self._ROUTING_CTX_UNTRUSTED_IDENTITY:
+            uid = getattr(source, "user_id", None)
+            if uid:
+                context["user_id"] = str(uid)
+        return context
 
     def _resolve_session_agent_runtime(
         self,

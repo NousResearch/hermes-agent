@@ -2178,11 +2178,58 @@ class AIAgent:
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
 
+            # If no explicit override, look up context_length from
+            # providers / custom_providers for the auxiliary model — the
+            # same lookup that the main model uses in __init__.
+            _aux_ctx = getattr(self, "_aux_compression_context_length_config", None)
+            if _aux_ctx is None and aux_base_url:
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    _custom_providers = get_compatible_custom_providers(_agent_cfg)
+                except Exception:
+                    _custom_providers = _agent_cfg.get("custom_providers", [])
+                for _cp_entry in (_custom_providers or []):
+                    if not isinstance(_cp_entry, dict):
+                        continue
+                    _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                    if _cp_url and _cp_url == aux_base_url.rstrip("/"):
+                        _cp_models = _cp_entry.get("models", {})
+                        if isinstance(_cp_models, dict):
+                            _cp_model_cfg = _cp_models.get(aux_model, {})
+                            if isinstance(_cp_model_cfg, dict):
+                                _cp_ctx = _cp_model_cfg.get("context_length")
+                                if _cp_ctx is not None:
+                                    try:
+                                        _aux_ctx = int(_cp_ctx)
+                                    except (ValueError, TypeError):
+                                        pass
+                            if _aux_ctx is not None:
+                                break
+                # Also check the keyed providers schema (providers.<key>.models.<model>.context_length)
+                if _aux_ctx is None:
+                    _providers = _agent_cfg.get("providers", {})
+                    if isinstance(_providers, dict):
+                        for _pk, _pentry in _providers.items():
+                            if not isinstance(_pentry, dict):
+                                continue
+                            _purl = (_pentry.get("base_url") or "").rstrip("/")
+                            if _purl and _purl == aux_base_url.rstrip("/"):
+                                _pm = _pentry.get("models", {})
+                                if isinstance(_pm, dict):
+                                    _pm_cfg = _pm.get(aux_model, {})
+                                    if isinstance(_pm_cfg, dict):
+                                        _pm_ctx = _pm_cfg.get("context_length")
+                                        if _pm_ctx is not None:
+                                            try:
+                                                _aux_ctx = int(_pm_ctx)
+                                            except (ValueError, TypeError):
+                                                pass
+
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
-                config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                config_context_length=_aux_ctx,
             )
 
             # Hard floor: the auxiliary compression model must have at least

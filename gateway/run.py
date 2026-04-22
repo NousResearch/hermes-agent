@@ -2366,6 +2366,17 @@ class GatewayRunner:
                 for key, entry in _expired_entries:
                     try:
                         await self._async_flush_memories(entry.session_id, key)
+                        try:
+                            from hermes_cli.plugins import invoke_hook as _invoke_hook
+                            _parts = key.split(":")
+                            _platform = _parts[2] if len(_parts) > 2 else ""
+                            _invoke_hook(
+                                "on_session_finalize",
+                                session_id=entry.session_id,
+                                platform=_platform,
+                            )
+                        except Exception:
+                            pass
                         # Shut down memory provider and close tool resources
                         # on the cached agent.  Idle agents live in
                         # _agent_cache (not _running_agents), so look there.

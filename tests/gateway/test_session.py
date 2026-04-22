@@ -1087,3 +1087,51 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+
+class TestEmailThreadIdSessionKey:
+    """Regression for QUIENG-503: when the email adapter populates
+    `source.thread_id` (gmail_thread_id mode), the session key must include
+    it — otherwise every Gmail thread from a given sender would collapse into
+    a single shared session and re-introduce the context-poisoning bug this
+    whole feature exists to fix."""
+
+    def test_email_dm_with_thread_id_includes_thread_in_key(self):
+        source = SessionSource(
+            platform=Platform.EMAIL,
+            chat_id="alice@example.com",
+            chat_type="dm",
+            user_id="alice@example.com",
+            user_name="Alice",
+            thread_id="gthr-1234567890",
+        )
+        assert build_session_key(source) == (
+            "agent:main:email:dm:alice@example.com:gthr-1234567890"
+        )
+
+    def test_email_dm_without_thread_id_stays_chat_keyed(self):
+        """Sender mode (thread_id absent) should continue to collapse all
+        email from a sender into a single session."""
+        source = SessionSource(
+            platform=Platform.EMAIL,
+            chat_id="alice@example.com",
+            chat_type="dm",
+            user_id="alice@example.com",
+            user_name="Alice",
+        )
+        assert build_session_key(source) == "agent:main:email:dm:alice@example.com"
+
+    def test_email_distinct_thread_ids_produce_distinct_keys(self):
+        first = SessionSource(
+            platform=Platform.EMAIL,
+            chat_id="alice@example.com",
+            chat_type="dm",
+            thread_id="gthr-111",
+        )
+        second = SessionSource(
+            platform=Platform.EMAIL,
+            chat_id="alice@example.com",
+            chat_type="dm",
+            thread_id="gthr-222",
+        )
+        assert build_session_key(first) != build_session_key(second)

@@ -99,11 +99,29 @@ def get_sandbox_dir() -> Path:
 
 
 def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
-    """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks."""
+    """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks.
+
+    On Windows, Popen with ``text=True`` enables universal-newlines on the
+    stdin pipe, which silently rewrites every ``"\\n"`` in *data* to ``"\\r\\n"``
+    before it reaches the child's stdin. For ``cat > file`` writers this
+    corrupts the on-disk content (LF input lands as CRLF, and downstream
+    pipes can layer a second ``\\r`` to produce CRCRLF). To stay byte-exact
+    across platforms, we write through the underlying binary buffer when
+    available and encode str payloads as UTF-8 ourselves.
+    """
 
     def _write():
         try:
-            proc.stdin.write(data)
+            buffer = getattr(proc.stdin, "buffer", None)
+            if buffer is not None:
+                payload = data.encode("utf-8") if isinstance(data, str) else data
+                buffer.write(payload)
+            else:
+                # Pure binary stdin (no text wrapper) — write bytes directly,
+                # encoding str if needed.
+                proc.stdin.write(
+                    data.encode("utf-8") if isinstance(data, str) else data
+                )
             proc.stdin.close()
         except (BrokenPipeError, OSError):
             pass

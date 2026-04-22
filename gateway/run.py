@@ -8076,7 +8076,11 @@ class GatewayRunner:
                 chat_id,
             )
         except Exception as e:
-            logger.warning("Restart notification failed: %s", e)
+            err_text = str(e).lower()
+            if "chat not found" in err_text:
+                logger.info("Restart notification skipped: target chat/topic no longer exists: %s", e)
+            else:
+                logger.warning("Restart notification failed: %s", e)
         finally:
             notify_path.unlink(missing_ok=True)
 
@@ -10945,7 +10949,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+        # SIGHUP / ExecReload should be a config/env refresh only.
+        # It must not trigger the service-restart path (exit 75), otherwise a
+        # harmless `systemctl reload` turns into a full restart and interrupts
+        # active Telegram work. Use the normal shutdown handler only for
+        # SIGINT/SIGTERM; SIGHUP just requests an in-process refresh.
+        logger.info("Received SIGHUP/SIGUSR1 reload signal — keeping gateway process alive")
     
     loop = asyncio.get_running_loop()
     if threading.current_thread() is threading.main_thread():
@@ -10954,9 +10963,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 loop.add_signal_handler(sig, shutdown_signal_handler)
             except NotImplementedError:
                 pass
-        if hasattr(signal, "SIGUSR1"):
+        for _reload_sig_name in ("SIGHUP", "SIGUSR1"):
+            _reload_sig = getattr(signal, _reload_sig_name, None)
+            if _reload_sig is None:
+                continue
             try:
-                loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)
+                loop.add_signal_handler(_reload_sig, restart_signal_handler)
             except NotImplementedError:
                 pass
     else:

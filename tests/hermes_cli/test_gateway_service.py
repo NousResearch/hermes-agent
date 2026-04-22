@@ -74,12 +74,15 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+
         gateway_cli.systemd_restart()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "reload-or-restart", gateway_cli.get_service_name()],
+            ["systemctl", "--user", "reload", gateway_cli.get_service_name()],
         ]
 
 
@@ -101,7 +104,7 @@ class TestGeneratedSystemdUnits:
         assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
 
     def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="root")
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
@@ -819,7 +822,7 @@ class TestGeneratedUnitIncludesLocalBin:
             "_build_user_local_paths",
             lambda home_path, existing: [str(home_path / ".local" / "bin")],
         )
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="root")
         # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit
 

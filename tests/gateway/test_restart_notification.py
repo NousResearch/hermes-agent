@@ -213,3 +213,25 @@ async def test_send_restart_notification_cleans_up_on_send_failure(
     await runner._send_restart_notification()
 
     assert not notify_path.exists()  # cleaned up despite error
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_silently_skips_chat_not_found(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    caplog.set_level("INFO")
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(side_effect=RuntimeError("Chat not found"))
+
+    await runner._send_restart_notification()
+
+    assert not notify_path.exists()
+    assert "Restart notification skipped" in caplog.text

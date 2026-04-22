@@ -1562,8 +1562,16 @@ def systemd_restart(system: bool = False):
             f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} --since '2 min ago'"
         )
         return
-    _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
-    print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
+
+    # Fallback path: when the target gateway is not our ancestor (for example
+    # a manual shell outside the service cgroup) we must NOT call
+    # reload-or-restart here.  For units with ExecReload, plain reload sends
+    # SIGUSR1 to the existing gateway so it can drain and preserve
+    # resume_pending/session continuity. restart/reload-or-restart forces a
+    # stop/start cycle and can SIGKILL the draining process after
+    # TimeoutStopSec, which is exactly the interruption path we want to avoid.
+    _run_systemctl(["reload", get_service_name()], system=system, check=True, timeout=90)
+    print(f"✓ {_service_scope_label(system).capitalize()} service reload requested")
 
 
 

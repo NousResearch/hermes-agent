@@ -60,6 +60,50 @@ class TestIsWriteDenied:
     def test_tilde_expansion(self):
         assert _is_write_denied("~/.ssh/authorized_keys") is True
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "auth.json",
+            "config.yaml",
+            "webhook_subscriptions.json",
+            "mcp-tokens/token1.json",
+            "mcp-tokens/subdir/token2.json",
+        ],
+    )
+    def test_hermes_control_files_and_mcp_tokens_denied(self, path):
+        """Hermes control files and mcp-tokens entries must be write-denied."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        full_path = str(hermes_home / path)
+        assert _is_write_denied(full_path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "dummy/../config.yaml",
+            "./auth.json",
+            "mcp-tokens/../config.yaml",
+        ],
+    )
+    def test_hermes_control_files_traversal_denied(self, path):
+        """Path traversal attempts to control files must be blocked by realpath."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        full_path = str(hermes_home / path)
+        assert _is_write_denied(full_path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/tmp/standard_file.txt",
+            "~/projects/myapp/main.py",
+            "/var/log/app.log",
+        ],
+    )
+    def test_standard_paths_allowed(self, path):
+        """Unrelated paths must still be allowed."""
+        assert _is_write_denied(path) is False
+
 
 
 # =========================================================================

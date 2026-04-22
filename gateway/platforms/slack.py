@@ -88,7 +88,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_mode_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
         self._watchdog_interval: float = float(self.config.extra.get("socket_watchdog_interval", 15.0) or 15.0)
-        self._watchdog_idle_seconds: float = float(self.config.extra.get("socket_watchdog_idle_seconds", 60.0) or 60.0)
+        self._watchdog_idle_seconds: float = float(self.config.extra.get("socket_watchdog_idle_seconds", 120.0) or 120.0)
         self._watchdog_lock = asyncio.Lock()
         self._last_socket_activity_ts: float = time.monotonic()
         self._last_inbound_event_ts: float = 0.0

@@ -5826,22 +5826,129 @@ class AIAgent:
                             result["response"] = _call_chat_completions()
                         return  # success
                     except Exception as e:
-                        if deltas_were_sent["yes"]:
-                            # Streaming failed AFTER some tokens were already
-                            # delivered.  Don't retry or fall back — partial
-                            # content already reached the user.
-                            logger.warning(
-                                "Streaming failed after partial delivery, not retrying: %s", e
-                            )
-                            result["error"] = e
-                            return
-
                         _is_timeout = isinstance(
                             e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
                         )
                         _is_conn_err = isinstance(
                             e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
                         )
+
+                        # If the stream died AFTER some tokens were delivered:
+                        # normally we don't retry (the user already saw text,
+                        # retrying would duplicate it).  BUT: if a tool call
+                        # was in-flight when the stream died, silently aborting
+                        # discards the tool call entirely.  In that case we
+                        # prefer to retry — the user sees a brief
+                        # "reconnecting" marker + duplicated preamble text,
+                        # which is strictly better than a failed action with
+                        # a "retry manually" message.  Limit this to transient
+                        # connection errors (Clawdbot-style narrow gate): no
+                        # tool has executed yet within this API call, so
+                        # silent retry is safe wrt side-effects.
+                        if deltas_were_sent["yes"]:
+                            _partial_tool_in_flight = bool(
+                                result.get("partial_tool_names")
+                            )
+                            _is_sse_conn_err_preview = False
+                            if not _is_timeout and not _is_conn_err:
+                                from openai import APIError as _APIError
+                                if isinstance(e, _APIError) and not getattr(e, "status_code", None):
+                                    _err_lower_preview = str(e).lower()
+                                    _SSE_PREVIEW_PHRASES = (
+                                        "connection lost",
+                                        "connection reset",
+                                        "connection closed",
+                                        "connection terminated",
+                                        "network error",
+                                        "network connection",
+                                        "terminated",
+                                        "peer closed",
+                                        "broken pipe",
+                                        "upstream connect error",
+                                    )
+                                    _is_sse_conn_err_preview = any(
+                                        phrase in _err_lower_preview
+                                        for phrase in _SSE_PREVIEW_PHRASES
+                                    )
+                            _is_transient = (
+                                _is_timeout or _is_conn_err or _is_sse_conn_err_preview
+                            )
+                            _can_silent_retry = (
+                                _partial_tool_in_flight
+                                and _is_transient
+                                and _stream_attempt < _max_stream_retries
+                            )
+                            if not _can_silent_retry:
+                                # Either no tool call was in-flight (so the
+                                # turn was a pure text response — current
+                                # stub-with-recovered-text behaviour is
+                                # correct), or retries are exhausted, or the
+                                # error isn't transient.  Fall through to the
+                                # stub path.
+                                logger.warning(
+                                    "Streaming failed after partial delivery, not retrying: %s", e
+                                )
+                                result["error"] = e
+                                return
+                            # Tool call was in-flight AND error is transient:
+                            # retry silently.  Clear per-attempt state so the
+                            # next stream starts clean.  Fire a "reconnecting"
+                            # marker so the user sees why the preamble is
+                            # about to be re-streamed.
+                            logger.info(
+                                "Streaming attempt %s/%s died mid tool-call "
+                                "(%s: %s) after user-visible text; retrying "
+                                "silently to avoid losing the action. "
+                                "Preamble will re-stream.",
+                                _stream_attempt + 1,
+                                _max_stream_retries + 1,
+                                type(e).__name__,
+                                e,
+                            )
+                            try:
+                                self._fire_stream_delta(
+                                    "\n\n⚠ Connection dropped mid tool-call; "
+                                    "reconnecting…\n\n"
+                                )
+                            except Exception:
+                                pass
+                            # Reset the streamed-text buffer so the retry's
+                            # fresh preamble doesn't get double-recorded in
+                            # _current_streamed_assistant_text (which would
+                            # pollute the interim-visible-text comparison).
+                            try:
+                                self._reset_stream_delivery_tracking()
+                            except Exception:
+                                pass
+                            # Reset in-memory accumulators so the next
+                            # attempt's chunks don't concat onto the dead
+                            # stream's partial JSON.
+                            result["partial_tool_names"] = []
+                            deltas_were_sent["yes"] = False
+                            first_delta_fired["done"] = False
+                            self._emit_status(
+                                f"⚠️ Connection dropped mid tool-call "
+                                f"({type(e).__name__}). Reconnecting… "
+                                f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
+                            )
+                            self._touch_activity(
+                                f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
+                                f"mid tool-call after {type(e).__name__}"
+                            )
+                            stale = request_client_holder.get("client")
+                            if stale is not None:
+                                self._close_request_openai_client(
+                                    stale, reason="stream_mid_tool_retry_cleanup"
+                                )
+                                request_client_holder["client"] = None
+                            try:
+                                self._replace_primary_openai_client(
+                                    reason="stream_mid_tool_retry_pool_cleanup"
+                                )
+                            except Exception:
+                                pass
+                            self._emit_status("🔄 Reconnected — resuming…")
+                            continue
 
                         # SSE error events from proxies (e.g. OpenRouter sends
                         # {"error":{"message":"Network connection lost."}}) are

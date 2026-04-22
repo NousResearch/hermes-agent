@@ -297,15 +297,31 @@ export function fmtTokens(n: number): string {
   return `${Math.round(n / 1000)}k`
 }
 
-function fmtDuration(seconds: number): string {
+/**
+ * `Ns` / `Nm` / `Nm Ss` formatter for seconds.  Shared with the agents
+ * overlay so the timeline + list + summary all speak the same dialect.
+ */
+export function fmtDuration(seconds: number): string {
   if (seconds < 60) {
-    return `${Math.round(seconds)}s`
+    return `${Math.max(0, Math.round(seconds))}s`
   }
 
   const m = Math.floor(seconds / 60)
   const s = Math.round(seconds - m * 60)
 
   return s === 0 ? `${m}m` : `${m}m ${s}s`
+}
+
+/**
+ * A subagent is top-level if it has no `parentId`, or its parent isn't in
+ * the same snapshot (orphaned by a pruned mid-flight root).  Same rule
+ * `buildSubagentTree` uses — keep call sites consistent across the live
+ * view, disk label, and diff pane.
+ */
+export function topLevelSubagents(items: readonly SubagentProgress[]): SubagentProgress[] {
+  const ids = new Set(items.map(s => s.id))
+
+  return items.filter(s => !s.parentId || !ids.has(s.parentId))
 }
 
 /**

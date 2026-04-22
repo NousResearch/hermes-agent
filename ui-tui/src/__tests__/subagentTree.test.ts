@@ -5,11 +5,13 @@ import {
   descendantIds,
   flattenTree,
   fmtCost,
+  fmtDuration,
   fmtTokens,
   formatSummary,
   hotnessBucket,
   peakHotness,
   sparkline,
+  topLevelSubagents,
   treeTotals,
   widthByDepth
 } from '../lib/subagentTree.js'
@@ -365,5 +367,44 @@ describe('formatSummary', () => {
         totalTools: 124
       })
     ).toBe('d3 · 7 agents · 124 tools · 2m 14s · ⚡2')
+  })
+})
+
+describe('fmtDuration', () => {
+  it('formats under a minute as plain seconds', () => {
+    expect(fmtDuration(0)).toBe('0s')
+    expect(fmtDuration(42)).toBe('42s')
+    expect(fmtDuration(59.4)).toBe('59s')
+  })
+
+  it('formats whole minutes without trailing seconds', () => {
+    expect(fmtDuration(60)).toBe('1m')
+    expect(fmtDuration(180)).toBe('3m')
+  })
+
+  it('mixes minutes and seconds', () => {
+    expect(fmtDuration(134)).toBe('2m 14s')
+    expect(fmtDuration(605)).toBe('10m 5s')
+  })
+})
+
+describe('topLevelSubagents', () => {
+  it('returns items with no parent', () => {
+    const items = [makeItem({ id: 'a', index: 0 }), makeItem({ id: 'b', index: 1 })]
+    expect(topLevelSubagents(items).map(s => s.id)).toEqual(['a', 'b'])
+  })
+
+  it('excludes children whose parent is present', () => {
+    const items = [
+      makeItem({ id: 'p', index: 0 }),
+      makeItem({ depth: 1, id: 'c', index: 0, parentId: 'p' })
+    ]
+
+    expect(topLevelSubagents(items).map(s => s.id)).toEqual(['p'])
+  })
+
+  it('promotes orphans whose parent is missing', () => {
+    const items = [makeItem({ id: 'a', index: 0 }), makeItem({ depth: 1, id: 'orphan', index: 1, parentId: 'ghost' })]
+    expect(topLevelSubagents(items).map(s => s.id)).toEqual(['a', 'orphan'])
   })
 })

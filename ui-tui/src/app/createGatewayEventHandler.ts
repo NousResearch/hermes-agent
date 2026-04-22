@@ -2,6 +2,7 @@ import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type { CommandsCatalogResponse, DelegationStatusResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress } from '../types.js'
@@ -66,20 +67,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return min === 0 ? s.startedAt : Math.min(min, s.startedAt)
       }, 0)
 
-      // Match buildSubagentTree semantics: an agent is top-level if it has
-      // no parent OR its parent isn't in the snapshot (orphan).  Otherwise
-      // the disk label would fall back to `${N} subagents` for any turn
-      // whose roots got pruned mid-flight.
-      const ids = new Set(subagents.map(s => s.id))
-      const top = subagents.filter(s => !s.parentId || !ids.has(s.parentId)).slice(0, 2)
+      const top = topLevelSubagents(subagents)
+        .map(s => s.goal)
+        .filter(Boolean)
+        .slice(0, 2)
 
-      const label = top.length
-        ? top
-            .map(s => s.goal)
-            .filter(Boolean)
-            .slice(0, 2)
-            .join(' · ')
-        : `${subagents.length} subagents`
+      const label = top.length ? top.join(' · ') : `${subagents.length} subagents`
 
       await rpc('spawn_tree.save', {
         finished_at: Date.now() / 1000,

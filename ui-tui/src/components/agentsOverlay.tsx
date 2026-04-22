@@ -19,11 +19,13 @@ import {
   descendantIds,
   flattenTree,
   fmtCost,
+  fmtDuration,
   fmtTokens,
   formatSummary,
   hotnessBucket,
   peakHotness,
   sparkline,
+  topLevelSubagents,
   treeTotals,
   widthByDepth
 } from '../lib/subagentTree.js'
@@ -89,22 +91,9 @@ const heatPalette = (t: Theme) => [t.color.bronze, t.color.amber, t.color.gold, 
 
 // ── Pure helpers ─────────────────────────────────────────────────────
 
-const fmtDur = (seconds?: number): string => {
-  if (!seconds || seconds <= 0) {
-    return ''
-  }
+const fmtDur = (seconds?: number) => (seconds == null || seconds <= 0 ? '' : fmtDuration(seconds))
+const fmtElapsedLabel = (seconds: number) => (seconds < 0 ? '' : fmtDuration(seconds))
 
-  if (seconds < 60) {
-    return `${Math.round(seconds)}s`
-  }
-
-  const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds - m * 60)
-
-  return s === 0 ? `${m}m` : `${m}m ${s}s`
-}
-
-/** Server duration if present; else live edge from `startedAt` (running / queued). */
 const displayElapsedSeconds = (item: SubagentProgress, nowMs: number): number | null => {
   if (item.durationSeconds != null) {
     return item.durationSeconds
@@ -115,22 +104,6 @@ const displayElapsedSeconds = (item: SubagentProgress, nowMs: number): number | 
   }
 
   return null
-}
-
-/** Like fmtDur but allows 0s for just-started / still-running rows. */
-const fmtElapsedLabel = (seconds: number): string => {
-  if (seconds < 0) {
-    return ''
-  }
-
-  if (seconds < 60) {
-    return `${Math.max(0, Math.round(seconds))}s`
-  }
-
-  const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds - m * 60)
-
-  return s === 0 ? `${m}m` : `${m}m ${s}s`
 }
 
 const indentFor = (depth: number): string => '  '.repeat(Math.max(0, depth))
@@ -144,22 +117,18 @@ const statusGlyph = (item: SubagentProgress, t: Theme) => {
 }
 
 const prepareRows = (tree: SubagentNode[], sort: SortMode, filter: FilterMode): SubagentNode[] =>
-  tree.length === 0
-    ? []
-    : [...tree]
-        .sort(SORT_COMPARATORS[sort])
-        .flatMap(n => flattenTree([n]))
-        .filter(FILTER_PREDICATES[filter])
+  tree.length === 0 ? [] : flattenTree([...tree].sort(SORT_COMPARATORS[sort])).filter(FILTER_PREDICATES[filter])
+
+const diffMetricLine = (name: string, a: number, b: number, fmt: (n: number) => string) => {
+  const d = b - a
+  const sign = d === 0 ? '' : d > 0 ? '+' : '-'
+
+  return `${name}: ${fmt(a)} → ${fmt(b)}  (${sign}${fmt(Math.abs(d)) || '0'})`
+}
 
 // ── Sub-components ───────────────────────────────────────────────────
 
-/**
- * Detail-pane scrollbar, polled on the parent tick.  `TranscriptScrollbar`
- * re-renders only on scroll events — fine for the main transcript, but the
- * overlay's content reflows on accordion toggle without any scroll, so the
- * thumb stays stale.  Ticking forces a re-read; always drawing the track
- * keeps the gutter visually stable for short content too.
- */
+/** Polled on parent `tick` so accordions can resize the thumb without a scroll event. */
 function OverlayScrollbar({
   scrollRef,
   t,
@@ -189,13 +158,11 @@ function OverlayScrollbar({
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
   const below = Math.max(0, vp - thumbTop - thumb)
 
-  const trackLines = (n: number) => (n > 0 ? `${'│\n'.repeat(Math.max(0, n - 1))}│` : '')
-  const thumbLines = `${'┃\n'.repeat(Math.max(0, thumb - 1))}┃`
-
-  const thumbColor = grab !== null ? t.color.gold : hover ? t.color.amber : t.color.amber
+  const vBar = (n: number) => (n > 0 ? `${'│\n'.repeat(n - 1)}│` : '')
+  const thumbBody = `${'┃\n'.repeat(Math.max(0, thumb - 1))}┃`
+  const thumbColor = grab !== null ? t.color.gold : t.color.amber
   const trackColor = hover ? t.color.bronze : t.color.dim
 
-  // Map a local row (0..vp-1) + grab offset to a scrollTop position.
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {
       return
@@ -223,21 +190,21 @@ function OverlayScrollbar({
     >
       {!scrollable ? (
         <Text color={trackColor} dim>
-          {trackLines(vp)}
+          {vBar(vp)}
         </Text>
       ) : (
         <>
           {thumbTop > 0 ? (
             <Text color={trackColor} dim={!hover}>
-              {trackLines(thumbTop)}
+              {vBar(thumbTop)}
             </Text>
           ) : null}
 
-          <Text color={thumbColor}>{thumbLines}</Text>
+          <Text color={thumbColor}>{thumbBody}</Text>
 
           {below > 0 ? (
             <Text color={trackColor} dim={!hover}>
-              {trackLines(below)}
+              {vBar(below)}
             </Text>
           ) : null}
         </>
@@ -246,11 +213,6 @@ function OverlayScrollbar({
   )
 }
 
-/**
- * Horizontal ASCII Gantt strip.  One bar per subagent, anchored by row id.
- * The ruler below maps screen positions to wall-clock seconds so a bar that
- * "ends in the middle" reads as "finished at ~Xs".
- */
 function GanttStrip({
   cols,
   cursor,
@@ -305,8 +267,6 @@ function GanttStrip({
     return ' '.repeat(s) + '█'.repeat(fill) + ' '.repeat(Math.max(0, barWidth - s - fill))
   }
 
-  // Wall-clock axis: more ticks on short windows so the scale visibly
-  // “counts up” with `now` instead of a single 0/10s pair.
   const charStep = totalSeconds < 20 && barWidth > 20 ? 5 : 10
 
   const ruler = Array.from({ length: barWidth }, (_, i) => {
@@ -388,10 +348,6 @@ function GanttStrip({
   )
 }
 
-/**
- * A collapsible section.  Open-state lives on a shared atom so navigating
- * between agents / list ↔ detail / history doesn't reset accordions.
- */
 function OverlaySection({
   children,
   count,
@@ -423,7 +379,6 @@ function OverlaySection({
   )
 }
 
-/** `label · value` row with the detail-pane colour hierarchy. */
 function Field({ name, t, value }: { name: string; t: Theme; value: ReactNode }) {
   return (
     <Text wrap="truncate-end">
@@ -461,27 +416,20 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
         <Text color={color}>{glyph}</Text> {item.goal}
       </Text>
 
-      <Box marginTop={1}>
+      <Box flexDirection="column" marginTop={1}>
         <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
+        {item.model ? <Field name="model" t={t} value={item.model} /> : null}
+        {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
+        <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
+        <Field
+          name="subtree"
+          t={t}
+          value={`${agg.descendantCount} agent${agg.descendantCount === 1 ? '' : 's'} · d${agg.maxDepthFromHere} · ⚡${agg.activeCount}`}
+        />
+        {item.durationSeconds ? <Field name="elapsed" t={t} value={fmtDur(item.durationSeconds)} /> : null}
+        {item.iteration != null ? <Field name="iteration" t={t} value={String(item.iteration)} /> : null}
+        {item.apiCalls ? <Field name="api calls" t={t} value={String(item.apiCalls)} /> : null}
       </Box>
-
-      {item.model ? <Field name="model" t={t} value={item.model} /> : null}
-
-      {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
-
-      <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
-
-      <Field
-        name="subtree"
-        t={t}
-        value={`${agg.descendantCount} agent${agg.descendantCount === 1 ? '' : 's'} · d${agg.maxDepthFromHere} · ⚡${agg.activeCount}`}
-      />
-
-      {item.durationSeconds ? <Field name="elapsed" t={t} value={fmtDur(item.durationSeconds)} /> : null}
-
-      {item.iteration != null ? <Field name="iteration" t={t} value={String(item.iteration)} /> : null}
-
-      {item.apiCalls ? <Field name="api calls" t={t} value={String(item.apiCalls)} /> : null}
 
       {localTokens > 0 || localCost > 0 ? (
         <OverlaySection defaultOpen t={t} title="Budget">
@@ -577,19 +525,6 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
   )
 }
 
-/** Pluck the label out of `formatToolCall` output: `Read_file("…")` → `Read_file`. */
-const latestToolLabel = (tools: readonly string[]): string => {
-  const last = tools[tools.length - 1]
-
-  if (!last) {
-    return ''
-  }
-
-  const paren = last.indexOf('(')
-
-  return (paren > 0 ? last.slice(0, paren) : last).trim()
-}
-
 function ListRow({
   active,
   index,
@@ -613,15 +548,10 @@ function ListRow({
   const goal = compactPreview(node.item.goal || 'subagent', width - 28 - node.item.depth * 2)
   const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
-
-  // Running rows replace the moving-number clock (timeline already has it)
-  // with the most recent tool label — no per-tick re-render, but changes
-  // as activity flows, so the list still conveys motion.
-  const current = node.item.status === 'running' ? latestToolLabel(node.item.tools) : ''
-  const trailing = current ? ` · ${compactPreview(current, 14)}` : ''
-
-  // Selection pattern mirrors sessionPicker: inverse + amber for contrast
-  // across any theme, body stays cornsilk, stats dim.
+  const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
+  const paren = line ? line.indexOf('(') : -1
+  const toolShort = line ? (paren > 0 ? line.slice(0, paren) : line).trim() : ''
+  const trailing = toolShort ? ` · ${compactPreview(toolShort, 14)}` : ''
   const fg = active ? t.color.amber : t.color.cornsilk
 
   return (
@@ -670,8 +600,7 @@ function DiffPane({
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
-        {snapshot.subagents
-          .filter(s => !s.parentId)
+        {topLevelSubagents(snapshot.subagents)
           .slice(0, 8)
           .map(s => {
             const { color, glyph } = statusGlyph(s, t)
@@ -708,12 +637,6 @@ function DiffView({
     }
   })
 
-  const delta = (name: string, a: number, b: number, fmt: (n: number) => string): string => {
-    const sign = b - a === 0 ? '' : b > a ? '+' : '-'
-
-    return `${name}: ${fmt(a)} → ${fmt(b)}  (${sign}${fmt(Math.abs(b - a)) || '0'})`
-  }
-
   const round = (n: number) => String(Math.round(n))
   const sumTokens = (x: typeof aTotals) => x.inputTokens + x.outputTokens
   const dollars = (n: number) => fmtCost(n) || '$0.00'
@@ -738,16 +661,20 @@ function DiffView({
           Δ
         </Text>
 
-        <Text color={t.color.cornsilk}>{delta('agents', aTotals.descendantCount, bTotals.descendantCount, round)}</Text>
-        <Text color={t.color.cornsilk}>{delta('tools', aTotals.totalTools, bTotals.totalTools, round)}</Text>
         <Text color={t.color.cornsilk}>
-          {delta('depth', aTotals.maxDepthFromHere, bTotals.maxDepthFromHere, round)}
+          {diffMetricLine('agents', aTotals.descendantCount, bTotals.descendantCount, round)}
+        </Text>
+        <Text color={t.color.cornsilk}>{diffMetricLine('tools', aTotals.totalTools, bTotals.totalTools, round)}</Text>
+        <Text color={t.color.cornsilk}>
+          {diffMetricLine('depth', aTotals.maxDepthFromHere, bTotals.maxDepthFromHere, round)}
         </Text>
         <Text color={t.color.cornsilk}>
-          {delta('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
+          {diffMetricLine('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
         </Text>
-        <Text color={t.color.cornsilk}>{delta('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
-        <Text color={t.color.cornsilk}>{delta('cost', aTotals.costUsd, bTotals.costUsd, dollars)}</Text>
+        <Text color={t.color.cornsilk}>
+          {diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}
+        </Text>
+        <Text color={t.color.cornsilk}>{diffMetricLine('cost', aTotals.costUsd, bTotals.costUsd, dollars)}</Text>
       </Box>
     </Box>
   )
@@ -913,6 +840,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   // ── Input ──────────────────────────────────────────────────────────
 
   const detailPageSize = Math.max(4, rowsH - 2)
+  const wheelDetailDy = 3
   const scrollDetail = (dy: number) => detailScrollRef.current?.scrollBy(dy)
 
   useInput((ch, key) => {
@@ -958,14 +886,12 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         return scrollDetail(detailPageSize)
       }
 
-      // Wheel = smooth pixel scroll; arrows = 2-row nudge.  Overlay's
-      // useInput supersedes the global wheel handler so we re-bind here.
       if (key.wheelUp) {
-        return scrollDetail(-3)
+        return scrollDetail(-wheelDetailDy)
       }
 
       if (key.wheelDown) {
-        return scrollDetail(3)
+        return scrollDetail(wheelDetailDy)
       }
 
       if (key.upArrow || ch === 'k') {
@@ -1036,20 +962,12 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     ? `caps d${delegation.maxSpawnDepth}/${delegation.maxConcurrentChildren ?? '?'}`
     : ''
 
-  // Single header line — title · metrics.  An earlier "title + subtitle"
-  // variant wrapped on narrow terminals which looked like the header was
-  // rendering twice, and a one-line header makes it obvious at a glance
-  // whether the turn is live or finished.
-  const title = (() => {
-    if (!replayMode || !effectiveSnapshot) {
-      return `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
-    }
-
-    const at = new Date(effectiveSnapshot.finishedAt).toLocaleTimeString()
-    const position = historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'
-
-    return `${position} · finished ${at}`
-  })()
+  const title =
+    replayMode && effectiveSnapshot
+      ? `${historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'} · finished ${new Date(
+          effectiveSnapshot.finishedAt
+        ).toLocaleTimeString()}`
+      : `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
 
   const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
 

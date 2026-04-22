@@ -1,11 +1,6 @@
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import type {
-  CommandsCatalogResponse,
-  DelegationStatusResponse,
-  GatewayEvent,
-  GatewaySkin
-} from '../gatewayTypes.js'
+import type { CommandsCatalogResponse, DelegationStatusResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
@@ -74,7 +69,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       const top = subagents.filter(s => !s.parentId).slice(0, 2)
 
       const label = top.length
-        ? top.map(s => s.goal).filter(Boolean).slice(0, 2).join(' · ')
+        ? top
+            .map(s => s.goal)
+            .filter(Boolean)
+            .slice(0, 2)
+            .join(' · ')
         : `${subagents.length} subagents`
 
       await rpc('spawn_tree.save', {
@@ -314,32 +313,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.recordToolStart(ev.payload.tool_id, ev.payload.name ?? 'tool', ev.payload.context ?? '')
 
         return
+      case 'tool.complete': {
+        const inlineDiffText =
+          ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
-      case 'tool.complete':
-        {
-          const inlineDiffText =
-            ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
+        turnController.recordToolComplete(
+          ev.payload.tool_id,
+          ev.payload.name,
+          ev.payload.error,
+          inlineDiffText ? '' : ev.payload.summary
+        )
 
-          turnController.recordToolComplete(
-            ev.payload.tool_id,
-            ev.payload.name,
-            ev.payload.error,
-            inlineDiffText ? '' : ev.payload.summary
-          )
-
-          if (!inlineDiffText) {
-            return
-          }
-
-          // Keep inline diffs attached to the assistant completion body so
-          // they render in the same message flow, not as a standalone system
-          // artifact that can look out-of-place around tool rows.
-          turnController.queueInlineDiff(inlineDiffText)
-
+        if (!inlineDiffText) {
           return
         }
 
+        // Keep inline diffs attached to the assistant completion body so
+        // they render in the same message flow, not as a standalone system
+        // artifact that can look out-of-place around tool rows.
+        turnController.queueInlineDiff(inlineDiffText)
+
         return
+      }
 
       case 'clarify.request':
         patchOverlayState({
@@ -386,9 +381,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'subagent.spawn_requested':
         // Child built but not yet running (waiting on ThreadPoolExecutor slot).
         // Preserve completed state if a later event races in before this one.
-        turnController.upsertSubagent(ev.payload, c =>
-          c.status === 'completed' ? {} : { status: 'queued' }
-        )
+        turnController.upsertSubagent(ev.payload, c => (c.status === 'completed' ? {} : { status: 'queued' }))
 
         // Prime the status-bar HUD: fetch caps (once every 5s) so we can
         // warn as depth/concurrency approaches the configured ceiling.
@@ -401,9 +394,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'subagent.start':
-        turnController.upsertSubagent(ev.payload, c =>
-          c.status === 'completed' ? {} : { status: 'running' }
-        )
+        turnController.upsertSubagent(ev.payload, c => (c.status === 'completed' ? {} : { status: 'running' }))
 
         return
       case 'subagent.thinking': {

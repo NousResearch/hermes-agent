@@ -182,8 +182,6 @@ auxiliary_is_nous: bool = False
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
-_NOUS_FREE_TIER_VISION_MODEL = "xiaomi/mimo-v2-omni"
-_NOUS_FREE_TIER_AUX_MODEL = "xiaomi/mimo-v2-pro"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -845,7 +843,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                     return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
             if base_url_host_matches(base_url, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(base_url, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
 
@@ -871,7 +869,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         extra = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
-            extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+            extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 
@@ -927,22 +925,35 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
-    if nous.get("source") == "pool":
-        model = "gemini-3-flash"
-    else:
-        model = _NOUS_MODEL
-    # Free-tier users can't use paid auxiliary models — use the free
-    # models instead: mimo-v2-omni for vision, mimo-v2-pro for text tasks.
-    # Paid accounts keep their tier-appropriate models: gemini-3-flash-preview
-    # for both text and vision tasks.
+
+    # Ask the Portal which model it currently recommends for this task type.
+    # The /api/nous/recommended-models endpoint is the authoritative source:
+    # it distinguishes paid vs free tier recommendations, and get_nous_recommended_aux_model
+    # auto-detects the caller's tier via check_nous_free_tier().  Fall back to
+    # _NOUS_MODEL (google/gemini-3-flash-preview) when the Portal is unreachable
+    # or returns a null recommendation for this task type.
+    model = _NOUS_MODEL
     try:
-        from hermes_cli.models import check_nous_free_tier
-        if check_nous_free_tier():
-            model = _NOUS_FREE_TIER_VISION_MODEL if vision else _NOUS_FREE_TIER_AUX_MODEL
-            logger.debug("Free-tier Nous account — using %s for auxiliary/%s",
-                         model, "vision" if vision else "text")
-    except Exception:
-        pass
+        from hermes_cli.models import get_nous_recommended_aux_model
+        recommended = get_nous_recommended_aux_model(vision=vision)
+        if recommended:
+            model = recommended
+            logger.debug(
+                "Auxiliary/%s: using Portal-recommended model %s",
+                "vision" if vision else "text", model,
+            )
+        else:
+            logger.debug(
+                "Auxiliary/%s: no Portal recommendation, falling back to %s",
+                "vision" if vision else "text", model,
+            )
+    except Exception as exc:
+        logger.debug(
+            "Auxiliary/%s: recommended-models lookup failed (%s); "
+            "falling back to %s",
+            "vision" if vision else "text", exc, model,
+        )
+
     if runtime is not None:
         api_key, base_url = runtime
     else:
@@ -1487,7 +1498,7 @@ def _to_async_client(sync_client, model: str):
 
         async_kwargs["default_headers"] = copilot_default_headers()
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+        async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1674,7 +1685,7 @@ def resolve_provider_client(
             )
             extra = {}
             if base_url_host_matches(custom_base, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
@@ -1781,7 +1792,7 @@ def resolve_provider_client(
         # Provider-specific headers
         headers = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
-            headers["User-Agent"] = "KimiCLI/1.30.0"
+            headers["User-Agent"] = "claude-code/0.1.0"
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 

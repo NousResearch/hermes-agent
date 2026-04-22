@@ -2,7 +2,7 @@ import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type { CommandsCatalogResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
-import { formatToolCall } from '../lib/text.js'
+import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress } from '../types.js'
 
@@ -11,7 +11,6 @@ import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
-const ERRLIKE_RE = /\b(error|traceback|exception|failed|spawn)\b/i
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
@@ -111,7 +110,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           turnController.pushActivity(String(r.warning), 'warn')
         }
       })
-      .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'warn'))
+      .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
     if (!STARTUP_RESUME_ID) {
       patchUiState({ status: 'forging session…' })
@@ -201,7 +200,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'gateway.stderr': {
         const line = String(ev.payload.line).slice(0, 120)
 
-        turnController.pushActivity(line, ERRLIKE_RE.test(line) ? 'error' : 'warn')
+        turnController.pushActivity(line, 'info')
 
         return
       }
@@ -222,11 +221,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (!turnController.protocolWarned) {
           turnController.protocolWarned = true
-          turnController.pushActivity('protocol noise detected · /logs to inspect', 'warn')
+          turnController.pushActivity('protocol noise detected · /logs to inspect', 'info')
         }
 
         if (ev.payload?.preview) {
-          turnController.pushActivity(`protocol noise: ${String(ev.payload.preview).slice(0, 120)}`, 'warn')
+          turnController.pushActivity(`protocol noise: ${String(ev.payload.preview).slice(0, 120)}`, 'info')
         }
 
         return
@@ -263,10 +262,27 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.complete':
-        turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
+        {
+          const inlineDiffText =
+            ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
-        if (ev.payload.inline_diff && getUiState().inlineDiffs) {
-          sys(ev.payload.inline_diff)
+          turnController.recordToolComplete(
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            inlineDiffText ? '' : ev.payload.summary
+          )
+
+          if (!inlineDiffText) {
+            return
+          }
+
+          // Keep inline diffs attached to the assistant completion body so
+          // they render in the same message flow, not as a standalone system
+          // artifact that can look out-of-place around tool rows.
+          turnController.queueInlineDiff(inlineDiffText)
+
+          return
         }
 
         return
@@ -282,7 +298,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const description = String(ev.payload.description ?? 'dangerous command')
 
         patchOverlayState({ approval: { command: String(ev.payload.command ?? ''), description } })
-        turnController.pushActivity(`approval needed · ${description}`, 'warn')
         setStatus('approval needed')
 
         return

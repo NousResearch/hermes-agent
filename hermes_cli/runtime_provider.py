@@ -46,6 +46,9 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
       protocol under a ``/anthropic`` suffix — treat those as
       ``anthropic_messages`` transport instead of the default
       ``chat_completions``.
+    - Kimi Code's ``api.kimi.com/coding`` endpoint also speaks the
+      Anthropic Messages protocol (the /coding route accepts Claude
+      Code's native request shape).
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     hostname = base_url_hostname(base_url)
@@ -54,6 +57,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     if hostname == "api.openai.com":
         return "codex_responses"
     if normalized.endswith("/anthropic"):
+        return "anthropic_messages"
+    if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None
 
@@ -205,7 +210,8 @@ def _resolve_runtime_from_pool_entry(
             api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
         else:
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
-            # api.openai.com → codex_responses, api.x.ai → codex_responses).
+            # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
+            # codex_responses).
             detected = _detect_api_mode_for_url(base_url)
             if detected:
                 api_mode = detected
@@ -674,7 +680,8 @@ def _resolve_explicit_runtime(
             if configured_mode:
                 api_mode = configured_mode
             else:
-                # Auto-detect Anthropic-compatible endpoints (/anthropic suffix).
+                # Auto-detect from URL (Anthropic /anthropic suffix,
+                # api.openai.com → Responses, Kimi /coding, etc.).
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected

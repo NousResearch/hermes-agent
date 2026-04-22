@@ -205,6 +205,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 
+
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
     "feishu": "https://accounts.feishu.cn",
@@ -1530,6 +1531,13 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             approval_id = next(self._approval_counter)
             cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+            approval_reply_to = None
+            if metadata:
+                approval_reply_to = (
+                    metadata.get("reply_to")
+                    or metadata.get("event_message_id")
+                    or metadata.get("message_id")
+                )
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
                 return {
@@ -1567,7 +1575,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 chat_id=chat_id,
                 msg_type="interactive",
                 payload=payload,
-                reply_to=None,
+                reply_to=approval_reply_to,
                 metadata=metadata,
             )
 
@@ -2392,7 +2400,19 @@ class FeishuAdapter(BasePlatformAdapter):
     def _pop_processing_reaction(self, message_id: str) -> Optional[str]:
         return self._pending_processing_reactions.pop(message_id, None)
 
+    @staticmethod
+    def _should_use_thread_progress_message(event: MessageEvent) -> bool:
+        source = getattr(event, "source", None)
+        return bool(
+            source
+            and getattr(source, "chat_type", None) == "group"
+            and getattr(source, "thread_id", None)
+            and getattr(event, "message_id", None)
+        )
+
     async def on_processing_start(self, event: MessageEvent) -> None:
+        if self._should_use_thread_progress_message(event):
+            return
         if not self._reactions_enabled():
             return
         message_id = event.message_id
@@ -2405,6 +2425,8 @@ class FeishuAdapter(BasePlatformAdapter):
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
+        if self._should_use_thread_progress_message(event):
+            return
         if not self._reactions_enabled():
             return
         message_id = event.message_id

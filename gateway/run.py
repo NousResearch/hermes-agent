@@ -9304,6 +9304,11 @@ class GatewayRunner:
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_reply_to = (
+            event_message_id
+            if source.platform == Platform.FEISHU and source.thread_id and event_message_id
+            else None
+        )
 
         async def send_progress_messages():
             if not progress_queue:
@@ -9387,15 +9392,30 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            await adapter.send(
+                                chat_id=source.chat_id,
+                                content=msg,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=full_text,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            result = await adapter.send(
+                                chat_id=source.chat_id,
+                                content=msg,
+                                reply_to=_progress_reply_to,
+                                metadata=_progress_metadata,
+                            )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
 
@@ -9478,6 +9498,7 @@ class GatewayRunner:
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_reply_to = _progress_reply_to
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -9487,6 +9508,7 @@ class GatewayRunner:
                     _status_adapter.send(
                         _status_chat_id,
                         message,
+                        reply_to=_status_reply_to,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,
@@ -9885,7 +9907,10 @@ class GatewayRunner:
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata={
+                                    **(_status_thread_metadata or {}),
+                                    **({"reply_to": _status_reply_to} if _status_reply_to else {}),
+                                } or None,
                             ),
                             _loop_for_step,
                         ).result(timeout=15)

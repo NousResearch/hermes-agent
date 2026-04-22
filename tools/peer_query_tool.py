@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 
-from hermes_peer.client import PeerNetworkError, broadcast_query, get_agent, list_agents, query_peer
+from hermes_peer.client import PeerNetworkError, PeerNotFoundError, broadcast_query, get_agent, list_agents, query_peer
 from hermes_peer.common import get_int_env, redact_secrets, run_hermes_query
 from tools.registry import registry
 
@@ -13,6 +13,15 @@ def check_requirements() -> bool:
 
 
 def _synthesize_peer_responses(question: str, responses: list[dict[str, str]], timeout_seconds: int) -> str:
+    try:
+        from hermes_sentry import start_span as _sentry_span, sanitize_observability_text as _sanitize
+    except ImportError:
+        import contextlib as _ctxlib
+        @_ctxlib.contextmanager
+        def _sentry_span(**_kw):
+            yield None
+        _sanitize = None
+
     bullet_list = "\n".join(
         f"- {item['agent']}: {item['response']}" for item in responses
     )
@@ -25,16 +34,61 @@ def _synthesize_peer_responses(question: str, responses: list[dict[str, str]], t
         f"Original question: {question}\n\n"
         f"Peer responses:\n{bullet_list}"
     )
+
+    peer_names = ", ".join(item["agent"] for item in responses)
+    with _sentry_span(
+        op="hermes.peer_synthesis",
+        description=f"synthesize {len(responses)} peers",
+        tags={"peer_count": str(len(responses))},
+    ) as span:
+        if span is not None:
+            span.set_data("peers", peer_names)
+        if span is not None and _sanitize:
+            span.set_data("input", _sanitize(synthesis_question, limit=3000))
+        try:
+            result = run_hermes_query(
+                synthesis_question,
+                instruction=instruction,
+                timeout_seconds=timeout_seconds,
+                toolsets=["session_search", "memory"],
+                source="peer-synthesis",
+            )
+        except Exception:
+            result = "\n".join(f"{item['agent']}: {item['response']}" for item in responses)
+        if span is not None and _sanitize:
+            span.set_data("output", _sanitize(result, limit=3000))
+        return result
+
+
+def _fuzzy_resolve_agent(query: str, requester: str, timeout: int) -> dict:
+    """Resolve a partial/nickname agent name to a full agent entry.
+
+    Tries prefix match first (e.g. 'owen' → 'owenwhite'), then substring.
+    Raises PeerNetworkError if no unique match is found.
+    """
+    q = query.lower()
     try:
-        return run_hermes_query(
-            synthesis_question,
-            instruction=instruction,
-            timeout_seconds=timeout_seconds,
-            toolsets=["session_search", "memory"],
-            source="peer-synthesis",
-        )
-    except Exception:
-        return "\n".join(f"{item['agent']}: {item['response']}" for item in responses)
+        peers = list_agents(timeout_seconds=min(timeout, 10))
+    except PeerNetworkError:
+        raise
+    except Exception as exc:
+        raise PeerNetworkError(f"Registry lookup failed: {exc}") from exc
+
+    candidates = [
+        p for p in peers
+        if p.get("name") and p["name"] != requester and p["name"].lower().startswith(q)
+    ]
+    if not candidates:
+        candidates = [
+            p for p in peers
+            if p.get("name") and p["name"] != requester and q in p["name"].lower()
+        ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        names = ", ".join(c["name"] for c in candidates)
+        raise PeerNetworkError(f"Ambiguous peer name '{query}' — matches: {names}")
+    raise PeerNetworkError(f"Unknown peer agent: {query}")
 
 
 def peer_query(
@@ -59,7 +113,10 @@ def peer_query(
 
     try:
         if agent.strip():
-            peer = get_agent(agent.strip(), timeout_seconds=min(timeout, 10))
+            try:
+                peer = get_agent(agent.strip(), timeout_seconds=min(timeout, 10))
+            except PeerNotFoundError:
+                peer = _fuzzy_resolve_agent(agent.strip(), requester, timeout)
             answer = query_peer(
                 peer["endpoint"],
                 question=normalized_question,
@@ -105,6 +162,10 @@ def peer_query(
                     "error": "No peers returned a usable response",
                 }
             )
+
+        # Redact each peer response before synthesis and output
+        for item in responses:
+            item["response"] = redact_secrets(item["response"])
 
         synthesis = _synthesize_peer_responses(normalized_question, responses, timeout)
         return json.dumps(

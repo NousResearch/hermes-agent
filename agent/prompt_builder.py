@@ -170,6 +170,22 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+PEER_QUERY_GUIDANCE = (
+    "# peer_query rules\n"
+    "When the user names or refers to a specific person or agent, you MUST set the "
+    "'agent' parameter to that peer's name. Do NOT broadcast when a specific peer is "
+    "named — broadcasting wastes time and puts unnecessary load on uninvolved agents.\n"
+    "Do NOT call peer_query without the 'agent' parameter to 'discover' or 'list' "
+    "available peers — the registry lookup already tells you who exists. If you need "
+    "to know who is available, call peer_query(agent='<name>') with the name the user "
+    "gave you, or check the registry directly.\n"
+    "Only omit 'agent' (broadcast) when the user explicitly asks to query ALL peers, "
+    "the entire team, or everyone — e.g. 'ask everyone', 'what does the team think', "
+    "'broadcast this question'.\n"
+    "When delivering a message to a specific peer, send it in a single direct "
+    "peer_query call — do not add extra exploratory queries."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

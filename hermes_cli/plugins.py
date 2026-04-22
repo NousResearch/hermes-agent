@@ -719,6 +719,12 @@ class PluginManager:
                 logger.warning("PyYAML not installed – cannot load %s", manifest_file)
                 return None
             data = yaml.safe_load(manifest_file.read_text()) or {}
+            if not isinstance(data, dict):
+                logger.warning(
+                    "Skipping %s: plugin.yaml must contain a mapping",
+                    manifest_file,
+                )
+                return None
 
             name = data.get("name", plugin_dir.name)
             key = f"{prefix}/{plugin_dir.name}" if prefix else name

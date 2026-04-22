@@ -211,6 +211,38 @@ class TestCmdInstall:
         mock_move.assert_not_called()
         mock_display_after_install.assert_not_called()
 
+    @patch("hermes_cli.plugins_cmd._display_after_install")
+    @patch("hermes_cli.plugins_cmd.shutil.move")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd.subprocess.run")
+    def test_install_non_mapping_manifest_falls_back_to_repo_name(
+        self,
+        mock_run,
+        mock_plugins_dir,
+        mock_move,
+        mock_display_after_install,
+        tmp_path,
+    ):
+        from hermes_cli.plugins_cmd import cmd_install
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        mock_plugins_dir.return_value = plugins_dir
+
+        def _fake_clone(cmd, capture_output, text, timeout):
+            target = Path(cmd[-1])
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "plugin.yaml").write_text("- not\n- a\n- mapping\n", encoding="utf-8")
+            (target / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = _fake_clone
+
+        cmd_install("owner/repo", enable=False)
+
+        assert Path(mock_move.call_args.args[1]).name == "repo"
+        mock_display_after_install.assert_called_once()
+
 
 # ── cmd_update tests ─────────────────────────────────────────────────────────
 

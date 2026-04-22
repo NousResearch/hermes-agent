@@ -161,6 +161,22 @@ class TestPluginDiscovery:
         }
         assert len(non_bundled) == 0
 
+    def test_discover_skips_non_mapping_manifest(self, tmp_path, monkeypatch, caplog):
+        """Valid YAML with the wrong top-level type should be skipped, not crash discovery."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "bad_manifest"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text("- not\n- a\n- mapping\n", encoding="utf-8")
+        (plugin_dir / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert "bad_manifest" not in mgr._plugins
+        assert any("must contain a mapping" in record.message for record in caplog.records)
+
     def test_entry_points_scanned(self, tmp_path, monkeypatch):
         """Entry-point based plugins are discovered (mocked)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))

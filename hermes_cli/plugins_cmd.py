@@ -122,7 +122,14 @@ def _read_manifest(plugin_dir: Path) -> dict:
         import yaml
 
         with open(manifest_file) as f:
-            return yaml.safe_load(f) or {}
+            manifest = yaml.safe_load(f) or {}
+        if not isinstance(manifest, dict):
+            logger.warning(
+                "Ignoring non-mapping plugin manifest in %s",
+                manifest_file,
+            )
+            return {}
+        return manifest
     except Exception as e:
         logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
         return {}
@@ -339,6 +346,8 @@ def cmd_install(
 
         # Read manifest
         manifest = _read_manifest(tmp_target)
+        if not isinstance(manifest, dict):
+            manifest = {}
         plugin_name = manifest.get("name") or _repo_name_from_url(git_url)
 
         # Sanitize plugin name against path traversal
@@ -394,6 +403,8 @@ def cmd_install(
 
     # Re-read manifest from installed location (for env var prompting)
     installed_manifest = _read_manifest(target)
+    if not isinstance(installed_manifest, dict):
+        installed_manifest = {}
 
     # Prompt for required environment variables before showing after-install docs
     _prompt_plugin_env_vars(installed_manifest, console)
@@ -627,6 +638,8 @@ def _plugin_exists(name: str) -> bool:
             if not child.is_dir():
                 continue
             manifest = _read_manifest(child)
+            if not isinstance(manifest, dict):
+                manifest = {}
             if manifest.get("name") == name:
                 return True
     # Bundled: <repo>/plugins/<name>/
@@ -681,6 +694,8 @@ def _discover_all_plugins() -> list:
                 try:
                     with open(manifest_file) as f:
                         manifest = yaml.safe_load(f) or {}
+                    if not isinstance(manifest, dict):
+                        manifest = {}
                     name = manifest.get("name", d.name)
                     version = manifest.get("version", "")
                     description = manifest.get("description", "")

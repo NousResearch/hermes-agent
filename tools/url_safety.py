@@ -5,6 +5,13 @@ skill could trick the agent into fetching internal resources like cloud
 metadata endpoints (169.254.169.254), localhost services, or private
 network hosts.
 
+The check can be globally disabled via ``security.allow_private_urls: true``
+in config.yaml for environments where DNS resolves external domains to
+private/benchmark-range IPs (OpenWrt routers, corporate proxies, VPNs
+that use 198.18.0.0/15 or 100.64.0.0/10).  Even when disabled, cloud
+metadata hostnames (metadata.google.internal, 169.254.169.254) are
+**always** blocked — those are never legitimate agent targets.
+
 Limitations (documented, not fixable at pre-flight level):
   - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
     can return a public IP for the check, then a private IP for the actual
@@ -18,16 +25,34 @@ Limitations (documented, not fixable at pre-flight level):
 
 import ipaddress
 import logging
+import os
 import socket
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 # Hostnames that should always be blocked regardless of IP resolution
+# or any config toggle.  These are cloud metadata endpoints that an
+# attacker could use to steal instance credentials.
 _BLOCKED_HOSTNAMES = frozenset({
     "metadata.google.internal",
     "metadata.goog",
 })
+
+# IPs and networks that should always be blocked regardless of the
+# allow_private_urls toggle.  These are cloud metadata / credential
+# endpoints — the #1 SSRF target — and the link-local range where
+# they all live.
+_ALWAYS_BLOCKED_IPS = frozenset({
+    ipaddress.ip_address("169.254.169.254"),  # AWS/GCP/Azure/DO/Oracle metadata
+    ipaddress.ip_address("169.254.170.2"),     # AWS ECS task metadata (task IAM creds)
+    ipaddress.ip_address("169.254.169.253"),   # Azure IMDS wire server
+    ipaddress.ip_address("fd00:ec2::254"),     # AWS metadata (IPv6)
+    ipaddress.ip_address("100.100.100.200"),   # Alibaba Cloud metadata
+})
+_ALWAYS_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("169.254.0.0/16"),    # Entire link-local range (no legit agent target)
+)
 
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
 # This is intentionally narrow: QQ media downloads can legitimately resolve
@@ -41,6 +66,67 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+# ---------------------------------------------------------------------------
+# Global toggle: allow private/internal IP resolution
+# ---------------------------------------------------------------------------
+# Cached after first read so we don't hit the filesystem on every URL check.
+_allow_private_resolved = False
+_cached_allow_private: bool = False
+
+
+def _global_allow_private_urls() -> bool:
+    """Return True when the user has opted out of private-IP blocking.
+
+    Checks (in priority order):
+    1. ``HERMES_ALLOW_PRIVATE_URLS`` env var  (``true``/``1``/``yes``)
+    2. ``security.allow_private_urls`` in config.yaml
+    3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
+
+    Result is cached for the process lifetime.
+    """
+    global _allow_private_resolved, _cached_allow_private
+    if _allow_private_resolved:
+        return _cached_allow_private
+
+    _allow_private_resolved = True
+    _cached_allow_private = False  # safe default
+
+    # 1. Env var override (highest priority)
+    env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
+    if env_val in ("true", "1", "yes"):
+        _cached_allow_private = True
+        return _cached_allow_private
+    if env_val in ("false", "0", "no"):
+        # Explicit false — don't fall through to config
+        return _cached_allow_private
+
+    # 2. Config file
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        # security.allow_private_urls (preferred)
+        sec = cfg.get("security", {})
+        if isinstance(sec, dict) and sec.get("allow_private_urls"):
+            _cached_allow_private = True
+            return _cached_allow_private
+        # browser.allow_private_urls (legacy fallback)
+        browser = cfg.get("browser", {})
+        if isinstance(browser, dict) and browser.get("allow_private_urls"):
+            _cached_allow_private = True
+            return _cached_allow_private
+    except Exception:
+        # Config unavailable (e.g. tests, early import) — keep default
+        pass
+
+    return _cached_allow_private
+
+
+def _reset_allow_private_cache() -> None:
+    """Reset the cached toggle — only for tests."""
+    global _allow_private_resolved, _cached_allow_private
+    _allow_private_resolved = False
+    _cached_allow_private = False
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -65,6 +151,11 @@ def is_safe_url(url: str) -> bool:
 
     Resolves the hostname to an IP and checks against private ranges.
     Fails closed: DNS errors and unexpected exceptions block the request.
+
+    When ``security.allow_private_urls`` is enabled (or the env var
+    ``HERMES_ALLOW_PRIVATE_URLS=true``), private-IP blocking is skipped.
+    Cloud metadata endpoints (169.254.169.254, metadata.google.internal)
+    remain blocked regardless — they are never legitimate agent targets.
     """
     try:
         parsed = urlparse(url)
@@ -73,10 +164,13 @@ def is_safe_url(url: str) -> bool:
         if not hostname:
             return False
 
-        # Block known internal hostnames
+        # Block known internal hostnames — ALWAYS, even with toggle on
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
             return False
+
+        # Check the global toggle AFTER blocking metadata hostnames
+        allow_all_private = _global_allow_private_urls()
 
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
 
@@ -96,14 +190,27 @@ def is_safe_url(url: str) -> bool:
             except ValueError:
                 continue
 
-            if not allow_private_ip and _is_blocked_ip(ip):
+            # Always block cloud metadata IPs and link-local, even with toggle on
+            if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
+                logger.warning(
+                    "Blocked request to cloud metadata address: %s -> %s",
+                    hostname, ip_str,
+                )
+                return False
+
+            if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,
                 )
                 return False
 
-        if allow_private_ip:
+        if allow_all_private:
+            logger.debug(
+                "Allowing private/internal resolution (security.allow_private_urls=true): %s",
+                hostname,
+            )
+        elif allow_private_ip:
             logger.debug(
                 "Allowing trusted hostname despite private/internal resolution: %s",
                 hostname,

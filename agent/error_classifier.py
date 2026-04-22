@@ -590,6 +590,16 @@ def _classify_400(
 
     # Some providers return rate limit / billing errors as 400 instead of 429/402.
     # Check these patterns before falling through to format_error.
+
+    # Overloaded patterns — server-side overload, NOT a credential/billing issue.
+    # Must come before rate_limit check to avoid rotating credentials unnecessarily.
+    if "overloaded" in error_msg or "temporarily overloaded" in error_msg:
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+            should_fallback=True,
+        )
+
     if any(p in error_msg for p in _RATE_LIMIT_PATTERNS):
         return result_fn(
             FailoverReason.rate_limit,
@@ -723,7 +733,14 @@ def _classify_by_message(
             should_fallback=True,
         )
 
-    # Rate limit patterns
+    # Rate limit patterns — but overloaded must come first to avoid credential rotation.
+    if "overloaded" in error_msg or "temporarily overloaded" in error_msg:
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+            should_fallback=True,
+        )
+
     if any(p in error_msg for p in _RATE_LIMIT_PATTERNS):
         return result_fn(
             FailoverReason.rate_limit,

@@ -744,7 +744,44 @@ def _run_single_child(
             if parent_task_id else []
         )
 
-        result = child.run_conversation(user_message=goal, task_id=child_task_id)
+        # Run the conversation in a sub-thread so we can enforce a timeout.
+        # child.run_conversation() blocks until done — without this, a slow or
+        # stuck subagent blocks the parent indefinitely (issue #13768).
+        _result_container: list = []
+
+        def _run():
+            _result_container.append(
+                child.run_conversation(user_message=goal, task_id=child_task_id)
+            )
+
+        _conv_thread = threading.Thread(target=_run, name=f"subagent-{task_index}-conversation")
+        _conv_thread.start()
+
+        # Default: no timeout (None) means wait forever
+        _timeout_seconds = 300  # safe default before config exists
+        _conv_thread.join(timeout=_timeout_seconds)
+
+        if _conv_thread.is_alive():
+            # Timed out — request graceful interrupt, then hard-stop
+            logger.warning(
+                "[delegate] Subagent %d timed out after %ds, interrupting...",
+                task_index,
+                _timeout_seconds,
+            )
+            child.interrupt(message=f"Timed out after {_timeout_seconds}s")
+            _conv_thread.join(timeout=5)
+            if _conv_thread.is_alive():
+                logger.error("[delegate] Subagent %d did not stop after interrupt, leaving thread running", task_index)
+            _result_container.append({
+                "final_response": "",
+                "completed": False,
+                "interrupted": True,
+                "messages": [],
+                "api_calls": 0,
+                "error": f"Subagent timed out after {_timeout_seconds}s",
+            })
+
+        result = _result_container[0]
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):

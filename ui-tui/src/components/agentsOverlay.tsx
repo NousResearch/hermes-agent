@@ -228,8 +228,9 @@ function GanttStrip({
   const totalSpan = Math.max(1, globalEnd - globalStart)
   const totalSeconds = (globalEnd - globalStart) / 1000
 
-  // 4-col id gutter ("  12 "), rest to the bar.
-  const barWidth = Math.max(10, cols - 6)
+  // 5-col id gutter ("  12  ") so the bar doesn't press against the id.
+  const idGutter = 5
+  const barWidth = Math.max(10, cols - idGutter - 2)
   const startIdx = Math.max(0, Math.min(Math.max(0, spans.length - maxRows), cursor - Math.floor(maxRows / 2)))
   const shown = spans.slice(startIdx, startIdx + maxRows)
 
@@ -285,7 +286,7 @@ function GanttStrip({
         return (
           <Text key={node.item.id} wrap="truncate-end">
             <Text bold={active} color={accent}>
-              {formatRowId(idx)}{' '}
+              {formatRowId(idx)}{'  '}
             </Text>
 
             <Text color={active ? t.color.amber : color}>{bar(startAt, endAt)}</Text>
@@ -296,13 +297,13 @@ function GanttStrip({
       })}
 
       <Text color={t.color.dim} dim>
-        {'   '}
+        {'    '}
         {ruler}
       </Text>
 
       {totalSeconds >= 2 ? (
         <Text color={t.color.dim} dim>
-          {'   '}
+          {'    '}
           {rulerLabels}
         </Text>
       ) : null}
@@ -528,13 +529,25 @@ function ListRow({
   // across any theme, body stays cornsilk, stats dim.
   const fg = active ? t.color.amber : t.color.cornsilk
 
+  // Heat marker + glyph occupy a fixed 3-char gutter so the goal text
+  // aligns across hot and cool rows.  One space on each side of the glyph
+  // gives the status dot breathing room — otherwise it reads glued to the
+  // heat bar and the goal text.
+  const prefix = heatMarker ? (
+    <Text color={heatMarker}>▍ </Text>
+  ) : (
+    <Text>{'  '}</Text>
+  )
+
   return (
     <Text bold={active} color={fg} inverse={active} wrap="truncate-end">
       {active ? '▸ ' : '  '}
-      <Text color={active ? fg : t.color.dim}>{formatRowId(index)} </Text>
+      <Text color={active ? fg : t.color.dim}>{formatRowId(index)}  </Text>
       {indentFor(node.item.depth)}
-      {heatMarker ? <Text color={heatMarker}>▍</Text> : null}
-      <Text color={active ? fg : color}>{glyph}</Text> {goal}
+      {prefix}
+      <Text color={active ? fg : color}>{glyph}</Text>
+      {'   '}
+      {goal}
       <Text color={active ? fg : t.color.dim}>
         {tools}
         {kids}

@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
+from utils import base_url_host_matches
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
@@ -284,6 +285,80 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-03-16",
     ),
+    # AWS Bedrock — pricing per the Bedrock pricing page.
+    # Bedrock charges the same per-token rates as the model provider but
+    # through AWS billing.  These are the on-demand prices (no commitment).
+    # Source: https://aws.amazon.com/bedrock/pricing/
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("15.00"),
+        output_cost_per_million=Decimal("75.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-haiku-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("4.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("3.20"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.06"),
+        output_cost_per_million=Decimal("0.24"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-micro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.035"),
+        output_cost_per_million=Decimal("0.14"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
 }
 
 
@@ -319,7 +394,7 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
-    if provider_name == "openrouter" or "openrouter.ai" in base:
+    if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")

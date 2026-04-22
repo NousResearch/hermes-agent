@@ -116,6 +116,7 @@ def _make_adapter():
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = object.__new__(TelegramAdapter)
+    adapter.config = config
     adapter._config = config
     adapter._platform = Platform.TELEGRAM
     adapter._connected = True
@@ -128,6 +129,81 @@ def _make_adapter():
     adapter._polling_error_callback_ref = None
     adapter.platform = Platform.TELEGRAM
     return adapter
+
+
+def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
+    """Forum General-topic messages should keep synthetic thread context."""
+    from gateway.platforms import telegram as telegram_mod
+
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="hello from General",
+        caption=None,
+        chat=SimpleNamespace(
+            id=-100123,
+            type=telegram_mod.ChatType.SUPERGROUP,
+            is_forum=True,
+            title="Forum group",
+        ),
+        from_user=SimpleNamespace(id=456, full_name="Alice"),
+        message_thread_id=None,
+        reply_to_message=None,
+        message_id=10,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=SimpleNamespace(value="text"))
+
+    assert event.source.chat_id == "-100123"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id == "1"
+
+
+@pytest.mark.asyncio
+async def test_send_omits_general_topic_thread_id():
+    """Telegram sends to forum General should omit message_thread_id=1."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=42)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="-100123",
+        content="test message",
+        metadata={"thread_id": "1"},
+    )
+
+    assert result.success is True
+    assert len(call_log) == 1
+    assert call_log[0]["chat_id"] == -100123
+    assert call_log[0]["text"] == "test message"
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_typing_retries_without_general_thread_when_not_found():
+    """Typing for forum General should fall back if Telegram rejects thread 1."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_chat_action(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") == 1:
+            raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
+
+    await adapter.send_typing("-100123", metadata={"thread_id": "1"})
+
+    assert call_log == [
+        {"chat_id": -100123, "action": "typing", "message_thread_id": 1},
+        {"chat_id": -100123, "action": "typing", "message_thread_id": None},
+    ]
 
 
 @pytest.mark.asyncio

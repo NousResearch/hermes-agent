@@ -110,7 +110,7 @@ Yes. Import the `AIAgent` class and use Hermes programmatically:
 ```python
 from run_agent import AIAgent
 
-agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
+agent = AIAgent(model="anthropic/claude-opus-4.7")
 response = agent.chat("Explain quantum computing briefly")
 ```
 
@@ -160,6 +160,33 @@ brew install python@3.12      # macOS
 
 The installer handles this automatically — if you see this error during manual installation, upgrade Python first.
 
+#### Terminal commands say `node: command not found` (or `nvm`, `pyenv`, `asdf`, …)
+
+**Cause:** Hermes builds a per-session environment snapshot by running `bash -l` once at startup. A bash login shell reads `/etc/profile`, `~/.bash_profile`, and `~/.profile`, but **does not source `~/.bashrc`** — so tools that install themselves there (`nvm`, `asdf`, `pyenv`, `cargo`, custom `PATH` exports) stay invisible to the snapshot. This most commonly happens when Hermes runs under systemd or in a minimal shell where nothing has pre-loaded the interactive shell profile.
+
+**Solution:** Hermes auto-sources `~/.bashrc` by default. If that's not enough — e.g. you're a zsh user whose PATH lives in `~/.zshrc`, or you init `nvm` from a standalone file — list the extra files to source in `~/.hermes/config.yaml`:
+
+```yaml
+terminal:
+  shell_init_files:
+    - ~/.zshrc                     # zsh users: pulls zsh-managed PATH into the bash snapshot
+    - ~/.nvm/nvm.sh                # direct nvm init (works regardless of shell)
+    - /etc/profile.d/cargo.sh      # system-wide rc files
+  # When this list is set, the default ~/.bashrc auto-source is NOT added —
+  # include it explicitly if you want both:
+  #   - ~/.bashrc
+  #   - ~/.zshrc
+```
+
+Missing files are skipped silently. Sourcing happens in bash, so files that rely on zsh-only syntax may error — if that's a concern, source just the PATH-setting portion (e.g. nvm's `nvm.sh` directly) rather than the whole rc file.
+
+To disable the auto-source behaviour (strict login-shell semantics only):
+
+```yaml
+terminal:
+  auto_source_bashrc: false
+```
+
 #### `uv: command not found`
 
 **Cause:** The `uv` package manager isn't installed or not in PATH.
@@ -186,6 +213,32 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 ---
 
 ### Provider & Model Issues
+
+#### `/model` only shows one provider / can't switch providers
+
+**Cause:** `/model` (inside a chat session) can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all `/model` will show.
+
+**Solution:** Exit your session and use `hermes model` from your terminal to add new providers:
+
+```bash
+# Exit the Hermes chat session first (Ctrl+C or /quit)
+
+# Run the full provider setup wizard
+hermes model
+
+# This lets you: add providers, run OAuth, enter API keys, configure endpoints
+```
+
+After adding a new provider via `hermes model`, start a new chat session — `/model` will now show all your configured providers.
+
+:::tip Quick reference
+| Want to... | Use |
+|-----------|-----|
+| Add a new provider | `hermes model` (from terminal) |
+| Enter/change API keys | `hermes model` (from terminal) |
+| Switch model mid-session | `/model <name>` (inside session) |
+| Switch to different configured provider | `/model provider:model` (inside session) |
+:::
 
 #### API key not working
 
@@ -217,7 +270,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 hermes model
 
 # Set a valid model
-hermes config set HERMES_MODEL openrouter/nous/hermes-3-llama-3.1-70b
+hermes config set HERMES_MODEL anthropic/claude-opus-4.7
 
 # Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
@@ -755,7 +808,7 @@ hermes config show | head -20
 hermes model
 
 # Or test with a known-good model
-hermes chat -q "hello" --model anthropic/claude-sonnet-4.6
+hermes chat -q "hello" --model anthropic/claude-opus-4.7
 ```
 
 If using OpenRouter, make sure your API key has credits. A 400 from OpenRouter often means the model requires a paid plan or the model ID has a typo.

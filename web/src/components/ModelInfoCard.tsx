@@ -52,7 +52,7 @@ export function ModelInfoCard({ currentModel, refreshKey = 0 }: ModelInfoCardPro
   const hasCaps = caps && Object.keys(caps).length > 0;
 
   return (
-    <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 space-y-2">
+    <div className="border border-border/60 bg-muted/30 px-3 py-2.5 space-y-2">
       {/* Context window */}
       <div className="flex items-center gap-4 text-xs">
         <div className="flex items-center gap-1.5 text-muted-foreground">
@@ -90,22 +90,22 @@ export function ModelInfoCard({ currentModel, refreshKey = 0 }: ModelInfoCardPro
       {hasCaps && (
         <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
           {caps.supports_tools && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+            <span className="inline-flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
               <Wrench className="h-2.5 w-2.5" /> Tools
             </span>
           )}
           {caps.supports_vision && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+            <span className="inline-flex items-center gap-1 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
               <Eye className="h-2.5 w-2.5" /> Vision
             </span>
           )}
           {caps.supports_reasoning && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-purple-500/10 px-2 py-0.5 text-[10px] font-medium text-purple-600 dark:text-purple-400">
+            <span className="inline-flex items-center gap-1 bg-purple-500/10 px-2 py-0.5 text-[10px] font-medium text-purple-600 dark:text-purple-400">
               <Brain className="h-2.5 w-2.5" /> Reasoning
             </span>
           )}
           {caps.model_family && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            <span className="inline-flex items-center gap-1 bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
               {caps.model_family}
             </span>
           )}

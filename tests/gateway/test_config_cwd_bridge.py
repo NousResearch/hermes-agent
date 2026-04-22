@@ -37,6 +37,10 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
         for cfg_key, env_var in terminal_env_map.items():
             if cfg_key in terminal_cfg:
                 val = terminal_cfg[cfg_key]
+                # Skip cwd placeholder values — don't overwrite already-resolved
+                # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
+                if cfg_key == "cwd" and str(val) in (".", "auto", "cwd"):
+                    continue
                 if isinstance(val, list):
                     env[env_var] = json.dumps(val)
                 else:
@@ -146,3 +150,58 @@ class TestTopLevelCwdAlias:
         cfg = {"cwd": "/from/config"}
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
         assert result["TERMINAL_CWD"] == "/from/config"
+
+
+class TestNestedTerminalCwdPlaceholderSkip:
+    """terminal.cwd placeholder values must not clobber TERMINAL_CWD.
+
+    When config.yaml has terminal.cwd: "." (or "auto"/"cwd"), the gateway
+    config bridge should NOT write that placeholder to TERMINAL_CWD.
+    This prevents .env or MESSAGING_CWD values from being overwritten.
+    See issues #10225, #4672, #10817.
+    """
+
+    def test_terminal_dot_cwd_does_not_clobber_env(self):
+        """terminal.cwd: '.' should not overwrite a pre-set TERMINAL_CWD."""
+        cfg = {"terminal": {"cwd": "."}}
+        result = _simulate_config_bridge(cfg, {"TERMINAL_CWD": "/my/project"})
+        assert result["TERMINAL_CWD"] == "/my/project"
+
+    def test_terminal_auto_cwd_does_not_clobber_env(self):
+        cfg = {"terminal": {"cwd": "auto"}}
+        result = _simulate_config_bridge(cfg, {"TERMINAL_CWD": "/my/project"})
+        assert result["TERMINAL_CWD"] == "/my/project"
+
+    def test_terminal_cwd_keyword_does_not_clobber_env(self):
+        cfg = {"terminal": {"cwd": "cwd"}}
+        result = _simulate_config_bridge(cfg, {"TERMINAL_CWD": "/my/project"})
+        assert result["TERMINAL_CWD"] == "/my/project"
+
+    def test_terminal_explicit_cwd_does_override(self):
+        """terminal.cwd: '/explicit/path' SHOULD override TERMINAL_CWD."""
+        cfg = {"terminal": {"cwd": "/explicit/path"}}
+        result = _simulate_config_bridge(cfg, {"TERMINAL_CWD": "/old/value"})
+        assert result["TERMINAL_CWD"] == "/explicit/path"
+
+    def test_terminal_dot_cwd_falls_back_to_messaging_cwd(self):
+        """terminal.cwd: '.' with no TERMINAL_CWD should fall to MESSAGING_CWD."""
+        cfg = {"terminal": {"cwd": "."}}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
+        assert result["TERMINAL_CWD"] == "/from/env"
+
+    def test_terminal_dot_cwd_and_messaging_cwd_both_set(self):
+        """Pre-set TERMINAL_CWD from .env wins over terminal.cwd: '.'."""
+        cfg = {"terminal": {"cwd": ".", "backend": "local"}}
+        result = _simulate_config_bridge(cfg, {
+            "TERMINAL_CWD": "/my/project",
+            "MESSAGING_CWD": "/fallback",
+        })
+        assert result["TERMINAL_CWD"] == "/my/project"
+
+    def test_non_cwd_terminal_keys_still_bridge(self):
+        """Other terminal config keys (backend, timeout) should still bridge normally."""
+        cfg = {"terminal": {"cwd": ".", "backend": "docker", "timeout": "300"}}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
+        assert result["TERMINAL_ENV"] == "docker"
+        assert result["TERMINAL_TIMEOUT"] == "300"
+        assert result["TERMINAL_CWD"] == "/from/env"

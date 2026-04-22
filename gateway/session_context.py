@@ -37,18 +37,30 @@ needs to replace the import + call site:
 """
 
 from contextvars import ContextVar
+from typing import Any
+
+# Sentinel to distinguish "never set in this context" from "explicitly set to empty".
+# When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
+# When it holds "" (after clear_session_vars resets it), we return "" — no fallback.
+_UNSET: Any = object()
 
 # ---------------------------------------------------------------------------
 # Per-task session variables
 # ---------------------------------------------------------------------------
 
-_SESSION_PLATFORM: ContextVar[str] = ContextVar("HERMES_SESSION_PLATFORM", default="")
-_SESSION_CHAT_ID: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_ID", default="")
-_SESSION_CHAT_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_NAME", default="")
-_SESSION_THREAD_ID: ContextVar[str] = ContextVar("HERMES_SESSION_THREAD_ID", default="")
-_SESSION_USER_ID: ContextVar[str] = ContextVar("HERMES_SESSION_USER_ID", default="")
-_SESSION_USER_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_USER_NAME", default="")
-_SESSION_KEY: ContextVar[str] = ContextVar("HERMES_SESSION_KEY", default="")
+_SESSION_PLATFORM: ContextVar = ContextVar("HERMES_SESSION_PLATFORM", default=_UNSET)
+_SESSION_CHAT_ID: ContextVar = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
+_SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
+_SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
+_SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
+_SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
+_SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
+
+# Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
+# don't clobber each other's delivery targets.
+_CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
+_CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
+_CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
@@ -58,6 +70,9 @@ _VAR_MAP = {
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
+    "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
+    "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
+    "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
 }
 
 
@@ -91,10 +106,17 @@ def set_session_vars(
 
 
 def clear_session_vars(tokens: list) -> None:
-    """Restore session context variables to their pre-handler values."""
-    if not tokens:
-        return
-    vars_in_order = [
+    """Mark session context variables as explicitly cleared.
+
+    Sets all variables to ``""`` so that ``get_session_env`` returns an empty
+    string instead of falling back to (potentially stale) ``os.environ``
+    values.  The *tokens* argument is accepted for API compatibility with
+    callers that saved the return value of ``set_session_vars``, but the
+    actual clearing uses ``var.set("")`` rather than ``var.reset(token)``
+    to ensure the "explicitly cleared" state is distinguishable from
+    "never set" (which holds the ``_UNSET`` sentinel).
+    """
+    for var in (
         _SESSION_PLATFORM,
         _SESSION_CHAT_ID,
         _SESSION_CHAT_NAME,
@@ -102,9 +124,8 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
-    ]
-    for var, token in zip(vars_in_order, tokens):
-        var.reset(token)
+    ):
+        var.set("")
 
 
 def get_session_env(name: str, default: str = "") -> str:
@@ -113,8 +134,13 @@ def get_session_env(name: str, default: str = "") -> str:
     Drop-in replacement for ``os.getenv("HERMES_SESSION_*", default)``.
 
     Resolution order:
-    1. Context variable (set by the gateway for concurrency-safe access)
-    2. ``os.environ`` (used by CLI, cron scheduler, and tests)
+    1. Context variable (set by the gateway for concurrency-safe access).
+       If the variable was explicitly set (even to ``""``) via
+       ``set_session_vars`` or ``clear_session_vars``, that value is
+       returned — **no fallback to os.environ**.
+    2. ``os.environ`` (only when the context variable was never set in
+       this context — i.e. CLI, cron scheduler, and test processes that
+       don't use ``set_session_vars`` at all).
     3. *default*
     """
     import os
@@ -122,7 +148,7 @@ def get_session_env(name: str, default: str = "") -> str:
     var = _VAR_MAP.get(name)
     if var is not None:
         value = var.get()
-        if value:
+        if value is not _UNSET:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)

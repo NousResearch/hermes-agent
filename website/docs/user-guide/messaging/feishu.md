@@ -244,6 +244,54 @@ Interactive cards require **three** configuration steps in the Feishu Developer 
 Without all three steps, Feishu will successfully *send* interactive cards (sending only requires `im:message:send` permission), but clicking any button will return error 200340. The card appears to work — the error only surfaces when a user interacts with it.
 :::
 
+## Document Comment Intelligent Reply
+
+Beyond chat, the adapter can also answer `@`-mentions left on **Feishu/Lark documents**. When a user comments on a document (local text selection or whole-doc comment) and @-mentions the bot, Hermes reads the document plus the surrounding comment thread and posts an LLM reply inline on the thread.
+
+Powered by the `drive.notice.comment_add_v1` event, the handler:
+
+- Fetches the document content and comment timeline in parallel (20 messages for whole-doc threads, 12 for local-selection threads).
+- Runs the agent with the `feishu_doc` + `feishu_drive` toolsets scoped to that single comment session.
+- Chunks replies at 4000 chars and posts them back as threaded replies.
+- Caches per-document sessions for 1 hour with a 50-message cap so follow-up comments on the same doc keep context.
+
+### 3-Tier Access Control
+
+Document-comment replies are **explicit-grant only** — there is no implicit allow-all mode. Permissions resolve in this order (first match wins, per field):
+
+1. **Exact doc** — rule scoped to a specific document token.
+2. **Wildcard** — rule that matches a pattern of docs.
+3. **Top-level** — default rule for the workspace.
+
+Two policies are available per rule:
+
+- **`allowlist`** — a static list of users / tenants.
+- **`pairing`** — static list ∪ runtime-approved store. Useful for rollouts where moderators can grant access live.
+
+Rules live in `~/.hermes/feishu_comment_rules.json` (pairing grants in `~/.hermes/feishu_comment_pairing.json`) with mtime-cached hot-reload — edits take effect on the next comment event without restarting the gateway.
+
+CLI:
+
+```bash
+# Inspect current rules and pairing state
+python -m gateway.platforms.feishu_comment_rules status
+
+# Simulate an access check for a specific doc + user
+python -m gateway.platforms.feishu_comment_rules check <fileType:fileToken> <user_open_id>
+
+# Manage pairing grants at runtime
+python -m gateway.platforms.feishu_comment_rules pairing list
+python -m gateway.platforms.feishu_comment_rules pairing add <user_open_id>
+python -m gateway.platforms.feishu_comment_rules pairing remove <user_open_id>
+```
+
+### Required Feishu App Configuration
+
+On top of the chat/card permissions already granted, add the drive comment event:
+
+- Subscribe to `drive.notice.comment_add_v1` in **Event Subscriptions**.
+- Grant the `docs:doc:readonly` and `drive:drive:readonly` scopes so the handler can read document content.
+
 ## Media Support
 
 ### Inbound (receiving)
@@ -287,13 +335,11 @@ If the Feishu API rejects the post payload (e.g., due to unsupported markdown co
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
-## ACK Emoji Reactions
+## Processing Status Reactions
 
-When the adapter receives an inbound message, it immediately adds an ✅ (OK) emoji reaction to signal that the message was received and is being processed. This provides visual feedback before the agent completes its response.
+While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
 
-The reaction is persistent — it remains on the message after the response is sent, serving as a receipt marker.
-
-User reactions on bot messages are also tracked. If a user adds or removes an emoji reaction on a message sent by the bot, it is routed as a synthetic text event (`reaction:added:EMOJI_TYPE` or `reaction:removed:EMOJI_TYPE`) so the agent can respond to feedback.
+Set `FEISHU_REACTIONS=false` to turn it off.
 
 ## Burst Protection and Batching
 

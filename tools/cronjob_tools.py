@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_constants import display_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # Import from cron module (will be available when properly installed)
@@ -391,6 +393,8 @@ Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
+To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
+
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
 If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
@@ -453,7 +457,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "script": {
                 "type": "string",
-                "description": "Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under ~/.hermes/scripts/. On update, pass empty string to clear."
+                "description": f"Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under {display_hermes_home()}/scripts/. On update, pass empty string to clear."
             },
         },
         "required": ["action"]

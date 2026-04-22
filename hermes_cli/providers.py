@@ -23,6 +23,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from utils import base_url_host_matches, base_url_hostname
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +65,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://portal.qwen.ai/v1",
         base_url_env_var="HERMES_QWEN_BASE_URL",
+    ),
+    "google-gemini-cli": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="cloudcode-pa://google",
     ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
@@ -128,9 +135,14 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="HF_BASE_URL",
     ),
     "xai": HermesOverlay(
-        transport="openai_chat",
+        transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
+    ),
+    "nvidia": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://integrate.api.nvidia.com/v1",
+        base_url_env_var="NVIDIA_BASE_URL",
     ),
     "xiaomi": HermesOverlay(
         transport="openai_chat",
@@ -140,6 +152,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
+    ),
+    "ollama-cloud": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="OLLAMA_BASE_URL",
     ),
 }
 
@@ -180,6 +196,13 @@ ALIASES: Dict[str, str] = {
     # xai
     "x-ai": "xai",
     "x.ai": "xai",
+    "grok": "xai",
+
+    # nvidia
+    "nim": "nvidia",
+    "nvidia-nim": "nvidia",
+    "build-nvidia": "nvidia",
+    "nemotron": "nvidia",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
@@ -227,6 +250,11 @@ ALIASES: Dict[str, str] = {
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
 
+    # google-gemini-cli (OAuth + Code Assist)
+    "gemini-cli": "google-gemini-cli",
+    "gemini-oauth": "google-gemini-cli",
+
+
     # huggingface
     "hf": "huggingface",
     "hugging-face": "huggingface",
@@ -236,6 +264,12 @@ ALIASES: Dict[str, str] = {
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
 
+    # bedrock
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "amazon": "bedrock",
+
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
@@ -244,7 +278,7 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "ollama-cloud",
+    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -262,6 +296,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
+    "bedrock": "AWS Bedrock",
+    "ollama-cloud": "Ollama Cloud",
 }
 
 
@@ -271,6 +307,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
+    "bedrock_converse": "bedrock_converse",
 }
 
 
@@ -287,12 +324,16 @@ def normalize_provider(name: str) -> str:
 
 
 def get_provider(name: str) -> Optional[ProviderDef]:
-    """Look up a provider by id or alias, merging all data sources.
+    """Look up a built-in provider by id or alias.
 
     Resolution order:
       1. Hermes overlays (for providers not in models.dev: nous, openai-codex, etc.)
       2. models.dev catalog + Hermes overlay
-      3. User-defined providers from config (TODO: Phase 4)
+
+    User-defined providers from config.yaml (``providers:`` / ``custom_providers:``)
+    are resolved by :func:`resolve_provider_full`, which layers ``resolve_user_provider``
+    and ``resolve_custom_provider`` on top of this function. Callers that need
+    user-config support should use ``resolve_provider_full`` instead.
 
     Returns a fully-resolved ProviderDef or None.
     """
@@ -388,13 +429,20 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
+    # Direct provider checks for providers not in HERMES_OVERLAYS
+    if provider == "bedrock":
+        return "bedrock_converse"
+
     # URL-based heuristics for custom / unknown providers
     if base_url:
         url_lower = base_url.rstrip("/").lower()
-        if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
+        hostname = base_url_hostname(base_url)
+        if url_lower.endswith("/anthropic") or hostname == "api.anthropic.com":
             return "anthropic_messages"
-        if "api.openai.com" in url_lower:
+        if hostname == "api.openai.com":
             return "codex_responses"
+        if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
+            return "bedrock_converse"
 
     return "chat_completions"
 

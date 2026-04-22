@@ -123,7 +123,7 @@ class TestSendMatrix:
         session.put.assert_called_once()
         call_kwargs = session.put.call_args
         url = call_kwargs[0][0]
-        assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/!room:example.com/send/m.room.message/")
+        assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/%21room%3Aexample.com/send/m.room.message/")
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer syt_tok"
         payload = call_kwargs[1]["json"]
         assert payload["msgtype"] == "m.text"

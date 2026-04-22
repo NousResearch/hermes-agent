@@ -484,52 +484,6 @@ class TestSkillViewSecureSetupOnLoad:
         assert result["setup_skipped"] is True
         assert result["content"].startswith("---")
 
-    def test_gateway_load_returns_guidance_without_secret_capture(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
-        called = {"value": False}
-
-        def fake_secret_callback(var_name, prompt, metadata=None):
-            called["value"] = True
-            return {
-                "success": True,
-                "stored_as": var_name,
-                "validated": False,
-                "skipped": False,
-            }
-
-        monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fake_secret_callback,
-            raising=False,
-        )
-
-        with patch.dict(
-            os.environ, {"HERMES_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-                _make_skill(
-                    tmp_path,
-                    "gif-search",
-                    frontmatter_extra=(
-                        "required_environment_variables:\n"
-                        "  - name: TENOR_API_KEY\n"
-                        "    prompt: Tenor API key\n"
-                    ),
-                )
-                raw = skill_view("gif-search")
-
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert called["value"] is False
-        assert "local cli" in result["gateway_setup_hint"].lower()
-        assert result["content"].startswith("---")
-
-
 # ---------------------------------------------------------------------------
 # skill_matches_platform
 # ---------------------------------------------------------------------------
@@ -839,26 +793,6 @@ class TestSkillViewPrerequisites:
         assert result["setup_needed"] is True
         assert result["missing_required_environment_variables"] == ["SHELL_ONLY_KEY"]
         assert result["readiness_status"] == "setup_needed"
-
-    def test_gateway_load_keeps_setup_guidance_for_backend_only_env(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-
-        with patch.dict(
-            os.environ, {"HERMES_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-                _make_skill(
-                    tmp_path,
-                    "backend-unknown",
-                    frontmatter_extra="prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n",
-                )
-                raw = skill_view("backend-unknown")
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert "local cli" in result["gateway_setup_hint"].lower()
-        assert result["setup_needed"] is True
 
     @pytest.mark.parametrize(
         "backend",

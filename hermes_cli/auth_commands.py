@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from getpass import getpass
 import math
+import sys
 import time
 from types import SimpleNamespace
 import uuid
@@ -32,7 +33,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"}
 
 
 def _get_custom_provider_names() -> list:
@@ -147,9 +148,26 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"} else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
+
+    # Clear ALL suppressions for this provider — re-adding a credential is
+    # a strong signal the user wants auth re-enabled.  This covers env:*
+    # (shell-exported vars), gh_cli (copilot), claude_code, qwen-cli,
+    # device_code (codex), etc.  One consistent re-engagement pattern.
+    # Matches the Codex device_code re-link pattern that predates this.
+    if not provider.startswith(CUSTOM_POOL_PREFIX):
+        try:
+            from hermes_cli.auth import (
+                _load_auth_store,
+                unsuppress_credential_source,
+            )
+            suppressed = _load_auth_store().get("suppressed_sources", {})
+            for src in list(suppressed.get(provider, []) or []):
+                unsuppress_credential_source(provider, src)
+        except Exception:
+            pass
 
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
@@ -160,7 +178,10 @@ def auth_add_command(args) -> None:
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:
-            label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            if sys.stdin.isatty():
+                label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            else:
+                label = default_label
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
@@ -213,22 +234,21 @@ def auth_add_command(args) -> None:
             ca_bundle=getattr(args, "ca_bundle", None),
             min_key_ttl_seconds=max(60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))),
         )
-        label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds.get("access_token", ""),
-            _oauth_default_label(provider, len(pool.entries()) + 1),
+        # Honor `--label <name>` so nous matches other providers' UX.  The
+        # helper embeds this into providers.nous so that label_from_token
+        # doesn't overwrite it on every subsequent load_pool("nous").
+        custom_label = (getattr(args, "label", None) or "").strip() or None
+        entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
+        shown_label = entry.label if entry is not None else label_from_token(
+            creds.get("access_token", ""), _oauth_default_label(provider, 1),
         )
-        entry = PooledCredential.from_dict(provider, {
-            **creds,
-            "label": label,
-            "auth_type": AUTH_TYPE_OAUTH,
-            "source": f"{SOURCE_MANUAL}:device_code",
-            "base_url": creds.get("inference_base_url"),
-        })
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        print(f'Saved {provider} OAuth device-code credentials: "{shown_label}"')
         return
 
     if provider == "openai-codex":
+        # Clear any existing suppression marker so a re-link after `hermes auth
+        # remove openai-codex` works without the new tokens being skipped.
+        auth_mod.unsuppress_credential_source(provider, "device_code")
         creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
@@ -245,6 +265,27 @@ def auth_add_command(args) -> None:
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
             last_refresh=creds.get("last_refresh"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "google-gemini-cli":
+        from agent.google_oauth import run_gemini_oauth_login_pure
+
+        creds = run_gemini_oauth_login_pure()
+        label = (getattr(args, "label", None) or "").strip() or (
+            creds.get("email") or _oauth_default_label(provider, len(pool.entries()) + 1)
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:google_pkce",
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
@@ -314,44 +355,28 @@ def auth_remove_command(args) -> None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
-    # If this was an env-seeded credential, also clear the env var from .env
-    # so it doesn't get re-seeded on the next load_pool() call.
-    if removed.source.startswith("env:"):
-        env_var = removed.source[len("env:"):]
-        if env_var:
-            from hermes_cli.config import remove_env_value
-            cleared = remove_env_value(env_var)
-            if cleared:
-                print(f"Cleared {env_var} from .env")
+    # Unified removal dispatch.  Every credential source Hermes reads from
+    # (env vars, external OAuth files, auth.json blocks, custom config)
+    # has a RemovalStep registered in agent.credential_sources.  The step
+    # handles its source-specific cleanup and we centralise suppression +
+    # user-facing output here so every source behaves identically from
+    # the user's perspective.
+    from agent.credential_sources import find_removal_step
+    from hermes_cli.auth import suppress_credential_source
 
-    # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
-    # clear the underlying auth store / credential file so it doesn't get
-    # re-seeded on the next load_pool() call.
-    elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
-        from hermes_cli.auth import (
-            _load_auth_store, _save_auth_store, _auth_store_lock,
-        )
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-            providers_dict = auth_store.get("providers")
-            if isinstance(providers_dict, dict) and provider in providers_dict:
-                del providers_dict[provider]
-                _save_auth_store(auth_store)
-                print(f"Cleared {provider} OAuth tokens from auth store")
+    step = find_removal_step(provider, removed.source)
+    if step is None:
+        # Unregistered source — e.g. "manual", which has nothing external
+        # to clean up.  The pool entry is already gone; we're done.
+        return
 
-    elif removed.source == "hermes_pkce" and provider == "anthropic":
-        from hermes_constants import get_hermes_home
-        oauth_file = get_hermes_home() / ".anthropic_oauth.json"
-        if oauth_file.exists():
-            oauth_file.unlink()
-            print("Cleared Hermes Anthropic OAuth credentials")
-
-    elif removed.source == "claude_code" and provider == "anthropic":
-        from hermes_cli.auth import suppress_credential_source
-        suppress_credential_source(provider, "claude_code")
-        print("Suppressed claude_code credential — it will not be re-seeded.")
-        print("Note: Claude Code credentials still live in ~/.claude/.credentials.json")
-        print("Run `hermes auth add anthropic` to re-enable if needed.")
+    result = step.remove_fn(provider, removed)
+    for line in result.cleaned:
+        print(line)
+    if result.suppress:
+        suppress_credential_source(provider, removed.source)
+    for line in result.hints:
+        print(line)
 
 
 def auth_reset_command(args) -> None:
@@ -368,6 +393,27 @@ def _interactive_auth() -> None:
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
+
+    # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
+    try:
+        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        if has_aws_credentials():
+            auth_source = resolve_aws_auth_env_var() or "unknown"
+            region = resolve_bedrock_region()
+            print(f"bedrock (AWS SDK credential chain):")
+            print(f"  Auth: {auth_source}")
+            print(f"  Region: {region}")
+            try:
+                import boto3
+                sts = boto3.client("sts", region_name=region)
+                identity = sts.get_caller_identity()
+                arn = identity.get("Arn", "unknown")
+                print(f"  Identity: {arn}")
+            except Exception:
+                print(f"  Identity: (could not resolve — boto3 STS call failed)")
+            print()
+    except ImportError:
+        pass  # boto3 or bedrock_adapter not available
     print()
 
     # Main menu

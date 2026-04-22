@@ -384,10 +384,21 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return void actions.sys('yolo needs an active session')
       }
 
-      return void gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid })
-        .then(r => actions.sys(r?.value === '1' ? 'yolo on' : r?.value === '0' ? 'yolo off' : 'failed to toggle yolo'))
-        .catch(() => actions.sys('failed to toggle yolo'))
+      // gateway.rpc swallows errors with its own sys() message and resolves to null,
+      // so we only speak when it came back with a real shape. null = rpc already spoke.
+      return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
+        if (r?.value === '1') {
+          return actions.sys('yolo on')
+        }
+
+        if (r?.value === '0') {
+          return actions.sys('yolo off')
+        }
+
+        if (r) {
+          actions.sys('failed to toggle yolo')
+        }
+      })
     }
 
     if (key.tab && cState.completions.length) {

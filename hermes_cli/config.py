@@ -1418,6 +1418,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "WAVESPEED_KEY": {
+        "description": "WAVESPEED API key for image and video generation",
+        "prompt": "WAVESPEED API key",
+        "url": "https://wavespeed.ai/",
+        "tools": ["image_generate","video_generate"],
+        "password": True,
+        "category": "tool",
+    },
     "TINKER_API_KEY": {
         "description": "Tinker API key for RL training",
         "prompt": "Tinker API key",

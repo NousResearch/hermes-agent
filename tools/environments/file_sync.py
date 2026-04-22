@@ -1,5 +1,7 @@
 """Shared file sync manager for remote execution backends.
 
+from __future__ import annotations
+
 Tracks local file changes via mtime+size, detects deletions, and
 syncs to remote environments transactionally.  Used by SSH, Modal,
 and Daytona.  Docker and Singularity use bind mounts (live host FS

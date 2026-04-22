@@ -1,5 +1,7 @@
 """CLI presentation -- spinner, kawaii faces, tool preview formatting.
 
+from __future__ import annotations
+
 Pure display functions and classes with no AIAgent dependency.
 Used by AIAgent._execute_tool_calls for CLI feedback.
 """

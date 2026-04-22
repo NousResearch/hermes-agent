@@ -1,4 +1,6 @@
 """
+from __future__ import annotations
+
 Gateway runner - entry point for messaging platform integrations.
 
 This module provides:

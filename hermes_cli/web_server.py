@@ -1,4 +1,6 @@
 """
+from __future__ import annotations
+
 Hermes Agent — Web UI server.
 
 Provides a FastAPI backend serving the Vite/React frontend and REST API

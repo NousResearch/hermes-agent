@@ -1,5 +1,7 @@
 """Dangerous command approval -- detection, prompting, and per-session state.
 
+from __future__ import annotations
+
 This module is the single source of truth for the dangerous command system:
 - Pattern detection (DANGEROUS_PATTERNS, detect_dangerous_command)
 - Per-session approval state (thread-safe, keyed by session_key)

@@ -1,5 +1,7 @@
 """Shared auxiliary client router for side tasks.
 
+from __future__ import annotations
+
 Provides a single resolution chain so every consumer (context compression,
 session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.

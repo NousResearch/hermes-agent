@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Hermes Agent Release Script
 
+from __future__ import annotations
+
 Generates changelogs and creates GitHub releases with CalVer tags.
 
 Usage:

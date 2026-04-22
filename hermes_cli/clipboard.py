@@ -1,5 +1,7 @@
 """Clipboard image extraction for macOS, Windows, Linux, and WSL2.
 
+from __future__ import annotations
+
 Provides a single function `save_clipboard_image(dest)` that checks the
 system clipboard for image data, saves it to *dest* as PNG, and returns
 True on success.  No external Python dependencies — uses only OS-level

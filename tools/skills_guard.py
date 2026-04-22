@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+from __future__ import annotations
+
 Skills Guard — Security scanner for externally-sourced skills.
 
 Every skill downloaded from a registry passes through this scanner before

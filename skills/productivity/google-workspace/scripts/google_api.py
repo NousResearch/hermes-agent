@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Google Workspace API CLI for Hermes Agent.
 
+from __future__ import annotations
+
 Uses the Google Workspace CLI (`gws`) when available, but preserves the
 existing Hermes-facing JSON contract and falls back to the Python client
 libraries if `gws` is not installed.

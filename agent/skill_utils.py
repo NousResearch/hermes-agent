@@ -1,5 +1,7 @@
 """Lightweight skill metadata utilities shared by prompt_builder and skills_tool.
 
+from __future__ import annotations
+
 This module intentionally avoids importing the tool registry, CLI config, or any
 heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.

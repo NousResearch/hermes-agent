@@ -1,5 +1,7 @@
 """Shared slash command helpers for skills and built-in prompt-style modes.
 
+from __future__ import annotations
+
 Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
 can invoke skills via /skill-name commands and prompt-only built-ins like
 /plan.

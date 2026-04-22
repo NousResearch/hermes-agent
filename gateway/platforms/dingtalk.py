@@ -1,4 +1,6 @@
 """
+from __future__ import annotations
+
 DingTalk platform adapter using Stream Mode.
 
 Uses dingtalk-stream SDK for real-time message reception without webhooks.

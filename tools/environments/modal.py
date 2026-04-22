@@ -1,5 +1,7 @@
 """Modal cloud execution environment using the native Modal SDK directly.
 
+from __future__ import annotations
+
 Uses ``Sandbox.create()`` + ``Sandbox.exec()`` instead of the older runtime
 wrapper, while preserving Hermes' persistent snapshot behavior across sessions.
 """

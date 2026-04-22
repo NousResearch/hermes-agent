@@ -1,4 +1,6 @@
 """
+from __future__ import annotations
+
 Interactive setup wizard for Hermes Agent.
 
 Modular wizard with independently-runnable sections:

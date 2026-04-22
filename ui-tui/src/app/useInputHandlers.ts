@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 
 import type {
   ApprovalRespondResponse,
+  ConfigSetResponse,
   SecretRespondResponse,
   SudoRespondResponse,
   VoiceRecordResponse
@@ -375,6 +376,16 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isAction(key, ch, 'g')) {
       return cActions.openEditor()
+    }
+
+    // Shift-Tab toggles per-session yolo without submitting a turn — mirrors
+    // Claude Code's in-place dangerously-approve toggle. Slash /yolo keeps
+    // working for discoverability; this just skips the inference round-trip
+    // when you only want to flip the flag mid-flow (blitz #5 sub-item 11).
+    if (key.shift && key.tab && !cState.completions.length) {
+      return void gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid })
+        .then(r => actions.sys(`yolo ${r?.value === '1' ? 'on' : 'off'}`))
     }
 
     if (key.tab && cState.completions.length) {

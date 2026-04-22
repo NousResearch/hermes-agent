@@ -343,7 +343,7 @@ function wrapWithSoftWrap(
   maxWidth: number,
   textWrap: Parameters<typeof wrapText>[2]
 ): { wrapped: string; softWrap: boolean[] | undefined } {
-  if (textWrap !== 'wrap' && textWrap !== 'wrap-trim') {
+  if (textWrap !== 'wrap' && textWrap !== 'wrap-char' && textWrap !== 'wrap-trim') {
     return {
       wrapped: wrapText(plainText, maxWidth, textWrap),
       softWrap: undefined

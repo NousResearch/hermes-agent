@@ -386,11 +386,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       return void gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid })
-        .then(r =>
-          actions.sys(
-            r?.value === '1' ? 'yolo on' : r?.value === '0' ? 'yolo off' : 'failed to toggle yolo'
-          )
-        )
+        .then(r => actions.sys(r?.value === '1' ? 'yolo on' : r?.value === '0' ? 'yolo off' : 'failed to toggle yolo'))
         .catch(() => actions.sys('failed to toggle yolo'))
     }
 

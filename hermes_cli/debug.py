@@ -332,6 +332,7 @@ class LogSnapshot:
     tail_text: str
     full_text: Optional[str]
 
+
 def _primary_log_path(log_name: str) -> Optional[Path]:
     """Where *log_name* would live if present. Doesn't check existence."""
     from hermes_cli.logs import LOG_FILES

@@ -1,0 +1,13 @@
+{
+  "run_id": "<run-id>",
+  "builder_status": "passed | failed | invalid",
+  "gate_status": "passed | failed | invalid",
+  "next_action": "publish | retry | escalate",
+  "decision_reason": "passed | missing_artifacts | invalid_builder_result | builder_failed | status_mismatch | verifier_failed",
+  "publish_recommended": false,
+  "retry_recommended": false,
+  "human_review_required": true,
+  "blocking_findings": [
+    "<missing artifact, failed verifier, policy issue, or mismatch>"
+  ]
+}

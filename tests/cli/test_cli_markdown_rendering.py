@@ -131,6 +131,38 @@ def test_strip_mode_preserves_intraword_underscores_in_snake_case_identifiers():
     assert "file_with_name" in output
 
 
+def test_strip_mode_preserves_matrix_gateway_env_var_names():
+    renderable = _render_final_assistant_content(
+        "MATRIX_HOMESERVER\n"
+        "MATRIX_ACCESS_TOKEN\n"
+        "MATRIX_USER_ID\n"
+        "MATRIX_PASSWORD\n"
+        "\n"
+        "Token auth: MATRIX_ACCESS_TOKEN\n"
+        "Password auth: MATRIX_USER_ID + MATRIX_PASSWORD",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "MATRIX_HOMESERVER" in output
+    assert "MATRIX_ACCESS_TOKEN" in output
+    assert "MATRIX_USER_ID" in output
+    assert "MATRIX_PASSWORD" in output
+    assert "MATRIXACCESSTOKEN" not in output
+    assert "MATRIXUSERID" not in output
+
+
+def test_strip_mode_preserves_intraword_triple_underscore_sequences():
+    renderable = _render_final_assistant_content(
+        "pre___triple___post",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "pre___triple___post" in output
+    assert "pretriplepost" not in output
+
+
 def test_strip_mode_still_strips_boundary_underscore_emphasis():
     renderable = _render_final_assistant_content(
         "say _hi_ and __bold__ now",

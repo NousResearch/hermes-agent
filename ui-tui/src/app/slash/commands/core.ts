@@ -8,6 +8,7 @@ import type {
   SessionSteerResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
+import type { StatusBarMode } from '../../interfaces.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
@@ -305,19 +306,30 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['sb'],
-    help: 'toggle status bar',
+    help: 'status bar position (on|off|bottom|top)',
     name: 'statusbar',
     run: (arg, ctx) => {
-      const next = flagFromArg(arg, ctx.ui.statusBar)
+      const mode = arg.trim().toLowerCase()
+      const current = ctx.ui.statusBar
+      // No-arg / `toggle` flips visibility while preserving the last
+      // explicit position: off → on (inline default), any-visible → off.
+      const next: null | StatusBarMode =
+        mode === '' || mode === 'toggle'
+          ? current === 'off'
+            ? 'on'
+            : 'off'
+          : mode === 'on' || mode === 'off' || mode === 'bottom' || mode === 'top'
+            ? mode
+            : null
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /statusbar [on|off|toggle]')
+        return ctx.transcript.sys('usage: /statusbar [on|off|bottom|top|toggle]')
       }
 
       patchUiState({ statusBar: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`status bar ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
     }
   },
 

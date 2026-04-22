@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
-import { applyDisplay } from '../app/useConfigSync.js'
+import { applyDisplay, normalizeStatusBar } from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -36,7 +36,7 @@ describe('applyDisplay', () => {
     expect(s.inlineDiffs).toBe(false)
     expect(s.showCost).toBe(true)
     expect(s.showReasoning).toBe(true)
-    expect(s.statusBar).toBe(false)
+    expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
   })
 
@@ -50,7 +50,7 @@ describe('applyDisplay', () => {
     expect(s.inlineDiffs).toBe(true)
     expect(s.showCost).toBe(false)
     expect(s.showReasoning).toBe(false)
-    expect(s.statusBar).toBe(true)
+    expect(s.statusBar).toBe('on')
     expect(s.streaming).toBe(true)
   })
 
@@ -63,5 +63,36 @@ describe('applyDisplay', () => {
     expect(setBell).toHaveBeenCalledWith(false)
     expect(s.inlineDiffs).toBe(true)
     expect(s.streaming).toBe(true)
+  })
+
+  it('accepts the new string statusBar modes', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tui_statusbar: 'bottom' } } }, setBell)
+    expect($uiState.get().statusBar).toBe('bottom')
+
+    applyDisplay({ config: { display: { tui_statusbar: 'top' } } }, setBell)
+    expect($uiState.get().statusBar).toBe('top')
+  })
+})
+
+describe('normalizeStatusBar', () => {
+  it('maps legacy bool to on/off', () => {
+    expect(normalizeStatusBar(true)).toBe('on')
+    expect(normalizeStatusBar(false)).toBe('off')
+  })
+
+  it('passes through the new string enum', () => {
+    expect(normalizeStatusBar('on')).toBe('on')
+    expect(normalizeStatusBar('off')).toBe('off')
+    expect(normalizeStatusBar('bottom')).toBe('bottom')
+    expect(normalizeStatusBar('top')).toBe('top')
+  })
+
+  it('defaults missing/unknown values to on', () => {
+    expect(normalizeStatusBar(undefined)).toBe('on')
+    expect(normalizeStatusBar(null)).toBe('on')
+    expect(normalizeStatusBar('sideways')).toBe('on')
+    expect(normalizeStatusBar(42)).toBe('on')
   })
 })

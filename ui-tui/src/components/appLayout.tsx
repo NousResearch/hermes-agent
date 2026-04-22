@@ -184,6 +184,8 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <Box flexDirection="column" position="relative">
+        <StatusRulePane at="on" composer={composer} status={status} />
+
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
@@ -195,7 +197,7 @@ const ComposerPane = memo(function ComposerPane({
       </Box>
 
       {!isBlocked && (
-        <Box flexDirection="column" marginBottom={1}>
+        <Box flexDirection="column" marginBottom={ui.statusBar === 'bottom' ? 0 : 1}>
           {composer.inputBuf.map((line, i) => (
             <Box key={i}>
               <Box width={3}>
@@ -255,10 +257,14 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
   )
 })
 
-const StatusRulePane = memo(function StatusRulePane({ composer, status }: Pick<AppLayoutProps, 'composer' | 'status'>) {
+const StatusRulePane = memo(function StatusRulePane({
+  at,
+  composer,
+  status
+}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'on' | 'top' }) {
   const ui = useStore($uiState)
 
-  if (!ui.statusBar) {
+  if (ui.statusBar !== at) {
     return null
   }
 
@@ -294,6 +300,8 @@ export const AppLayout = memo(function AppLayout({
   return (
     <AlternateScreen mouseTracking={mouseTracking}>
       <Box flexDirection="column" flexGrow={1}>
+        {!overlay.agents && <StatusRulePane at="top" composer={composer} status={status} />}
+
         <Box flexDirection="row" flexGrow={1}>
           {overlay.agents ? (
             <AgentsOverlayPane />
@@ -314,7 +322,7 @@ export const AppLayout = memo(function AppLayout({
 
         {!overlay.agents && <ComposerPane actions={actions} composer={composer} status={status} />}
 
-        {!overlay.agents && <StatusRulePane composer={composer} status={status} />}
+        {!overlay.agents && <StatusRulePane at="bottom" composer={composer} status={status} />}
       </Box>
     </AlternateScreen>
   )

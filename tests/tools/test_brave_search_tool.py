@@ -381,6 +381,57 @@ class TestBraveSearch:
         assert call.kwargs["headers"]["Content-Type"] == "application/json"
         assert call.kwargs["headers"]["Accept-Encoding"] == "gzip"
 
+    def test_answers_accepts_messages_only_chat_completions_surface(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "choices": [
+                {"message": {"content": "Messages-only answer."}}
+            ],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 12, "total_tokens": 20},
+        }
+
+        with patch.dict(os.environ, {"BRAVE_ANSWERS_API_KEY": "answers-test"}, clear=True), \
+             patch("tools.brave_search_tool.httpx.post", return_value=response) as mock_post:
+            from tools.brave_search_tool import brave_answers
+
+            result = json.loads(
+                brave_answers(
+                    messages=[
+                        {"role": "system", "content": "Answer directly."},
+                        {"role": "user", "content": "What is Brave Search?"},
+                    ]
+                )
+            )
+
+        assert result["success"] is True
+        assert result["data"]["query"] == ""
+        assert result["data"]["answer"] == "Messages-only answer."
+        assert result["data"]["usage"]["total_tokens"] == 20
+
+        call = mock_post.call_args
+        assert call.args[0].endswith("/chat/completions")
+        assert call.kwargs["json"] == {
+            "model": "brave-pro",
+            "messages": [
+                {"role": "system", "content": "Answer directly."},
+                {"role": "user", "content": "What is Brave Search?"},
+            ],
+            "stream": False,
+        }
+        assert call.kwargs["headers"]["X-Subscription-Token"] == "answers-test"
+        assert call.kwargs["headers"]["Content-Type"] == "application/json"
+        assert call.kwargs["headers"]["Accept-Encoding"] == "gzip"
+
+    def test_answers_schema_allows_query_or_messages(self):
+        from tools.brave_search_tool import BRAVE_ANSWERS_SCHEMA
+
+        parameters = BRAVE_ANSWERS_SCHEMA["parameters"]
+        assert "anyOf" in parameters
+        assert {"required": ["query"]} in parameters["anyOf"]
+        assert {"required": ["messages"]} in parameters["anyOf"]
+        assert "required" not in parameters or "query" not in parameters.get("required", [])
+
     def test_answers_surfaces_structured_brave_http_errors(self):
         error_response = _make_brave_http_error_response(
             {

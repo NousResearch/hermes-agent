@@ -378,7 +378,7 @@ def _print_setup_summary(config: dict, hermes_home):
             label = f"Web Search ({subscription_features.web.current_provider})"
         tool_status.append((label, True, None))
     else:
-        tool_status.append(("Web Search", False, "BRAVE_SEARCH_API_KEY/BRAVE_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
+        tool_status.append(("Web Search", False, "BRAVE_SEARCH_API_KEY/BRAVE_FREE_API_KEY/BRAVE_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
 
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider

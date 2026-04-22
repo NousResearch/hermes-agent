@@ -26,6 +26,26 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "brvs...cdef" in output
 
 
+def test_show_status_free_key_only_does_not_claim_answers_or_suggest(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BRAVE_FREE_API_KEY", "brvf-1...cdef")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    lines = output.splitlines()
+
+    brave_search_line = next(line for line in lines if "Brave Search" in line)
+    brave_free_line = next(line for line in lines if "Brave Free" in line)
+    brave_answers_line = next(line for line in lines if "Brave Answers" in line)
+    brave_suggest_line = next(line for line in lines if "Brave Suggest" in line)
+
+    assert "✓" in brave_search_line
+    assert "✓" in brave_free_line
+    assert "✗" in brave_answers_line
+    assert "✗" in brave_suggest_line
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

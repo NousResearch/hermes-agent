@@ -145,15 +145,15 @@ def show_status(args):
     brave_display = redact_key(brave_value) if not show_all else brave_value
     print(f"  {'Brave Search':<12}  {check_mark(bool(brave_value))} {brave_display}")
 
-    brave_free_value = get_env_value("BRAVE_FREE_API_KEY") or brave_value
+    brave_free_value = get_env_value("BRAVE_FREE_API_KEY")
     brave_free_display = redact_key(brave_free_value) if not show_all else brave_free_value
     print(f"  {'Brave Free':<12}  {check_mark(bool(brave_free_value))} {brave_free_display}")
 
-    brave_answers_value = get_env_value("BRAVE_ANSWERS_API_KEY") or brave_value
+    brave_answers_value = get_env_value("BRAVE_ANSWERS_API_KEY") or get_env_value("BRAVE_SEARCH_API_KEY") or get_env_value("BRAVE_API_KEY")
     brave_answers_display = redact_key(brave_answers_value) if not show_all else brave_answers_value
     print(f"  {'Brave Answers':<12}  {check_mark(bool(brave_answers_value))} {brave_answers_display}")
 
-    brave_autosuggest_value = get_env_value("BRAVE_AUTOSUGGEST_API_KEY") or brave_value
+    brave_autosuggest_value = get_env_value("BRAVE_AUTOSUGGEST_API_KEY") or get_env_value("BRAVE_SEARCH_API_KEY") or get_env_value("BRAVE_API_KEY")
     brave_autosuggest_display = redact_key(brave_autosuggest_value) if not show_all else brave_autosuggest_value
     print(f"  {'Brave Suggest':<12}  {check_mark(bool(brave_autosuggest_value))} {brave_autosuggest_display}")
 

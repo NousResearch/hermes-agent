@@ -993,7 +993,7 @@ BRAVE_SUGGEST_SCHEMA = {
 
 BRAVE_ANSWERS_SCHEMA = {
     "name": "brave_answers",
-    "description": "Get an AI-generated answer from Brave Search using the OpenAI-compatible chat completions endpoint. Works best with BRAVE_ANSWERS_API_KEY.",
+    "description": "Get an AI-generated answer from Brave Search using the OpenAI-compatible chat completions endpoint. Provide either query or messages. Works best with BRAVE_ANSWERS_API_KEY.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1034,7 +1034,10 @@ BRAVE_ANSWERS_SCHEMA = {
                 "description": "Enable citations",
             },
         },
-        "required": ["query"],
+        "anyOf": [
+            {"required": ["query"]},
+            {"required": ["messages"]},
+        ],
     },
 }
 

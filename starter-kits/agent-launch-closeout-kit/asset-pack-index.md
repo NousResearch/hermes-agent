@@ -57,6 +57,7 @@ Required fields:
 - Demo outline: `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`
 - Demo capture runbook: `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
 - Demo capture helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh`
+- Demo workspace launcher (macOS): `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh`
 - Captions file: `starter-kits/agentic-cron-orchestration-kit/launch/demo-captions.srt`
 - Edited asset path: record in `starter-kits/agent-launch-closeout-kit/launch-execution-log.md`
 

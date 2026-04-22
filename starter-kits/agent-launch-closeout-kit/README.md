@@ -40,6 +40,7 @@ The closeout kit is only credible if it can close that real gap cleanly.
 | `scripts/publish-unblock-helper.sh` | One-shot unblock helper: runs preflight, captures current state, emits a filled `--verified` command, and generates a timestamped handoff artifact plus `auth-artifacts/latest-publish-unblock-handoff.md` |
 | `scripts/demo-capture-preflight.sh` | Verify the demo source files, rerun the underlying product preflight, and refresh `demo-artifacts/latest-demo-capture-readiness.md` before recording |
 | `scripts/demo-capture.sh` | Freeze a timestamped capture-session packet (`--prepare`) and finalize `launch-execution-log.md` with recording/edit asset paths (`--finalize`) |
+| `scripts/demo-capture-launcher.sh` | macOS workspace primer: refreshes the latest capture packet, opens the exact walkthrough surfaces, activates QuickTime Player, and prints the finalize command |
 | `demo-trigger.md` | One-screen operator card for recording the walkthrough and closing the loop in the launch log |
 
 Run the unblock helper any time browser auth is the known blocker:
@@ -65,6 +66,7 @@ bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh --
 - [ ] Verify the live publish session is actually signed into X (the `x-access.json` marker is not enough by itself).
 - [ ] If the marker is stale or the browser still lands on login, run `scripts/browser-auth-recovery.sh --prepare` and use the generated recovery packet before retrying publish.
 - [ ] After a real signed-in browser proof event, run `scripts/browser-auth-recovery.sh --verified --surface-url ... --screenshot-path ...` so the launch log, audit, and `x-access.json` marker all refresh from the same evidence.
+- [ ] Prime the walkthrough workspace with `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh` so the latest packet, proof artifact, log, and demo outline are open before recording starts.
 - [ ] Run one real closeout cycle against the proof surface and record URL, timestamp, attachment, and asset path.
 - [ ] Tighten the kit to the proved path only and remove any broadened launch-system scope.
 - [ ] Freeze the kit with docs, checklist alignment, and retrospective-ready packaging.

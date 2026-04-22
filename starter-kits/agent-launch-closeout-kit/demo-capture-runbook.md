@@ -34,6 +34,14 @@ This reruns `scripts/demo-capture-preflight.sh`, refreshes `demo-artifacts/lates
 For the one-screen operator version of this path, use:
 - `starter-kits/agent-launch-closeout-kit/demo-trigger.md`
 
+For the macOS workspace-launch version of this path, use:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh
+```
+
+That command reruns `--prepare`, resolves the newest session packet, opens the readiness/proof/log surfaces in an editor, activates QuickTime Player, and prints the exact finalize command again so the walkthrough can start without hunting files.
+
 After the recording/edit is complete, close the loop with:
 
 ```bash
@@ -59,6 +67,10 @@ open starter-kits/agent-launch-closeout-kit/launch-execution-log.md
 ### Shot 1 — Problem framing
 - Show the launch execution log with `pending publish` and `pending capture`
 - Caption: "Proof-backed products still die if the last mile lives only in your head."
+
+### Before recording
+- Prefer `scripts/demo-capture-launcher.sh` on macOS so the workspace is opened in the same order every time.
+- Confirm the latest session packet's suggested raw/edit asset paths before pressing record.
 
 ### Shot 2 — Preflight
 - Run `bash starter-kits/agentic-cron-orchestration-kit/scripts/preflight.sh`

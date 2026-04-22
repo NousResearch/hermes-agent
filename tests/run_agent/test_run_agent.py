@@ -2350,6 +2350,391 @@ class TestRunConversation:
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 
+    def test_repeated_memory_tool_failures_break_retry_loop(
+        self, agent_with_memory_tool
+    ):
+        self._setup_agent(agent_with_memory_tool)
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+
+        tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps(
+                {
+                    "action": "remove",
+                    "target": "memory",
+                    "old_text": "",
+                }
+            ),
+            call_id="mem1",
+        )
+        repeating_resp = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        agent.client.chat.completions.create.side_effect = [
+            repeating_resp,
+            repeating_resp,
+            repeating_resp,
+            _mock_response(content="should not be reached", finish_reason="stop"),
+        ]
+
+        status_messages = []
+        memory_error = json.dumps(
+            {
+                "success": False,
+                "error": "old_text is required for 'remove' action.",
+            }
+        )
+
+        with (
+            patch("tools.memory_tool.memory_tool", return_value=memory_error) as mock_memory,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=status_messages.append),
+        ):
+            result = agent.run_conversation("forget that memory")
+
+        assert mock_memory.call_count == 3
+        assert agent.client.chat.completions.create.call_count == 3
+        assert result["completed"] is True
+        assert "same memory edit kept failing repeatedly" in result["final_response"]
+        assert "old_text is required" in result["final_response"]
+        assert any(
+            "repeated memory edit failure" in msg.lower() for msg in status_messages
+        )
+
+    def test_repeated_housekeeping_memory_failures_preserve_prior_content(
+        self, agent_with_memory_tool
+    ):
+        self._setup_agent(agent_with_memory_tool)
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+
+        tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps(
+                {
+                    "action": "remove",
+                    "target": "memory",
+                    "old_text": "",
+                }
+            ),
+            call_id="mem1",
+        )
+        repeating_resp = _mock_response(
+            content="Here is the answer you asked for.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        agent.client.chat.completions.create.side_effect = [
+            repeating_resp,
+            repeating_resp,
+            repeating_resp,
+            _mock_response(content="should not be reached", finish_reason="stop"),
+        ]
+
+        memory_error = json.dumps(
+            {
+                "success": False,
+                "error": "old_text is required for 'remove' action.",
+            }
+        )
+
+        with (
+            patch("tools.memory_tool.memory_tool", return_value=memory_error),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me and forget that memory")
+
+        assert agent.client.chat.completions.create.call_count == 3
+        assert result["completed"] is True
+        assert result["final_response"].startswith("Here is the answer you asked for.")
+        assert "same memory edit kept failing repeatedly" in result["final_response"]
+
+    def test_mixed_tool_turn_does_not_abort_on_repeated_memory_failures(
+        self, agent_with_memory_tool
+    ):
+        self._setup_agent(agent_with_memory_tool)
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+
+        search_tc = _mock_tool_call(name="web_search", arguments="{}", call_id="w1")
+        memory_tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps(
+                {
+                    "action": "remove",
+                    "target": "memory",
+                    "old_text": "",
+                }
+            ),
+            call_id="mem1",
+        )
+        repeating_resp = _mock_response(
+            content="Here is the answer so far.",
+            finish_reason="tool_calls",
+            tool_calls=[search_tc, memory_tc],
+        )
+        final_resp = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            repeating_resp,
+            repeating_resp,
+            repeating_resp,
+            final_resp,
+        ]
+
+        web_search_calls = []
+        memory_error = json.dumps(
+            {
+                "success": False,
+                "error": "old_text is required for 'remove' action.",
+            }
+        )
+
+        def _handle_tool(name, *_args, **_kwargs):
+            web_search_calls.append(name)
+            if name == "web_search":
+                return "search result"
+            raise AssertionError(name)
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=_handle_tool),
+            patch("tools.memory_tool.memory_tool", return_value=memory_error) as mock_memory,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something and forget that memory")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Done searching"
+        assert "same memory edit kept failing repeatedly" not in result["final_response"]
+        assert agent.client.chat.completions.create.call_count == 4
+        assert mock_memory.call_count == 3
+        assert web_search_calls.count("web_search") == 3
+
+    def test_repeated_mixed_memory_failures_suppress_identical_memory_retry(
+        self, agent_with_memory_tool
+    ):
+        self._setup_agent(agent_with_memory_tool)
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+
+        search_tc = _mock_tool_call(name="web_search", arguments="{}", call_id="w1")
+        memory_tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps(
+                {
+                    "action": "remove",
+                    "target": "memory",
+                    "old_text": "",
+                }
+            ),
+            call_id="mem1",
+        )
+        repeating_resp = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[search_tc, memory_tc],
+        )
+        final_resp = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            repeating_resp,
+            repeating_resp,
+            repeating_resp,
+            repeating_resp,
+            final_resp,
+        ]
+
+        web_search_calls = []
+        memory_error = json.dumps(
+            {
+                "success": False,
+                "error": "old_text is required for 'remove' action.",
+            }
+        )
+
+        def _handle_tool(name, *_args, **_kwargs):
+            web_search_calls.append(name)
+            if name == "web_search":
+                return "search result"
+            raise AssertionError(name)
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=_handle_tool),
+            patch("tools.memory_tool.memory_tool", return_value=memory_error) as mock_memory,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something and forget that memory")
+
+        assert result["completed"] is True
+        assert "stopped retrying the same memory edit" in result["final_response"]
+        assert agent.client.chat.completions.create.call_count == 4
+        assert mock_memory.call_count == 3
+        assert web_search_calls.count("web_search") == 4
+
+    def test_repeated_mixed_memory_loop_aborts_before_max_iterations(
+        self, agent_with_memory_tool
+    ):
+        self._setup_agent(agent_with_memory_tool)
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+        agent.max_iterations = 4
+
+        search_tc = _mock_tool_call(name="web_search", arguments="{}", call_id="w1")
+        memory_tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps(
+                {
+                    "action": "remove",
+                    "target": "memory",
+                    "old_text": "",
+                }
+            ),
+            call_id="mem1",
+        )
+        repeating_resp = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[search_tc, memory_tc],
+        )
+        agent.client.chat.completions.create.side_effect = [repeating_resp] * 8
+
+        status_messages = []
+        web_search_calls = []
+        memory_error = json.dumps(
+            {
+                "success": False,
+                "error": "old_text is required for 'remove' action.",
+            }
+        )
+
+        def _handle_tool(name, *_args, **_kwargs):
+            web_search_calls.append(name)
+            if name == "web_search":
+                return "search result"
+            raise AssertionError(name)
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=_handle_tool),
+            patch("tools.memory_tool.memory_tool", return_value=memory_error) as mock_memory,
+            patch.object(agent, "_handle_max_iterations", return_value="summary") as mock_summary,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=status_messages.append),
+        ):
+            result = agent.run_conversation("search something and forget that memory")
+
+        assert result["completed"] is True
+        assert "stopped retrying the same memory edit" in result["final_response"]
+        assert agent.client.chat.completions.create.call_count == 4
+        assert mock_memory.call_count == 3
+        mock_summary.assert_not_called()
+        assert web_search_calls.count("web_search") == 4
+        assert any(
+            "repeated memory edit failure" in msg.lower() for msg in status_messages
+        )
+
+    def test_repeated_mixed_memory_loop_tracks_memory_signature_across_batch_variants(
+        self, agent_with_memory_tool
+    ):
+        self._setup_agent(agent_with_memory_tool)
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+        agent.max_iterations = 6
+
+        resp_a = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    name="web_search",
+                    arguments=json.dumps({"query": "a"}),
+                    call_id="w1",
+                ),
+                _mock_tool_call(
+                    name="memory",
+                    arguments=json.dumps(
+                        {
+                            "action": "remove",
+                            "target": "memory",
+                            "old_text": "",
+                        }
+                    ),
+                    call_id="mem1",
+                ),
+            ],
+        )
+        resp_b = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    name="web_search",
+                    arguments=json.dumps({"query": "b"}),
+                    call_id="w2",
+                ),
+                _mock_tool_call(
+                    name="memory",
+                    arguments=json.dumps(
+                        {
+                            "action": "remove",
+                            "target": "memory",
+                            "old_text": "",
+                        }
+                    ),
+                    call_id="mem1",
+                ),
+            ],
+        )
+        agent.client.chat.completions.create.side_effect = [
+            resp_a,
+            resp_a,
+            resp_a,
+            resp_b,
+            resp_a,
+            resp_b,
+        ]
+
+        web_search_calls = []
+        memory_error = json.dumps(
+            {
+                "success": False,
+                "error": "old_text is required for 'remove' action.",
+            }
+        )
+
+        def _handle_tool(name, *_args, **_kwargs):
+            web_search_calls.append(name)
+            if name == "web_search":
+                return "search result"
+            raise AssertionError(name)
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=_handle_tool),
+            patch("tools.memory_tool.memory_tool", return_value=memory_error) as mock_memory,
+            patch.object(agent, "_handle_max_iterations", return_value="summary") as mock_summary,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something and forget that memory")
+
+        assert result["completed"] is True
+        assert "stopped retrying the same memory edit" in result["final_response"]
+        assert agent.client.chat.completions.create.call_count == 4
+        assert mock_memory.call_count == 3
+        mock_summary.assert_not_called()
+        assert web_search_calls.count("web_search") == 4
+
     def test_glm_prompt_exceeds_max_length_triggers_compression(self, agent):
         """GLM/Z.AI uses 'Prompt exceeds max length' for context overflow."""
         self._setup_agent(agent)

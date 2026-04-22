@@ -247,6 +247,11 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
+_HOUSEKEEPING_TOOLS = frozenset({
+    "memory", "todo", "skill_manage", "session_search",
+})
+_REPEATED_MEMORY_TOOL_FAILURE_LIMIT = 3
+_REPEATED_MIXED_MEMORY_SIGNATURE_LIMIT = 2
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
@@ -8270,6 +8275,10 @@ class AIAgent:
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+        self._current_tool_batch_all_housekeeping = self._all_tool_calls_are_housekeeping(
+            assistant_message.tool_calls
+        )
+        self._memory_tool_failure_suppressed_this_batch = False
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
             # SAFETY: check interrupt BEFORE starting each tool.
             # If the user sent "stop" during a previous tool's execution,
@@ -8411,25 +8420,27 @@ class AIAgent:
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
-                target = function_args.get("target", "memory")
-                from tools.memory_tool import memory_tool as _memory_tool
-                function_result = _memory_tool(
-                    action=function_args.get("action"),
-                    target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
-                    store=self._memory_store,
-                )
-                # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in ("add", "replace"):
-                    try:
-                        self._memory_manager.on_memory_write(
-                            function_args.get("action", ""),
-                            target,
-                            function_args.get("content", ""),
-                        )
-                    except Exception:
-                        pass
+                function_result = self._maybe_suppress_memory_tool_call(function_args)
+                if function_result is None:
+                    target = function_args.get("target", "memory")
+                    from tools.memory_tool import memory_tool as _memory_tool
+                    function_result = _memory_tool(
+                        action=function_args.get("action"),
+                        target=target,
+                        content=function_args.get("content"),
+                        old_text=function_args.get("old_text"),
+                        store=self._memory_store,
+                    )
+                    # Bridge: notify external memory provider of built-in memory writes
+                    if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                        try:
+                            self._memory_manager.on_memory_write(
+                                function_args.get("action", ""),
+                                target,
+                                function_args.get("content", ""),
+                            )
+                        except Exception:
+                            pass
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
@@ -8572,6 +8583,21 @@ class AIAgent:
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
             _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+            if function_name == "memory":
+                _replacement_result = self._track_repeated_memory_tool_failure(
+                    function_args,
+                    function_result,
+                    is_error=_is_error_result,
+                    batch_all_housekeeping=self._current_tool_batch_all_housekeeping,
+                )
+                if _replacement_result is not None:
+                    function_result = _replacement_result
+                    _is_error_result, _ = _detect_tool_failure(
+                        function_name, function_result
+                    )
+                    result_preview = function_result if self.verbose_logging else (
+                        function_result[:200] if len(function_result) > 200 else function_result
+                    )
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
@@ -8654,6 +8680,191 @@ class AIAgent:
             self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
 
 
+
+    def _track_repeated_memory_tool_failure(
+        self,
+        function_args: dict,
+        function_result: str,
+        *,
+        is_error: bool,
+        batch_all_housekeeping: bool,
+    ) -> str | None:
+        """Track repeated identical failing memory edits within one turn."""
+        if not is_error:
+            self._last_memory_tool_failure_signature = None
+            self._last_memory_tool_failure_count = 0
+            return None
+
+        try:
+            data = json.loads(function_result)
+        except Exception:
+            data = None
+
+        if isinstance(data, dict):
+            error_text = str(data.get("error", "") or "").strip()
+            if data.get("success") is not False and not error_text:
+                self._last_memory_tool_failure_signature = None
+                self._last_memory_tool_failure_count = 0
+                return None
+        else:
+            error_text = str(function_result or "").strip()
+
+        signature = self._make_memory_tool_failure_signature(function_args)
+        if signature == getattr(self, "_last_memory_tool_failure_signature", None):
+            self._last_memory_tool_failure_count = (
+                getattr(self, "_last_memory_tool_failure_count", 0) + 1
+            )
+        else:
+            self._last_memory_tool_failure_signature = signature
+            self._last_memory_tool_failure_count = 1
+
+        if (
+            self._last_memory_tool_failure_count
+            >= _REPEATED_MEMORY_TOOL_FAILURE_LIMIT
+        ):
+            abort_mode = (
+                "repeated_memory_tool_failure"
+                if batch_all_housekeeping
+                else "mixed_memory_tool_loop"
+            )
+            self._memory_tool_failure_abort = {
+                "mode": abort_mode,
+                "action": function_args.get("action"),
+                "error": error_text,
+                "attempts": self._last_memory_tool_failure_count,
+            }
+            if batch_all_housekeeping:
+                return None
+
+            if signature != getattr(self, "_suppressed_memory_tool_failure_signature", None):
+                self._suppressed_mixed_memory_signature = None
+                self._suppressed_mixed_memory_count = 0
+            self._suppressed_memory_tool_failure_signature = signature
+            self._suppressed_memory_tool_failure_info = {
+                "action": function_args.get("action"),
+                "error": error_text,
+                "attempts": self._last_memory_tool_failure_count,
+            }
+            self._memory_tool_failure_abort = None
+            self._memory_tool_failure_suppressed_this_batch = True
+            return self._build_suppressed_memory_tool_result(function_args, error_text)
+
+        return None
+
+    def _make_memory_tool_failure_signature(self, function_args: dict) -> str:
+        payload = {
+            "action": function_args.get("action"),
+            "target": function_args.get("target", "memory"),
+            "content": function_args.get("content"),
+            "old_text": function_args.get("old_text"),
+        }
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+    def _build_suppressed_memory_tool_result(
+        self, function_args: dict, detail: str = ""
+    ) -> str:
+        action = str(function_args.get("action") or "").strip().lower()
+        target = str(function_args.get("target") or "memory").strip() or "memory"
+        message = (
+            "Repeated invalid memory edit suppressed for this turn. "
+            "Continue the main task without retrying this same memory edit."
+        )
+        if action in {"replace", "remove"}:
+            message += (
+                " Ask the user for the exact memory text if this change is still needed."
+            )
+        elif action == "add":
+            message += " Ask the user for the exact memory content if this save is still needed."
+        if detail:
+            message += f" Latest detail: {detail}"
+        return json.dumps(
+            {
+                "success": True,
+                "suppressed": True,
+                "target": target,
+                "action": action or None,
+                "message": message,
+            },
+            ensure_ascii=False,
+        )
+
+    def _maybe_suppress_memory_tool_call(self, function_args: dict) -> str | None:
+        if getattr(self, "_current_tool_batch_all_housekeeping", False):
+            return None
+
+        signature = self._make_memory_tool_failure_signature(function_args)
+        if signature != getattr(self, "_suppressed_memory_tool_failure_signature", None):
+            return None
+
+        info = getattr(self, "_suppressed_memory_tool_failure_info", {}) or {}
+        self._memory_tool_failure_suppressed_this_batch = True
+        return self._build_suppressed_memory_tool_result(
+            function_args,
+            str(info.get("error") or "").strip(),
+        )
+
+    def _build_repeated_memory_failure_response(self, abort_info: dict) -> str:
+        """Build a user-visible response when memory retries are looping."""
+        fallback = getattr(self, "_last_content_with_tools", None)
+        fallback_allowed = getattr(
+            self, "_last_content_tools_all_housekeeping", False
+        )
+        action = str(abort_info.get("action") or "").strip().lower()
+        detail = str(abort_info.get("error") or "").strip()
+        mode = str(abort_info.get("mode") or "").strip().lower()
+
+        if mode == "mixed_memory_tool_loop":
+            note = (
+                "I stopped retrying the same memory edit because it kept pulling "
+                "the task into the same tool loop."
+            )
+            if action in {"replace", "remove"}:
+                note += (
+                    " Please retry that memory change separately with the exact "
+                    "memory text to change or remove."
+                )
+            elif action == "add":
+                note += (
+                    " Please retry that memory save separately with the exact "
+                    "content you want stored."
+                )
+            else:
+                note += " Please retry the memory change separately with explicit content."
+        else:
+            note = (
+                "I couldn't finish the memory update because the same memory edit "
+                "kept failing repeatedly."
+            )
+            if action in {"replace", "remove"}:
+                note += " Please retry with the exact memory text to change or remove."
+            elif action == "add":
+                note += " Please retry with the exact content you want saved."
+            else:
+                note += " Please retry the memory change with explicit content."
+        if detail:
+            note += f" Last memory error: {detail}"
+
+        if fallback and (fallback_allowed or mode == "mixed_memory_tool_loop"):
+            clean_fallback = self._strip_think_blocks(fallback).strip()
+            if clean_fallback:
+                return f"{clean_fallback}\n\n{note}"
+        return note
+
+    def _all_tool_calls_are_housekeeping(self, tool_calls: list) -> bool:
+        """Return True when every tool call in the batch is housekeeping."""
+        if not tool_calls:
+            return False
+
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                name = ((tc.get("function") or {}).get("name") or "").strip()
+            else:
+                name = str(
+                    getattr(getattr(tc, "function", None), "name", "") or ""
+                ).strip()
+            if name not in _HOUSEKEEPING_TOOLS:
+                return False
+        return True
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
@@ -8899,6 +9110,15 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        self._last_memory_tool_failure_signature = None
+        self._last_memory_tool_failure_count = 0
+        self._memory_tool_failure_abort = None
+        self._suppressed_memory_tool_failure_signature = None
+        self._suppressed_memory_tool_failure_info = None
+        self._suppressed_mixed_memory_signature = None
+        self._suppressed_mixed_memory_count = 0
+        self._current_tool_batch_all_housekeeping = False
+        self._memory_tool_failure_suppressed_this_batch = False
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -11331,12 +11551,8 @@ class AIAgent:
                         # skill_manage, etc.).  If any substantive tool is present
                         # (search_files, read_file, write_file, terminal, ...),
                         # keep output visible so the user sees progress.
-                        _HOUSEKEEPING_TOOLS = frozenset({
-                            "memory", "todo", "skill_manage", "session_search",
-                        })
-                        _all_housekeeping = all(
-                            tc.function.name in _HOUSEKEEPING_TOOLS
-                            for tc in assistant_message.tool_calls
+                        _all_housekeeping = self._all_tool_calls_are_housekeeping(
+                            assistant_message.tool_calls
                         )
                         self._last_content_tools_all_housekeeping = _all_housekeeping
                         if _all_housekeeping and self._has_stream_consumers():
@@ -11375,6 +11591,13 @@ class AIAgent:
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
 
+                    self._current_tool_batch_all_housekeeping = (
+                        self._all_tool_calls_are_housekeeping(
+                            assistant_message.tool_calls
+                        )
+                    )
+                    self._memory_tool_failure_suppressed_this_batch = False
+
                     # Close any open streaming display (response box, reasoning
                     # box) before tool execution begins.  Intermediate turns may
                     # have streamed early content that opened the response box;
@@ -11388,6 +11611,73 @@ class AIAgent:
                             pass
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    if (
+                        self._memory_tool_failure_suppressed_this_batch
+                        and not self._current_tool_batch_all_housekeeping
+                    ):
+                        _suppressed_signature = getattr(
+                            self, "_suppressed_memory_tool_failure_signature", None
+                        )
+                        if (
+                            _suppressed_signature
+                            and _suppressed_signature
+                            == self._suppressed_mixed_memory_signature
+                        ):
+                            self._suppressed_mixed_memory_count += 1
+                        else:
+                            self._suppressed_mixed_memory_signature = (
+                                _suppressed_signature
+                            )
+                            self._suppressed_mixed_memory_count = 1
+
+                        if (
+                            self._suppressed_mixed_memory_count
+                            >= _REPEATED_MIXED_MEMORY_SIGNATURE_LIMIT
+                        ):
+                            info = (
+                                getattr(
+                                    self, "_suppressed_memory_tool_failure_info", {}
+                                )
+                                or {}
+                            )
+                            self._memory_tool_failure_abort = {
+                                "mode": "mixed_memory_tool_loop",
+                                "action": info.get("action"),
+                                "error": info.get("error"),
+                                "attempts": info.get("attempts", 0),
+                            }
+                    else:
+                        self._suppressed_mixed_memory_signature = None
+                        self._suppressed_mixed_memory_count = 0
+
+                    if self._memory_tool_failure_abort:
+                        abort_info = self._memory_tool_failure_abort
+                        self._memory_tool_failure_abort = None
+                        self._mute_post_response = False
+                        self._last_memory_tool_failure_signature = None
+                        self._last_memory_tool_failure_count = 0
+                        final_response = self._build_repeated_memory_failure_response(
+                            abort_info
+                        )
+                        self._last_content_with_tools = None
+                        self._last_content_tools_all_housekeeping = False
+                        self._empty_content_retries = 0
+                        self._emit_status(
+                            "⚠️ Repeated memory edit failure — stopping retry loop"
+                        )
+                        logger.warning(
+                            "Repeated identical memory tool failure (%d attempts): %s",
+                            abort_info.get("attempts", 0),
+                            abort_info.get("error", "") or "(no detail)",
+                        )
+                        messages.append(
+                            {"role": "assistant", "content": final_response}
+                        )
+                        _turn_exit_reason = str(
+                            abort_info.get("mode") or "repeated_memory_tool_failure"
+                        )
+                        break
 
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the
@@ -11825,7 +12115,13 @@ class AIAgent:
             final_response = self._handle_max_iterations(messages, api_call_count)
         
         # Determine if conversation completed successfully
-        completed = final_response is not None and api_call_count < self.max_iterations
+        completed = final_response is not None and (
+            api_call_count < self.max_iterations
+            or _turn_exit_reason in {
+                "repeated_memory_tool_failure",
+                "mixed_memory_tool_loop",
+            }
+        )
 
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)

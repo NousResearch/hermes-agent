@@ -67,9 +67,9 @@ fi
   printf -- '- Launch execution log still shows pending capture state: %s\n\n' "$pending_capture_status"
 
   printf '## Next capture path\n'
-  printf '1. Run `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-preflight.sh` before recording if you need a fresh readiness packet.\n'
+  printf '1. Run `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --prepare` to refresh this readiness packet and freeze a timestamped capture-session file with suggested raw/edit output paths.\n'
   printf '2. Follow `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md` shot list.\n'
-  printf '3. Record the output asset path back into `starter-kits/agent-launch-closeout-kit/launch-execution-log.md`.\n'
+  printf '3. After recording/editing, run `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --finalize --recording-path /absolute/path/to/raw.mov --duration 00:01:19 --edited-asset-path /absolute/path/to/final.mp4`.\n'
   printf '4. Use the captured walkthrough as the primary publish attachment once X auth is restored; otherwise fall back to the proof still.\n\n'
 
   printf '## Raw preflight output\n'

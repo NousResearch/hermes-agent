@@ -39,6 +39,7 @@ The closeout kit is only credible if it can close that real gap cleanly.
 | `scripts/browser-auth-recovery.sh` | Generate recovery packet (`--prepare`) or record verified sign-in (`--verified`) |
 | `scripts/publish-unblock-helper.sh` | One-shot unblock helper: runs preflight, captures current state, emits a filled `--verified` command, and generates a timestamped handoff artifact plus `auth-artifacts/latest-publish-unblock-handoff.md` |
 | `scripts/demo-capture-preflight.sh` | Verify the demo source files, rerun the underlying product preflight, and refresh `demo-artifacts/latest-demo-capture-readiness.md` before recording |
+| `scripts/demo-capture.sh` | Freeze a timestamped capture-session packet (`--prepare`) and finalize `launch-execution-log.md` with recording/edit asset paths (`--finalize`) |
 
 Run the unblock helper any time browser auth is the known blocker:
 

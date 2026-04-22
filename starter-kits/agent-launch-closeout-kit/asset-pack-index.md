@@ -52,8 +52,10 @@ Required fields:
 
 ### Media
 - Demo readiness packet: `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md`
+- Demo capture session packet: latest `starter-kits/agent-launch-closeout-kit/demo-artifacts/demo-capture-session-*.md`
 - Demo outline: `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`
 - Demo capture runbook: `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
+- Demo capture helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh`
 - Captions file: `starter-kits/agentic-cron-orchestration-kit/launch/demo-captions.srt`
 - Edited asset path: record in `starter-kits/agent-launch-closeout-kit/launch-execution-log.md`
 

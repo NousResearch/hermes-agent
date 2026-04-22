@@ -26,10 +26,19 @@ Proof reference:
 Run from repo root:
 
 ```bash
-bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-preflight.sh
+bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --prepare
 ```
 
-This refreshes `demo-artifacts/latest-demo-capture-readiness.md` and reruns the underlying product preflight so the walkthrough starts from a fresh readiness packet instead of stale assumptions.
+This reruns `scripts/demo-capture-preflight.sh`, refreshes `demo-artifacts/latest-demo-capture-readiness.md`, and freezes a timestamped `demo-artifacts/demo-capture-session-*.md` packet with the suggested raw/edit asset paths and the exact finalize command.
+
+After the recording/edit is complete, close the loop with:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --finalize \
+  --recording-path /absolute/path/to/raw-demo-capture.mov \
+  --duration 00:01:19 \
+  --edited-asset-path /absolute/path/to/final-demo.mp4
+```
 
 Then show the proof artifact:
 

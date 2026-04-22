@@ -6175,7 +6175,7 @@ class HermesCLI:
         print(f"  {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
         print(f"  {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for session in sessions:
-            title = (session.get("title") or "—")[:30]
+            title = session.get("title") or "—"
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
             print(f"  {title:<32} {preview:<40} {last_active:<13} {session['id']}")

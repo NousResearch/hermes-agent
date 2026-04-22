@@ -20,6 +20,7 @@ EDITED_ASSET_PATH=""
 DURATION=""
 NOTES=""
 POSTED_URL=""
+LOG_PATH_OVERRIDE=""
 
 usage() {
   cat <<'EOF'
@@ -31,7 +32,8 @@ Usage:
     --duration 00:01:19 \
     --edited-asset-path /absolute/path/to/final.mp4 \
     [--posted-url https://x.com/... ] \
-    [--notes "optional note"]
+    [--notes "optional note"] \
+    [--log-path /absolute/path/to/launch-execution-log-copy.md]
 
 Behavior:
   --prepare   Run preflight, freeze a timestamped capture-session packet, and print the exact next steps.
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       NOTES="${2:-}"
       shift 2
       ;;
+    --log-path)
+      LOG_PATH_OVERRIDE="${2:-}"
+      shift 2
+      ;;
     --posted-url)
       POSTED_URL="${2:-}"
       shift 2
@@ -98,6 +104,11 @@ require_file "$TRIGGER_PATH"
 require_file "$LOG_PATH"
 require_file "$README_PATH"
 mkdir -p "$ARTIFACT_DIR"
+
+if [[ -n "$LOG_PATH_OVERRIDE" ]]; then
+  LOG_PATH="$LOG_PATH_OVERRIDE"
+fi
+require_file "$LOG_PATH"
 
 if [[ "$MODE" == "prepare" ]]; then
   preflight_output="$(bash "$KIT_DIR/scripts/demo-capture-preflight.sh" 2>&1)"
@@ -161,50 +172,46 @@ edited_asset_path = sys.argv[4]
 posted_url = sys.argv[5]
 notes = sys.argv[6]
 text = log_path.read_text()
-old = """## Demo walkthrough
-- Status: pending capture
-- Readiness packet: `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md`
-- Source files:
-  - `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`
-  - `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
-  - `starter-kits/agentic-cron-orchestration-kit/launch/demo-captions.srt`
-- Done criteria:
-  - `Preflight OK` visible
-  - path-injection requirement shown explicitly
-  - proof artifact with **1.74 minutes** shown explicitly
-  - note/checklist outcome shown explicitly
-- Record after capture:
-  - Recording path:
-  - Duration:
-  - Edited asset path:
-  - Posted URL (if published):
-  - Notes:
-"""
-new = f"""## Demo walkthrough
-- Status: captured on {duration}
-- Readiness packet: `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md`
-- Source files:
-  - `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`
-  - `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
-  - `starter-kits/agentic-cron-orchestration-kit/launch/demo-captions.srt`
-- Done criteria:
-  - `Preflight OK` visible
-  - path-injection requirement shown explicitly
-  - proof artifact with **1.74 minutes** shown explicitly
-  - note/checklist outcome shown explicitly
-- Recorded asset:
-  - Recording path: {recording_path}
-  - Duration: {duration}
-  - Edited asset path: {edited_asset_path}
-  - Posted URL (if published): {posted_url}
-  - Notes: {notes}
-"""
-if old not in text:
-    raise SystemExit("Demo walkthrough block not in expected pending-capture format")
-text = text.replace(old, new, 1)
-text = text.replace("- [ ] Demo walkthrough captured", "- [x] Demo walkthrough captured", 1)
-text = text.replace("- [ ] Final attachment choice recorded here", "- [x] Final attachment choice recorded here", 1)
-log_path.write_text(text)
+
+# Match the Demo walkthrough section robustly using regex that tolerates
+# field-order variation and extra/missing optional fields.
+# Anchored at ## Demo walkthrough and covering everything up to the next ##.
+pattern = re.compile(
+    r'(## Demo walkthrough\n)'
+    r'(- Status: )(pending capture|captured on[^\n]*)\n'
+    r'(- Readiness packet: [^\n]+\n)'
+    r'(- Capture helper: [^\n]+\n)'
+    r'(- Trigger card: [^\n]+\n)'
+    r'(- Source files:\n)((?:  - [^\n]+\n)+)'
+    r'(- Done criteria:\n)((?:  - [^\n]+\n)+)'
+    r'(- Record after capture:\n)((?:  - [^\n]*\n)*)',
+    re.MULTILINE
+)
+
+def replacement(m):
+    parts = [
+        m.group(1),                           # ## Demo walkthrough
+        m.group(2), f"captured on {duration}\n",
+        m.group(4),                           # - Readiness packet
+        m.group(5),                           # - Capture helper
+        m.group(6),                           # - Trigger card
+        m.group(7), m.group(8),               # - Source files: + items
+        m.group(9), m.group(10),              # - Done criteria: + items
+        "- Recorded asset:\n",
+        f"  - Recording path: {recording_path}\n",
+        f"  - Duration: {duration}\n",
+        f"  - Edited asset path: {edited_asset_path}\n",
+        f"  - Posted URL (if published): {posted_url}\n",
+        f"  - Notes: {notes}\n",
+    ]
+    return ''.join(parts)
+
+new_text, count = pattern.subn(replacement, text)
+if count == 0:
+    raise SystemExit("Demo walkthrough block not found in expected format in launch-execution-log.md")
+new_text = new_text.replace("- [ ] Demo walkthrough captured", "- [x] Demo walkthrough captured", 1)
+new_text = new_text.replace("- [ ] Final attachment choice recorded here", "- [x] Final attachment choice recorded here", 1)
+log_path.write_text(new_text)
 PY
 
 printf 'Demo capture finalized\n'

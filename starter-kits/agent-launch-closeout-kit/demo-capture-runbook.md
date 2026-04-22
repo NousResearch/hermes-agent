@@ -42,6 +42,12 @@ bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh
 
 That command reruns `--prepare`, resolves the newest session packet, opens the readiness/proof/log surfaces in an editor, activates QuickTime Player, and prints the exact finalize command again so the walkthrough can start without hunting files.
 
+Before a real recording run, verify the finalize path still matches the current log format:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/verify-demo-capture-finalize.sh
+```
+
 After the recording/edit is complete, close the loop with:
 
 ```bash

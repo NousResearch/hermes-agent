@@ -40,6 +40,7 @@ The closeout kit is only credible if it can close that real gap cleanly.
 | `scripts/publish-unblock-helper.sh` | One-shot unblock helper: runs preflight, captures current state, emits a filled `--verified` command, and generates a timestamped handoff artifact plus `auth-artifacts/latest-publish-unblock-handoff.md` |
 | `scripts/demo-capture-preflight.sh` | Verify the demo source files, rerun the underlying product preflight, and refresh `demo-artifacts/latest-demo-capture-readiness.md` before recording |
 | `scripts/demo-capture.sh` | Freeze a timestamped capture-session packet (`--prepare`) and finalize `launch-execution-log.md` with recording/edit asset paths (`--finalize`) |
+| `scripts/verify-demo-capture-finalize.sh` | Smoke-test the finalize flow against a temp copy of the launch log so format drift is caught before a real recording run |
 | `scripts/demo-capture-launcher.sh` | macOS workspace primer: refreshes the latest capture packet, opens the exact walkthrough surfaces, activates QuickTime Player, and prints the finalize command |
 | `demo-trigger.md` | One-screen operator card for recording the walkthrough and closing the loop in the launch log |
 

@@ -66,7 +66,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return min === 0 ? s.startedAt : Math.min(min, s.startedAt)
       }, 0)
 
-      const top = subagents.filter(s => !s.parentId).slice(0, 2)
+      // Match buildSubagentTree semantics: an agent is top-level if it has
+      // no parent OR its parent isn't in the snapshot (orphan).  Otherwise
+      // the disk label would fall back to `${N} subagents` for any turn
+      // whose roots got pruned mid-flight.
+      const ids = new Set(subagents.map(s => s.id))
+      const top = subagents.filter(s => !s.parentId || !ids.has(s.parentId)).slice(0, 2)
 
       const label = top.length
         ? top

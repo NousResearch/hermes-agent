@@ -1489,13 +1489,9 @@ def delegate_task(
     # when a runaway tree is detected, without interrupting already-running
     # children.  Cleared via the matching `delegation.pause` RPC.
     if is_spawn_paused():
-        return json.dumps(
-            {
-                "error": (
-                    "Delegation spawning is paused. Clear the pause via the TUI "
-                    "(`p` in /agents) or the `delegation.pause` RPC before retrying."
-                )
-            }
+        return tool_error(
+            "Delegation spawning is paused. Clear the pause via the TUI "
+            "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
     # Normalise the top-level role once; per-task overrides re-normalise.

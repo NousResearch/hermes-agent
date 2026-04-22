@@ -67,6 +67,11 @@ def _safe_int(value: Any, default: int, minimum: int = 1, maximum: int = 20) -> 
     return max(minimum, min(maximum, number))
 
 
+def _add_param(params: Dict[str, Any], key: str, value: Any) -> None:
+    if value is not None and value != "":
+        params[key] = value
+
+
 def _normalize_result_item(item: Dict[str, Any], position: int) -> Dict[str, Any]:
     description = (
         item.get("description")
@@ -77,15 +82,18 @@ def _normalize_result_item(item: Dict[str, Any], position: int) -> Dict[str, Any
     )
     if isinstance(description, list):
         description = "\n".join(str(x) for x in description if x)
-    return {
+    normalized: Dict[str, Any] = {
         "title": str(item.get("title") or item.get("name") or ""),
         "url": str(item.get("url") or item.get("link") or ""),
         "description": str(description),
         "position": position,
     }
+    if item.get("img"):
+        normalized["img"] = item["img"]
+    return normalized
 
 
-def _normalize_search_response(payload: Dict[str, Any], count: int) -> Dict[str, Any]:
+def _normalize_search_response(payload: Dict[str, Any], count: int, offset: int = 0) -> Dict[str, Any]:
     web = payload.get("web") if isinstance(payload.get("web"), dict) else {}
     results = (
         web.get("results")
@@ -94,10 +102,17 @@ def _normalize_search_response(payload: Dict[str, Any], count: int) -> Dict[str,
         or []
     )
     normalized: List[Dict[str, Any]] = []
-    for idx, item in enumerate(results[:count], start=1):
+    start_position = max(0, offset) + 1
+    for idx, item in enumerate(results[:count], start=start_position):
         if isinstance(item, dict):
             normalized.append(_normalize_result_item(item, idx))
     data: Dict[str, Any] = {"web": normalized}
+
+    if payload.get("query") is not None:
+        data["query"] = payload["query"]
+    for key in ("news", "videos", "summarizer", "rich"):
+        if payload.get(key) is not None:
+            data[key] = payload[key]
 
     summary = web.get("summary") or payload.get("summary")
     if summary:
@@ -113,6 +128,16 @@ def brave_search(
     freshness: Optional[str] = None,
     extra_snippets: bool = False,
     summary: bool = False,
+    search_lang: Optional[str] = None,
+    ui_lang: Optional[str] = None,
+    safesearch: Optional[str] = None,
+    offset: Optional[int] = None,
+    text_decorations: Optional[bool] = None,
+    spellcheck: Optional[bool] = None,
+    result_filter: Optional[str] = None,
+    goggles: Optional[str] = None,
+    goggles_id: Optional[str] = None,
+    units: Optional[str] = None,
 ) -> str:
     """Search the web using Brave Search."""
     query = (query or "").strip()
@@ -125,8 +150,20 @@ def brave_search(
         "count": count,
         "country": (country or "us").strip() or "us",
     }
-    if freshness:
-        params["freshness"] = freshness
+    _add_param(params, "freshness", freshness)
+    _add_param(params, "search_lang", search_lang)
+    _add_param(params, "ui_lang", ui_lang)
+    _add_param(params, "safesearch", safesearch)
+    if offset is not None:
+        params["offset"] = _safe_int(offset, default=0, minimum=0, maximum=9)
+    if text_decorations is not None:
+        params["text_decorations"] = bool(text_decorations)
+    if spellcheck is not None:
+        params["spellcheck"] = bool(spellcheck)
+    _add_param(params, "result_filter", result_filter)
+    _add_param(params, "goggles", goggles)
+    _add_param(params, "goggles_id", goggles_id)
+    _add_param(params, "units", units)
     if extra_snippets:
         params["extra_snippets"] = True
     if summary:
@@ -141,13 +178,14 @@ def brave_search(
         )
         response.raise_for_status()
         payload = response.json()
-        return _json_dumps(_normalize_search_response(payload, count))
+        normalized_offset = params.get("offset", 0)
+        return _json_dumps(_normalize_search_response(payload, count, offset=normalized_offset))
     except Exception as exc:
         logger.exception("Brave search failed: %s", exc)
         return tool_error(f"Brave search failed: {type(exc).__name__}: {exc}")
 
 
-def _normalize_suggestions(payload: Dict[str, Any], count: int) -> List[str]:
+def _normalize_suggestions(payload: Dict[str, Any], count: int) -> List[Any]:
     items = (
         payload.get("suggestions")
         or payload.get("results")
@@ -155,22 +193,23 @@ def _normalize_suggestions(payload: Dict[str, Any], count: int) -> List[str]:
         or payload.get("data")
         or []
     )
-    suggestions: List[str] = []
+    suggestions: List[Any] = []
     for item in items:
         if isinstance(item, str):
             text = item.strip()
+            if text:
+                suggestions.append(text)
         elif isinstance(item, dict):
-            text = str(
-                item.get("query")
-                or item.get("text")
-                or item.get("suggestion")
-                or item.get("title")
-                or ""
-            ).strip()
+            if set(item.keys()) <= {"query"} and isinstance(item.get("query"), str):
+                text = item["query"].strip()
+                if text:
+                    suggestions.append(text)
+            else:
+                suggestions.append(dict(item))
         else:
             text = str(item).strip()
-        if text:
-            suggestions.append(text)
+            if text:
+                suggestions.append(text)
         if len(suggestions) >= count:
             break
     return suggestions
@@ -178,7 +217,7 @@ def _normalize_suggestions(payload: Dict[str, Any], count: int) -> List[str]:
 
 def brave_suggest(
     query: str,
-    count: int = 10,
+    count: int = 5,
     country: str = "US",
     lang: Optional[str] = None,
     rich: bool = False,
@@ -188,7 +227,7 @@ def brave_suggest(
     if not query:
         return tool_error("Query is required")
 
-    count = _safe_int(count, default=10, minimum=1, maximum=20)
+    count = _safe_int(count, default=5, minimum=1, maximum=20)
     params: Dict[str, Any] = {"q": query, "count": count, "country": country or "US"}
     if lang:
         params["lang"] = lang
@@ -205,7 +244,8 @@ def brave_suggest(
         response.raise_for_status()
         payload = response.json()
         suggestions = _normalize_suggestions(payload, count)
-        return _json_dumps({"success": True, "data": {"query": query, "suggestions": suggestions}})
+        query_value = payload.get("query", query)
+        return _json_dumps({"success": True, "data": {"query": query_value, "suggestions": suggestions}})
     except Exception as exc:
         logger.exception("Brave suggest failed: %s", exc)
         return tool_error(f"Brave suggest failed: {type(exc).__name__}: {exc}")
@@ -265,20 +305,45 @@ def _extract_sources(payload: Dict[str, Any]) -> List[Any]:
     return []
 
 
-def brave_answers(query: str, model: str = _BRAVE_DEFAULT_MODEL) -> str:
+def brave_answers(
+    query: Optional[str] = None,
+    model: str = _BRAVE_DEFAULT_MODEL,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    stream: Optional[bool] = None,
+    country: Optional[str] = None,
+    language: Optional[str] = None,
+    enable_entities: Optional[bool] = None,
+    enable_citations: Optional[bool] = None,
+) -> str:
     """Get an AI-generated answer from Brave Search.
 
     Brave exposes this as an OpenAI-compatible chat completion endpoint.
     """
     query = (query or "").strip()
-    if not query:
-        return tool_error("Query is required")
-
     model = (model or _BRAVE_DEFAULT_MODEL).strip() or _BRAVE_DEFAULT_MODEL
-    payload = {
+
+    request_messages = messages if messages is not None else None
+    if request_messages is None:
+        if not query:
+            return tool_error("Query is required")
+        request_messages = [{"role": "user", "content": query}]
+    elif not request_messages:
+        return tool_error("Messages are required")
+
+    payload: Dict[str, Any] = {
         "model": model,
-        "messages": [{"role": "user", "content": query}],
+        "messages": request_messages,
     }
+    if stream is not None:
+        payload["stream"] = stream
+    if country is not None:
+        payload["country"] = country
+    if language is not None:
+        payload["language"] = language
+    if enable_entities is not None:
+        payload["enable_entities"] = enable_entities
+    if enable_citations is not None:
+        payload["enable_citations"] = enable_citations
 
     try:
         response = httpx.post(
@@ -312,7 +377,7 @@ def brave_answers(query: str, model: str = _BRAVE_DEFAULT_MODEL) -> str:
 
 BRAVE_SEARCH_SCHEMA = {
     "name": "brave_search",
-    "description": "Search the web with Brave Search. Supports country, freshness, extra snippets, and optional summary results.",
+    "description": "Search the web with Brave Search. Supports country, freshness, search language, UI language, safe search, offsets, goggles, and optional summary results.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -336,6 +401,49 @@ BRAVE_SEARCH_SCHEMA = {
                 "type": "string",
                 "enum": ["pd", "pw", "pm", "py"],
                 "description": "Freshness filter: pd=day, pw=week, pm=month, py=year",
+            },
+            "search_lang": {
+                "type": "string",
+                "description": "Search result language",
+            },
+            "ui_lang": {
+                "type": "string",
+                "description": "UI language",
+            },
+            "safesearch": {
+                "type": "string",
+                "description": "Safe search mode",
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9,
+                "default": 0,
+                "description": "Result offset (0-9)",
+            },
+            "text_decorations": {
+                "type": "boolean",
+                "description": "Enable or disable text decorations",
+            },
+            "spellcheck": {
+                "type": "boolean",
+                "description": "Enable or disable spellcheck",
+            },
+            "result_filter": {
+                "type": "string",
+                "description": "Filter the returned result types",
+            },
+            "goggles": {
+                "type": "string",
+                "description": "Named goggles filter",
+            },
+            "goggles_id": {
+                "type": "string",
+                "description": "Goggles identifier",
+            },
+            "units": {
+                "type": "string",
+                "description": "Units preference",
             },
             "extra_snippets": {
                 "type": "boolean",
@@ -367,7 +475,7 @@ BRAVE_SUGGEST_SCHEMA = {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 20,
-                "default": 10,
+                "default": 5,
                 "description": "Maximum number of suggestions to return (1-20)",
             },
             "country": {
@@ -399,10 +507,37 @@ BRAVE_ANSWERS_SCHEMA = {
                 "type": "string",
                 "description": "Question to answer",
             },
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                },
+                "description": "OpenAI-style chat messages; if provided, they are sent directly to Brave.",
+            },
             "model": {
                 "type": "string",
                 "default": _BRAVE_DEFAULT_MODEL,
                 "description": "Brave answer model name",
+            },
+            "stream": {
+                "type": "boolean",
+                "description": "Enable streaming responses",
+            },
+            "country": {
+                "type": "string",
+                "description": "Country hint",
+            },
+            "language": {
+                "type": "string",
+                "description": "Language hint",
+            },
+            "enable_entities": {
+                "type": "boolean",
+                "description": "Enable entity extraction",
+            },
+            "enable_citations": {
+                "type": "boolean",
+                "description": "Enable citations",
             },
         },
         "required": ["query"],
@@ -420,6 +555,16 @@ registry.register(
         freshness=args.get("freshness"),
         extra_snippets=bool(args.get("extra_snippets", False)),
         summary=bool(args.get("summary", False)),
+        search_lang=args.get("search_lang"),
+        ui_lang=args.get("ui_lang"),
+        safesearch=args.get("safesearch"),
+        offset=args.get("offset"),
+        text_decorations=args.get("text_decorations"),
+        spellcheck=args.get("spellcheck"),
+        result_filter=args.get("result_filter"),
+        goggles=args.get("goggles"),
+        goggles_id=args.get("goggles_id"),
+        units=args.get("units"),
     ),
     check_fn=check_brave_api_key,
     requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
@@ -433,7 +578,7 @@ registry.register(
     schema=BRAVE_SUGGEST_SCHEMA,
     handler=lambda args, **kw: brave_suggest(
         args.get("query", ""),
-        count=args.get("count", 10),
+        count=args.get("count", 5),
         country=args.get("country", "US"),
         lang=args.get("lang"),
         rich=bool(args.get("rich", False)),
@@ -449,8 +594,14 @@ registry.register(
     toolset="web",
     schema=BRAVE_ANSWERS_SCHEMA,
     handler=lambda args, **kw: brave_answers(
-        args.get("query", ""),
+        args.get("query"),
         model=args.get("model", _BRAVE_DEFAULT_MODEL),
+        messages=args.get("messages"),
+        stream=args.get("stream"),
+        country=args.get("country"),
+        language=args.get("language"),
+        enable_entities=args.get("enable_entities"),
+        enable_citations=args.get("enable_citations"),
     ),
     check_fn=check_brave_api_key,
     requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],

@@ -428,20 +428,6 @@ def _capture_log_snapshot(
         return LogSnapshot(path=log_path, tail_text=f"(error reading: {exc})", full_text=None)
 
 
-def _read_log_tail(log_name: str, num_lines: int) -> str:
-    """Read the last *num_lines* from a log file, or return a placeholder."""
-    return _capture_log_snapshot(log_name, tail_lines=num_lines).tail_text
-
-
-def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[str]:
-    """Read a log file for standalone upload.
-
-    Returns the file content (last *max_bytes* if truncated), or None if the
-    file doesn't exist or is empty.
-    """
-    return _capture_log_snapshot(log_name, tail_lines=1, max_bytes=max_bytes).full_text
-
-
 def _capture_default_log_snapshots(log_lines: int) -> dict[str, LogSnapshot]:
     """Capture all logs used by debug-share exactly once."""
     errors_lines = min(log_lines, 100)

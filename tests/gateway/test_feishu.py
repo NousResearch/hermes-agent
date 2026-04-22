@@ -805,6 +805,37 @@ class TestAdapterBehavior(unittest.TestCase):
             )
         )
 
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_GROUP_POLICY": "allowlist",
+            "FEISHU_ALLOWED_USERS": "ou_allowed",
+            "FEISHU_GROUP_REQUIRE_MENTION": "false",
+        },
+        clear=True,
+    )
+    def test_group_message_allowlist_without_mention_when_config_disabled(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        plain_message = SimpleNamespace(mentions=[], content="hello")
+
+        self.assertTrue(
+            adapter._should_accept_group_message(
+                plain_message,
+                SimpleNamespace(open_id="ou_allowed", user_id=None),
+                "",
+            )
+        )
+        self.assertFalse(
+            adapter._should_accept_group_message(
+                plain_message,
+                SimpleNamespace(open_id="ou_blocked", user_id=None),
+                "",
+            )
+        )
+
     def test_per_group_allowlist_policy_gates_by_sender(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

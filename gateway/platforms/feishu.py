@@ -306,6 +306,7 @@ class FeishuAdapterSettings:
     encrypt_key: str
     verification_token: str
     group_policy: str
+    require_mention_in_groups: bool
     allowed_group_users: frozenset[str]
     bot_open_id: str
     bot_user_id: str
@@ -1191,6 +1192,12 @@ class FeishuAdapter(BasePlatformAdapter):
             encrypt_key=os.getenv("FEISHU_ENCRYPT_KEY", "").strip(),
             verification_token=os.getenv("FEISHU_VERIFICATION_TOKEN", "").strip(),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            require_mention_in_groups=(
+                str(extra.get("require_mention_in_groups", os.getenv("FEISHU_GROUP_REQUIRE_MENTION", "true")))
+                .strip()
+                .lower()
+                not in ("false", "0", "no")
+            ),
             allowed_group_users=frozenset(
                 item.strip()
                 for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
@@ -1247,6 +1254,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._encrypt_key = settings.encrypt_key
         self._verification_token = settings.verification_token
         self._group_policy = settings.group_policy
+        self._require_mention_in_groups = settings.require_mention_in_groups
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
@@ -3373,9 +3381,11 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Apply group allowlist policy, then optional mention gating."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        if not self._require_mention_in_groups:
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:

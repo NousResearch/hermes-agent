@@ -915,10 +915,18 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
       Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
       preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
+    - Bedrock cross-region inference profile IDs (us.*, eu.*, ap.*, global.*)
+      use dots as namespace separators — never mangle those.
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
+        lower = model.lower()
+    # Bedrock inference profile IDs start with a region prefix followed by a dot
+    # (e.g. us.anthropic.claude-haiku-4-5-20251001-v1:0). Preserve as-is.
+    _BEDROCK_PREFIXES = ("us.", "eu.", "ap.", "global.")
+    if any(lower.startswith(p) for p in _BEDROCK_PREFIXES):
+        return model
     if not preserve_dots:
         # OpenRouter uses dots for version separators (claude-opus-4.6),
         # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.

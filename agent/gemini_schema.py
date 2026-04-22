@@ -72,6 +72,18 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
                 if isinstance(item, dict)
             ]
             continue
+        if key == "enum":
+            # Gemini's Schema.enum requires TYPE_STRING values — it rejects
+            # integer/float/bool enum entries even when the schema's ``type``
+            # is ``integer`` or ``number``.  Stringify every value so tools
+            # like discord_server's auto_archive_duration=[60, 1440, ...]
+            # don't trigger "Invalid value at enum[0] (TYPE_STRING)" 400s.
+            if isinstance(value, list):
+                cleaned[key] = [
+                    str(v) if not isinstance(v, str) else v
+                    for v in value
+                ]
+            continue
         cleaned[key] = value
     return cleaned
 

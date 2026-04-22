@@ -1131,6 +1131,20 @@ def cmd_chat(args):
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
+    # --ignore-user-config: make load_cli_config() / load_config() skip the
+    # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
+    # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
+    # import time). Credentials in .env are still loaded — this flag only
+    # ignores behavioral/config settings.
+    if getattr(args, "ignore_user_config", False):
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+
+    # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
+    # (rules), memory entries, and any preloaded skills coming from user config.
+    # Maps to AIAgent(skip_context_files=True, skip_memory=True).
+    if getattr(args, "ignore_rules", False):
+        os.environ["HERMES_IGNORE_RULES"] = "1"
+
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
@@ -1159,6 +1173,8 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
+        "ignore_rules": getattr(args, "ignore_rules", False),
+        "ignore_user_config": getattr(args, "ignore_user_config", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -6607,6 +6623,18 @@ For more help on a command:
         help="Include the session ID in the agent's system prompt",
     )
     parser.add_argument(
+        "--ignore-user-config",
+        action="store_true",
+        default=False,
+        help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded)",
+    )
+    parser.add_argument(
+        "--ignore-rules",
+        action="store_true",
+        default=False,
+        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills",
+    )
+    parser.add_argument(
         "--tui",
         action="store_true",
         default=False,
@@ -6744,6 +6772,18 @@ For more help on a command:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Include the session ID in the agent's system prompt",
+    )
+    chat_parser.add_argument(
+        "--ignore-user-config",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.",
+    )
+    chat_parser.add_argument(
+        "--ignore-rules",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
     )
     chat_parser.add_argument(
         "--source",

@@ -143,7 +143,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(fromServer))
   })
 
-  it('routes inline_diff into the active segment stream, not historyItems', () => {
+  it('attaches inline_diff to the assistant completion body', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
     const diff = '\u001b[31m--- a/foo.ts\u001b[0m\n\u001b[32m+++ b/foo.ts\u001b[0m\n@@\n-old\n+new'
@@ -158,26 +158,21 @@ describe('createGatewayEventHandler', () => {
       type: 'tool.complete'
     } as any)
 
-    // While streaming, nothing has flowed to historyItems yet — diff must be
-    // held in segmentMessages so the transcript renders it inline with the
-    // current turn rather than above it.
+    // Diff is buffered for message.complete and sanitized (ANSI stripped).
     expect(appended).toHaveLength(0)
-    expect(turnController.segmentMessages).toContainEqual(
-      expect.objectContaining({ kind: 'trail', role: 'system', text: '' })
-    )
-    expect(turnController.segmentMessages).toContainEqual({ role: 'system', text: cleaned })
+    expect(turnController.pendingInlineDiffs).toEqual([cleaned])
 
     onEvent({
       payload: { text: 'patch applied' },
       type: 'message.complete'
     } as any)
 
-    // After the turn closes, the diff lands in history in the order the
-    // gateway emitted it — before the assistant's final text, not above it.
-    expect(appended).toHaveLength(3)
-    expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '' })
-    expect(appended[1]).toMatchObject({ role: 'system', text: cleaned })
-    expect(appended[2]).toMatchObject({ role: 'assistant', text: 'patch applied' })
+    // Diff is rendered in the same assistant message body as the completion.
+    expect(appended).toHaveLength(1)
+    expect(appended[0]).toMatchObject({ role: 'assistant' })
+    expect(appended[0]?.text).toContain('patch applied')
+    expect(appended[0]?.text).toContain('```diff')
+    expect(appended[0]?.text).toContain(cleaned)
   })
 
   it('shows setup panel for missing provider startup error', () => {

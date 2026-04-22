@@ -272,12 +272,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             return
           }
 
-          // Push into the active turn's segment stream so the diff renders
-          // inline with the assistant's output.  Routing through `sys()`
-          // lands it in the completed-history section above the streaming
-          // bubble — which is why blitz testers saw diffs "appear at the
-          // top, out of sequence" with the rest of the turn.
-          turnController.appendSegmentMessage({ role: 'system', text: diffText })
+          // Keep inline diffs attached to the assistant completion body so
+          // they render in the same message flow, not as a standalone system
+          // artifact that can look out-of-place around tool rows.
+          turnController.queueInlineDiff(diffText)
         }
 
         return

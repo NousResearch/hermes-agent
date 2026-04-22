@@ -273,6 +273,7 @@ def run_dump(args):
         ("MINIMAX_API_KEY", "minimax"),
         ("DEEPSEEK_API_KEY", "deepseek"),
         ("DASHSCOPE_API_KEY", "dashscope"),
+        ("ABLITERATION_API_KEY", "abliteration"),
         ("HF_TOKEN", "huggingface"),
         ("NVIDIA_API_KEY", "nvidia"),
         ("AI_GATEWAY_API_KEY", "ai_gateway"),

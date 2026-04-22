@@ -257,6 +257,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "trinity-large-preview",
         "trinity-mini",
     ],
+    # Public docs currently expose a single first-class model plus a live
+    # GET /v1/models catalog for future additions.
+    "abliteration": [
+        "abliterated-model",
+    ],
     "opencode-zen": [
         "kimi-k2.5",
         "gpt-5.4-pro",
@@ -709,6 +714,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
+    ProviderEntry("abliteration",   "abliteration.ai",          "abliteration.ai (OpenAI-compatible direct API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
@@ -742,6 +748,9 @@ _PROVIDER_ALIASES = {
     "stepfun-coding-plan": "stepfun",
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+    "abliteration-ai": "abliteration",
+    "abliteration.ai": "abliteration",
+    "abliterationai": "abliteration",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -1625,6 +1634,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
             creds = resolve_api_key_provider_credentials("stepfun")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "abliteration":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("abliteration")
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:

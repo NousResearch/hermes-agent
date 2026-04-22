@@ -30,6 +30,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "abliteration",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -39,6 +40,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "stepfun", "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
+    "abliteration-ai", "abliteration.ai", "abliterationai",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal",
@@ -163,6 +165,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "nemotron": 131072,
     # Arcee
     "trinity": 262144,
+    # abliteration.ai docs list ``abliterated-model`` at 150K context.
+    "abliterated-model": 150000,
     # OpenRouter
     "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
@@ -240,6 +244,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.stepfun.ai": "stepfun",
     "api.stepfun.com": "stepfun",
     "api.arcee.ai": "arcee",
+    "api.abliteration.ai": "abliteration",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",

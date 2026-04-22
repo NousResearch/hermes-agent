@@ -159,6 +159,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "abliteration": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("ABLITERATION_API_KEY",),
+        base_url_override="https://api.abliteration.ai/v1",
+        base_url_env_var="ABLITERATION_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
@@ -284,6 +290,11 @@ ALIASES: Dict[str, str] = {
     "arcee-ai": "arcee",
     "arceeai": "arcee",
 
+    # abliteration.ai
+    "abliteration-ai": "abliteration",
+    "abliteration.ai": "abliteration",
+    "abliterationai": "abliteration",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -309,6 +320,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "abliteration": "abliteration.ai",
 }
 
 

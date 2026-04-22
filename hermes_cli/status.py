@@ -142,6 +142,10 @@ def show_status(args):
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
+    abliteration_value = get_env_value("ABLITERATION_API_KEY") or ""
+    abliteration_display = redact_key(abliteration_value) if not show_all else abliteration_value
+    print(f"  {'abliteration.ai':<12}  {check_mark(bool(abliteration_value))} {abliteration_display}")
+
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value

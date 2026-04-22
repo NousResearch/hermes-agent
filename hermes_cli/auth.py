@@ -200,6 +200,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("ARCEEAI_API_KEY",),
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "abliteration": ProviderConfig(
+        id="abliteration",
+        name="abliteration.ai",
+        auth_type="api_key",
+        inference_base_url="https://api.abliteration.ai/v1",
+        api_key_env_vars=("ABLITERATION_API_KEY",),
+        base_url_env_var="ABLITERATION_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -1004,6 +1012,7 @@ def resolve_provider(
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
+        "abliteration-ai": "abliteration", "abliteration.ai": "abliteration", "abliterationai": "abliteration",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",

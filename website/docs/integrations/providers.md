@@ -25,6 +25,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
+| **abliteration.ai** | `ABLITERATION_API_KEY` in `~/.hermes/.env` (provider: `abliteration`; aliases: `abliteration-ai`, `abliteration.ai`; the provider quickstart calls the shell variable `ABLIT_KEY`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
@@ -274,16 +275,20 @@ hermes chat --provider xiaomi --model mimo-v2-pro
 # Arcee AI (Trinity models)
 hermes chat --provider arcee --model trinity-large-thinking
 # Requires: ARCEEAI_API_KEY in ~/.hermes/.env
+
+# abliteration.ai
+hermes chat --provider abliteration --model abliterated-model
+# Requires: ABLITERATION_API_KEY in ~/.hermes/.env
 ```
 
 Or set the provider permanently in `config.yaml`:
 ```yaml
 model:
-  provider: "zai"       # or: kimi-coding, kimi-coding-cn, minimax, minimax-cn, alibaba, xiaomi, arcee
+  provider: "zai"       # or: kimi-coding, kimi-coding-cn, minimax, minimax-cn, alibaba, xiaomi, arcee, abliteration
   default: "glm-5"
 ```
 
-Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, or `XIAOMI_BASE_URL` environment variables.
+Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, or `ABLITERATION_BASE_URL` environment variables.
 
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
@@ -1159,7 +1164,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `abliteration`, `alibaba`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

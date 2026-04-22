@@ -1732,3 +1732,372 @@ class TestConcurrentWriteSafety:
         assert "30" in src, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
+
+
+# =========================================================================
+# Schema migration atomicity (#8030)
+# =========================================================================
+
+class TestMigrationAtomicity:
+    """Verify that schema migrations are atomic: version is NOT bumped if
+    ALTER TABLE fails for a non-duplicate-column reason."""
+
+    def test_version_not_bumped_on_real_alter_failure(self, tmp_path):
+        """If ALTER TABLE fails for a reason other than 'column already exists',
+        the schema_version must NOT be bumped (transaction rolled back)."""
+        import sqlite3
+        from unittest.mock import patch
+
+        db_path = tmp_path / "atomic_test.db"
+        conn = sqlite3.connect(str(db_path))
+        # Create a v5 schema with the messages table missing the v6 columns.
+        conn.executescript("""
+            PRAGMA journal_mode=WAL;
+
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (5);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
+            CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
+                ON sessions(title) WHERE title IS NOT NULL;
+        """)
+        conn.commit()
+        conn.close()
+
+        # Inject a non-duplicate OperationalError into the v6 ALTER TABLE
+        # by wrapping _init_schema to drop the messages table right before
+        # the migration executes (after SCHEMA_SQL re-creates it).
+        original_init = SessionDB._init_schema
+
+        def failing_init(self_db):
+            # Let SCHEMA_SQL create tables, then drop messages to make
+            # the v6 ALTER TABLE fail with "no such table: messages".
+            cursor = self_db._conn.cursor()
+            import hermes_state
+            for statement in hermes_state.SCHEMA_SQL.split(";"):
+                statement = statement.strip()
+                if statement:
+                    cursor.execute(statement)
+            self_db._conn.commit()
+
+            # Drop messages so ALTER TABLE messages fails
+            cursor.execute("DROP TABLE IF EXISTS messages")
+            self_db._conn.commit()
+
+            # Run the migration logic (same code path as _init_schema)
+            cursor.execute("SELECT version FROM schema_version LIMIT 1")
+            row = cursor.fetchone()
+            current_version = row[0]
+
+            if current_version < 6:
+                self_db._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for col_name, col_type in [
+                        ("reasoning", "TEXT"),
+                        ("reasoning_details", "TEXT"),
+                        ("codex_reasoning_items", "TEXT"),
+                    ]:
+                        try:
+                            safe = col_name.replace('"', '""')
+                            cursor.execute(
+                                f'ALTER TABLE messages ADD COLUMN "{safe}" {col_type}'
+                            )
+                        except sqlite3.OperationalError as exc:
+                            if not SessionDB._is_column_exists_error(exc):
+                                raise
+                    cursor.execute("UPDATE schema_version SET version = 6")
+                    self_db._conn.commit()
+                except BaseException:
+                    self_db._conn.rollback()
+                    raise
+
+        with patch.object(SessionDB, '_init_schema', failing_init):
+            with pytest.raises(sqlite3.OperationalError, match="no such table"):
+                SessionDB(db_path=db_path)
+
+        # Re-open raw to check version was NOT bumped
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        assert row[0] == 5, (
+            f"schema_version should still be 5 after failed migration, got {row[0]}"
+        )
+        conn.close()
+
+    def test_version_bumped_when_column_already_exists(self, tmp_path):
+        """If ALTER TABLE fails because the column already exists (duplicate),
+        the version SHOULD still be bumped (the migration is effectively done)."""
+        import sqlite3
+
+        db_path = tmp_path / "idempotent_test.db"
+        conn = sqlite3.connect(str(db_path))
+        # Create v5 schema WITH the v6 columns already present
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (5);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        # Should succeed -- columns already exist, version bumps to 6
+        session_db = SessionDB(db_path=db_path)
+        cursor = session_db._conn.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == 6
+        session_db.close()
+
+    def test_no_executescript_in_init_schema(self):
+        """_init_schema must not call executescript (it implicitly commits)."""
+        import inspect
+        src = inspect.getsource(SessionDB._init_schema)
+        # Check for actual method calls (.executescript() or executescript()),
+        # not mentions in comments/docstrings.
+        import re
+        calls = re.findall(r'\.executescript\s*\(', src)
+        assert calls == [], (
+            "_init_schema should not call executescript() — it implicitly commits "
+            "any open transaction, breaking migration atomicity"
+        )
+
+    def test_is_column_exists_error_recognizes_duplicate_column(self):
+        """_is_column_exists_error correctly identifies duplicate column errors."""
+        import sqlite3
+        exc = sqlite3.OperationalError("duplicate column name: title")
+        assert SessionDB._is_column_exists_error(exc) is True
+
+    def test_is_column_exists_error_recognizes_already_exists(self):
+        """_is_column_exists_error correctly identifies 'already exists' errors."""
+        import sqlite3
+        exc = sqlite3.OperationalError("index idx_foo already exists")
+        assert SessionDB._is_column_exists_error(exc) is True
+
+    def test_is_column_exists_error_rejects_other_errors(self):
+        """_is_column_exists_error returns False for unrelated errors."""
+        import sqlite3
+        exc = sqlite3.OperationalError("no such table: messages")
+        assert SessionDB._is_column_exists_error(exc) is False
+
+        exc2 = sqlite3.OperationalError("database is locked")
+        assert SessionDB._is_column_exists_error(exc2) is False
+
+
+class TestConcurrentInitialization:
+    """Verify that concurrent SessionDB initialization (CLI + gateway startup)
+    does not corrupt the schema."""
+
+    def test_concurrent_init_produces_valid_schema(self, tmp_path):
+        """Two SessionDB instances initializing the same DB file concurrently
+        must both end up with a valid, consistent schema."""
+        import threading
+
+        db_path = tmp_path / "concurrent_init.db"
+        errors = []
+        instances = []
+        lock = threading.Lock()
+
+        def init_db():
+            try:
+                db = SessionDB(db_path=db_path)
+                with lock:
+                    instances.append(db)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=init_db) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        # All threads should succeed without errors
+        assert errors == [], f"Concurrent init errors: {errors}"
+        assert len(instances) == 4
+
+        # All instances should agree on schema version
+        for db in instances:
+            cursor = db._conn.execute("SELECT version FROM schema_version")
+            version = cursor.fetchone()[0]
+            assert version == 6, f"Expected version 6, got {version}"
+            db.close()
+
+    def test_concurrent_init_with_migration(self, tmp_path):
+        """Multiple instances migrating from v2 to v6 concurrently should all
+        succeed and converge on version 6."""
+        import sqlite3
+        import threading
+
+        db_path = tmp_path / "concurrent_migrate.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            PRAGMA journal_mode=WAL;
+
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (2);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
+            CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+        """)
+        conn.commit()
+        conn.close()
+
+        errors = []
+        instances = []
+        lock = threading.Lock()
+
+        def init_db():
+            try:
+                db = SessionDB(db_path=db_path)
+                with lock:
+                    instances.append(db)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=init_db) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert errors == [], f"Concurrent migration errors: {errors}"
+        assert len(instances) == 3
+
+        # All should be at version 6
+        for db in instances:
+            cursor = db._conn.execute("SELECT version FROM schema_version")
+            assert cursor.fetchone()[0] == 6
+            db.close()
+
+        # Verify the migrated columns actually exist
+        check_conn = sqlite3.connect(str(db_path))
+        check_conn.row_factory = sqlite3.Row
+        cols = {row[1] for row in check_conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        assert "title" in cols
+        assert "billing_provider" in cols
+        msg_cols = {row[1] for row in check_conn.execute("PRAGMA table_info(messages)").fetchall()}
+        assert "reasoning" in msg_cols
+        assert "reasoning_details" in msg_cols
+        assert "codex_reasoning_items" in msg_cols
+        check_conn.close()

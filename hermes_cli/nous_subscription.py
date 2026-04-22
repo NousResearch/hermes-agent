@@ -20,6 +20,18 @@ from tools.tool_backend_helpers import (
 )
 
 
+def _web_backend_label(backend: str) -> str:
+    labels = {
+        "brave": "Brave Search",
+        "exa": "Exa",
+        "firecrawl": "Firecrawl",
+        "parallel": "Parallel",
+        "tavily": "Tavily",
+    }
+    normalized = (backend or "").strip().lower()
+    return labels.get(normalized, backend or "")
+
+
 _DEFAULT_PLATFORM_TOOLSETS = {
     "cli": "hermes-cli",
 }
@@ -406,7 +418,7 @@ def get_nous_subscription_features(
             managed_by_nous=web_managed,
             direct_override=web_active and not web_managed,
             toolset_enabled=web_tool_enabled,
-            current_provider=web_backend or "",
+            current_provider=_web_backend_label(web_backend),
             explicit_configured=bool(web_backend),
         ),
         "image_gen": NousFeatureState(

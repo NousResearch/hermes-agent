@@ -371,14 +371,14 @@ def _print_setup_summary(config: dict, hermes_home):
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
-        tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
+        tool_status.append(("Web Search (Nous subscription)", True, None))
     elif subscription_features.web.available:
-        label = "Web Search & Extract"
+        label = "Web Search"
         if subscription_features.web.current_provider:
-            label = f"Web Search & Extract ({subscription_features.web.current_provider})"
+            label = f"Web Search ({subscription_features.web.current_provider})"
         tool_status.append((label, True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
+        tool_status.append(("Web Search", False, "BRAVE_SEARCH_API_KEY/BRAVE_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
 
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider

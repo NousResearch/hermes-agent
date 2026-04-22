@@ -193,7 +193,7 @@ TOOL_CATEGORIES = {
         ],
     },
     "web": {
-        "name": "Web Search & Extract",
+        "name": "Web Search",
         "setup_title": "Select Search Provider",
         "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
         "icon": "🔍",

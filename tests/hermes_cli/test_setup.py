@@ -492,3 +492,30 @@ def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys
 
     captured = capsys.readouterr()
     assert "Run 'hermes chat' manually" in captured.out
+
+
+def test_print_setup_summary_mentions_brave_search(monkeypatch, capsys, tmp_path):
+    from hermes_cli import setup as setup_mod
+
+    feature = lambda **kwargs: types.SimpleNamespace(**kwargs)
+    subscription_features = types.SimpleNamespace(
+        nous_auth_present=False,
+        web=feature(managed_by_nous=False, available=True, current_provider="Brave Search"),
+        browser=feature(managed_by_nous=False, available=False, current_provider=""),
+        image_gen=feature(managed_by_nous=False, available=False),
+        tts=feature(managed_by_nous=False, available=False),
+        modal=feature(managed_by_nous=False, direct_override=False),
+    )
+
+    monkeypatch.setattr(setup_mod, "get_nous_subscription_features", lambda config: subscription_features)
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda _name: "")
+    monkeypatch.setattr(setup_mod, "print_header", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup_mod, "print_success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup_mod, "print_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup_mod, "print_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup_mod, "managed_nous_tools_enabled", lambda: False)
+
+    setup_mod._print_setup_summary({}, tmp_path)
+
+    out = capsys.readouterr().out
+    assert "Web Search (Brave Search)" in out

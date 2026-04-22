@@ -656,6 +656,82 @@ class TestResolveSessionNameGatewayKey:
         assert ":" not in result
 
 
+class TestResolveSessionNameLengthLimit:
+    """Regression tests for Honcho's 100-char session ID limit (issue #13868).
+
+    Long gateway session keys (Matrix room+event IDs, Telegram supergroup
+    reply chains, Slack thread IDs with long workspace prefixes) can overflow
+    Honcho's 100-char session_id limit after sanitization. Before this fix,
+    every Honcho API call for those sessions 400'd with "session_id too long".
+    """
+
+    HONCHO_MAX = 100
+
+    def test_short_gateway_key_unchanged(self):
+        """Short keys must not get a hash suffix appended."""
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        # Unchanged fast-path: sanitize only, no truncation, no hash suffix.
+        assert result == "agent-main-telegram-dm-8439114563"
+        assert len(result) <= self.HONCHO_MAX
+
+    def test_key_at_exact_limit_unchanged(self):
+        """A sanitized key that is exactly 100 chars must be returned as-is."""
+        key = "a" * self.HONCHO_MAX
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result == key
+        assert len(result) == self.HONCHO_MAX
+
+    def test_long_gateway_key_truncated_to_limit(self):
+        """An over-limit sanitized key must truncate to exactly 100 chars."""
+        key = "!roomid:matrix.example.org|" + "$event_" + ("a" * 300)
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result is not None
+        assert len(result) == self.HONCHO_MAX
+
+    def test_truncation_is_deterministic(self):
+        """Same long key must always produce the same truncated session ID."""
+        key = "matrix-" + ("a" * 300)
+        config = HonchoClientConfig()
+        first = config.resolve_session_name(gateway_session_key=key)
+        second = config.resolve_session_name(gateway_session_key=key)
+        assert first == second
+
+    def test_truncated_result_respects_char_allowlist(self):
+        """Truncated result must still match Honcho's [a-zA-Z0-9_-] allowlist."""
+        import re
+        key = "slack:T12345:thread-reply:" + ("x" * 300) + ":with:colons:and:slashes/here"
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result is not None
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", result)
+
+    def test_distinct_long_keys_do_not_collide(self):
+        """Two long keys sharing a prefix must produce different truncated IDs."""
+        prefix = "matrix:!room:example.org|" + "a" * 200
+        key_a = prefix + "-suffix-alpha"
+        key_b = prefix + "-suffix-beta"
+        config = HonchoClientConfig()
+        result_a = config.resolve_session_name(gateway_session_key=key_a)
+        result_b = config.resolve_session_name(gateway_session_key=key_b)
+        assert result_a != result_b
+        assert len(result_a) == self.HONCHO_MAX
+        assert len(result_b) == self.HONCHO_MAX
+
+    def test_truncated_result_has_hash_suffix(self):
+        """Truncated IDs must end with '-<8 hex chars>' for collision resistance."""
+        import re
+        key = "matrix-" + ("a" * 300)
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        # Last 9 chars: '-' + 8 hex chars.
+        assert re.search(r"-[0-9a-f]{8}$", result)
+
+
 class TestResetHonchoClient:
     def test_reset_clears_singleton(self):
         import plugins.memory.honcho.client as mod

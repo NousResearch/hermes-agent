@@ -1,8 +1,0 @@
-08:08:00 interrupt fired: msg='okay', children=0, parent._interrupt=True
-08:08:00 ENTER: queued interrupt msg='okay', agent_running=True
-08:08:11 ENTER: queued interrupt msg='continue', agent_running=True
-08:08:11 interrupt fired: msg='continue', children=0, parent._interrupt=True
-08:26:19 ENTER: queued interrupt msg='짰냐 ?', agent_running=True
-08:26:19 interrupt fired: msg='짰냐 ?', children=0, parent._interrupt=True
-08:39:17 ENTER: queued interrupt msg='그다음 너의 페르소나를 오르비 문영사 무브의 Ceo Staff / 전략기획실장으로 바꿔. 현재 페르소나랑 A', agent_running=True
-08:39:17 interrupt fired: msg='그다음 너의 페르소나를 오르비 문영사 무브의 Ceo Staff / 전략기획실장으로 바꿔. 현재 페르소나랑 A', children=0, parent._interrupt=True

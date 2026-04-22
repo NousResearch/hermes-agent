@@ -69,3 +69,6 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 .omx/
+
+# Orbiracle local runtime home (profile state, secrets, sessions, generated skills)
+.orbiracle-sidecar/

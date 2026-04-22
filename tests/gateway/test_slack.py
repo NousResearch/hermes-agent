@@ -1138,6 +1138,56 @@ class TestReactions:
         adapter._app.client.reactions_add.assert_not_called()
         adapter._app.client.reactions_remove.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_reactions_disabled_via_env(self, adapter, monkeypatch):
+        """SLACK_REACTIONS=false should suppress all reaction lifecycle."""
+        monkeypatch.setenv("SLACK_REACTIONS", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000004",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should NOT register for reactions when toggle is off
+        assert "1234567890.000004" not in adapter._reacting_message_ids
+
+        # Hooks should also be no-ops when disabled
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="dm",
+            user_id="U_USER",
+        )
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000004",
+        )
+        # Force-add to verify hooks respect the toggle independently
+        adapter._reacting_message_ids.add("1234567890.000004")
+        await adapter.on_processing_start(msg_event)
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
+        adapter._app.client.reactions_add.assert_not_called()
+        adapter._app.client.reactions_remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reactions_enabled_by_default(self, adapter):
+        """SLACK_REACTIONS defaults to true (matches existing behavior)."""
+        assert adapter._reactions_enabled() is True
+
 
 # ---------------------------------------------------------------------------
 # TestThreadReplyHandling

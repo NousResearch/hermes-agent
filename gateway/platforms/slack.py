@@ -607,8 +607,14 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
             return False
 
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
@@ -618,6 +624,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
+        if not self._reactions_enabled():
+            return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
@@ -1260,7 +1268,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Only react when bot is directly addressed (DM or @mention).
         # In listen-all channels (require_mention=false), reacting to every
         # casual message would be noisy.
-        _should_react = is_dm or is_mentioned
+        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
             self._reacting_message_ids.add(ts)
 

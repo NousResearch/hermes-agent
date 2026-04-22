@@ -10364,7 +10364,20 @@ class HermesCLI:
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
-        
+
+        # Disable CPR (Cursor Position Report) queries — prompt_toolkit sends
+        # \x1b[6n (Device Status Report) to detect cursor position, and the
+        # terminal replies with \x1b[row;colR. Over SSH/cloudflared tunnels
+        # these responses leak as raw text like "20;1R21;1R" and flood the
+        # display. Disabling CPR forces prompt_toolkit to use heuristic
+        # fallback instead, eliminating the leak with no visible side effects.
+        _cpr_disabled_output = None
+        try:
+            from prompt_toolkit.output.vt100 import Vt100_Output
+            _cpr_disabled_output = Vt100_Output.from_pty(sys.stdout, enable_cpr=False)
+        except Exception:
+            pass
+
         # Create the application
         app = Application(
             layout=layout,
@@ -10372,6 +10385,7 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            output=_cpr_disabled_output,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback

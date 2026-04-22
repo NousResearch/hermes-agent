@@ -175,6 +175,12 @@ try:
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
+try:
+    from hermes_sentry import init_sentry as _init_sentry
+    _init_sentry("cli")
+except Exception:
+    pass  # best-effort — don't crash the CLI if Sentry init fails
+
 # Apply IPv4 preference early, before any HTTP clients are created.
 try:
     from hermes_cli.config import load_config as _load_config_early

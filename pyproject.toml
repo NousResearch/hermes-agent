@@ -19,6 +19,7 @@ dependencies = [
   "httpx[socks]>=0.28.1,<1",
   "rich>=14.3.3,<15",
   "tenacity>=9.1.4,<10",
+  "sentry-sdk>=2.27.0,<3",
   "pyyaml>=6.0.2,<7",
   "requests>=2.33.0,<3",  # CVE-2026-25645
   "jinja2>=3.1.5,<4",
@@ -120,7 +121,7 @@ hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "hermes_sentry", "rl_cli", "utils"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*"]

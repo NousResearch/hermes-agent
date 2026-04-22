@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
+from hermes_sentry import capture_exception, sanitize_observability_text
 
 logger = logging.getLogger(__name__)
 
@@ -1007,6 +1008,23 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        capture_exception(
+            e,
+            tags={
+                "component": "cron",
+                "cron_job_id": job_id,
+                "cron_job_name": job_name,
+                "cron_phase": "run_job",
+            },
+            extras={
+                "job_id": job_id,
+                "job_name": job_name,
+                "schedule": job.get("schedule_display") or job.get("schedule"),
+                "deliver": job.get("deliver"),
+                "prompt": sanitize_observability_text(prompt, limit=4000),
+                "error": sanitize_observability_text(error_msg, limit=2000),
+            },
+        )
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

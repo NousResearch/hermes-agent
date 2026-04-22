@@ -1754,6 +1754,15 @@ class GatewayRunner:
                 agent.close()
         except Exception:
             pass
+        # Auxiliary async clients (session_search/web/vision/etc.) live in a
+        # process-global cache and are created inside worker threads. Clean up
+        # any entries whose event loop is now dead so their httpx transports do
+        # not accumulate across gateway turns.
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+            cleanup_stale_async_clients()
+        except Exception:
+            pass
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -2651,6 +2660,11 @@ class GatewayRunner:
             try:
                 from tools.browser_tool import cleanup_all_browsers
                 cleanup_all_browsers()
+            except Exception:
+                pass
+            try:
+                from agent.auxiliary_client import shutdown_cached_clients
+                shutdown_cached_clients()
             except Exception:
                 pass
 

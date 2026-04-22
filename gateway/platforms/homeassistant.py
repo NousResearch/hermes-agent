@@ -39,10 +39,12 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 
-def check_ha_requirements() -> bool:
+def check_ha_requirements(config: Optional[PlatformConfig] = None) -> bool:
     """Check if Home Assistant dependencies are available and configured."""
     if not AIOHTTP_AVAILABLE:
         return False
+    if config is not None and config.token:
+        return True
     if not os.getenv("HASS_TOKEN"):
         return False
     return True

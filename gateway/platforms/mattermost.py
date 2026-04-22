@@ -50,10 +50,11 @@ _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
 
-def check_mattermost_requirements() -> bool:
+def check_mattermost_requirements(config: Optional[PlatformConfig] = None) -> bool:
     """Return True if the Mattermost adapter can be used."""
-    token = os.getenv("MATTERMOST_TOKEN", "")
-    url = os.getenv("MATTERMOST_URL", "")
+    extra = getattr(config, "extra", {}) or {}
+    token = getattr(config, "token", None) or os.getenv("MATTERMOST_TOKEN", "")
+    url = extra.get("url", "") or os.getenv("MATTERMOST_URL", "")
     if not token:
         logger.debug("Mattermost: MATTERMOST_TOKEN not set")
         return False
@@ -735,5 +736,4 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
-
 

@@ -102,6 +102,9 @@ class TestIsTimeoutError:
     def test_write_timeout(self):
         assert _StubAdapter._is_timeout_error("WriteTimeout: send stalled")
 
+    def test_timeout_prefix_is_flagged(self):
+        assert _StubAdapter._is_timeout_error("Timeout sending message to WeCom")
+
     def test_connect_timeout_not_flagged(self):
         """ConnectTimeout is a connection error, not a delivery-ambiguous timeout."""
         assert not _StubAdapter._is_timeout_error("ConnectTimeout: host unreachable")
@@ -176,6 +179,20 @@ class TestSendWithRetryNetworkRetry:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
         assert result.success
         assert len(adapter._send_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_timeout_prefix_skips_plaintext_fallback(self):
+        """Timeout-prefixed adapter errors should return immediately so we do
+        not send a second plain-text copy after an ambiguous delivery."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="Timeout sending message to WeCom"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
+        mock_sleep.assert_not_called()
+        assert not result.success
+        assert len(adapter._send_calls) == 1
 
     @pytest.mark.asyncio
     async def test_retryable_flag_respected(self):

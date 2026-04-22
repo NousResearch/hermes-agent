@@ -1577,7 +1577,12 @@ class BasePlatformAdapter(ABC):
         if not error:
             return False
         lowered = error.lower()
-        return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+        return (
+            "timed out" in lowered
+            or "readtimeout" in lowered
+            or "writetimeout" in lowered
+            or lowered.startswith("timeout")
+        )
 
     async def _send_with_retry(
         self,

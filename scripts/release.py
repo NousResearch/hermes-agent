@@ -285,6 +285,7 @@ AUTHOR_MAP = {
     "srhtsrht17@gmail.com": "Sertug17",
     "stephenschoettler@gmail.com": "stephenschoettler",
     "tanishq231003@gmail.com": "yyovil",
+    "taosiyuan163@153.com": "taosiyuan163",
     "tesseracttars@gmail.com": "tesseracttars-creator",
     "tianliangjay@gmail.com": "xingkongliang",
     "tranquil_flow@protonmail.com": "Tranquil-Flow",

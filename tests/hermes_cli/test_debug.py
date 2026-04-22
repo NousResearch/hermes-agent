@@ -174,6 +174,16 @@ class TestReadFullLog:
         assert content is not None
         assert "truncated" in content
 
+    def test_preserves_line_when_tail_starts_on_exact_boundary(self, hermes_home):
+        from hermes_cli.debug import _read_full_log
+
+        (hermes_home / "logs" / "agent.log").write_bytes(b"abc\ndef\n")
+
+        content = _read_full_log("agent", max_bytes=4)
+
+        assert content is not None
+        assert content == "[... truncated — showing last ~0KB ...]\ndef\n"
+
     def test_unknown_log_returns_none(self, hermes_home):
         from hermes_cli.debug import _read_full_log
         assert _read_full_log("nonexistent") is None

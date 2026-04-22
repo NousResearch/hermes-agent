@@ -373,9 +373,16 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
 
         # File is larger than max_bytes — read the tail.
         with open(log_path, "rb") as f:
-            f.seek(size - max_bytes)
-            # Skip partial line at the seek point.
-            f.readline()
+            start = size - max_bytes
+            f.seek(start)
+            # Skip the first line only when the seek landed mid-line.
+            if start > 0:
+                f.seek(start - 1)
+                if f.read(1) != b"\n":
+                    f.seek(start)
+                    f.readline()
+                else:
+                    f.seek(start)
             content = f.read().decode("utf-8", errors="replace")
         return f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{content}"
     except Exception:

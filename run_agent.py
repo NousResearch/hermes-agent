@@ -6574,6 +6574,15 @@ class AIAgent:
             self._codex_transport = t
         return t
 
+    def _get_chat_completions_transport(self):
+        """Return the cached ChatCompletionsTransport instance (lazy singleton)."""
+        t = getattr(self, "_chat_completions_transport", None)
+        if t is None:
+            from agent.transports import get_transport
+            t = get_transport("chat_completions")
+            self._chat_completions_transport = t
+        return t
+
     def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
         if not any(
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
@@ -6757,261 +6766,103 @@ class AIAgent:
                 github_reasoning_extra=self._github_models_reasoning_extra_body() if is_github_responses else None,
             )
 
-        sanitized_messages = api_messages
-        needs_sanitization = False
-        for msg in api_messages:
-            if not isinstance(msg, dict):
-                continue
-            if "codex_reasoning_items" in msg:
-                needs_sanitization = True
-                break
+        # ── chat_completions (default) ─────────────────────────────────────
+        _ct = self._get_chat_completions_transport()
 
-            tool_calls = msg.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for tool_call in tool_calls:
-                    if not isinstance(tool_call, dict):
-                        continue
-                    if "call_id" in tool_call or "response_item_id" in tool_call:
-                        needs_sanitization = True
-                        break
-                if needs_sanitization:
-                    break
-
-        if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
-                if not isinstance(msg, dict):
-                    continue
-
-                # Codex-only replay state must not leak into strict chat-completions APIs.
-                msg.pop("codex_reasoning_items", None)
-
-                tool_calls = msg.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for tool_call in tool_calls:
-                        if isinstance(tool_call, dict):
-                            tool_call.pop("call_id", None)
-                            tool_call.pop("response_item_id", None)
-
-        # Qwen portal: normalize content to list-of-dicts, inject cache_control.
-        # Must run AFTER codex sanitization so we transform the final messages.
-        # If sanitization already deepcopied, reuse that copy (in-place).
-        if self._is_qwen_portal():
-            if sanitized_messages is api_messages:
-                # No sanitization was done — we need our own copy.
-                sanitized_messages = self._qwen_prepare_chat_messages(sanitized_messages)
-            else:
-                # Already a deepcopy — transform in place to avoid a second deepcopy.
-                self._qwen_prepare_chat_messages_inplace(sanitized_messages)
-
-        # GPT-5 and Codex models respond better to 'developer' than 'system'
-        # for instruction-following.  Swap the role at the API boundary so
-        # internal message representation stays uniform ("system").
-        _model_lower = (self.model or "").lower()
-        if (
-            sanitized_messages
-            and sanitized_messages[0].get("role") == "system"
-            and any(p in _model_lower for p in DEVELOPER_ROLE_MODELS)
-        ):
-            # Shallow-copy the list + first message only — rest stays shared.
-            sanitized_messages = list(sanitized_messages)
-            sanitized_messages[0] = {**sanitized_messages[0], "role": "developer"}
-
-        provider_preferences = {}
-        if self.providers_allowed:
-            provider_preferences["only"] = self.providers_allowed
-        if self.providers_ignored:
-            provider_preferences["ignore"] = self.providers_ignored
-        if self.providers_order:
-            provider_preferences["order"] = self.providers_order
-        if self.provider_sort:
-            provider_preferences["sort"] = self.provider_sort
-        if self.provider_require_parameters:
-            provider_preferences["require_parameters"] = True
-        if self.provider_data_collection:
-            provider_preferences["data_collection"] = self.provider_data_collection
-
-        api_kwargs = {
-            "model": self.model,
-            "messages": sanitized_messages,
-            "timeout": self._resolved_api_call_timeout(),
-        }
-        try:
-            from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
-        except Exception:
-            _fixed_temperature_for_model = None
-            OMIT_TEMPERATURE = None
-        if _fixed_temperature_for_model is not None:
-            fixed_temperature = _fixed_temperature_for_model(self.model, self.base_url)
-            if fixed_temperature is OMIT_TEMPERATURE:
-                api_kwargs.pop("temperature", None)
-            elif fixed_temperature is not None:
-                api_kwargs["temperature"] = fixed_temperature
-        if self._is_qwen_portal():
-            api_kwargs["metadata"] = {
-                "sessionId": self.session_id or "hermes",
-                "promptId": str(uuid.uuid4()),
-            }
-        if self.tools:
-            api_kwargs["tools"] = self.tools
-
-        # ── max_tokens for chat_completions ──────────────────────────────
-        # Priority: ephemeral override (error recovery / length-continuation
-        # boost) > user-configured max_tokens > provider-specific defaults.
-        _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
-        if _ephemeral_out is not None:
-            self._ephemeral_max_output_tokens = None  # consume immediately
-            api_kwargs.update(self._max_tokens_param(_ephemeral_out))
-        elif self.max_tokens is not None:
-            api_kwargs.update(self._max_tokens_param(self.max_tokens))
-        elif "integrate.api.nvidia.com" in self._base_url_lower:
-            # NVIDIA NIM defaults to a very low max_tokens when omitted,
-            # causing models like GLM-4.7 to truncate immediately (thinking
-            # tokens alone exhaust the budget).  16384 provides adequate room.
-            api_kwargs.update(self._max_tokens_param(16384))
-        elif self._is_qwen_portal():
-            # Qwen Portal defaults to a very low max_tokens when omitted.
-            # Reasoning models (qwen3-coder-plus) exhaust that budget on
-            # thinking tokens alone, causing the portal to return
-            # finish_reason="stop" with truncated output — the agent sees
-            # this as an intentional stop and exits the loop.  Send 65536
-            # (the documented max output for qwen3-coder models) so the
-            # model has adequate output budget for tool calls.
-            api_kwargs.update(self._max_tokens_param(65536))
-        elif (
-            base_url_host_matches(self.base_url, "api.kimi.com")
-            or base_url_host_matches(self.base_url, "moonshot.ai")
-            or base_url_host_matches(self.base_url, "moonshot.cn")
-        ):
-            # Kimi/Moonshot defaults to a low max_tokens when omitted.
-            # Reasoning tokens share the output budget — without an explicit
-            # value the model can exhaust it on thinking alone, causing
-            # "Response truncated due to output length limit".  32000 matches
-            # Kimi CLI's default (see MoonshotAI/kimi-cli kimi.py generate()).
-            api_kwargs.update(self._max_tokens_param(32000))
-            # Kimi requires reasoning_effort as a top-level chat completions
-            # parameter (not inside extra_body).  Mirror Kimi CLI's
-            # with_generation_kwargs(reasoning_effort=...) / with_thinking():
-            # when thinking is disabled, Kimi CLI omits reasoning_effort
-            # entirely (maps to None).
-            _kimi_thinking_off = bool(
-                self.reasoning_config
-                and isinstance(self.reasoning_config, dict)
-                and self.reasoning_config.get("enabled") is False
-            )
-            if not _kimi_thinking_off:
-                _kimi_effort = "medium"
-                if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                    _e = (self.reasoning_config.get("effort") or "").strip().lower()
-                    if _e in ("low", "medium", "high"):
-                        _kimi_effort = _e
-                api_kwargs["reasoning_effort"] = _kimi_effort
-        elif (self._is_openrouter_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
-            # OpenRouter and Nous Portal translate requests to Anthropic's
-            # Messages API, which requires max_tokens as a mandatory field.
-            # When we omit it, the proxy picks a default that can be too
-            # low — the model spends its output budget on thinking and has
-            # almost nothing left for the actual response (especially large
-            # tool calls like write_file).  Sending the model's real output
-            # limit ensures full capacity.
-            try:
-                from agent.anthropic_adapter import _get_anthropic_max_output
-                _model_output_limit = _get_anthropic_max_output(self.model)
-                api_kwargs["max_tokens"] = _model_output_limit
-            except Exception:
-                pass  # fail open — let the proxy pick its default
-
-        extra_body = {}
-
-        _is_openrouter = self._is_openrouter_url()
-        _is_github_models = (
+        # Provider detection flags
+        _is_qwen = self._is_qwen_portal()
+        _is_or = self._is_openrouter_url()
+        _is_gh = (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
             or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
         )
-
-        # Provider preferences (only, ignore, order, sort) are OpenRouter-
-        # specific.  Only send to OpenRouter-compatible endpoints.
-        # TODO: Nous Portal will add transparent proxy support — re-enable
-        # for _is_nous when their backend is updated.
-        if provider_preferences and _is_openrouter:
-            extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self._base_url_lower
-
-        # Kimi/Moonshot API uses extra_body.thinking (separate from the
-        # top-level reasoning_effort) to enable/disable reasoning mode.
-        # Mirror Kimi CLI's with_thinking() behavior exactly — see
-        # MoonshotAI/kimi-cli packages/kosong/src/kosong/chat_provider/kimi.py
+        _is_nvidia = "integrate.api.nvidia.com" in self._base_url_lower
         _is_kimi = (
             base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
-        if _is_kimi:
-            _kimi_thinking_enabled = True
-            if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                if self.reasoning_config.get("enabled") is False:
-                    _kimi_thinking_enabled = False
-            extra_body["thinking"] = {
-                "type": "enabled" if _kimi_thinking_enabled else "disabled",
+
+        # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
+        # sentinel (temperature omitted entirely), a numeric override, or None.
+        try:
+            from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+            _ft = _fixed_temperature_for_model(self.model, self.base_url)
+            _omit_temp = _ft is OMIT_TEMPERATURE
+            _fixed_temp = _ft if not _omit_temp else None
+        except Exception:
+            _omit_temp = False
+            _fixed_temp = None
+
+        # Provider preferences (OpenRouter-specific)
+        _prefs: Dict[str, Any] = {}
+        if self.providers_allowed:
+            _prefs["only"] = self.providers_allowed
+        if self.providers_ignored:
+            _prefs["ignore"] = self.providers_ignored
+        if self.providers_order:
+            _prefs["order"] = self.providers_order
+        if self.provider_sort:
+            _prefs["sort"] = self.provider_sort
+        if self.provider_require_parameters:
+            _prefs["require_parameters"] = True
+        if self.provider_data_collection:
+            _prefs["data_collection"] = self.provider_data_collection
+
+        # Anthropic max output for Claude on OpenRouter/Nous
+        _ant_max = None
+        if (_is_or or _is_nous) and "claude" in (self.model or "").lower():
+            try:
+                from agent.anthropic_adapter import _get_anthropic_max_output
+                _ant_max = _get_anthropic_max_output(self.model)
+            except Exception:
+                pass  # fail open — let the proxy pick its default
+
+        # Qwen session metadata precomputed here (promptId is per-call random)
+        _qwen_meta = None
+        if _is_qwen:
+            _qwen_meta = {
+                "sessionId": self.session_id or "hermes",
+                "promptId": str(uuid.uuid4()),
             }
 
-        if self._supports_reasoning_extra_body():
-            if _is_github_models:
-                github_reasoning = self._github_models_reasoning_extra_body()
-                if github_reasoning is not None:
-                    extra_body["reasoning"] = github_reasoning
-            else:
-                if self.reasoning_config is not None:
-                    rc = dict(self.reasoning_config)
-                    # Nous Portal requires reasoning enabled — don't send
-                    # enabled=false to it (would cause 400).
-                    if _is_nous and rc.get("enabled") is False:
-                        pass  # omit reasoning entirely for Nous when disabled
-                    else:
-                        extra_body["reasoning"] = rc
-                else:
-                    extra_body["reasoning"] = {
-                        "enabled": True,
-                        "effort": "medium"
-                    }
+        # Ephemeral max output override — consume immediately so the next
+        # turn doesn't inherit it.
+        _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
+        if _ephemeral_out is not None:
+            self._ephemeral_max_output_tokens = None
 
-        # Nous Portal product attribution
-        if _is_nous:
-            extra_body["tags"] = ["product=hermes-agent"]
-
-        # Ollama num_ctx: override the 2048 default so the model actually
-        # uses the context window it was trained for.  Passed via the OpenAI
-        # SDK's extra_body → options.num_ctx, which Ollama's OpenAI-compat
-        # endpoint forwards to the runner as --ctx-size.
-        if self._ollama_num_ctx:
-            options = extra_body.get("options", {})
-            options["num_ctx"] = self._ollama_num_ctx
-            extra_body["options"] = options
-
-        # Ollama / custom provider: pass think=false when reasoning is disabled.
-        # Ollama does not recognise the OpenRouter-style `reasoning` extra_body
-        # field, so we use its native `think` parameter instead.
-        # This prevents thinking-capable models (Qwen3, etc.) from generating
-        # <think> blocks and producing empty-response errors when the user has
-        # set reasoning_effort: none.
-        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
-            _effort = (self.reasoning_config.get("effort") or "").strip().lower()
-            _enabled = self.reasoning_config.get("enabled", True)
-            if _effort == "none" or _enabled is False:
-                extra_body["think"] = False
-
-        if self._is_qwen_portal():
-            extra_body["vl_high_resolution_images"] = True
-
-        if extra_body:
-            api_kwargs["extra_body"] = extra_body
-
-        # Priority Processing / generic request overrides (e.g. service_tier).
-        # Applied last so overrides win over any defaults set above.
-        if self.request_overrides:
-            api_kwargs.update(self.request_overrides)
-
-        return api_kwargs
+        return _ct.build_kwargs(
+            model=self.model,
+            messages=api_messages,
+            tools=self.tools,
+            timeout=self._resolved_api_call_timeout(),
+            max_tokens=self.max_tokens,
+            ephemeral_max_output_tokens=_ephemeral_out,
+            max_tokens_param_fn=self._max_tokens_param,
+            reasoning_config=self.reasoning_config,
+            request_overrides=self.request_overrides,
+            session_id=getattr(self, "session_id", None),
+            model_lower=(self.model or "").lower(),
+            is_openrouter=_is_or,
+            is_nous=_is_nous,
+            is_qwen_portal=_is_qwen,
+            is_github_models=_is_gh,
+            is_nvidia_nim=_is_nvidia,
+            is_kimi=_is_kimi,
+            is_custom_provider=self.provider == "custom",
+            ollama_num_ctx=self._ollama_num_ctx,
+            provider_preferences=_prefs or None,
+            qwen_prepare_fn=self._qwen_prepare_chat_messages if _is_qwen else None,
+            qwen_prepare_inplace_fn=self._qwen_prepare_chat_messages_inplace if _is_qwen else None,
+            qwen_session_metadata=_qwen_meta,
+            fixed_temperature=_fixed_temp,
+            omit_temperature=_omit_temp,
+            supports_reasoning=self._supports_reasoning_extra_body(),
+            github_reasoning_extra=self._github_models_reasoning_extra_body() if _is_gh else None,
+            anthropic_max_output=_ant_max,
+        )
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
@@ -9400,7 +9251,8 @@ class AIAgent:
                             else:
                                 error_details.append("response.content invalid (not a non-empty list)")
                     else:
-                        if response is None or not hasattr(response, 'choices') or response.choices is None or not response.choices:
+                        _ctv = self._get_chat_completions_transport()
+                        if not _ctv.validate_response(response):
                             response_invalid = True
                             if response is None:
                                 error_details.append("response is None")

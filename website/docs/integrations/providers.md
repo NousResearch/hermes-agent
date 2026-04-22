@@ -1052,11 +1052,11 @@ custom_providers:
     # api_key omitted — Hermes uses "no-key-required" for keyless local servers
   - name: work
     base_url: https://gpu-server.internal.corp/v1
-    api_key: corp-api-key
+    key_env: CORP_API_KEY
     api_mode: chat_completions   # optional, auto-detected from URL
   - name: anthropic-proxy
     base_url: https://proxy.example.com/anthropic
-    api_key: proxy-key
+    key_env: ANTHROPIC_PROXY_KEY
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
@@ -1154,7 +1154,7 @@ fallback_model:
   provider: openrouter                    # required
   model: anthropic/claude-sonnet-4        # required
   # base_url: http://localhost:8000/v1    # optional, for custom endpoints
-  # api_key_env: MY_CUSTOM_KEY           # optional, env var name for custom endpoint API key
+  # key_env: MY_CUSTOM_KEY               # optional, env var name for custom endpoint API key
 ```
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
@@ -1164,39 +1164,6 @@ Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-a
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
 :::
-
-## Smart Model Routing
-
-Optional cheap-vs-strong routing lets Hermes keep your main model for complex work while sending very short/simple turns to a cheaper model.
-
-```yaml
-smart_model_routing:
-  enabled: true
-  max_simple_chars: 160
-  max_simple_words: 28
-  cheap_model:
-    provider: openrouter
-    model: google/gemini-2.5-flash
-    # base_url: http://localhost:8000/v1  # optional custom endpoint
-    # api_key_env: MY_CUSTOM_KEY          # optional env var name for that endpoint's API key
-```
-
-How it works:
-- If a turn is short, single-line, and does not look code/tool/debug heavy, Hermes may route it to `cheap_model`
-- If the turn looks complex, Hermes stays on your primary model/provider
-- If the cheap route cannot be resolved cleanly, Hermes falls back to the primary model automatically
-
-This is intentionally conservative. It is meant for quick, low-stakes turns like:
-- short factual questions
-- quick rewrites
-- lightweight summaries
-
-It will avoid routing prompts that look like:
-- coding/debugging work
-- tool-heavy requests
-- long or multi-line analysis asks
-
-Use this when you want lower latency or cost without fully changing your default model.
 
 ---
 

@@ -112,7 +112,7 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 | `Ctrl+D`                        | Exit                                                                                                                                                    |
 | `Ctrl+G`                        | Open `$EDITOR` with the current draft                                                                                                                   |
 | `Ctrl+L`                        | New session (same as `/clear`)                                                                                                                          |
-| `Ctrl+V` / `Alt+V`              | Paste clipboard image (same as `/paste`)                                                                                                                |
+| `Ctrl+V` / `Alt+V`              | Paste text first, then fall back to image/path attachment when applicable                                                                               |
 | `Tab`                           | Apply the active completion                                                                                                                             |
 | `Up/Down`                       | Cycle completions if the completion list is open; otherwise edit queued messages first, then walk input history                                         |
 | `Left/Right`                    | Move the cursor                                                                                                                                         |
@@ -217,8 +217,8 @@ The local slash handler covers the built-ins that need direct client behavior:
 Notes:
 
 - `/copy` sends the selected assistant response through OSC 52.
-- `/paste` with no args asks the gateway for clipboard image attachment state.
-- `/paste` does not manage text paste entries; text paste is inline-only.
+- `/paste` with no args asks the gateway to attach a clipboard image.
+- Text paste remains inline-only; `Cmd+V` / `Ctrl+V` handle layered text/OSC52/image fallback before `/paste` is needed.
 - `/details [hidden|collapsed|expanded|cycle]` controls thinking/tool-detail visibility.
 - `/statusbar` toggles the status rule on/off.
 

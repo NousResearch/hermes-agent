@@ -63,6 +63,12 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
     runner.pairing_store._is_rate_limited.return_value = False
+    # Attributes required by _handle_message for the authorized-user path
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._update_prompts = {}
+    runner.hooks = SimpleNamespace(dispatch=AsyncMock(return_value=None))
+    runner._sessions = {}
     return runner, adapter
 
 
@@ -295,3 +301,172 @@ async def test_global_ignore_suppresses_pairing_reply(monkeypatch):
     assert result is None
     runner.pairing_store.generate_code.assert_not_called()
     adapter.send.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Allowlist-configured platforms default to "ignore" for unauthorized users
+# (#9337: Signal gateway sends pairing spam when allowlist is configured)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_signal_with_allowlist_ignores_unauthorized_dm(monkeypatch):
+    """When SIGNAL_ALLOWED_USERS is set, unauthorized DMs are silently dropped.
+
+    This is the primary regression test for #9337: before the fix, Signal
+    would send pairing codes to ANY sender even when a strict allowlist was
+    configured, spamming personal contacts with cryptic bot messages.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15550000001")  # allowlist set
+
+    config = GatewayConfig(
+        platforms={Platform.SIGNAL: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.SIGNAL, config)
+
+    result = await runner._handle_message(
+        _make_event(Platform.SIGNAL, "+15559999999", "+15559999999")  # not in allowlist
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_telegram_with_allowlist_ignores_unauthorized_dm(monkeypatch):
+    """Same behavior for Telegram: allowlist ⟹ ignore unauthorized DMs."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111111111")
+
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.TELEGRAM, config)
+
+    result = await runner._handle_message(
+        _make_event(Platform.TELEGRAM, "999999999", "999999999")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_global_allowlist_ignores_unauthorized_dm(monkeypatch):
+    """GATEWAY_ALLOWED_USERS also triggers the 'ignore' behavior."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "111111111")
+
+    config = GatewayConfig(
+        platforms={Platform.SIGNAL: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.SIGNAL, config)
+
+    result = await runner._handle_message(
+        _make_event(Platform.SIGNAL, "+15559999999", "+15559999999")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_allowlist_still_pairs_by_default(monkeypatch):
+    """Without any allowlist, pairing behavior is preserved (open gateway)."""
+    _clear_auth_env(monkeypatch)
+    # No SIGNAL_ALLOWED_USERS, no GATEWAY_ALLOWED_USERS
+
+    config = GatewayConfig(
+        platforms={Platform.SIGNAL: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.SIGNAL, config)
+    runner.pairing_store.generate_code.return_value = "PAIR1234"
+
+    result = await runner._handle_message(
+        _make_event(Platform.SIGNAL, "+15559999999", "+15559999999")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_called_once()
+    adapter.send.assert_awaited_once()
+    assert "PAIR1234" in adapter.send.await_args.args[1]
+
+
+def test_explicit_pair_config_overrides_allowlist_default(monkeypatch):
+    """Explicit unauthorized_dm_behavior='pair' overrides the allowlist default.
+
+    Operators can opt back in to pairing even with an allowlist by setting
+    unauthorized_dm_behavior: pair in their platform config.  We test the
+    _get_unauthorized_dm_behavior resolver directly to avoid the full
+    _handle_message pipeline which requires extensive runner state.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15550000001")
+
+    config = GatewayConfig(
+        platforms={
+            Platform.SIGNAL: PlatformConfig(
+                enabled=True,
+                extra={"unauthorized_dm_behavior": "pair"},  # explicit override
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.SIGNAL, config)
+
+    # The per-platform explicit config should beat the allowlist-derived default
+    behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
+    assert behavior == "pair"
+
+
+def test_allowlist_authorized_user_returns_ignore_for_unauthorized(monkeypatch):
+    """_get_unauthorized_dm_behavior returns 'ignore' when allowlist is set.
+
+    We test the resolver directly.  The full _handle_message path for
+    authorized users is covered by the integration tests in this module.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15550000001")
+
+    config = GatewayConfig(
+        platforms={Platform.SIGNAL: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.SIGNAL, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
+    assert behavior == "ignore"
+
+
+def test_get_unauthorized_dm_behavior_no_allowlist_returns_pair(monkeypatch):
+    """Without any allowlist, 'pair' is still the default."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={Platform.SIGNAL: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.SIGNAL, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
+    assert behavior == "pair"
+
+
+def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
+    """QQBOT is included in the allowlist-aware default (QQ_ALLOWED_USERS).
+
+    Regression guard: the initial #9337 fix omitted QQBOT from the env map
+    inside _get_unauthorized_dm_behavior, even though _is_user_authorized
+    mapped it to QQ_ALLOWED_USERS.  Without QQBOT here, a QQ operator with a
+    strict user allowlist would still get pairing codes sent to strangers.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("QQ_ALLOWED_USERS", "allowed-openid-1")
+
+    config = GatewayConfig(
+        platforms={Platform.QQBOT: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.QQBOT, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.QQBOT)
+    assert behavior == "ignore"

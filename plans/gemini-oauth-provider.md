@@ -4,7 +4,7 @@
 Add a first-class `gemini` provider that authenticates via Google OAuth, using the standard Gemini API (not Cloud Code Assist). Users who have a Google AI subscription or Gemini API access can authenticate through the browser without needing to manually copy API keys.
 
 ## Architecture Decision
-- **Path A (chosen):** Standard Gemini API at `generativelanguage.googleapis.com/v1beta/openai/`
+- **Path A (chosen):** Standard Gemini API at `generativelanguage.googleapis.com/v1beta`
 - **NOT Path B:** Cloud Code Assist (`cloudcode-pa.googleapis.com`) — rate-limited free tier, internal API, account ban risk
 - Standard `chat_completions` api_mode via OpenAI SDK — no new api_mode needed
 - Our own OAuth credentials — NOT sharing tokens with Gemini CLI
@@ -32,9 +32,9 @@ Add a first-class `gemini` provider that authenticates via Google OAuth, using t
 - File locking for concurrent access (multiple agent sessions)
 
 ## API Integration
-- Base URL: `https://generativelanguage.googleapis.com/v1beta/openai/`
-- Auth: `Authorization: Bearer <access_token>` (passed as `api_key` to OpenAI SDK)
-- api_mode: `chat_completions` (standard)
+- Base URL: `https://generativelanguage.googleapis.com/v1beta`
+- Auth: native Gemini API authentication handled by the provider adapter
+- api_mode: `chat_completions` (standard facade over native transport)
 - Models: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, etc.
 
 ## Files to Create/Modify

@@ -46,9 +46,9 @@ The classic CLI remains available as the default. Anything documented in [CLI In
 - **Live session panel** — tools and skills fill in progressively as they initialize.
 - **Mouse-friendly selection** — drag to highlight with a uniform background instead of SGR inverse. Copy with your terminal's normal copy gesture.
 - **Alternate-screen rendering** — differential updates mean no flicker when streaming, no scrollback clutter after you quit.
-- **Composer affordances** — inline paste-collapse for long snippets, image paste from the clipboard (`Alt+V`), bracketed-paste safety.
+- **Composer affordances** — inline paste-collapse for long snippets, `Cmd+V` / `Ctrl+V` text paste with clipboard-image fallback, bracketed-paste safety, and image/file-path attachment normalization.
 
-Same [skins](features/skins.md) and [personalities](features/personality.md) apply. Switch mid-session with `/skin ares`, `/personality pirate`, and the UI repaints live. Skin keys are marked `(both)`, `(classic)`, or `(tui)` in [`example-skin.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/docs/skins/example-skin.yaml) so you can see at a glance what applies where — the TUI honors the banner palette, UI colors, prompt glyph/color, session display, completion menu, selection bg, `tool_prefix`, and `help_header`.
+Same [skins](features/skins.md) and [personalities](features/personality.md) apply. Switch mid-session with `/skin ares`, `/personality pirate`, and the UI repaints live. See [Skins & Themes](features/skins.md) for the full list of customizable keys and which ones apply to classic vs TUI — the TUI honors the banner palette, UI colors, prompt glyph/color, session display, completion menu, selection bg, `tool_prefix`, and `help_header`.
 
 ## Requirements
 
@@ -73,7 +73,8 @@ The directory must contain `dist/entry.js` and an up-to-date `node_modules`.
 Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavioral differences:
 
 - **Mouse drag** highlights text with a uniform selection background.
-- **`Ctrl+V`** pastes text from your clipboard directly into the composer; multi-line pastes stay on one row until you expand them.
+- **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
+- **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
 
 ## Slash commands

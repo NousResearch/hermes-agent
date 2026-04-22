@@ -8,7 +8,8 @@ Use this while X publish auth is blocked or whenever the walkthrough needs to be
 ## Preconditions
 1. Run the readiness pass:
    - `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --prepare`
-   - or on macOS: `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh`
+   - or on macOS for a primed workspace: `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh`
+   - or on macOS for one-command timed capture + finalize + verification: `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-timed-record-wrapper.sh`
 2. Confirm `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md` shows `Status: ready`.
 3. Open the latest session packet in `starter-kits/agent-launch-closeout-kit/demo-artifacts/demo-capture-session-*.md` and use its suggested raw/edit asset paths.
 

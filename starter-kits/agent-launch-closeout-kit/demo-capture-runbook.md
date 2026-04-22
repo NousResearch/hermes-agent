@@ -42,7 +42,15 @@ bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh
 
 That command reruns `--prepare`, resolves the newest session packet, opens the readiness/proof/log surfaces in an editor, activates QuickTime Player, and prints the exact finalize command again so the walkthrough can start without hunting files.
 
-After recording/editing, prefer the headless closeout path so the launch log can be finalized later without reopening QuickTime or the GUI workspace:
+For the lowest-friction macOS capture path when you want the walkthrough recorded, finalized, and verified in one block, use:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-timed-record-wrapper.sh
+```
+
+That wrapper reruns `--prepare` by default, records the main display with native `screencapture`, copies the raw recording into the edited-asset slot when needed, finalizes `launch-execution-log.md`, and runs the post-finalize verifier automatically.
+
+If you already have the recording/edit assets on disk or need to rerun closeout later, prefer the headless finalize helper:
 
 ```bash
 bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-headless-finalize.sh \

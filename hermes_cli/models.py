@@ -42,7 +42,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openrouter/elephant-alpha",       "free"),
     ("openai/gpt-5.4",                  ""),
     ("openai/gpt-5.4-mini",             ""),
-    ("xiaomi/mimo-v2-pro",               ""),
+    ("xiaomi/mimo-v2.5-pro",             ""),
+    ("xiaomi/mimo-v2.5",                 ""),
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-image-preview", ""),
     ("google/gemini-3-flash-preview",   ""),
@@ -108,7 +109,8 @@ def _codex_curated_models() -> list[str]:
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "moonshotai/kimi-k2.6",
-        "xiaomi/mimo-v2-pro",
+        "xiaomi/mimo-v2.5-pro",
+        "xiaomi/mimo-v2.5",
         "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",

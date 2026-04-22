@@ -72,11 +72,99 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 
 DEFAULT_MODEL = "gpt-image-2-medium"
 
+_CODEX_CHAT_MODEL = "gpt-5.4"
+_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_CODEX_INSTRUCTIONS = (
+    "You are an assistant that must fulfill image generation requests by using "
+    "the image_generation tool when provided."
+)
+
 _SIZES = {
     "landscape": "1536x1024",
     "square": "1024x1024",
     "portrait": "1024x1536",
 }
+
+
+def _read_codex_access_token() -> Optional[str]:
+    """Read a usable Codex OAuth token from Hermes auth state."""
+    try:
+        from agent.auxiliary_client import _read_codex_access_token as _reader
+
+        token = _reader()
+        return str(token).strip() if isinstance(token, str) and token.strip() else None
+    except Exception as exc:
+        logger.debug("Could not resolve Codex access token for image generation: %s", exc)
+        return None
+
+
+def _build_codex_client():
+    """Return an OpenAI client pointed at the ChatGPT/Codex backend, or None."""
+    token = _read_codex_access_token()
+    if not token:
+        return None
+    try:
+        import openai
+        from agent.auxiliary_client import _codex_cloudflare_headers
+
+        return openai.OpenAI(
+            api_key=token,
+            base_url=_CODEX_BASE_URL,
+            default_headers=_codex_cloudflare_headers(token),
+        )
+    except Exception as exc:
+        logger.debug("Could not build Codex image client: %s", exc)
+        return None
+
+
+def _collect_codex_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+    """Generate via Codex Responses image tool and return the final base64 image."""
+    image_b64: Optional[str] = None
+    with client.responses.stream(
+        model=_CODEX_CHAT_MODEL,
+        store=False,
+        instructions=_CODEX_INSTRUCTIONS,
+        input=[{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}],
+        }],
+        tools=[{
+            "type": "image_generation",
+            "model": API_MODEL,
+            "size": size,
+            "quality": quality,
+            "output_format": "png",
+            "background": "opaque",
+            "partial_images": 1,
+        }],
+        tool_choice={
+            "type": "allowed_tools",
+            "mode": "required",
+            "tools": [{"type": "image_generation"}],
+        },
+    ) as stream:
+        for event in stream:
+            event_type = getattr(event, "type", "")
+            if event_type == "response.output_item.done":
+                item = getattr(event, "item", None)
+                if getattr(item, "type", None) == "image_generation_call":
+                    result = getattr(item, "result", None)
+                    if isinstance(result, str) and result:
+                        image_b64 = result
+            elif event_type == "response.image_generation_call.partial_image":
+                partial = getattr(event, "partial_image_b64", None)
+                if isinstance(partial, str) and partial:
+                    image_b64 = partial
+        final = stream.get_final_response()
+
+    for item in getattr(final, "output", None) or []:
+        if getattr(item, "type", None) == "image_generation_call":
+            result = getattr(item, "result", None)
+            if isinstance(result, str) and result:
+                image_b64 = result
+
+    return image_b64
 
 
 def _load_openai_config() -> Dict[str, Any]:
@@ -133,7 +221,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not (os.environ.get("OPENAI_API_KEY") or _read_codex_access_token()):
             return False
         try:
             import openai  # noqa: F401
@@ -160,11 +248,11 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return {
             "name": "OpenAI",
             "badge": "paid",
-            "tag": "gpt-image-2 at low/medium/high quality tiers",
+            "tag": "gpt-image-2 at low/medium/high quality tiers (API key or ChatGPT/Codex auth)",
             "env_vars": [
                 {
                     "key": "OPENAI_API_KEY",
-                    "prompt": "OpenAI API key",
+                    "prompt": "OpenAI API key (optional if ChatGPT/Codex auth is already configured)",
                     "url": "https://platform.openai.com/api-keys",
                 },
             ],
@@ -187,12 +275,16 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        api_key_present = bool(os.environ.get("OPENAI_API_KEY"))
+        codex_token = _read_codex_access_token()
+        use_codex = not api_key_present and bool(codex_token)
+
+        if not api_key_present and not codex_token:
             return error_response(
                 error=(
-                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
-                    "Generation → OpenAI to configure, or `hermes setup` "
-                    "to add the key."
+                    "Neither OPENAI_API_KEY nor ChatGPT/Codex OAuth auth is available. "
+                    "Run `hermes tools` → Image Generation → OpenAI to configure, "
+                    "or authenticate Hermes with OpenAI Codex/ChatGPT first."
                 ),
                 error_type="auth_required",
                 provider="openai",
@@ -222,35 +314,61 @@ class OpenAIImageGenProvider(ImageGenProvider):
             "quality": meta["quality"],
         }
 
-        try:
-            client = openai.OpenAI()
-            response = client.images.generate(**payload)
-        except Exception as exc:
-            logger.debug("OpenAI image generation failed", exc_info=True)
-            return error_response(
-                error=f"OpenAI image generation failed: {exc}",
-                error_type="api_error",
-                provider="openai",
-                model=tier_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
-            )
+        b64 = None
+        url = None
+        revised_prompt = None
 
-        data = getattr(response, "data", None) or []
-        if not data:
-            return error_response(
-                error="OpenAI returned no image data",
-                error_type="empty_response",
-                provider="openai",
-                model=tier_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
-            )
+        if use_codex:
+            try:
+                client = _build_codex_client()
+                if client is None:
+                    raise RuntimeError("Could not initialize Codex image client")
+                b64 = _collect_codex_image_b64(
+                    client,
+                    prompt=prompt,
+                    size=size,
+                    quality=meta["quality"],
+                )
+            except Exception as exc:
+                logger.debug("Codex-backed OpenAI image generation failed", exc_info=True)
+                return error_response(
+                    error=f"OpenAI image generation via Codex auth failed: {exc}",
+                    error_type="api_error",
+                    provider="openai",
+                    model=tier_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+        else:
+            try:
+                client = openai.OpenAI()
+                response = client.images.generate(**payload)
+            except Exception as exc:
+                logger.debug("OpenAI image generation failed", exc_info=True)
+                return error_response(
+                    error=f"OpenAI image generation failed: {exc}",
+                    error_type="api_error",
+                    provider="openai",
+                    model=tier_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
 
-        first = data[0]
-        b64 = getattr(first, "b64_json", None)
-        url = getattr(first, "url", None)
-        revised_prompt = getattr(first, "revised_prompt", None)
+            data = getattr(response, "data", None) or []
+            if not data:
+                return error_response(
+                    error="OpenAI returned no image data",
+                    error_type="empty_response",
+                    provider="openai",
+                    model=tier_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+
+            first = data[0]
+            b64 = getattr(first, "b64_json", None)
+            url = getattr(first, "url", None)
+            revised_prompt = getattr(first, "revised_prompt", None)
 
         if b64:
             try:
@@ -279,7 +397,11 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        extra: Dict[str, Any] = {
+            "size": size,
+            "quality": meta["quality"],
+            "auth_source": "codex" if use_codex else "api_key",
+        }
         if revised_prompt:
             extra["revised_prompt"] = revised_prompt
 

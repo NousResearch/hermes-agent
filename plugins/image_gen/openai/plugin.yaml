@@ -1,7 +1,5 @@
 name: openai
-version: 1.0.0
-description: "OpenAI image generation backend (gpt-image-2). Saves generated images to $HERMES_HOME/cache/images/."
+version: 1.1.0
+description: "OpenAI image generation backend (gpt-image-2). Supports either OPENAI_API_KEY or ChatGPT/Codex OAuth auth and saves generated images to $HERMES_HOME/cache/images/."
 author: NousResearch
 kind: backend
-requires_env:
-  - OPENAI_API_KEY

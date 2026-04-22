@@ -78,6 +78,12 @@ docker run -it --rm \
   nousresearch/hermes-agent
 ```
 
+Or if you have already opened a terminal in your running container (via Docker Desktop for instance), just run:
+
+```sh
+/opt/hermes/.venv/bin/hermes
+```
+
 ## Persistent volumes
 
 The `/opt/data` volume is the single source of truth for all Hermes state. It maps to your host's `~/.hermes/` directory and contains:

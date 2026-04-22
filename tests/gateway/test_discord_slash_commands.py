@@ -393,6 +393,34 @@ def test_build_slash_event_uses_group_context_for_channels(adapter):
 # ------------------------------------------------------------------
 # Auto-thread: _auto_create_thread
 # ------------------------------------------------------------------
+# Smart auto-thread titles
+# ------------------------------------------------------------------
+
+
+def test_build_auto_thread_name_summarizes_request(adapter):
+    name = adapter._build_auto_thread_name(
+        "Can you make yourself auto-retitle threads intelligently? Based on the first message, "
+        "give the thread a title that is a smart summary of its contents"
+    )
+
+    assert name == "Auto-retitle threads intelligently"
+
+
+def test_build_auto_thread_name_strips_polite_openers(adapter):
+    name = adapter._build_auto_thread_name(
+        "<@555> please help me debug Docker networking on WSL2"
+    )
+
+    assert name == "Debug Docker networking on WSL2"
+
+
+def test_build_auto_thread_name_strips_i_want_you_to_help_me_wrapper(adapter):
+    name = adapter._build_auto_thread_name(
+        "I want you to help me manage my todo list using Google Tasks. "
+        "Google Tasks will be the canonical task store that I use with you and OpenClaw together"
+    )
+
+    assert name == "Manage my todo list using Google Tasks"
 
 
 @pytest.mark.asyncio
@@ -412,6 +440,45 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     call_kwargs = message.create_thread.await_args[1]
     assert call_kwargs["name"] == "Hello world, how are you?"
     assert call_kwargs["auto_archive_duration"] == 1440
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_uses_summarized_name_when_smart_titles_enabled(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SMART_THREAD_TITLES", "true")
+    thread = SimpleNamespace(id=999, name="Hello world")
+    message = SimpleNamespace(
+        content=(
+            "Can you make yourself auto-retitle threads intelligently? Based on the first "
+            "message, give the thread a title that is a smart summary of its contents"
+        ),
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    call_kwargs = message.create_thread.await_args[1]
+    assert call_kwargs["name"] == "Auto-retitle threads intelligently"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_uses_plain_sanitized_name_when_smart_titles_disabled(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SMART_THREAD_TITLES", "false")
+    thread = SimpleNamespace(id=999, name="Hello world")
+    message = SimpleNamespace(
+        content="<@555> please help me debug Docker networking on WSL2",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    call_kwargs = message.create_thread.await_args[1]
+    assert call_kwargs["name"] == "please help me debug Docker networking on WSL2"
 
 
 @pytest.mark.asyncio
@@ -507,6 +574,18 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
 
     result = await adapter._auto_create_thread(message)
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_title_edits_discord_thread(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SMART_THREAD_TITLES", "true")
+    thread = SimpleNamespace(id=555, edit=AsyncMock())
+    adapter._client.get_channel = MagicMock(return_value=thread)
+
+    ok = await adapter.rename_thread_title("555", "Better Thread Title")
+
+    assert ok is True
+    thread.edit.assert_awaited_once_with(name="Better Thread Title")
 
 
 # ------------------------------------------------------------------
@@ -679,6 +758,29 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
+
+
+def test_discord_smart_thread_titles_config_bridge(monkeypatch, tmp_path):
+    """discord.smart_thread_titles in config.yaml should be bridged to DISCORD_SMART_THREAD_TITLES."""
+    import yaml
+    from pathlib import Path
+
+    hermes_dir = tmp_path / ".hermes"
+    hermes_dir.mkdir()
+    config_path = hermes_dir / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "discord": {"smart_thread_titles": True},
+    }))
+
+    monkeypatch.delenv("DISCORD_SMART_THREAD_TITLES", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_SMART_THREAD_TITLES") == "true"
 
 
 # ------------------------------------------------------------------

@@ -297,6 +297,76 @@ from gateway.restart import (
 )
 
 
+def _build_thread_title_callback(adapter, source: SessionSource, loop):
+    """Return a callback that renames Discord threads after auto-titling.
+
+    The title generator runs in a background thread.  This bridges the title
+    back onto the asyncio loop safely so the adapter can rename the visible
+    Discord thread after the first exchange.
+    """
+    if (
+        not adapter
+        or not source
+        or source.platform != Platform.DISCORD
+        or source.chat_type != "thread"
+        or not source.thread_id
+        or not hasattr(adapter, "rename_thread_title")
+        or loop is None
+    ):
+        return None
+    if hasattr(adapter, "smart_thread_titles_enabled") and not adapter.smart_thread_titles_enabled():
+        return None
+
+    def _on_title(title: str) -> None:
+        if not title:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                adapter.rename_thread_title(source.thread_id, title),
+                loop,
+            )
+        except Exception:
+            logger.debug("Failed to schedule Discord thread retitle", exc_info=True)
+
+    return _on_title
+
+
+def _maybe_auto_title_after_response(
+    session_db,
+    adapter,
+    source: SessionSource,
+    effective_session_id: str,
+    message: str,
+    final_response: str,
+    result_holder,
+    loop,
+) -> None:
+    """Kick off post-response auto-titling using a loop captured on the async side.
+
+    This helper is safe to call from the executor thread that runs the agent.
+    It must not call ``asyncio.get_running_loop()`` itself because worker
+    threads do not have one.
+    """
+    if not final_response or not session_db:
+        return
+
+    try:
+        from agent.title_generator import maybe_auto_title
+
+        all_msgs = result_holder[0].get("messages", []) if result_holder and result_holder[0] else []
+        title_callback = _build_thread_title_callback(adapter, source, loop)
+        maybe_auto_title(
+            session_db,
+            effective_session_id,
+            message,
+            final_response,
+            all_msgs,
+            on_title=title_callback,
+        )
+    except Exception:
+        logger.debug("Failed to start auto-title after response", exc_info=True)
+
+
 def _normalize_whatsapp_identifier(value: str) -> str:
     """Strip WhatsApp JID/LID syntax down to its stable numeric identifier."""
     return (
@@ -10080,20 +10150,21 @@ class GatewayRunner:
             # Reset to 0 so the gateway writes ALL compressed messages.
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
-            # Auto-generate session title after first exchange (non-blocking)
-            if final_response and self._session_db:
-                try:
-                    from agent.title_generator import maybe_auto_title
-                    all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
-                    maybe_auto_title(
-                        self._session_db,
-                        effective_session_id,
-                        message,
-                        final_response,
-                        all_msgs,
-                    )
-                except Exception:
-                    pass
+            # Auto-generate session title after first exchange (non-blocking).
+            # This code runs inside run_sync on a worker thread, so it must use
+            # the event loop captured on the async side instead of calling
+            # asyncio.get_running_loop() here.
+            _adapter = self.adapters.get(source.platform)
+            _maybe_auto_title_after_response(
+                self._session_db,
+                _adapter,
+                source,
+                effective_session_id,
+                message,
+                final_response,
+                result_holder,
+                _loop_for_step,
+            )
 
             return {
                 "final_response": final_response,

@@ -195,6 +195,45 @@ describe('createGatewayEventHandler', () => {
     expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
   })
 
+  it('strips the CLI "┊ review diff" header from queued inline diffs', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const raw = '  \u001b[33m┊ review diff\u001b[0m\n--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { inline_diff: raw, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({
+      payload: { text: 'done' },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).not.toContain('┊ review diff')
+    expect(appended[0]?.text).toContain('--- a/foo.ts')
+  })
+
+  it('suppresses inline_diff when assistant already wrote a diff fence', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const inlineDiff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+    const assistantText = 'Done. Clean swap:\n\n```diff\n-old\n+new\n```'
+
+    onEvent({
+      payload: { inline_diff: inlineDiff, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({
+      payload: { text: assistantText },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).toBe(assistantText)
+    expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
+  })
+
   it('keeps tool trail terse when inline_diff is present', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

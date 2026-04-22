@@ -607,7 +607,15 @@ def get_running_pid(
         return None
 
     if not _looks_like_gateway_process(pid):
-        if not _record_looks_like_gateway(record):
+        # If /proc is readable and the live PID does not look like the gateway,
+        # treat the PID file as stale. Relying on the stored record alone can
+        # misidentify an unrelated reused PID as the gateway after a forced kill.
+        cmdline = _read_process_cmdline(pid)
+        if cmdline is None:
+            if not _record_looks_like_gateway(record):
+                _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+                return None
+        else:
             _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
             return None
 

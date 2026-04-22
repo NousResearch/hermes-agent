@@ -4405,6 +4405,12 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        # Validate message_text is not empty (GLM error 1213 fix)
+        # Some providers (GLM/Zhipu) return error 1213 "prompt parameter
+        # was not received normally" for empty messages.
+        if not message_text or not message_text.strip():
+            message_text = "[The user sent an empty message. Ask them what they need help with.]"
+
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
@@ -4518,7 +4524,16 @@ class GatewayRunner:
                     and len(history) > 50
                 )
 
-                if _is_ctx_fail:
+                # Detect GLM/Zhipu error 1213 (empty/malformed prompt)
+                _is_glm_1213 = "'1213'" in error_str or "1213" in error_str
+
+                if _is_glm_1213:
+                    response = (
+                        "⚠️ GLM returned error 1213 (prompt not received normally). "
+                        "This usually means the message was empty or malformed. "
+                        "Please try sending your message again."
+                    )
+                elif _is_ctx_fail:
                     response = (
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "

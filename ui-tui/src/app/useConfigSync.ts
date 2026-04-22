@@ -16,17 +16,12 @@ import { patchUiState } from './uiStore.js'
 
 const STATUSBAR_MODES = new Set<StatusBarMode>(['bottom', 'off', 'top'])
 
-// Legacy configs stored tui_statusbar as a bool; the short-lived 4-mode
-// variant wrote 'on'. Both map to 'top' (inline above the input) — the
-// original feature's default — so users keep their preference without
-// manual migration.
-export const normalizeStatusBar = (raw: unknown): StatusBarMode => {
-  if (raw === false) return 'off'
-  if (raw === true || raw == null || raw === 'on') return 'top'
-  if (typeof raw === 'string' && STATUSBAR_MODES.has(raw as StatusBarMode)) return raw as StatusBarMode
-
-  return 'top'
-}
+export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
+  raw === false
+    ? 'off'
+    : typeof raw === 'string' && STATUSBAR_MODES.has(raw as StatusBarMode)
+      ? (raw as StatusBarMode)
+      : 'top'
 
 const MTIME_POLL_MS = 5000
 

@@ -216,13 +216,7 @@ const ComposerPane = memo(function ComposerPane({
             </Box>
 
             <Box flexGrow={1} position="relative">
-              {/*
-                Subtract the NoSelect paddingX={1} (2 cols total) and the
-                prompt-glyph column (pw) so cursorLayout agrees with the
-                width wrap-ansi actually uses at render time. Off-by-one/
-                two here manifests as the final letter flickering
-                in/out when a sentence crosses the wrap boundary.
-              */}
+              {/* subtract NoSelect paddingX={1} (2 cols) + pw so wrap-ansi and cursorLayout agree */}
               <TextInput
                 columns={Math.max(20, composer.cols - pw - 2)}
                 onChange={composer.updateInput}
@@ -271,12 +265,8 @@ const StatusRulePane = memo(function StatusRulePane({
     return null
   }
 
-  // 'top' sits inline above the input; give it one row of breathing
-  // space above so the transcript (or queue) doesn't butt directly
-  // against the status row. 'bottom' lives at the last row of the
-  // viewport so it needs no margin.
   return (
-    <Box flexShrink={0} marginTop={at === 'top' ? 1 : 0}>
+    <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
@@ -318,18 +308,20 @@ export const AppLayout = memo(function AppLayout({
         </Box>
 
         {!overlay.agents && (
-          <PromptZone
-            cols={composer.cols}
-            onApprovalChoice={actions.answerApproval}
-            onClarifyAnswer={actions.answerClarify}
-            onSecretSubmit={actions.answerSecret}
-            onSudoSubmit={actions.answerSudo}
-          />
+          <>
+            <PromptZone
+              cols={composer.cols}
+              onApprovalChoice={actions.answerApproval}
+              onClarifyAnswer={actions.answerClarify}
+              onSecretSubmit={actions.answerSecret}
+              onSudoSubmit={actions.answerSudo}
+            />
+
+            <ComposerPane actions={actions} composer={composer} status={status} />
+
+            <StatusRulePane at="bottom" composer={composer} status={status} />
+          </>
         )}
-
-        {!overlay.agents && <ComposerPane actions={actions} composer={composer} status={status} />}
-
-        {!overlay.agents && <StatusRulePane at="bottom" composer={composer} status={status} />}
       </Box>
     </AlternateScreen>
   )

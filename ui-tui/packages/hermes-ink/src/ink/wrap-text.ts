@@ -50,17 +50,8 @@ export default function wrapText(text: string, maxWidth: number, wrapType: Style
     })
   }
 
-  // Char-granularity wrap: break at exact column boundaries regardless of
-  // whitespace. Used for text inputs where the cursor position must track
-  // the wrap boundary deterministically — word-wrap's whitespace-preferring
-  // reshuffle causes visible cursor flicker as each keystroke can push a
-  // word across a line break.
   if (wrapType === 'wrap-char') {
-    return wrapAnsi(text, maxWidth, {
-      trim: false,
-      hard: true,
-      wordWrap: false
-    })
+    return wrapAnsi(text, maxWidth, { trim: false, hard: true, wordWrap: false })
   }
 
   if (wrapType === 'wrap-trim') {

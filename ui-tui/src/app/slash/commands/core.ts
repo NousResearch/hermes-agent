@@ -310,23 +310,18 @@ export const coreCommands: SlashCommand[] = [
     name: 'statusbar',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
-      const current = ctx.ui.statusBar
+      const toggle: StatusBarMode = ctx.ui.statusBar === 'off' ? 'top' : 'off'
 
-      // 'on' is a legacy alias for 'top' — the inline position above the
-      // input where the bar originally lived. No-arg / `toggle` flips
-      // visibility and defaults to 'top' when reappearing.
       const next: null | StatusBarMode =
-        mode === '' || mode === 'toggle'
-          ? current === 'off'
-            ? 'top'
-            : 'off'
+        !mode || mode === 'toggle'
+          ? toggle
           : mode === 'on' || mode === 'top'
             ? 'top'
             : mode === 'off' || mode === 'bottom'
               ? mode
               : null
 
-      if (next === null) {
+      if (!next) {
         return ctx.transcript.sys('usage: /statusbar [on|off|top|bottom|toggle]')
       }
 

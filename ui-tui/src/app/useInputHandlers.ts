@@ -378,10 +378,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return cActions.openEditor()
     }
 
-    // Shift-Tab toggles per-session yolo without submitting a turn — mirrors
-    // Claude Code's in-place dangerously-approve toggle. Slash /yolo keeps
-    // working for discoverability; this just skips the inference round-trip
-    // when you only want to flip the flag mid-flow (blitz #5 sub-item 11).
+    // shift-tab flips yolo without spending a turn (claude-code parity)
     if (key.shift && key.tab && !cState.completions.length) {
       return void gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid })

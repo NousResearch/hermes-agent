@@ -455,21 +455,14 @@ def _write_config_key(key_path: str, value):
     _save_cfg(cfg)
 
 
-# Legacy configs stored display.tui_statusbar as a bool; a short-lived
-# intermediate wrote 'on'. Both forms map to 'top' — the inline position
-# above the input where the bar originally lived — so users don't need to
-# migrate by hand.
+_STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
+
+
 def _coerce_statusbar(raw) -> str:
-    if raw is True:
-        return "top"
     if raw is False:
         return "off"
-    if isinstance(raw, str):
-        s = raw.strip().lower()
-        if s == "on":
-            return "top"
-        if s in {"off", "top", "bottom"}:
-            return s
+    if isinstance(raw, str) and (s := raw.strip().lower()) in _STATUSBAR_MODES:
+        return s
     return "top"
 
 
@@ -2535,17 +2528,18 @@ def _(rid, params: dict) -> dict:
 
     if key == "statusbar":
         raw = str(value or "").strip().lower()
-        cfg0 = _load_cfg()
-        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        d0 = _load_cfg().get("display") or {}
         current = _coerce_statusbar(d0.get("tui_statusbar", "top"))
+
         if raw in ("", "toggle"):
             nv = "top" if current == "off" else "off"
         elif raw == "on":
             nv = "top"
-        elif raw in ("off", "top", "bottom"):
+        elif raw in _STATUSBAR_MODES:
             nv = raw
         else:
             return _err(rid, 4002, f"unknown statusbar value: {value}")
+
         _write_config_key("display.tui_statusbar", nv)
         return _ok(rid, {"key": key, "value": nv})
 

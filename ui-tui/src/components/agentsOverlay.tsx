@@ -1,6 +1,6 @@
-import { Box, NoSelect, ScrollBox, Text, useInput, useStdout, type ScrollBoxHandle } from '@hermes/ink'
+import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   $delegationState,
@@ -210,6 +210,7 @@ function GanttStrip({
   const spans = flatNodes
     .map((node, idx) => {
       const started = node.item.startedAt ?? now
+
       const ended =
         node.item.durationSeconds != null && node.item.startedAt != null
           ? node.item.startedAt + node.item.durationSeconds * 1000
@@ -276,6 +277,7 @@ function GanttStrip({
         const active = idx === cursor
         const { color } = statusGlyph(node.item, t)
         const accent = active ? t.color.amber : t.color.dim
+
         const durLabel = node.item.durationSeconds
           ? fmtDur(node.item.durationSeconds)
           : node.item.status === 'running'
@@ -832,20 +834,20 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     if (ch === '<' || ch === '[') {
       return stepHistory(1)
     }
-    i
-f (ch === '>' || ch === ']') {
+
+    if (ch === '>' || ch === ']') {
       return stepHistory(-1)
     }
-    if (ch === 'p') {
 
+    if (ch === 'p') {
       return togglePause()
     }
-    i
-f (ch === 'x' && selected) {
+
+    if (ch === 'x' && selected) {
       return killOne(selected.item.id)
     }
-    if (ch === 'X' && selected) {
 
+    if (ch === 'X' && selected) {
       return killSubtree(selected)
     }
 
@@ -853,28 +855,28 @@ f (ch === 'x' && selected) {
       if (key.leftArrow || ch === 'h') {
         return setMode('list')
       }
-      i
-f (key.pageUp || (key.ctrl && ch === 'u')) {
+
+      if (key.pageUp || (key.ctrl && ch === 'u')) {
         return scrollDetail(-detailPageSize)
       }
-      if (key.pageDown || (key.ctrl && ch === 'd')) {
 
+      if (key.pageDown || (key.ctrl && ch === 'd')) {
         return scrollDetail(detailPageSize)
       }
-      i
-f (key.upArrow || ch === 'k') {
+
+      if (key.upArrow || ch === 'k') {
         return scrollDetail(-2)
       }
-      if (key.downArrow || ch === 'j') {
 
+      if (key.downArrow || ch === 'j') {
         return scrollDetail(2)
       }
-      i
-f (ch === 'g') {
+
+      if (ch === 'g') {
         return detailScrollRef.current?.scrollTo(0)
       }
-      if (ch === 'G') {
 
+      if (ch === 'G') {
         return detailScrollRef.current?.scrollToBottom?.()
       }
 
@@ -885,28 +887,28 @@ f (ch === 'g') {
     if ((key.return || key.rightArrow || ch === 'l') && selected) {
       return setMode('detail')
     }
-    i
-f (key.upArrow || ch === 'k') {
+
+    if (key.upArrow || ch === 'k') {
       return setCursor(c => Math.max(0, c - 1))
     }
-    if (key.downArrow || ch === 'j') {
 
+    if (key.downArrow || ch === 'j') {
       return setCursor(c => Math.min(Math.max(0, rows.length - 1), c + 1))
     }
-    i
-f (ch === 'g') {
+
+    if (ch === 'g') {
       return setCursor(0)
     }
-    if (ch === 'G') {
 
+    if (ch === 'G') {
       return setCursor(Math.max(0, rows.length - 1))
     }
-    i
-f (ch === 's') {
+
+    if (ch === 's') {
       return setSort(m => cycle(SORT_ORDER, m))
     }
-    i
-f (ch === 'f') {
+
+    if (ch === 'f') {
       return setFilter(m => cycle(FILTER_ORDER, m))
     }
   })

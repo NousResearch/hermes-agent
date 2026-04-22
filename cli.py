@@ -22,6 +22,7 @@ import re
 import concurrent.futures
 import base64
 import atexit
+import errno
 import tempfile
 import time
 import uuid
@@ -10659,7 +10660,7 @@ class HermesCLI:
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393).
             # This is the fallback for cases that slip past the fstat() guard.
-            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err) or getattr(_stdin_err, "errno", 0) == errno.EIO:
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
                     "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"

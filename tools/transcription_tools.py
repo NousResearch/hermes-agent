@@ -67,6 +67,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_DEEPGRAM_STT_MODEL = os.getenv("STT_DEEPGRAM_MODEL", "nova-3")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -242,6 +243,14 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "deepgram":
+            if os.getenv("DEEPGRAM_API_KEY"):
+                return "deepgram"
+            logger.warning(
+                "STT provider 'deepgram' configured but DEEPGRAM_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
@@ -259,6 +268,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
+    if os.getenv("DEEPGRAM_API_KEY"):
+        logger.info("No local STT available, using Deepgram Nova-3 STT API")
+        return "deepgram"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -574,6 +586,65 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: deepgram (Nova-3 STT API)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Deepgram Nova-3 STT API.
+
+    Uses the Deepgram REST API directly (no SDK required).
+    Requires ``DEEPGRAM_API_KEY`` environment variable.
+    """
+    import requests
+
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "DEEPGRAM_API_KEY not set"}
+
+    try:
+        url = "https://api.deepgram.com/v1/listen"
+        params = {
+            "model": model_name,
+            "smart_format": "true",
+            "punctuate": "true",
+        }
+        headers = {
+            "Authorization": f"Token {api_key}",
+        }
+
+        with open(file_path, "rb") as audio_file:
+            response = requests.post(
+                url,
+                params=params,
+                headers=headers,
+                data=audio_file,
+                timeout=120,
+            )
+        response.raise_for_status()
+
+        result = response.json()
+        channels = result.get("results", {}).get("channels", [])
+        if channels:
+            alternatives = channels[0].get("alternatives", [])
+            if alternatives:
+                transcript_text = alternatives[0].get("transcript", "").strip()
+                logger.info(
+                    "Transcribed %s via Deepgram API (%s, %d chars)",
+                    Path(file_path).name, model_name, len(transcript_text),
+                )
+                return {"success": True, "transcript": transcript_text, "provider": "deepgram"}
+
+        return {"success": False, "transcript": "", "error": "Deepgram returned empty transcript"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Deepgram transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Deepgram transcription failed: {type(e).__name__}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -640,6 +711,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         mistral_cfg = stt_config.get("mistral", {})
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
+
+    if provider == "deepgram":
+        deepgram_cfg = stt_config.get("deepgram", {})
+        model_name = model or deepgram_cfg.get("model", DEFAULT_DEEPGRAM_STT_MODEL)
+        return _transcribe_deepgram(file_path, model_name)
 
     # No provider available
     return {

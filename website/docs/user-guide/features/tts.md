@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with nine providers:
+Convert text to speech with ten providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -23,6 +23,7 @@ Convert text to speech with nine providers:
 | **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
+| **Deepgram (Aura TTS)** | Excellent | Paid | `DEEPGRAM_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
@@ -42,7 +43,7 @@ Convert text to speech with nine providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "deepgram" | "gemini" | "xai" | "neutts" | "kittentts"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -64,6 +65,8 @@ tts:
   mistral:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
+  deepgram:
+    model: "aura-2-thalia-en"    # Voice IS the model. 102 voices across 7 languages (en, es, de, it, nl, fr, ja)
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
@@ -91,7 +94,7 @@ tts:
 
 Telegram voice bubbles require Opus/OGG audio format:
 
-- **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
+- **OpenAI, ElevenLabs, Mistral, and Deepgram** produce Opus natively — no extra setup
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
@@ -125,6 +128,8 @@ Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automat
 | **Local Whisper** (default) | Good | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
+| **Mistral (Voxtral Transcribe)** | Excellent | Paid | `MISTRAL_API_KEY` |
+| **Deepgram (Nova-3)** | Excellent | Paid | `DEEPGRAM_API_KEY` |
 
 :::info Zero Config
 Local transcription works out of the box when `faster-whisper` is installed. If that's unavailable, Hermes can also use a local `whisper` CLI from common install locations (like `/opt/homebrew/bin`) or a custom command via `HERMES_LOCAL_STT_COMMAND`.
@@ -135,13 +140,15 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral"
+  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "deepgram"
   local:
     model: "base"             # tiny, base, small, medium, large-v3
   openai:
     model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
   mistral:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
+  deepgram:
+    model: "nova-3"             # nova-3 (latest), nova-2, nova-2-phonecall, nova-2-medical
 ```
 
 ### Provider Details
@@ -162,6 +169,8 @@ stt:
 
 **Mistral API (Voxtral Transcribe)** — Requires `MISTRAL_API_KEY`. Uses Mistral's [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) models. Supports 13 languages, speaker diarization, and word-level timestamps. Install with `pip install hermes-agent[mistral]`.
 
+**Deepgram API (Nova-3)** — Requires `DEEPGRAM_API_KEY`. Deepgram's [Nova-3](https://developers.deepgram.com/docs/models-languages-overview) model with smart formatting and punctuation. Same key enables Aura TTS (102 voices, 7 languages).
+
 **Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders.
 
 ### Fallback Behavior
@@ -171,4 +180,5 @@ If your configured provider isn't available, Hermes automatically falls back:
 - **Groq key not set** → Falls back to local transcription, then OpenAI
 - **OpenAI key not set** → Falls back to local transcription, then Groq
 - **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
+- **Deepgram key not set** → Skipped in auto-detect; falls through to next available provider
 - **Nothing available** → Voice messages pass through with an accurate note to the user

@@ -2,12 +2,13 @@
 """
 Text-to-Speech Tool Module
 
-Supports seven TTS providers:
+Supports eight TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
+- Deepgram (Aura TTS): Fast, 102 voices, 7 languages, native Opus, needs DEEPGRAM_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
@@ -96,6 +97,8 @@ DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
+DEFAULT_DEEPGRAM_MODEL = "aura-2-thalia-en"
+DEFAULT_DEEPGRAM_BASE_URL = "https://api.deepgram.com/v1/speak"
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
@@ -785,6 +788,61 @@ def _check_kittentts_available() -> bool:
         return False
 
 
+# ===========================================================================
+# Provider: Deepgram Aura TTS
+# ===========================================================================
+def _generate_deepgram_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Deepgram Aura TTS API.
+
+    Deepgram returns raw audio bytes via a simple HTTP POST.
+    Supports native Opus output for Telegram voice bubbles.
+    No SDK required — uses the requests library.
+
+    Documented params: model (voice), encoding, container, bit_rate, sample_rate.
+    """
+    import requests
+
+    api_key = os.getenv("DEEPGRAM_API_KEY", "")
+    if not api_key:
+        raise ValueError("DEEPGRAM_API_KEY not set. Get one at https://console.deepgram.com/")
+
+    dg_config = tts_config.get("deepgram", {})
+    model = dg_config.get("model", DEFAULT_DEEPGRAM_MODEL)
+    base_url = dg_config.get("base_url", DEFAULT_DEEPGRAM_BASE_URL)
+
+    # Determine encoding from output file extension
+    if output_path.endswith(".ogg"):
+        encoding = "opus"
+    elif output_path.endswith(".wav"):
+        encoding = "linear16"
+    elif output_path.endswith(".flac"):
+        encoding = "flac"
+    else:
+        encoding = "mp3"
+
+    url = base_url
+    params = {"model": model, "encoding": encoding}
+    headers = {
+        "Authorization": f"Token {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(url, params=params, json={"text": text}, headers=headers, timeout=60)
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        logger.error("Deepgram TTS HTTP error: %s %s", response.status_code, response.text[:200])
+        raise RuntimeError(f"Deepgram TTS API error (HTTP {response.status_code}): {response.text[:200]}") from e
+    except Exception as e:
+        logger.error("Deepgram TTS failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Deepgram TTS failed: {type(e).__name__}") from e
+
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+
+    return output_path
+
+
 def _default_neutts_ref_audio() -> str:
     """Return path to the bundled default voice reference audio."""
     return str(Path(__file__).parent / "neutts_samples" / "jo.wav")
@@ -968,7 +1026,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini", "deepgram"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1048,6 +1106,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with KittenTTS (local, ~25MB)...")
             _generate_kittentts(text, file_str, tts_config)
 
+        elif provider == "deepgram":
+            logger.info("Generating speech with Deepgram TTS...")
+            _generate_deepgram_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -1092,7 +1154,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
+        elif provider in ("elevenlabs", "openai", "mistral", "gemini", "deepgram"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)

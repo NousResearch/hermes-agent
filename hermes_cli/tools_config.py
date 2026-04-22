@@ -174,6 +174,15 @@ TOOL_CATEGORIES = {
                 "tts_provider": "mistral",
             },
             {
+                "name": "Deepgram (Aura TTS)",
+                "badge": "paid",
+                "tag": "102 voices, 7 languages, native Opus",
+                "env_vars": [
+                    {"key": "DEEPGRAM_API_KEY", "prompt": "Deepgram API key", "url": "https://console.deepgram.com/"},
+                ],
+                "tts_provider": "deepgram",
+            },
+            {
                 "name": "Google Gemini TTS",
                 "badge": "preview",
                 "tag": "30 prebuilt voices, controllable via prompts",

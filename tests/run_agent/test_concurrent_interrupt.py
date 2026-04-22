@@ -184,7 +184,7 @@ def test_running_concurrent_worker_sees_is_interrupted(monkeypatch):
     observed = {"saw_true": False, "poll_count": 0, "worker_tid": None}
     worker_started = threading.Event()
 
-    def polling_tool(name, args, task_id, call_id=None):
+    def polling_tool(name, args, task_id, call_id=None, messages=None):
         observed["worker_tid"] = threading.current_thread().ident
         worker_started.set()
         deadline = time.monotonic() + 5.0
@@ -211,6 +211,9 @@ def test_running_concurrent_worker_sees_is_interrupted(monkeypatch):
 
     t = threading.Thread(target=_interrupt_after_start)
     t.start()
+    # Re-apply polling_tool after _make_agent overrides _invoke_tool
+    agent._invoke_tool = MagicMock(side_effect=polling_tool)
+
     start = time.monotonic()
     agent._execute_tool_calls_concurrent(msg, messages, "test_task")
     elapsed = time.monotonic() - start

@@ -20,6 +20,7 @@ from hermes_cli.plugins import (
     get_plugin_manager,
     get_plugin_command_handler,
     get_plugin_commands,
+    get_plugin_gateway_commands,
     get_pre_tool_call_block_message,
     discover_plugins,
     invoke_hook,
@@ -260,6 +261,7 @@ class TestPluginHooks:
     def test_valid_hooks_include_request_scoped_api_hooks(self):
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
+        assert "pre_gateway_command" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
 
@@ -762,6 +764,41 @@ class TestPluginCommands:
         ctx.register_command("status-cmd", lambda a: a)
         assert mgr._plugin_commands["status-cmd"]["description"] == "Plugin command"
 
+    def test_register_gateway_command_registers_generic_and_platform_metadata(self):
+        """register_gateway_command() should expose both dispatch and UI metadata."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        handler = lambda args: f"gateway:{args}"
+        ctx.register_gateway_command(
+            "discord",
+            "metricas",
+            handler,
+            description="Metrics dashboard",
+            args_hint="dias:7 formato:json",
+        )
+
+        assert "metricas" in mgr._plugin_commands
+        assert "metricas" in mgr._plugin_gateway_commands["discord"]
+        entry = mgr._plugin_gateway_commands["discord"]["metricas"]
+        assert entry["handler"] is handler
+        assert entry["description"] == "Metrics dashboard"
+        assert entry["args_hint"] == "dias:7 formato:json"
+        assert entry["plugin"] == "test-plugin"
+
+    def test_register_gateway_command_empty_platform_rejected(self, caplog):
+        """Empty platform names are rejected with a warning."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx.register_gateway_command("", "metricas", lambda a: a)
+
+        assert mgr._plugin_gateway_commands == {}
+        assert "empty platform" in caplog.text
+
     def test_get_plugin_command_handler_found(self):
         """get_plugin_command_handler() returns the handler for a registered command."""
         mgr = PluginManager()
@@ -794,6 +831,43 @@ class TestPluginCommands:
             assert "cmd-a" in cmds
             assert "cmd-b" in cmds
             assert cmds["cmd-a"]["description"] == "A"
+
+    def test_get_plugin_gateway_commands_returns_platform_slice(self):
+        """get_plugin_gateway_commands() should return only the requested platform."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_gateway_command("discord", "metricas", lambda a: a, description="Metrics")
+        ctx.register_gateway_command("telegram", "metricas", lambda a: a, description="Metrics")
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            discord_cmds = get_plugin_gateway_commands("discord")
+            telegram_cmds = get_plugin_gateway_commands("telegram")
+
+        assert "metricas" in discord_cmds
+        assert discord_cmds["metricas"]["platform"] == "discord"
+        assert "metricas" in telegram_cmds
+        assert telegram_cmds["metricas"]["platform"] == "telegram"
+
+    def test_get_plugin_gateway_commands_discovers_plugins_lazily(self, tmp_path, monkeypatch):
+        """Gateway command lookup should trigger plugin discovery on first access."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "gateway-plugin",
+            register_body=(
+                'ctx.register_gateway_command("discord", "metricas", lambda a: a, '
+                'description="Metrics", args_hint="dias:7")'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        import hermes_cli.plugins as plugins_mod
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            cmds = get_plugin_gateway_commands("discord")
+            assert "metricas" in cmds
+            assert cmds["metricas"]["args_hint"] == "dias:7"
 
     def test_get_plugin_command_handler_discovers_plugins_lazily(self, tmp_path, monkeypatch):
         """Handler lookup should work before any explicit discover_plugins() call."""

@@ -60,6 +60,7 @@ logger = logging.getLogger(__name__)
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
+    "pre_gateway_command",
     "transform_terminal_output",
     "transform_tool_result",
     "pre_llm_call",
@@ -302,6 +303,53 @@ class PluginContext:
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
+    def register_gateway_command(
+        self,
+        platform: str,
+        name: str,
+        handler: Callable,
+        description: str = "",
+        args_hint: str = "",
+    ) -> None:
+        """Register a plugin slash command for a specific gateway platform.
+
+        This builds on ``register_command()`` so the command remains available
+        through Hermes' normal in-session slash command dispatch while also
+        exposing metadata the gateway adapter can use for native UI
+        registration (for example, Discord app commands).
+        """
+        clean_platform = platform.lower().strip()
+        if not clean_platform:
+            logger.warning(
+                "Plugin '%s' tried to register a gateway command with an empty platform.",
+                self.manifest.name,
+            )
+            return
+
+        clean = name.lower().strip().lstrip("/").replace(" ", "-")
+        self.register_command(clean, handler, description=description)
+
+        entry = self._manager._plugin_commands.get(clean)
+        if not entry or entry.get("handler") is not handler:
+            return
+
+        platform_registry = self._manager._plugin_gateway_commands.setdefault(
+            clean_platform, {}
+        )
+        platform_registry[clean] = {
+            "handler": handler,
+            "description": entry.get("description") or "Plugin command",
+            "plugin": self.manifest.name,
+            "platform": clean_platform,
+            "args_hint": (args_hint or "").strip(),
+        }
+        logger.debug(
+            "Plugin %s registered gateway command for %s: /%s",
+            self.manifest.name,
+            clean_platform,
+            clean,
+        )
+
     # -- tool dispatch -------------------------------------------------------
 
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
@@ -446,6 +494,7 @@ class PluginManager:
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
+        self._plugin_gateway_commands: Dict[str, Dict[str, dict]] = {}
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
@@ -898,6 +947,16 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plugin_gateway_commands(platform: str) -> Dict[str, dict]:
+    """Return plugin gateway command metadata for a specific platform."""
+    clean_platform = platform.lower().strip()
+    if not clean_platform:
+        return {}
+    return _ensure_plugins_discovered()._plugin_gateway_commands.get(
+        clean_platform, {}
+    )
 
 
 def get_plugin_toolsets() -> List[tuple]:

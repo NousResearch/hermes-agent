@@ -3434,22 +3434,74 @@ class GatewayRunner:
 
         # Check for commands
         command = event.get_command()
-        
+
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
+        _cmd_def = _resolve_cmd(command) if command else None
+        canonical = _cmd_def.name if _cmd_def else command
+
+        # Let plugins intercept gateway slash commands before Hermes handles
+        # them. This supports policy/ACL plugins that need allow, deny,
+        # rewrite, or fully-handle behavior at the gateway boundary.
+        if command:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+                raw_args = event.get_command_args().strip()
+                hook_results = _invoke_hook(
+                    "pre_gateway_command",
+                    platform=source.platform.value if source.platform else "",
+                    command_name=command.replace("_", "-"),
+                    canonical_command=(
+                        canonical.replace("_", "-")
+                        if isinstance(canonical, str) and canonical
+                        else command.replace("_", "-")
+                    ),
+                    raw_command=command,
+                    raw_args=raw_args,
+                    event=event,
+                    source=source,
+                    runner=self,
+                )
+
+                for hook_result in hook_results:
+                    if not isinstance(hook_result, dict):
+                        continue
+                    decision = str(hook_result.get("decision", "")).strip().lower()
+                    if not decision or decision == "allow":
+                        continue
+                    if decision == "deny":
+                        message = hook_result.get("message")
+                        if isinstance(message, str) and message:
+                            return message
+                        return f"Command `/{command}` was blocked by a plugin."
+                    if decision == "handled":
+                        message = hook_result.get("message")
+                        return message if isinstance(message, str) and message else None
+                    if decision == "rewrite":
+                        new_command = str(
+                            hook_result.get("command_name", "")
+                        ).strip().lstrip("/")
+                        if not new_command:
+                            continue
+                        new_args = str(hook_result.get("raw_args", "")).strip()
+                        event.text = f"/{new_command} {new_args}".strip()
+                        command = event.get_command()
+                        _cmd_def = _resolve_cmd(command) if command else None
+                        canonical = _cmd_def.name if _cmd_def else command
+                        break
+            except Exception as e:
+                logger.debug("pre_gateway_command hook dispatch failed (non-fatal): %s", e)
+
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
         # in hermes_cli/commands.py — no hardcoded set to maintain here.
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
-        if command and command in GATEWAY_KNOWN_COMMANDS:
-            await self.hooks.emit(f"command:{command}", {
+        if canonical and canonical in GATEWAY_KNOWN_COMMANDS:
+            await self.hooks.emit(f"command:{canonical}", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
-                "command": command,
+                "command": canonical,
                 "args": event.get_command_args().strip(),
             })
-
-        # Resolve aliases to canonical name so dispatch only checks canonicals.
-        _cmd_def = _resolve_cmd(command) if command else None
-        canonical = _cmd_def.name if _cmd_def else command
 
         if canonical == "new":
             return await self._handle_reset_command(event)

@@ -199,6 +199,61 @@ async def test_auto_registered_command_with_args(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_auto_registers_plugin_gateway_commands_for_discord(adapter):
+    """Plugin gateway commands should appear as native Discord slash commands."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_gateway_commands",
+        return_value={
+            "metricas": {
+                "description": "Metrics dashboard",
+                "args_hint": "dias:7 formato:json",
+                "plugin": "metrics-plugin",
+            }
+        },
+    ):
+        adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+    assert "metricas" in tree_names
+
+    metricas_cmd = adapter._client.tree.commands["metricas"]
+    interaction = SimpleNamespace()
+    await metricas_cmd.callback(interaction, args="dias:7 formato:json")
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/metricas dias:7 formato:json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_plugin_gateway_command_skips_existing_name_conflict(adapter):
+    """Plugin gateway commands must not override an existing tree command."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_gateway_commands",
+        return_value={
+            "restart": {
+                "description": "Plugin restart",
+                "args_hint": "",
+                "plugin": "conflict-plugin",
+            }
+        },
+    ):
+        adapter._register_slash_commands()
+
+    restart_cmd = adapter._client.tree.commands["restart"]
+    interaction = SimpleNamespace()
+    await restart_cmd(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction,
+        "/restart",
+        "Restart requested~",
+    )
+
+
 # ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
@@ -882,4 +937,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-

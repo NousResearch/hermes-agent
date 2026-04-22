@@ -7,7 +7,7 @@ delegate_task call instead of telling the user the command doesn't exist).
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -164,3 +164,78 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_pre_gateway_command_can_deny_before_dispatch(monkeypatch):
+    """A plugin pre_gateway_command hook can block a slash command early."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("denied slash command leaked to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[{"decision": "deny", "message": "Blocked by ACL"}],
+    ):
+        result = await runner._handle_message(_make_event("/status"))
+
+    assert result == "Blocked by ACL"
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_gateway_command_can_rewrite_to_plugin_command(monkeypatch):
+    """Rewrite directives should update dispatch before plugin command lookup."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("rewritten slash command leaked to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[{"decision": "rewrite", "command_name": "metricas", "raw_args": "dias:7"}],
+    ), patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        return_value=lambda args: f"metrics {args}",
+    ):
+        result = await runner._handle_message(_make_event("/legacy-metricas"))
+
+    assert result == "metrics dias:7"
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_gateway_command_can_mark_command_as_handled(monkeypatch):
+    """Handled directives should short-circuit normal dispatch cleanly."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("handled slash command leaked to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[{"decision": "handled", "message": "Already handled upstream"}],
+    ):
+        result = await runner._handle_message(_make_event("/status"))
+
+    assert result == "Already handled upstream"
+    runner._run_agent.assert_not_called()

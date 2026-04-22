@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS messages (
     token_count INTEGER,
     finish_reason TEXT,
     reasoning TEXT,
+    reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT
 );
@@ -329,6 +330,15 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: preserve provider-native reasoning_content separately from
+                # normalized reasoning text. Kimi/Moonshot replay can require
+                # this field on assistant tool-call messages when thinking is on.
+                try:
+                    cursor.execute('ALTER TABLE messages ADD COLUMN "reasoning_content" TEXT')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -922,6 +932,7 @@ class SessionDB:
         token_count: int = None,
         finish_reason: str = None,
         reasoning: str = None,
+        reasoning_content: str = None,
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
     ) -> int:
@@ -951,8 +962,8 @@ class SessionDB:
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_details, codex_reasoning_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -964,6 +975,7 @@ class SessionDB:
                     token_count,
                     finish_reason,
                     reasoning,
+                    reasoning_content,
                     reasoning_details_json,
                     codex_items_json,
                 ),
@@ -1014,7 +1026,7 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "reasoning, reasoning_details, codex_reasoning_items "
+                "reasoning, reasoning_content, reasoning_details, codex_reasoning_items "
                 "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
                 (session_id,),
             )
@@ -1038,6 +1050,8 @@ class SessionDB:
             if row["role"] == "assistant":
                 if row["reasoning"]:
                     msg["reasoning"] = row["reasoning"]
+                if row["reasoning_content"] is not None:
+                    msg["reasoning_content"] = row["reasoning_content"]
                 if row["reasoning_details"]:
                     try:
                         msg["reasoning_details"] = json.loads(row["reasoning_details"])

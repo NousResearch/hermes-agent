@@ -255,6 +255,38 @@ class TestMessageStorage:
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
 
+    def test_reasoning_content_persisted_and_restored(self, db):
+        """reasoning_content must survive session replay as its own field."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Hello",
+            reasoning="Short summary",
+            reasoning_content="Longer provider-native scratchpad",
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0]["reasoning"] == "Short summary"
+        assert conv[0]["reasoning_content"] == "Longer provider-native scratchpad"
+
+    def test_reasoning_content_empty_string_restored_for_assistant(self, db):
+        """Empty reasoning_content still needs to round-trip for strict replays."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "date", "arguments": "{}"}}],
+            reasoning_content="",
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert "reasoning_content" in conv[0]
+        assert conv[0]["reasoning_content"] == ""
+
     def test_reasoning_not_set_for_non_assistant(self, db):
         """reasoning is never leaked onto user or tool messages."""
         db.create_session(session_id="s1", source="telegram")
@@ -1120,7 +1152,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1176,12 +1208,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v7
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")

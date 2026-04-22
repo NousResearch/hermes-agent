@@ -1216,6 +1216,15 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert result["reasoning"] == "thinking"
 
+    def test_reasoning_content_preserved_separately(self, agent):
+        msg = _mock_assistant_msg(
+            content="answer",
+            reasoning="summary",
+            reasoning_content="provider scratchpad",
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        assert result["reasoning_content"] == "provider scratchpad"
+
     def test_with_tool_calls(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         msg = _mock_assistant_msg(content="", tool_calls=[tc])
@@ -4186,6 +4195,90 @@ class TestPersistUserMessageOverride:
         assert saved_messages[0]["content"] == "Hello there"
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
+
+
+class TestReasoningReplayForStrictProviders:
+    """Assistant replay must preserve provider-native reasoning fields."""
+
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+    def test_kimi_tool_replay_includes_empty_reasoning_content(self, agent):
+        self._setup_agent(agent)
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "kimi-coding"
+
+        prior_assistant = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{\"command\":\"date\"}"},
+                }
+            ],
+        }
+        tool_result = {"role": "tool", "tool_call_id": "c1", "content": "Tue Apr 21"}
+        final_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = final_resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next step",
+                conversation_history=[prior_assistant, tool_result],
+            )
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
+        assert replayed_assistant["role"] == "assistant"
+        assert replayed_assistant["tool_calls"][0]["function"]["name"] == "terminal"
+        assert "reasoning_content" in replayed_assistant
+        assert replayed_assistant["reasoning_content"] == ""
+
+    def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
+        self._setup_agent(agent)
+        prior_assistant = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": "{\"q\":\"test\"}"},
+                }
+            ],
+            "reasoning": "summary reasoning",
+            "reasoning_content": "provider-native scratchpad",
+        }
+        tool_result = {"role": "tool", "tool_call_id": "c1", "content": "ok"}
+        final_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = final_resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next step",
+                conversation_history=[prior_assistant, tool_result],
+            )
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
+        assert replayed_assistant["reasoning_content"] == "provider-native scratchpad"
 
 
 # ---------------------------------------------------------------------------

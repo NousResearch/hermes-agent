@@ -9,7 +9,6 @@ import copy
 import json
 import logging
 import tempfile
-import threading
 import os
 import re
 import uuid
@@ -35,11 +34,6 @@ except ImportError:
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
-
-# In-process lock protecting load_jobs→modify→save_jobs cycles.
-# Required when tick() runs jobs in parallel threads — without this,
-# concurrent mark_job_run / advance_next_run calls can clobber each other.
-_jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -590,7 +584,7 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None, duration_ms: Optional[int] = None):
     """
     Mark a job as having been run.
     
@@ -600,44 +594,46 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
     """
-    with _jobs_file_lock:
-        jobs = load_jobs()
-        for i, job in enumerate(jobs):
-            if job["id"] == job_id:
-                now = _hermes_now().isoformat()
-                job["last_run_at"] = now
-                job["last_status"] = "ok" if success else "error"
-                job["last_error"] = error if not success else None
-                # Track delivery failures separately — cleared on successful delivery
-                job["last_delivery_error"] = delivery_error
+    jobs = load_jobs()
+    for i, job in enumerate(jobs):
+        if job["id"] == job_id:
+            now = _hermes_now().isoformat()
+            job["last_run_at"] = now
+            job["last_status"] = "ok" if success else "error"
+            job["last_error"] = error if not success else None
+            # Track delivery failures separately — cleared on successful delivery
+            job["last_delivery_error"] = delivery_error
+            # Track execution duration
+            if duration_ms is not None:
+                job["duration_ms"] = duration_ms
+            
+            # Increment completed count
+            if job.get("repeat"):
+                job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
                 
-                # Increment completed count
-                if job.get("repeat"):
-                    job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                    
-                    # Check if we've hit the repeat limit
-                    times = job["repeat"].get("times")
-                    completed = job["repeat"]["completed"]
-                    if times is not None and times > 0 and completed >= times:
-                        # Remove the job (limit reached)
-                        jobs.pop(i)
-                        save_jobs(jobs)
-                        return
-                
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                # Check if we've hit the repeat limit
+                times = job["repeat"].get("times")
+                completed = job["repeat"]["completed"]
+                if times is not None and times > 0 and completed >= times:
+                    # Remove the job (limit reached)
+                    jobs.pop(i)
+                    save_jobs(jobs)
+                    return
+            
+            # Compute next run
+            job["next_run_at"] = compute_next_run(job["schedule"], now)
 
-                # If no next run (one-shot completed), disable
-                if job["next_run_at"] is None:
-                    job["enabled"] = False
-                    job["state"] = "completed"
-                elif job.get("state") != "paused":
-                    job["state"] = "scheduled"
+            # If no next run (one-shot completed), disable
+            if job["next_run_at"] is None:
+                job["enabled"] = False
+                job["state"] = "completed"
+            elif job.get("state") != "paused":
+                job["state"] = "scheduled"
 
-                save_jobs(jobs)
-                return
+            save_jobs(jobs)
+            return
 
-        logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+    logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
 def advance_next_run(job_id: str) -> bool:
@@ -652,21 +648,20 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    with _jobs_file_lock:
-        jobs = load_jobs()
-        for job in jobs:
-            if job["id"] == job_id:
-                kind = job.get("schedule", {}).get("kind")
-                if kind not in ("cron", "interval"):
-                    return False
-                now = _hermes_now().isoformat()
-                new_next = compute_next_run(job["schedule"], now)
-                if new_next and new_next != job.get("next_run_at"):
-                    job["next_run_at"] = new_next
-                    save_jobs(jobs)
-                    return True
+    jobs = load_jobs()
+    for job in jobs:
+        if job["id"] == job_id:
+            kind = job.get("schedule", {}).get("kind")
+            if kind not in ("cron", "interval"):
                 return False
-        return False
+            now = _hermes_now().isoformat()
+            new_next = compute_next_run(job["schedule"], now)
+            if new_next and new_next != job.get("next_run_at"):
+                job["next_run_at"] = new_next
+                save_jobs(jobs)
+                return True
+            return False
+    return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:

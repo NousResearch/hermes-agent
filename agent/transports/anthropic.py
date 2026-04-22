@@ -87,14 +87,20 @@ class AnthropicTransport(ProviderTransport):
         return normalize_anthropic_response_v2(response, strip_tool_prefix=strip_tool_prefix)
 
     def validate_response(self, response: Any) -> bool:
-        """Check Anthropic response structure is valid."""
+        """Check Anthropic response structure is valid.
+
+        An empty content list is legitimate when ``stop_reason == "end_turn"``
+        — the model's canonical way of signalling "nothing more to add" after
+        a tool turn that already delivered the user-facing text. Treating it
+        as invalid falsely retries a completed response.
+        """
         if response is None:
             return False
         content_blocks = getattr(response, "content", None)
         if not isinstance(content_blocks, list):
             return False
         if not content_blocks:
-            return False
+            return getattr(response, "stop_reason", None) == "end_turn"
         return True
 
     def extract_cache_stats(self, response: Any) -> Optional[Dict[str, int]]:

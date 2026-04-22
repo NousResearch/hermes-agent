@@ -534,6 +534,41 @@ class HonchoClientConfig:
             pass
         return None
 
+    # Honcho enforces a 100-char limit on session IDs. Long gateway session keys
+    # (Matrix "!room:server" + thread event IDs, Telegram supergroup reply
+    # chains, Slack thread IDs with long workspace prefixes) can overflow this
+    # limit after sanitization; the Honcho API then rejects every call for that
+    # session with "session_id too long". See issue #13868.
+    _HONCHO_SESSION_ID_MAX_LEN = 100
+    _HONCHO_SESSION_ID_HASH_LEN = 8
+
+    @classmethod
+    def _enforce_session_id_limit(cls, sanitized: str, original: str) -> str:
+        """Truncate a sanitized session ID to Honcho's 100-char limit.
+
+        The common case (short keys) short-circuits with no modification.
+        For over-limit keys, keep a prefix of the sanitized ID and append a
+        deterministic ``-<sha256 prefix>`` suffix so two distinct long keys
+        that share a leading segment don't collide onto the same truncated ID.
+        The hash is taken over the *original* pre-sanitization key, so two
+        inputs that sanitize to the same string still collide intentionally
+        (same logical session), but two inputs that only share a prefix do not.
+        """
+        max_len = cls._HONCHO_SESSION_ID_MAX_LEN
+        if len(sanitized) <= max_len:
+            return sanitized
+
+        import hashlib
+
+        hash_len = cls._HONCHO_SESSION_ID_HASH_LEN
+        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:hash_len]
+        # max_len - hash_len - 1 (for the '-' separator) chars of the sanitized
+        # prefix, then '-<hash>'. Strip any trailing hyphen from the prefix so
+        # the result doesn't double up on separators.
+        prefix_len = max_len - hash_len - 1
+        prefix = sanitized[:prefix_len].rstrip("-")
+        return f"{prefix}-{digest}"
+
     def resolve_session_name(
         self,
         cwd: str | None = None,
@@ -578,7 +613,7 @@ class HonchoClientConfig:
         if gateway_session_key:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
             if sanitized:
-                return sanitized
+                return self._enforce_session_id_limit(sanitized, gateway_session_key)
 
         # per-session: inherit Hermes session_id (new Honcho session each run)
         if self.session_strategy == "per-session" and session_id:

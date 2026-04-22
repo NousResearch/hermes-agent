@@ -1753,6 +1753,42 @@ def _spawn_tree_session_dir(session_id: str):
     return d
 
 
+# Per-session append-only index of lightweight snapshot metadata.  Read by
+# `spawn_tree.list` so scanning doesn't require reading every full snapshot
+# file (Copilot review on #14045).  One JSON object per line.
+_SPAWN_TREE_INDEX = "_index.jsonl"
+
+
+def _append_spawn_tree_index(session_dir, entry: dict) -> None:
+    try:
+        with (session_dir / _SPAWN_TREE_INDEX).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        # Index is a cache — losing a line just means list() falls back
+        # to a directory scan for that entry.  Never block the save.
+        logger.debug("spawn_tree index append failed: %s", exc)
+
+
+def _read_spawn_tree_index(session_dir) -> list[dict]:
+    index_path = session_dir / _SPAWN_TREE_INDEX
+    if not index_path.exists():
+        return []
+    out: list[dict] = []
+    try:
+        with index_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    return out
+
+
 @method("spawn_tree.save")
 def _(rid, params: dict) -> dict:
     session_id = str(params.get("session_id") or "").strip()
@@ -1780,6 +1816,15 @@ def _(rid, params: dict) -> dict:
     except OSError as exc:
         return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
 
+    _append_spawn_tree_index(d, {
+        "path": str(path),
+        "session_id": session_id,
+        "started_at": payload["started_at"],
+        "finished_at": payload["finished_at"],
+        "label": label,
+        "count": len(subagents),
+    })
+
     return _ok(rid, {"path": str(path), "session_id": session_id})
 
 
@@ -1789,19 +1834,27 @@ def _(rid, params: dict) -> dict:
     limit = int(params.get("limit") or 50)
     cross_session = bool(params.get("cross_session"))
 
-    roots = []
     if cross_session:
         root = _spawn_trees_root()
         roots = [p for p in root.iterdir() if p.is_dir()]
     else:
         roots = [_spawn_tree_session_dir(session_id or "default")]
 
-    entries = []
+    entries: list[dict] = []
     for d in roots:
+        indexed = _read_spawn_tree_index(d)
+        if indexed:
+            # Skip index entries whose snapshot file was manually deleted.
+            entries.extend(e for e in indexed if (p := e.get("path")) and Path(p).exists())
+            continue
+
+        # Fallback for legacy (pre-index) sessions: full scan.  O(N) reads
+        # but only runs once per session until the next save writes the index.
         for p in d.glob("*.json"):
+            if p.name == _SPAWN_TREE_INDEX:
+                continue
             try:
                 stat = p.stat()
-                # Peek at the header for label/counts without parsing the full list.
                 try:
                     raw = json.loads(p.read_text(encoding="utf-8"))
                 except Exception:

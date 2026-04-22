@@ -24,18 +24,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Activate venv ───────────────────────────────────────────────────────────
-# Prefer a .venv in the current tree, fall back to the main checkout's venv
-# (useful for worktrees where we don't always duplicate the venv).
+# Prefer a local worktree venv, but for a full-suite run we need the optional
+# extras that power ACP, web, DingTalk, and local STT tests. Some worktrees
+# have a minimal .venv that can run targeted tests but not the full suite, so
+# fall back to the shared checkout's richer venv when the local one is incomplete.
 VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+GIT_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+SHARED_REPO_ROOT="${GIT_COMMON_DIR%/.git}"
+for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$SHARED_REPO_ROOT/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
+    if [ "$#" -eq 0 ]; then
+      if ! "$candidate/bin/python" - <<'PY' >/dev/null 2>&1
+import importlib
+required = ("acp", "dingtalk_stream", "fastapi", "faster_whisper")
+for name in required:
+    importlib.import_module(name)
+PY
+      then
+        continue
+      fi
+    fi
     VENV="$candidate"
     break
   fi
 done
 
 if [ -z "$VENV" ]; then
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+  echo "error: no suitable virtualenv found in $REPO_ROOT/.venv, $REPO_ROOT/venv, or $SHARED_REPO_ROOT/venv" >&2
   exit 1
 fi
 
@@ -43,6 +58,13 @@ PYTHON="$VENV/bin/python"
 
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
+  if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    "$PYTHON" -m ensurepip --upgrade >/dev/null 2>&1 || true
+  fi
+  if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    echo "error: pip is unavailable in $VENV and ensurepip could not restore it" >&2
+    exit 1
+  fi
   echo "→ installing pytest-split into $VENV"
   "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
 fi
@@ -87,18 +109,21 @@ WORKERS="${HERMES_TEST_WORKERS:-4}"
 # ── Run pytest ──────────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
 
-# If the first argument starts with `-` treat all args as pytest flags;
-# otherwise treat them as test paths.
-ARGS=("$@")
-
 echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
+PYTEST_CMD=(
+  "$PYTHON" -m pytest
+  -o "addopts="
+  -n "$WORKERS"
+  --ignore=tests/integration
+  --ignore=tests/e2e
+  -m "not integration"
+)
+
+if [ "$#" -gt 0 ]; then
+  PYTEST_CMD+=("$@")
+fi
+
 # -o "addopts=" clears pyproject.toml's `-n auto` so our -n wins.
-exec "$PYTHON" -m pytest \
-  -o "addopts=" \
-  -n "$WORKERS" \
-  --ignore=tests/integration \
-  --ignore=tests/e2e \
-  -m "not integration" \
-  "${ARGS[@]}"
+exec "${PYTEST_CMD[@]}"

@@ -31,6 +31,7 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DOCKER_VOLUME_DEST_RE = re.compile(r"^.+:(?P<dst>/[^:]*?)(?::[^:]+)?$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -86,6 +87,16 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
         normalized[key] = value
 
     return normalized
+
+
+def _docker_volume_destination(spec: str) -> str:
+    """Return the container destination path from a docker ``-v`` spec."""
+    match = _DOCKER_VOLUME_DEST_RE.match(spec.strip())
+    if not match:
+        return ""
+
+    destination = match.group("dst").rstrip("/")
+    return destination or "/"
 
 
 def _load_hermes_env_vars() -> dict[str, str]:
@@ -312,7 +323,7 @@ class DockerEnvironment(BaseEnvironment):
                 continue
             if ":" in vol:
                 volume_args.extend(["-v", vol])
-                if ":/workspace" in vol:
+                if _docker_volume_destination(vol) == "/workspace":
                     workspace_explicitly_mounted = True
             else:
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")

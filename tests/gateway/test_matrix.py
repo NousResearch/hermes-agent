@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
 
 
 def _make_fake_mautrix():
@@ -1896,6 +1897,81 @@ class TestMatrixReadReceipts:
         assert result is False
 
 
+# ---------------------------------------------------------------------------
+# Media normalization
+# ---------------------------------------------------------------------------
+
+class TestMatrixImageOnlyMediaNormalization:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        self.adapter._client.download_media = AsyncMock(return_value=None)
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._mxc_to_http = (
+            lambda url: "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
+        )
+
+    @pytest.mark.asyncio
+    async def test_image_only_filename_body_is_not_forwarded_as_text(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$image1",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "30.png",
+                "url": "mxc://example/30.png",
+                "info": {"mimetype": "image/png"},
+            },
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == ""
+        assert captured_event.media_urls == [
+            "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
+        ]
+        assert captured_event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_image_caption_text_is_preserved(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$image2",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "Please describe this chart",
+                "url": "mxc://example/30.png",
+                "info": {"mimetype": "image/png"},
+            },
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == "Please describe this chart"
 # ---------------------------------------------------------------------------
 # Message redaction
 # ---------------------------------------------------------------------------

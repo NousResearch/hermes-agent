@@ -4,6 +4,10 @@
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
   "scripts": {
+    "lint:md": "npx --yes markdownlint-cli \"docs/*.md\" \"docs/**/*.md\"",
+    "lint:md:fix": "npx --yes markdownlint-cli --fix \"docs/*.md\" \"docs/**/*.md\"",
+    "hooks:install": "python -m pip install pre-commit && pre-commit install",
+    "hooks:run": "pre-commit run --all-files",
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
   },
   "repository": {

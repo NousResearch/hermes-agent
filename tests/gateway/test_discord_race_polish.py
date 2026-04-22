@@ -5,7 +5,6 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from gateway.config import Platform, PlatformConfig
 
 
@@ -61,10 +60,17 @@ async def test_concurrent_joins_do_not_double_connect():
     channel.connect = lambda: slow_connect(channel)
 
     from gateway.platforms import discord as discord_mod
-    with patch.object(discord_mod, "VoiceReceiver",
-                      MagicMock(return_value=MagicMock(start=lambda: None))):
-        with patch.object(discord_mod.asyncio, "ensure_future",
-                          lambda _c: asyncio.create_task(asyncio.sleep(0))):
+
+    def _consume_timeout_task(coro):
+        coro.close()
+        return asyncio.create_task(asyncio.sleep(0))
+
+    with patch.object(
+        discord_mod,
+        "VoiceReceiver",
+        MagicMock(return_value=MagicMock(start=lambda: None)),
+    ):
+        with patch.object(discord_mod.asyncio, "ensure_future", _consume_timeout_task):
             t1 = asyncio.create_task(adapter.join_voice_channel(channel))
             t2 = asyncio.create_task(adapter.join_voice_channel(channel))
             await asyncio.sleep(0.05)

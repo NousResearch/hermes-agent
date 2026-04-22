@@ -174,12 +174,13 @@ def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_pat
         'lambda **kw: f\'CANON[{kw["tool_name"]}]\' + kw["result"])\n',
         encoding="utf-8",
     )
-    # Plugins are opt-in — must be listed in plugins.enabled to load.
-    cfg_path = hermes_home / "config.yaml"
-    cfg_path.write_text(
+    # Plugins are opt-in: write config.yaml enabling this plugin.
+    import yaml
+    (hermes_home / "config.yaml").write_text(
         yaml.safe_dump({"plugins": {"enabled": ["transform_result_canon"]}}),
         encoding="utf-8",
     )
+    plugins_mod._plugin_manager = plugins_mod.PluginManager()
 
     # Force a fresh plugin manager so the new config is picked up.
     plugins_mod._plugin_manager = plugins_mod.PluginManager()

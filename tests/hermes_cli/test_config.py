@@ -503,7 +503,6 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["api_mode"] == "codex_responses"
 
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
-        """URL field precedence is base_url > url > api (PR #9332)."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(

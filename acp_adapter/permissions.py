@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Callable
 
 from acp.schema import (
     AllowedOutcome,
@@ -74,7 +74,6 @@ def make_approval_callback(
                 if opt.option_id == option_id:
                     return _KIND_TO_HERMES.get(opt.kind, "deny")
             return "once"  # fallback for unknown option_id
-        else:
-            return "deny"
+        return "deny"
 
     return _callback

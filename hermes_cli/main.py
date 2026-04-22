@@ -98,6 +98,35 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    # Skip when imported under pytest / sphinx / IDE inspectors. Otherwise
+    # pytest's `-p plugin` flag gets misread as a profile name and aborts.
+    _under_test = (
+        "pytest" in sys.modules
+        or "PYTEST_CURRENT_TEST" in os.environ
+        or "_pytest.config" in sys.modules
+    )
+    _entry = os.path.basename(sys.argv[0]) if sys.argv else ""
+    _is_hermes_cli = _entry == "hermes" or _entry.startswith("hermes-")
+
+    if _under_test or not _is_hermes_cli:
+        # Honor active_profile sticky default but never parse argv flags.
+        try:
+            from hermes_constants import get_default_hermes_root
+
+            active_path = get_default_hermes_root() / "active_profile"
+            if active_path.exists():
+                name = active_path.read_text().strip()
+                if name and name != "default":
+                    try:
+                        from hermes_cli.profiles import resolve_profile_env
+
+                        os.environ["HERMES_HOME"] = resolve_profile_env(name)
+                    except Exception:
+                        pass
+        except (UnicodeDecodeError, OSError, ImportError):
+            pass
+        return
+
     argv = sys.argv[1:]
     profile_name = None
     consume = 0

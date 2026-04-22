@@ -268,8 +268,13 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     # Encode to base64
     encoded = base64.b64encode(data).decode("ascii")
     
-    # Determine MIME type
-    mime = mime_type or _determine_mime_type(image_path)
+    # Determine MIME type — prefer magic-byte detection over extension
+    if mime_type:
+        mime = mime_type
+    else:
+        mime = _detect_image_mime_type(image_path)
+        if not mime:
+            mime = _determine_mime_type(image_path)
     
     # Create data URL
     data_url = f"data:{mime};base64,{encoded}"

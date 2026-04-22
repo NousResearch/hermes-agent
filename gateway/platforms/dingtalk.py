@@ -33,20 +33,51 @@ import os
 import re
 import traceback
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from datetime import UTC, datetime
+from typing import Any
 
 try:
     import dingtalk_stream
     from dingtalk_stream import ChatbotMessage
-    from dingtalk_stream.frames import CallbackMessage, AckMessage
+    from dingtalk_stream.frames import AckMessage, CallbackMessage
 
     DINGTALK_STREAM_AVAILABLE = True
 except ImportError:
     DINGTALK_STREAM_AVAILABLE = False
     dingtalk_stream = None  # type: ignore[assignment]
-    ChatbotMessage = None  # type: ignore[assignment]
     CallbackMessage = None  # type: ignore[assignment]
+
+    class ChatbotMessage:  # type: ignore[no-redef]
+        """Lightweight stub when dingtalk-stream is not installed."""
+
+        def __init__(self) -> None:
+            self.message_id: str = ""
+            self.conversation_id: str = ""
+            self.conversation_type: str = "1"
+            self.sender_id: str = ""
+            self.sender_nick: str = ""
+            self.sender_staff_id: str = ""
+            self.session_webhook: str = ""
+            self.session_webhook_expired_time: int = 0
+            self.is_in_at_list: bool = False
+            self.text: Any = None
+            self.msgtype: str = "text"
+
+        @classmethod
+        def from_dict(cls, data: dict) -> "ChatbotMessage":
+            obj = cls()
+            for key, value in data.items():
+                # Convert camelCase keys to snake_case attributes
+                snake = "".join(
+                    f"_{c.lower()}" if c.isupper() else c for c in key
+                ).lstrip("_")
+                setattr(obj, snake, value)
+            # Also keep original keys for direct attribute access
+            for key, value in data.items():
+                if not hasattr(obj, key):
+                    setattr(obj, key, value)
+            return obj
+
     AckMessage = type(
         "AckMessage",
         (),
@@ -68,10 +99,14 @@ except ImportError:
 try:
     from alibabacloud_dingtalk.card_1_0 import (
         client as dingtalk_card_client,
+    )
+    from alibabacloud_dingtalk.card_1_0 import (
         models as dingtalk_card_models,
     )
     from alibabacloud_dingtalk.robot_1_0 import (
         client as dingtalk_robot_client,
+    )
+    from alibabacloud_dingtalk.robot_1_0 import (
         models as dingtalk_robot_models,
     )
     from alibabacloud_tea_openapi import models as open_api_models
@@ -88,20 +123,20 @@ except ImportError:
     tea_util_models = None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
 )
+from gateway.platforms.helpers import MessageDeduplicator
 
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
-_DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
+_DINGTALK_WEBHOOK_RE = re.compile(r"^https://(?:api|oapi)\.dingtalk\.com/")
 
 # DingTalk message type → runtime content type
 DINGTALK_TYPE_MAPPING = {
@@ -169,31 +204,31 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Mention state is the structured ``is_in_at_list`` attribute from the
         # dingtalk-stream SDK (set from the callback's ``isInAtList`` flag),
         # not text parsing.
-        self._mention_patterns: List[re.Pattern] = self._compile_mention_patterns()
-        self._allowed_users: Set[str] = self._load_allowed_users()
+        self._mention_patterns: list[re.Pattern] = self._compile_mention_patterns()
+        self._allowed_users: set[str] = self._load_allowed_users()
 
         self._stream_client: Any = None
-        self._stream_task: Optional[asyncio.Task] = None
-        self._http_client: Optional["httpx.AsyncClient"] = None
-        self._card_sdk: Optional[Any] = None
-        self._robot_sdk: Optional[Any] = None
+        self._stream_task: asyncio.Task | None = None
+        self._http_client: httpx.AsyncClient | None = None
+        self._card_sdk: Any | None = None
+        self._robot_sdk: Any | None = None
         self._robot_code: str = extra.get("robot_code") or self._client_id
 
         # Message deduplication
         self._dedup = MessageDeduplicator(max_size=1000)
         # Map chat_id -> (session_webhook, expired_time_ms) for reply routing
-        self._session_webhooks: Dict[str, tuple[str, int]] = {}
+        self._session_webhooks: dict[str, tuple[str, int]] = {}
         # Map chat_id -> last inbound ChatbotMessage. Keyed by chat_id instead
         # of a single class attribute to avoid cross-message clobbering when
         # multiple conversations run concurrently.
-        self._message_contexts: Dict[str, Any] = {}
-        self._card_template_id: Optional[str] = extra.get("card_template_id")
+        self._message_contexts: dict[str, Any] = {}
+        self._card_template_id: str | None = extra.get("card_template_id")
 
         # Chats for which we've already fired the Done reaction — prevents
         # double-firing across segment boundaries or parallel flows
         # (tool-progress + stream-consumer both finalizing their cards).
         # Reset each inbound message.
-        self._done_emoji_fired: Set[str] = set()
+        self._done_emoji_fired: set[str] = set()
         # Cards in streaming state per chat: chat_id -> { out_track_id -> last_content }.
         # Every `send()` creates+finalizes a card (closed state).  A subsequent
         # `edit_message(finalize=False)` re-opens the card (DingTalk's API
@@ -201,10 +236,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         # streaming).  We track those reopened cards so the next `send()` can
         # auto-close them as siblings — otherwise tool-progress cards get
         # stuck in streaming state forever.
-        self._streaming_cards: Dict[str, Dict[str, str]] = {}
+        self._streaming_cards: dict[str, dict[str, str]] = {}
         # Track fire-and-forget emoji/reaction coroutines so Python's GC
         # doesn't drop them mid-flight, and we can cancel them on disconnect.
-        self._bg_tasks: Set[asyncio.Task] = set()
+        self._bg_tasks: set[asyncio.Task] = set()
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -300,12 +335,18 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Close the active websocket first so the stream task sees the
         # disconnection and exits cleanly, rather than getting stuck
         # awaiting frames that will never arrive.
-        websocket = getattr(self._stream_client, "websocket", None) if self._stream_client else None
+        websocket = (
+            getattr(self._stream_client, "websocket", None)
+            if self._stream_client
+            else None
+        )
         if websocket is not None:
             try:
                 await websocket.close()
             except Exception as e:
-                logger.debug("[%s] websocket close during disconnect failed: %s", self.name, e)
+                logger.debug(
+                    "[%s] websocket close during disconnect failed: %s", self.name, e
+                )
 
         if self._stream_task:
             # Try graceful close first if SDK supports it. The SDK's close()
@@ -319,8 +360,10 @@ class DingTalkAdapter(BasePlatformAdapter):
             self._stream_task.cancel()
             try:
                 await asyncio.wait_for(self._stream_task, timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                logger.debug("[%s] stream task did not exit cleanly during disconnect", self.name)
+            except (TimeoutError, asyncio.CancelledError):
+                logger.debug(
+                    "[%s] stream task did not exit cleanly during disconnect", self.name
+                )
             self._stream_task = None
 
         # Cancel any in-flight background tasks (emoji reactions, etc.)
@@ -351,9 +394,14 @@ class DingTalkAdapter(BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() in ("true", "1", "yes", "on")
             return bool(configured)
-        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
 
-    def _dingtalk_free_response_chats(self) -> Set[str]:
+    def _dingtalk_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
             raw = os.getenv("DINGTALK_FREE_RESPONSE_CHATS", "")
@@ -361,9 +409,11 @@ class DingTalkAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
-    def _compile_mention_patterns(self) -> List[re.Pattern]:
+    def _compile_mention_patterns(self) -> list[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
-        patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        patterns = (
+            self.config.extra.get("mention_patterns") if self.config.extra else None
+        )
         if patterns is None:
             raw = os.getenv("DINGTALK_MENTION_PATTERNS", "").strip()
             if raw:
@@ -372,7 +422,9 @@ class DingTalkAdapter(BasePlatformAdapter):
                 except Exception:
                     loaded = [part.strip() for part in raw.splitlines() if part.strip()]
                     if not loaded:
-                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
+                        loaded = [
+                            part.strip() for part in raw.split(",") if part.strip()
+                        ]
                 patterns = loaded
 
         if patterns is None:
@@ -387,19 +439,26 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
             return []
 
-        compiled: List[re.Pattern] = []
+        compiled: list[re.Pattern] = []
         for pattern in patterns:
             if not isinstance(pattern, str) or not pattern.strip():
                 continue
             try:
                 compiled.append(re.compile(pattern, re.IGNORECASE))
             except re.error as exc:
-                logger.warning("[%s] Invalid DingTalk mention pattern %r: %s", self.name, pattern, exc)
+                logger.warning(
+                    "[%s] Invalid DingTalk mention pattern %r: %s",
+                    self.name,
+                    pattern,
+                    exc,
+                )
         if compiled:
-            logger.info("[%s] Loaded %d DingTalk mention pattern(s)", self.name, len(compiled))
+            logger.info(
+                "[%s] Loaded %d DingTalk mention pattern(s)", self.name, len(compiled)
+            )
         return compiled
 
-    def _load_allowed_users(self) -> Set[str]:
+    def _load_allowed_users(self) -> set[str]:
         """Load allowed-users list from config.extra or env var.
 
         IDs are matched case-insensitively against the sender's ``staff_id`` and
@@ -434,7 +493,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
         return any(pattern.search(text) for pattern in self._mention_patterns)
 
-    def _should_process_message(self, message: "ChatbotMessage", text: str, is_group: bool, chat_id: str) -> bool:
+    def _should_process_message(
+        self, message: "ChatbotMessage", text: str, is_group: bool, chat_id: str
+    ) -> bool:
         """Apply DingTalk group trigger rules.
 
         DMs remain unrestricted (subject to ``allowed_users`` which is enforced
@@ -480,16 +541,22 @@ class DingTalkAdapter(BasePlatformAdapter):
         for out_track_id, last_content in list(cards.items()):
             try:
                 await self._stream_card_content(
-                    out_track_id, token, last_content, finalize=True,
+                    out_track_id,
+                    token,
+                    last_content,
+                    finalize=True,
                 )
                 logger.debug(
                     "[%s] AI Card sibling closed: %s",
-                    self.name, out_track_id,
+                    self.name,
+                    out_track_id,
                 )
             except Exception as e:
                 logger.debug(
                     "[%s] Sibling close failed for %s: %s",
-                    self.name, out_track_id, e,
+                    self.name,
+                    out_track_id,
+                    e,
                 )
 
     def _fire_done_reaction(self, chat_id: str) -> None:
@@ -511,10 +578,16 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         async def _swap() -> None:
             await self._send_emotion(
-                msg_id, conversation_id, "🤔Thinking", recall=True,
+                msg_id,
+                conversation_id,
+                "🤔Thinking",
+                recall=True,
             )
             await self._send_emotion(
-                msg_id, conversation_id, "🥳Done", recall=False,
+                msg_id,
+                conversation_id,
+                "🥳Done",
+                recall=False,
             )
 
         self._spawn_bg(_swap())
@@ -546,7 +619,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not self._is_user_allowed(sender_id, sender_staff_id):
             logger.debug(
                 "[%s] Dropping message from non-allowlisted user staff_id=%s sender_id=%s",
-                self.name, sender_staff_id, sender_id,
+                self.name,
+                sender_staff_id,
+                sender_id,
             )
             return
 
@@ -558,7 +633,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not self._should_process_message(message, _early_text, is_group, chat_id):
             logger.debug(
                 "[%s] Dropping group message that failed mention gate message_id=%s chat_id=%s",
-                self.name, msg_id, chat_id,
+                self.name,
+                msg_id,
+                chat_id,
             )
             return
 
@@ -612,12 +689,12 @@ class DingTalkAdapter(BasePlatformAdapter):
         create_at = getattr(message, "create_at", None)
         try:
             timestamp = (
-                datetime.fromtimestamp(int(create_at) / 1000, tz=timezone.utc)
+                datetime.fromtimestamp(int(create_at) / 1000, tz=UTC)
                 if create_at
-                else datetime.now(tz=timezone.utc)
+                else datetime.now(tz=UTC)
             )
         except (ValueError, OSError, TypeError):
-            timestamp = datetime.now(tz=timezone.utc)
+            timestamp = datetime.now(tz=UTC)
 
         event = MessageEvent(
             text=text,
@@ -752,8 +829,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         """Send a markdown reply via DingTalk session webhook."""
         metadata = metadata or {}
@@ -771,7 +848,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             if not webhook_info:
                 logger.warning(
                     "[%s] No valid session_webhook for chat_id=%s",
-                    self.name, chat_id,
+                    self.name,
+                    chat_id,
                 )
                 return SendResult(
                     success=False,
@@ -803,7 +881,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             await self._close_streaming_siblings(chat_id)
 
             result = await self._create_and_stream_card(
-                chat_id, current_message, content,
+                chat_id,
+                current_message,
+                content,
                 finalize=is_final_reply,
             )
             if result and result.success:
@@ -815,12 +895,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                     # first chunk): keep the card open and track it so the
                     # next send() auto-closes it as a sibling, or
                     # edit_message(finalize=True) closes it explicitly.
-                    self._streaming_cards.setdefault(chat_id, {})[
-                        result.message_id
-                    ] = content
+                    self._streaming_cards.setdefault(chat_id, {})[result.message_id] = (
+                        content
+                    )
                 return result
 
-            logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
+            logger.warning(
+                "[%s] AI Card send failed, falling back to webhook", self.name
+            )
 
         logger.debug("[%s] Sending via webhook", self.name)
         # Normalize markdown for DingTalk
@@ -860,14 +942,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         """DingTalk does not support typing indicators."""
         pass
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
         return {
             "name": chat_id,
             "type": "group" if "group" in chat_id.lower() else "dm",
         }
 
-    def _get_valid_webhook(self, chat_id: str) -> Optional[tuple[str, int]]:
+    def _get_valid_webhook(self, chat_id: str) -> tuple[str, int] | None:
         """Get a valid (non-expired) session webhook for the given chat_id."""
         info = self._session_webhooks.get(chat_id)
         if not info:
@@ -875,7 +957,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         webhook, expired_time_ms = info
         # Check expiry with 5-minute safety margin
         if expired_time_ms and expired_time_ms > 0:
-            now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+            now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
             safety_margin_ms = 5 * 60 * 1000
             if now_ms + safety_margin_ms >= expired_time_ms:
                 # Expired, remove from cache
@@ -890,7 +972,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = True,
-    ) -> Optional[SendResult]:
+    ) -> SendResult | None:
         """Create an AI Card, deliver it to the conversation, and stream initial content.
 
         Always called with ``finalize=True`` from ``send()`` (closed state).
@@ -985,7 +1067,10 @@ class DingTalkAdapter(BasePlatformAdapter):
             # card immediately (one-shot); finalize=False keeps it open
             # for streaming edit_message updates by out_track_id.
             await self._stream_card_content(
-                out_track_id, token, content, finalize=finalize,
+                out_track_id,
+                token,
+                content,
+                finalize=finalize,
             )
 
             logger.info(
@@ -999,7 +1084,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning(
                 "[%s] AI Card create failed: %s\n%s",
-                self.name, e, traceback.format_exc(),
+                self.name,
+                e,
+                traceback.format_exc(),
             )
             return None
 
@@ -1026,7 +1113,10 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         try:
             await self._stream_card_content(
-                message_id, token, content, finalize=finalize,
+                message_id,
+                token,
+                content,
+                finalize=finalize,
             )
             if finalize:
                 # Remove from streaming-cards tracking and fire Done.  This
@@ -1037,7 +1127,8 @@ class DingTalkAdapter(BasePlatformAdapter):
                     self._streaming_cards.pop(chat_id, None)
                 logger.debug(
                     "[%s] AI Card finalized (edit): %s",
-                    self.name, message_id,
+                    self.name,
+                    message_id,
                 )
                 self._fire_done_reaction(chat_id)
             else:
@@ -1077,7 +1168,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             stream_request, stream_headers, runtime
         )
 
-    async def _get_access_token(self) -> Optional[str]:
+    async def _get_access_token(self) -> str | None:
         """Get access token using SDK's cached token."""
         if not self._stream_client:
             return None
@@ -1153,7 +1244,10 @@ class DingTalkAdapter(BasePlatformAdapter):
                 )
             logger.info(
                 "[%s] _send_emotion: %s %s on msg=%s",
-                self.name, action, emoji_name, open_msg_id[:24],
+                self.name,
+                action,
+                emoji_name,
+                open_msg_id[:24],
             )
         except Exception:
             logger.debug(
@@ -1218,8 +1312,10 @@ class DingTalkAdapter(BasePlatformAdapter):
                 x_acs_dingtalk_access_token=token,
             )
             runtime = tea_util_models.RuntimeOptions()
-            response = await self._robot_sdk.robot_message_file_download_with_options_async(
-                request, headers, runtime
+            response = (
+                await self._robot_sdk.robot_message_file_download_with_options_async(
+                    request, headers, runtime
+                )
             )
             body = response.body if response else None
             if body:
@@ -1278,7 +1374,9 @@ class _IncomingHandler(
     CallbackMessage.data dict into a ChatbotMessage before forwarding.
     """
 
-    def __init__(self, adapter: DingTalkAdapter, loop: Optional[asyncio.AbstractEventLoop] = None):
+    def __init__(
+        self, adapter: DingTalkAdapter, loop: asyncio.AbstractEventLoop | None = None
+    ):
         if DINGTALK_STREAM_AVAILABLE:
             super().__init__()
         self._adapter = adapter
@@ -1309,10 +1407,10 @@ class _IncomingHandler(
             # SDK versions).
             if not getattr(chatbot_msg, "session_webhook", None):
                 webhook = (
-                    data.get("sessionWebhook")
-                    or data.get("session_webhook")
-                    or ""
-                ) if isinstance(data, dict) else ""
+                    (data.get("sessionWebhook") or data.get("session_webhook") or "")
+                    if isinstance(data, dict)
+                    else ""
+                )
                 if webhook:
                     chatbot_msg.session_webhook = webhook
 
@@ -1321,9 +1419,7 @@ class _IncomingHandler(
             # ``isInAtList`` in the raw payload; the adapter's mention check
             # reads the ChatbotMessage attribute ``is_in_at_list``.
             if not getattr(chatbot_msg, "is_in_at_list", False):
-                raw_flag = (
-                    data.get("isInAtList") if isinstance(data, dict) else False
-                )
+                raw_flag = data.get("isInAtList") if isinstance(data, dict) else False
                 if raw_flag:
                     chatbot_msg.is_in_at_list = True
 
@@ -1334,7 +1430,10 @@ class _IncomingHandler(
             if msg_id and conversation_id:
                 self._adapter._spawn_bg(
                     self._adapter._send_emotion(
-                        msg_id, conversation_id, "🤔Thinking", recall=False,
+                        msg_id,
+                        conversation_id,
+                        "🤔Thinking",
+                        recall=False,
                     )
                 )
 

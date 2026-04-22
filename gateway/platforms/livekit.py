@@ -146,6 +146,17 @@ class LiveKitAdapter(BasePlatformAdapter):
         self._presence_task: Optional[asyncio.Task] = None
         self._graceful_leave: bool = False  # set while intentionally leaving
 
+        # Per-participant audio buffers: identity -> (pcm bytearray, last_audio_time)
+        self._audio_buffers: Dict[str, bytearray] = {}
+        self._last_audio_time: Dict[str, float] = {}
+        self._audio_streams: Dict[str, asyncio.Task] = {}
+
+        # Pause audio capture during TTS playback
+        self._paused = False
+
+        # Per-participant speech state (for listening-start/stop events)
+        self._speaking_participants: set[str] = set()
+
         self._presence_poll_interval: float = self._resolve_presence_poll_interval()
 
     def _resolve_presence_poll_interval(self) -> float:
@@ -168,17 +179,6 @@ class LiveKitAdapter(BasePlatformAdapter):
         interval = PRESENCE_POLL_INTERVAL_CLOUD if is_cloud else PRESENCE_POLL_INTERVAL_LOCAL
         logger.info("[%s] presence poll interval=%.1fs (%s default)", self.name, interval, "cloud" if is_cloud else "local")
         return interval
-
-        # Per-participant audio buffers: identity -> (pcm bytearray, last_audio_time)
-        self._audio_buffers: Dict[str, bytearray] = {}
-        self._last_audio_time: Dict[str, float] = {}
-        self._audio_streams: Dict[str, asyncio.Task] = {}
-
-        # Pause audio capture during TTS playback
-        self._paused = False
-
-        # Per-participant speech state (for listening-start/stop events)
-        self._speaking_participants: set[str] = set()
 
     @staticmethod
     def _find_default_avatar() -> str:

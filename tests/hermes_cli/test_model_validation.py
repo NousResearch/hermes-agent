@@ -542,6 +542,108 @@ class TestValidateCodexAutoCorrection:
         assert "not found" in result["message"]
 
 
+# -- validate — Gemini native / OAuth (no /models probe) -----------------------
+
+class TestValidateGeminiCuratedCatalog:
+    """Regression test for #13186: /model switches to Gemini native / OAuth
+    Code Assist must validate against Hermes' curated catalog, not probe a
+    non-existent OpenAI-compatible /models endpoint.
+
+    Background: commit 3dea497b migrated the ``gemini`` provider off the
+    OpenAI translation layer onto the native AI Studio API.  The CLI's
+    ``validate_requested_model`` kept probing ``/v1/models`` for existence,
+    which returns HTTP 404 on both AI Studio (``generativelanguage.googleapis.com``)
+    and OAuth Code Assist (``cloudcode-pa.googleapis.com``), so every
+    ``/model gemini-3.1-pro-preview`` style switch was rejected with
+    ``accepted=False`` and ``"Could not reach the Google AI Studio API to
+    validate..."``.
+    """
+
+    GEMINI_CATALOG = [
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+    ]
+
+    GEMINI_CLI_CATALOG = [
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+    ]
+
+    def test_gemini_native_exact_match_accepted(self):
+        """Exact match against the curated Gemini catalog is accepted without probing."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=self.GEMINI_CATALOG), \
+             patch("hermes_cli.models.fetch_api_models") as mock_fetch:
+            result = validate_requested_model("gemini-3.1-pro-preview", "gemini")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["persist"] is True
+        assert result["message"] is None
+        # Critical: must NOT probe the AI Studio endpoint — that is the
+        # bug that caused #13186.
+        mock_fetch.assert_not_called()
+
+    def test_google_gemini_cli_oauth_exact_match_accepted(self):
+        """OAuth Code Assist path (google-gemini-cli) validates against its own catalog."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=self.GEMINI_CLI_CATALOG), \
+             patch("hermes_cli.models.fetch_api_models") as mock_fetch:
+            result = validate_requested_model("gemini-3-flash-preview", "google-gemini-cli")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        mock_fetch.assert_not_called()
+
+    def test_gemini_provider_alias_resolves(self):
+        """``google`` / ``google-ai-studio`` aliases route to the gemini catalog."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=self.GEMINI_CATALOG):
+            for alias in ("google", "google-ai-studio", "google-gemini"):
+                result = validate_requested_model("gemini-3.1-pro-preview", alias)
+                assert result["accepted"] is True, f"alias {alias!r} should resolve"
+                assert result["recognized"] is True
+
+    def test_gemini_case_insensitive_match(self):
+        """Pasted names like ``Gemini-3.1-Pro-Preview`` are accepted."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=self.GEMINI_CATALOG):
+            result = validate_requested_model("Gemini-3.1-Pro-Preview", "gemini")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    def test_gemini_typo_auto_corrects(self):
+        """``gemini-3.1-pro-previw`` (missing ``e``) auto-corrects."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=self.GEMINI_CATALOG):
+            result = validate_requested_model("gemini-3.1-pro-previw", "gemini")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["corrected_model"] == "gemini-3.1-pro-preview"
+        assert "Auto-corrected" in result["message"]
+
+    def test_gemini_unknown_model_accepted_with_warning(self):
+        """Unknown Gemini names (preview releases not yet in the static catalog)
+        are accepted with a warning — rejecting them would leave users stuck
+        when Google ships a new preview model."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=self.GEMINI_CATALOG):
+            result = validate_requested_model("gemini-5-ultra-preview", "gemini")
+        assert result["accepted"] is True
+        assert result["recognized"] is False
+        assert result["persist"] is True
+        assert "not found" in result["message"]
+        # Must mention the probe limitation so the user understands why.
+        assert "/models" in result["message"]
+
+    def test_gemini_does_not_probe_openai_models_endpoint(self):
+        """Regression guard: validate_requested_model MUST NOT call
+        ``fetch_api_models`` for any Gemini provider — that's what caused
+        #13186 in the first place."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=self.GEMINI_CATALOG), \
+             patch("hermes_cli.models.fetch_api_models") as mock_fetch:
+            # Try both: a known model and an unknown one.
+            validate_requested_model("gemini-3-flash-preview", "gemini")
+            validate_requested_model("gemini-99-unreleased", "gemini")
+            validate_requested_model("gemini-3.1-pro-preview", "google-gemini-cli")
+        assert mock_fetch.call_count == 0
+
+
 # -- probe_api_models — Cloudflare UA mitigation --------------------------------
 
 class TestProbeApiModelsUserAgent:

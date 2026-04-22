@@ -2314,6 +2314,69 @@ def validate_requested_model(
                 ),
             }
 
+    # Gemini native AI Studio / Google Gemini CLI (OAuth Code Assist) do not
+    # expose an OpenAI-compatible ``/models`` endpoint: the native AI Studio
+    # REST surface uses ``generateContent`` / ``streamGenerateContent``, and
+    # the OAuth path uses ``cloudcode-pa.googleapis.com``.  Probing either
+    # URL returns HTTP 404, which historically caused ``validate_requested_model``
+    # to reject every ``/model`` switch for Gemini providers (regression
+    # introduced when gemini was migrated off the OpenAI translation layer —
+    # commit 3dea497b).  Validate against the curated catalog instead, mirroring
+    # the OpenAI Codex / MiniMax path.
+    if normalized in ("gemini", "google-gemini-cli"):
+        try:
+            gemini_models = provider_model_ids(normalized)
+        except Exception:
+            gemini_models = []
+        if gemini_models:
+            # Case-insensitive lookup: Gemini model names are already lowercase,
+            # but users sometimes paste "Gemini-3.1-Pro-Preview".
+            catalog_lower = {m.lower(): m for m in gemini_models}
+            if requested_for_lookup.lower() in catalog_lower:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            catalog_lower_list = list(catalog_lower.keys())
+            auto = get_close_matches(
+                requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9
+            )
+            if auto:
+                corrected = catalog_lower[auto[0]]
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": corrected,
+                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
+                }
+            suggestions = get_close_matches(
+                requested_for_lookup.lower(), catalog_lower_list, n=3, cutoff=0.5
+            )
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = (
+                    "\n  Similar models: "
+                    + ", ".join(f"`{catalog_lower[s]}`" for s in suggestions)
+                )
+            # Accept unknown Gemini names (preview releases land in the AI
+            # Studio catalog ahead of Hermes' static list) but flag them so
+            # typos are not silently persisted.
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in Hermes' Gemini catalog."
+                    f"{suggestion_text}"
+                    "\n  Google AI Studio and Gemini OAuth do not expose an OpenAI-compatible "
+                    "`/models` endpoint, so Hermes cannot probe for the live model list."
+                    "\n  The model may still work if it exists upstream."
+                ),
+            }
+
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 

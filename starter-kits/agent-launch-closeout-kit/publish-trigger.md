@@ -68,3 +68,18 @@ Update these from the recorded execution result:
 
 ## Verification
 After using this card, launch closeout is not done until the execution log no longer says pending publish and the publish fields are filled.
+
+## Demo capture — auth-independent parallel move
+If X auth is the live blocker, demo capture can proceed without waiting.
+
+Precondition check:
+- Run `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-preflight.sh`
+- Confirm `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md` shows `Status: ready`
+- Confirm the **1.74 minutes** proof metric and the path-injection requirement are both present
+
+Then record immediately using:
+- `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
+
+Record the output asset path in `starter-kits/agent-launch-closeout-kit/launch-execution-log.md` under `Demo walkthrough` → `Recording path`.
+
+Do not wait for publish to unblock demo capture. The proof surface is already verified and preflight already passes. Record the walkthrough while auth is being restored so the attachment choice is ready the moment publish unblocks.

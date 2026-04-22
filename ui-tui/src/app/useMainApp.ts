@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
-import { fmtCwdBranch } from '../domain/paths.js'
+import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -315,10 +315,14 @@ export function useMainApp(gw: GatewayClient) {
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
   // ── Terminal tab title ─────────────────────────────────────────────
-  // Show model name + status so users can identify the Hermes tab.
+  // model + cwd + 3-state marker so multi-instance users can spot which tab
+  // is working, which is idle, and which is waiting on them.
+  // `⚠` blocked on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   const shortModel = ui.info?.model?.replace(/^.*\//, '') ?? ''
-  const titleStatus = ui.busy ? '⏳' : '✓'
-  const terminalTitle = shortModel ? `${titleStatus} ${shortModel} — Hermes` : 'Hermes'
+  const blockedOnInput = !!(overlay.approval || overlay.sudo || overlay.secret || overlay.clarify)
+  const titleStatus = blockedOnInput ? '⚠' : ui.busy ? '⏳' : '✓'
+  const cwdTag = ui.info?.cwd ? ` · ${shortCwd(ui.info.cwd, 24)}` : ''
+  const terminalTitle = shortModel ? `${titleStatus} ${shortModel}${cwdTag}` : 'Hermes'
   useTerminalTitle(terminalTitle)
 
   useEffect(() => {

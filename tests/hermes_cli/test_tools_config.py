@@ -444,6 +444,13 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
 class TestPlatformToolsetConsistency:
     """Every platform in tools_config.PLATFORMS must have a matching toolset."""
 
+    def test_sms_platform_is_registered(self):
+        """SMS gateway sessions need a platform registry entry to resolve toolsets."""
+        from hermes_cli.tools_config import PLATFORMS
+
+        assert "sms" in PLATFORMS
+        assert PLATFORMS["sms"]["default_toolset"] == "hermes-sms"
+
     def test_all_platforms_have_toolset_definitions(self):
         """Each platform's default_toolset must exist in TOOLSETS."""
         from hermes_cli.tools_config import PLATFORMS

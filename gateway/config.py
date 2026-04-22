@@ -769,11 +769,40 @@ def load_gateway_config() -> GatewayConfig:
 
     # Override with environment variables
     _apply_env_overrides(config)
+
+    _maybe_wechat_only_gateway(config)
     
     # --- Validate loaded values ---
     _validate_gateway_config(config)
 
     return config
+
+
+def _maybe_wechat_only_gateway(config: GatewayConfig) -> None:
+    """When ``HERMES_GATEWAY_WECHAT_ONLY`` is truthy, drop every platform except Weixin.
+
+    Runs after ``_apply_env_overrides`` so ``WEIXIN_*`` env vars have already
+    been merged.  Use this for a **Weixin-only** full Hermes gateway (same
+    ``gateway/run.py`` + ``AIAgent`` stack as multi-platform mode).
+    """
+    raw = os.getenv("HERMES_GATEWAY_WECHAT_ONLY", "").strip().lower()
+    if raw not in ("1", "true", "yes", "on"):
+        return
+    weixin_cfg = config.platforms.get(Platform.WEIXIN)
+    if not weixin_cfg or not weixin_cfg.enabled:
+        logger.warning(
+            "HERMES_GATEWAY_WECHAT_ONLY is set but Weixin is not enabled — "
+            "set WEIXIN_TOKEN, WEIXIN_ACCOUNT_ID, and enable weixin in config."
+        )
+        config.platforms = {}
+        return
+    dropped = [p.value for p in config.platforms if p != Platform.WEIXIN]
+    config.platforms = {Platform.WEIXIN: weixin_cfg}
+    if dropped:
+        logger.info(
+            "HERMES_GATEWAY_WECHAT_ONLY: using Weixin only (disabled: %s)",
+            ", ".join(sorted(dropped)),
+        )
 
 
 def _validate_gateway_config(config: "GatewayConfig") -> None:

@@ -60,6 +60,24 @@ The handler receives normalized Hermes `MessageEvent`; return text to send back 
 
 You are responsible for complying with Tencent / WeChat terms of service and applicable law when using iLink or automation.
 
+## Full Hermes Agent on WeChat only (recommended for “whole agent”)
+
+For the **complete** gateway stack — `AIAgent`, SQLite sessions, tools/skills,
+slash commands, memory — use the **main Hermes Agent** repo and run::
+
+```bash
+export HERMES_GATEWAY_WECHAT_ONLY=1
+export WEIXIN_TOKEN=...
+export WEIXIN_ACCOUNT_ID=...
+hermes gateway
+```
+
+Setting `HERMES_GATEWAY_WECHAT_ONLY` removes every **other** messaging platform from
+gateway config after env merges; only Weixin stays enabled.
+
+This folder (`standalone_wechat_hermes`) remains a **thin SDK / echo demo** without
+the full runner.
+
 ## Source
 
 Derived from [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`gateway/platforms/weixin.py` and dependencies). Hermes upstream remains the authoritative source for bugfixes.

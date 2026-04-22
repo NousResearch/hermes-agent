@@ -2528,8 +2528,8 @@ def _(rid, params: dict) -> dict:
 
     if key == "statusbar":
         raw = str(value or "").strip().lower()
-        cfg0 = _load_cfg()
-        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        display = _load_cfg().get("display")
+        d0 = display if isinstance(display, dict) else {}
         current = _coerce_statusbar(d0.get("tui_statusbar", "top"))
 
         if raw in ("", "toggle"):

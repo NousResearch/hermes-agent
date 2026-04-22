@@ -1,4 +1,4 @@
-import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
+import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -314,16 +314,15 @@ export function useMainApp(gw: GatewayClient) {
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
-  // ── Terminal tab title ─────────────────────────────────────────────
-  // model + cwd + 3-state marker so multi-instance users can spot which tab
-  // is working, which is idle, and which is waiting on them.
-  // `⚠` blocked on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
-  const shortModel = ui.info?.model?.replace(/^.*\//, '') ?? ''
-  const blockedOnInput = !!(overlay.approval || overlay.sudo || overlay.secret || overlay.clarify)
-  const titleStatus = blockedOnInput ? '⚠' : ui.busy ? '⏳' : '✓'
-  const cwdTag = ui.info?.cwd ? ` · ${shortCwd(ui.info.cwd, 24)}` : ''
-  const terminalTitle = shortModel ? `${titleStatus} ${shortModel}${cwdTag}` : 'Hermes'
-  useTerminalTitle(terminalTitle)
+  // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
+  const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
+  const marker =
+    overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
+  const tabCwd = ui.info?.cwd
+
+  useTerminalTitle(
+    model ? `${marker} ${model}${tabCwd ? ` · ${shortCwd(tabCwd, 24)}` : ''}` : 'Hermes'
+  )
 
   useEffect(() => {
     if (!ui.sid || !stdout) {

@@ -37,6 +37,7 @@ def _brave_search_api_key() -> str:
     """Return the configured Brave Search key for search-style endpoints."""
     return (
         os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+        or os.getenv("BRAVE_FREE_API_KEY", "").strip()
         or os.getenv("BRAVE_API_KEY", "").strip()
     )
 
@@ -80,7 +81,7 @@ def _brave_search_headers() -> Dict[str, str]:
     return _brave_headers(
         _brave_search_api_key(),
         missing_message=(
-            "BRAVE_SEARCH_API_KEY environment variable not set. "
+            "BRAVE_SEARCH_API_KEY or BRAVE_FREE_API_KEY environment variable not set. "
             "Get your Brave Search API key at https://api-dashboard.search.brave.com"
         ),
     )
@@ -1052,7 +1053,7 @@ registry.register(
         units=args.get("units"),
     ),
     check_fn=check_brave_search_api_key,
-    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
     emoji="🔎",
     max_result_size_chars=100_000,
 )
@@ -1077,7 +1078,7 @@ registry.register(
         operators=args.get("operators"),
     ),
     check_fn=check_brave_search_api_key,
-    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
     emoji="📰",
     max_result_size_chars=100_000,
 )
@@ -1095,7 +1096,7 @@ registry.register(
         spellcheck=args.get("spellcheck"),
     ),
     check_fn=check_brave_search_api_key,
-    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
     emoji="🖼️",
     max_result_size_chars=100_000,
 )
@@ -1118,7 +1119,7 @@ registry.register(
         operators=args.get("operators"),
     ),
     check_fn=check_brave_search_api_key,
-    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
     emoji="🎬",
     max_result_size_chars=100_000,
 )
@@ -1134,7 +1135,7 @@ registry.register(
         units=args.get("units"),
     ),
     check_fn=check_brave_search_api_key,
-    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
     emoji="📍",
     max_result_size_chars=100_000,
 )
@@ -1145,7 +1146,7 @@ registry.register(
     schema=BRAVE_LOCAL_DESCRIPTIONS_SCHEMA,
     handler=lambda args, **kw: brave_local_descriptions(args.get("ids")),
     check_fn=check_brave_search_api_key,
-    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
     emoji="🗺️",
     max_result_size_chars=100_000,
 )
@@ -1162,7 +1163,7 @@ registry.register(
         rich=bool(args.get("rich", False)),
     ),
     check_fn=check_brave_autosuggest_api_key,
-    requires_env=["BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
     emoji="💡",
     max_result_size_chars=50_000,
 )
@@ -1182,7 +1183,7 @@ registry.register(
         enable_citations=args.get("enable_citations"),
     ),
     check_fn=check_brave_answers_api_key,
-    requires_env=["BRAVE_ANSWERS_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
+    requires_env=["BRAVE_ANSWERS_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_API_KEY"],
     emoji="🧠",
     max_result_size_chars=100_000,
 )

@@ -79,7 +79,8 @@ Hermes supports Brave as a split integration. Different Brave endpoint families 
 
 | Env var | Used by Hermes for | Brave plan families | Expected shape |
 |---------|--------------------|---------------------|----------------|
-| `BRAVE_SEARCH_API_KEY` | `web_search` with Brave backend, `brave_search`, `brave_news`, `brave_images`, `brave_videos`, `brave_local_pois`, `brave_local_descriptions` | `Free`, `Search` | Opaque Brave token string, typically starting with `BSA...` |
+| `BRAVE_SEARCH_API_KEY` | `web_search` with Brave backend, `brave_search`, `brave_news`, `brave_images`, `brave_videos`, `brave_local_pois`, `brave_local_descriptions` | `Search` | Opaque Brave token string, typically starting with `BSA...` |
+| `BRAVE_FREE_API_KEY` | `web_search` with Brave backend, `brave_search`, `brave_news`, `brave_images`, `brave_videos`, `brave_local_pois`, `brave_local_descriptions` | `Free` | Opaque Brave token string, typically starting with `BSA...` |
 | `BRAVE_ANSWERS_API_KEY` | `brave_answers` | `Free AI`, `Answers` | Opaque Brave token string, typically starting with `BSA...` |
 | `BRAVE_AUTOSUGGEST_API_KEY` | `brave_suggest` | `Free Autosuggest`, `Autosuggest` | Opaque Brave token string, typically starting with `BSA...` |
 | `BRAVE_API_KEY` | Legacy fallback only | Legacy / backward-compat only | Same opaque Brave token shape |
@@ -88,6 +89,7 @@ Hermes supports Brave as a split integration. Different Brave endpoint families 
 
 ```bash
 BRAVE_SEARCH_API_KEY=BSA...
+BRAVE_FREE_API_KEY=BSA...
 BRAVE_ANSWERS_API_KEY=BSA...
 BRAVE_AUTOSUGGEST_API_KEY=BSA...
 ```

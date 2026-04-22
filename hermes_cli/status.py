@@ -141,9 +141,13 @@ def show_status(args):
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
-    brave_value = get_env_value("BRAVE_SEARCH_API_KEY") or get_env_value("BRAVE_API_KEY")
+    brave_value = get_env_value("BRAVE_SEARCH_API_KEY") or get_env_value("BRAVE_FREE_API_KEY") or get_env_value("BRAVE_API_KEY")
     brave_display = redact_key(brave_value) if not show_all else brave_value
     print(f"  {'Brave Search':<12}  {check_mark(bool(brave_value))} {brave_display}")
+
+    brave_free_value = get_env_value("BRAVE_FREE_API_KEY") or brave_value
+    brave_free_display = redact_key(brave_free_value) if not show_all else brave_free_value
+    print(f"  {'Brave Free':<12}  {check_mark(bool(brave_free_value))} {brave_free_display}")
 
     brave_answers_value = get_env_value("BRAVE_ANSWERS_API_KEY") or brave_value
     brave_answers_display = redact_key(brave_answers_value) if not show_all else brave_answers_value

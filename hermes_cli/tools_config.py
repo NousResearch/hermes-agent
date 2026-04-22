@@ -251,6 +251,7 @@ TOOL_CATEGORIES = {
                 "web_backend": "brave",
                 "env_vars": [
                     {"key": "BRAVE_SEARCH_API_KEY", "prompt": "Brave Search API key", "url": "https://api-dashboard.search.brave.com/"},
+                    {"key": "BRAVE_FREE_API_KEY", "prompt": "Brave Free API key (optional alias)", "url": "https://api-dashboard.search.brave.com/"},
                     {"key": "BRAVE_ANSWERS_API_KEY", "prompt": "Brave Answers API key (optional)", "url": "https://api-dashboard.search.brave.com/"},
                     {"key": "BRAVE_AUTOSUGGEST_API_KEY", "prompt": "Brave Autosuggest API key (optional)", "url": "https://api-dashboard.search.brave.com/"},
                 ],

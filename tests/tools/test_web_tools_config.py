@@ -260,6 +260,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
         "BRAVE_SEARCH_API_KEY",
+        "BRAVE_FREE_API_KEY",
         "BRAVE_ANSWERS_API_KEY",
         "BRAVE_AUTOSUGGEST_API_KEY",
         "BRAVE_API_KEY",
@@ -340,6 +341,13 @@ class TestBackendSelection:
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Brave"}), \
              patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test"}):
+            assert _get_backend() == "brave"
+
+    def test_config_brave_accepts_free_key_alias(self):
+        """web.backend=brave works when only BRAVE_FREE_API_KEY is configured."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "brave"}), \
+             patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}):
             assert _get_backend() == "brave"
 
     def test_config_brave_without_search_key_falls_back_to_default_backend(self):
@@ -543,6 +551,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
         "BRAVE_SEARCH_API_KEY",
+        "BRAVE_FREE_API_KEY",
         "BRAVE_ANSWERS_API_KEY",
         "BRAVE_AUTOSUGGEST_API_KEY",
         "BRAVE_API_KEY",
@@ -591,6 +600,11 @@ class TestCheckWebApiKey:
 
     def test_brave_key_only(self):
         with patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "brave-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_brave_free_key_only(self):
+        with patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -650,6 +664,7 @@ def test_web_requires_env_includes_brave_keys():
 
     envs = _web_requires_env()
     assert "BRAVE_SEARCH_API_KEY" in envs
+    assert "BRAVE_FREE_API_KEY" in envs
     assert "BRAVE_API_KEY" in envs
 
 

@@ -395,6 +395,7 @@ def test_brave_provider_lists_split_key_layout():
     env_keys = [entry["key"] for entry in brave_provider["env_vars"]]
     assert env_keys == [
         "BRAVE_SEARCH_API_KEY",
+        "BRAVE_FREE_API_KEY",
         "BRAVE_ANSWERS_API_KEY",
         "BRAVE_AUTOSUGGEST_API_KEY",
     ]

@@ -56,7 +56,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
-    "BRAVE_SEARCH_API_KEY", "BRAVE_ANSWERS_API_KEY", "BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_API_KEY",
+    "BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_ANSWERS_API_KEY", "BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_API_KEY",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
 })
@@ -908,6 +908,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
     12: ["BRAVE_SEARCH_API_KEY"],
+    23: ["BRAVE_FREE_API_KEY"],
     22: ["BRAVE_ANSWERS_API_KEY", "BRAVE_AUTOSUGGEST_API_KEY"],
 }
 
@@ -1329,6 +1330,22 @@ OPTIONAL_ENV_VARS = {
     "BRAVE_SEARCH_API_KEY": {
         "description": "Brave Search API key for native web, news, image, video, and local Brave tools. Expected shape: opaque Brave token string, typically starting with BSA...",
         "prompt": "Brave Search API key",
+        "url": "https://api-dashboard.search.brave.com/",
+        "tools": [
+            "web_search",
+            "brave_search",
+            "brave_news",
+            "brave_images",
+            "brave_videos",
+            "brave_local_pois",
+            "brave_local_descriptions",
+        ],
+        "password": True,
+        "category": "tool",
+    },
+    "BRAVE_FREE_API_KEY": {
+        "description": "Brave Free API key for native web, news, image, video, and local Brave tools. Expected shape: opaque Brave token string, typically starting with BSA...",
+        "prompt": "Brave Free API key",
         "url": "https://api-dashboard.search.brave.com/",
         "tools": [
             "web_search",
@@ -3556,6 +3573,7 @@ def show_config():
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
         ("BRAVE_SEARCH_API_KEY", "Brave Search"),
+        ("BRAVE_FREE_API_KEY", "Brave Free"),
         ("BRAVE_ANSWERS_API_KEY", "Brave Answers"),
         ("BRAVE_AUTOSUGGEST_API_KEY", "Brave Autosuggest"),
         ("BROWSERBASE_API_KEY", "Browserbase"),

@@ -81,7 +81,11 @@ _CONTENT_BACKENDS = ("firecrawl", "parallel", "tavily", "exa")
 
 
 def _brave_api_key() -> str:
-    return os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or os.getenv("BRAVE_API_KEY", "").strip()
+    return (
+        os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+        or os.getenv("BRAVE_FREE_API_KEY", "").strip()
+        or os.getenv("BRAVE_API_KEY", "").strip()
+    )
 
 
 def _load_web_config() -> dict:
@@ -213,6 +217,7 @@ def _web_requires_env() -> list[str]:
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "BRAVE_SEARCH_API_KEY",
+        "BRAVE_FREE_API_KEY",
         "BRAVE_API_KEY",
     ]
     if managed_nous_tools_enabled():
@@ -2018,7 +2023,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set BRAVE_SEARCH_API_KEY, BRAVE_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set BRAVE_SEARCH_API_KEY, BRAVE_FREE_API_KEY, BRAVE_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

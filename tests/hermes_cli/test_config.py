@@ -408,6 +408,21 @@ class TestOptionalEnvVarsRegistry:
             "brave_local_descriptions",
         }.issubset(tools)
 
+    def test_brave_free_api_key_lists_native_brave_tools(self):
+        """BRAVE_FREE_API_KEY advertises the Brave search-style tool surface."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        tools = set(OPTIONAL_ENV_VARS["BRAVE_FREE_API_KEY"]["tools"])
+        assert {
+            "web_search",
+            "brave_search",
+            "brave_news",
+            "brave_images",
+            "brave_videos",
+            "brave_local_pois",
+            "brave_local_descriptions",
+        }.issubset(tools)
+
     def test_brave_answers_api_key_lists_answers_tool(self):
         """BRAVE_ANSWERS_API_KEY advertises the native Brave answers tool."""
         from hermes_cli.config import OPTIONAL_ENV_VARS

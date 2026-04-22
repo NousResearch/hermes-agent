@@ -167,13 +167,13 @@ Hermes' Brave integration is split by endpoint family so mixed Brave subscriptio
 
 | Hermes tool | Preferred env var | Brave plan families Hermes can use | Notes |
 |-------------|-------------------|------------------------------------|-------|
-| `web_search` (Brave backend) | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Hermes routes generic web search through Brave when the web backend is set to `brave`. |
-| `brave_search` | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Web results plus Brave-specific sections already exposed by `/web/search`. |
-| `brave_news` | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Native `/news/search` wrapper. |
-| `brave_images` | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Native `/images/search` wrapper. |
-| `brave_videos` | `BRAVE_SEARCH_API_KEY` | `Free`, `Search` | Native `/videos/search` wrapper. |
-| `brave_local_pois` | `BRAVE_SEARCH_API_KEY` | `Search` | Uses location ids returned by Brave web search. |
-| `brave_local_descriptions` | `BRAVE_SEARCH_API_KEY` | `Search` | Uses location ids returned by Brave web search. |
+| `web_search` (Brave backend) | `BRAVE_SEARCH_API_KEY` or `BRAVE_FREE_API_KEY` | `Free`, `Search` | Hermes routes generic web search through Brave when the web backend is set to `brave`. |
+| `brave_search` | `BRAVE_SEARCH_API_KEY` or `BRAVE_FREE_API_KEY` | `Free`, `Search` | Web results plus Brave-specific sections already exposed by `/web/search`. |
+| `brave_news` | `BRAVE_SEARCH_API_KEY` or `BRAVE_FREE_API_KEY` | `Free`, `Search` | Native `/news/search` wrapper. |
+| `brave_images` | `BRAVE_SEARCH_API_KEY` or `BRAVE_FREE_API_KEY` | `Free`, `Search` | Native `/images/search` wrapper. |
+| `brave_videos` | `BRAVE_SEARCH_API_KEY` or `BRAVE_FREE_API_KEY` | `Free`, `Search` | Native `/videos/search` wrapper. |
+| `brave_local_pois` | `BRAVE_SEARCH_API_KEY` or `BRAVE_FREE_API_KEY` | `Free`, `Search` | Uses location ids returned by Brave web search. |
+| `brave_local_descriptions` | `BRAVE_SEARCH_API_KEY` or `BRAVE_FREE_API_KEY` | `Free`, `Search` | Uses location ids returned by Brave web search. |
 | `brave_answers` | `BRAVE_ANSWERS_API_KEY` | `Free AI`, `Answers` | Native `/chat/completions` wrapper. Falls back to `BRAVE_SEARCH_API_KEY` only for legacy single-key setups. |
 | `brave_suggest` | `BRAVE_AUTOSUGGEST_API_KEY` | `Free Autosuggest`, `Autosuggest` | Native `/suggest/search` wrapper. Falls back to `BRAVE_SEARCH_API_KEY` only for legacy setups. |
 

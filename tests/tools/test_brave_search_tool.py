@@ -184,6 +184,22 @@ class TestBraveSearch:
         assert result["data"]["summarizer"] == {"summary": "Summary text"}
         assert result["data"]["rich"] == {"title": "Rich result", "url": "https://example.com/rich"}
 
+    def test_search_accepts_free_key_alias(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "web": {"results": [{"title": "Result 1", "url": "https://example.com/1", "description": "Snippet 1"}]}
+        }
+
+        with patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}, clear=True), \
+             patch("tools.brave_search_tool.httpx.get", return_value=response) as mock_get:
+            from tools.brave_search_tool import brave_search
+
+            result = json.loads(brave_search("python testing", count=1))
+
+        assert result["success"] is True
+        assert mock_get.call_args.kwargs["headers"]["X-Subscription-Token"] == "brave-free-test"
+
     def test_search_surfaces_structured_brave_http_errors(self):
         error_response = _make_brave_http_error_response(
             {

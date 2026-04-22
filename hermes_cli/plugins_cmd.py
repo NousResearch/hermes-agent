@@ -743,7 +743,7 @@ def cmd_list() -> None:
 def _discover_memory_providers() -> list[tuple[str, str]]:
     """Return [(name, description), ...] for available memory providers."""
     try:
-        from plugins.memory import discover_memory_providers
+        from hermes_memory.plugins.memory import discover_memory_providers
         return [(name, desc) for name, desc, _avail in discover_memory_providers()]
     except Exception:
         return []

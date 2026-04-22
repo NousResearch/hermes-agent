@@ -42,7 +42,7 @@ def _cap_retaindb_sleeps(monkeypatch):
     own ``time.sleep`` stays real since it uses a different reference.
     """
     try:
-        from plugins.memory import retaindb as _retaindb
+        from hermes_memory.plugins.memory import retaindb as _retaindb
     except ImportError:
         return
 
@@ -62,7 +62,7 @@ _repo_root = str(Path(__file__).resolve().parents[2])
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
-from plugins.memory.retaindb import (
+from hermes_memory.plugins.memory.retaindb import (
     _Client,
     _WriteQueue,
     _build_overlay,
@@ -735,7 +735,7 @@ class TestOnMemoryWrite:
 
 class TestRegister:
     def test_register_calls_register_memory_provider(self):
-        from plugins.memory.retaindb import register
+        from hermes_memory.plugins.memory.retaindb import register
         ctx = MagicMock()
         register(ctx)
         ctx.register_memory_provider.assert_called_once()

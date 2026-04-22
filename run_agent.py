@@ -1457,7 +1457,7 @@ class AIAgent:
 
                 if _mem_provider_name:
                     from hermes_memory.memory_manager import MemoryManager as _MemoryManager
-                    from plugins.memory import load_memory_provider as _load_mem
+                    from hermes_memory.plugins.memory import load_memory_provider as _load_mem
                     self._memory_manager = _MemoryManager()
                     _mp = _load_mem(_mem_provider_name)
                     if _mp and _mp.is_available():

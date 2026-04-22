@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from plugins.memory.honcho.client import (
+from hermes_memory.plugins.memory.honcho.client import (
     HonchoClientConfig,
     get_honcho_client,
     reset_honcho_client,
@@ -476,7 +476,7 @@ class TestProfileScopedConfig:
                 "hermes.dreamer": {"peerName": "dreamer-user"},
             },
         }))
-        with patch("plugins.memory.honcho.client.resolve_active_host", return_value="hermes.dreamer"):
+        with patch("hermes_memory.plugins.memory.honcho.client.resolve_active_host", return_value="hermes.dreamer"):
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.host == "hermes.dreamer"
         assert config.peer_name == "dreamer-user"
@@ -658,7 +658,7 @@ class TestResolveSessionNameGatewayKey:
 
 class TestResetHonchoClient:
     def test_reset_clears_singleton(self):
-        import plugins.memory.honcho.client as mod
+        import hermes_memory.plugins.memory.honcho.client as mod
         mod._honcho_client = MagicMock()
         assert mod._honcho_client is not None
         reset_honcho_client()

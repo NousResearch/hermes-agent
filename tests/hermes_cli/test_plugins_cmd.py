@@ -571,7 +571,7 @@ class TestProviderDiscovery:
 
     def test_discover_memory_providers_empty(self):
         """Discovery returns empty list when import fails."""
-        with patch("plugins.memory.discover_memory_providers",
+        with patch("hermes_memory.plugins.memory.discover_memory_providers",
                     side_effect=ImportError("no module")):
             from hermes_cli.plugins_cmd import _discover_memory_providers
             result = _discover_memory_providers()

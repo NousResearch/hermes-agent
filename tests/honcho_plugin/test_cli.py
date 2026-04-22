@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
-        import plugins.memory.honcho.cli as honcho_cli
+        import hermes_memory.plugins.memory.honcho.cli as honcho_cli
 
         cfg_path = tmp_path / "honcho.json"
         cfg_path.write_text("{}")
@@ -38,11 +38,11 @@ class TestCmdStatus:
         monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
         monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "default")
         monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            "hermes_memory.plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
             lambda host=None: FakeConfig(),
         )
         monkeypatch.setattr(
-            "plugins.memory.honcho.client.get_honcho_client",
+            "hermes_memory.plugins.memory.honcho.client.get_honcho_client",
             lambda cfg: object(),
         )
 

@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from plugins.memory.supermemory import (
+from hermes_memory.plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
     _format_prefetch_context,
@@ -55,7 +55,7 @@ class FakeClient:
 @pytest.fixture
 def provider(monkeypatch, tmp_path):
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     p = SupermemoryMemoryProvider()
     p.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
     return p
@@ -269,7 +269,7 @@ def test_handle_tool_call_returns_error_when_unconfigured(monkeypatch):
 def test_identity_template_resolved_in_container_tag(monkeypatch, tmp_path):
     """container_tag with {identity} resolves to profile-scoped tag."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     _save_supermemory_config({"container_tag": "hermes-{identity}"}, str(tmp_path))
     p = SupermemoryMemoryProvider()
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli", agent_identity="coder")
@@ -279,7 +279,7 @@ def test_identity_template_resolved_in_container_tag(monkeypatch, tmp_path):
 def test_identity_template_default_profile(monkeypatch, tmp_path):
     """Without agent_identity kwarg, {identity} resolves to 'default'."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     _save_supermemory_config({"container_tag": "hermes-{identity}"}, str(tmp_path))
     p = SupermemoryMemoryProvider()
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
@@ -290,7 +290,7 @@ def test_container_tag_env_var_override(monkeypatch, tmp_path):
     """SUPERMEMORY_CONTAINER_TAG env var overrides config."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
     monkeypatch.setenv("SUPERMEMORY_CONTAINER_TAG", "env-override")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     p = SupermemoryMemoryProvider()
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
     assert p._container_tag == "env_override"
@@ -302,7 +302,7 @@ def test_container_tag_env_var_override(monkeypatch, tmp_path):
 def test_search_mode_config_passed_to_client(monkeypatch, tmp_path):
     """search_mode from config is passed to _SupermemoryClient."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     _save_supermemory_config({"search_mode": "memories"}, str(tmp_path))
     p = SupermemoryMemoryProvider()
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
@@ -313,7 +313,7 @@ def test_search_mode_config_passed_to_client(monkeypatch, tmp_path):
 def test_invalid_search_mode_falls_back_to_default(monkeypatch, tmp_path):
     """Invalid search_mode falls back to 'hybrid'."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     _save_supermemory_config({"search_mode": "invalid_mode"}, str(tmp_path))
     p = SupermemoryMemoryProvider()
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
@@ -334,7 +334,7 @@ def test_multi_container_disabled_by_default(provider):
 def test_multi_container_enabled_adds_schema_param(monkeypatch, tmp_path):
     """When enabled, tool schemas include container_tag parameter."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     _save_supermemory_config({
         "enable_custom_container_tags": True,
         "custom_containers": ["project-alpha", "shared"],
@@ -351,7 +351,7 @@ def test_multi_container_enabled_adds_schema_param(monkeypatch, tmp_path):
 def test_multi_container_tool_store_with_custom_tag(monkeypatch, tmp_path):
     """supermemory_store uses the resolved container_tag when multi-container is enabled."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     _save_supermemory_config({
         "enable_custom_container_tags": True,
         "custom_containers": ["project-alpha"],
@@ -370,7 +370,7 @@ def test_multi_container_tool_store_with_custom_tag(monkeypatch, tmp_path):
 def test_multi_container_rejects_unlisted_tag(monkeypatch, tmp_path):
     """Tool calls with a non-whitelisted container_tag return an error."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     _save_supermemory_config({
         "enable_custom_container_tags": True,
         "custom_containers": ["allowed-tag"],
@@ -388,7 +388,7 @@ def test_multi_container_rejects_unlisted_tag(monkeypatch, tmp_path):
 def test_multi_container_system_prompt_includes_instructions(monkeypatch, tmp_path):
     """system_prompt_block includes container list and instructions when multi-container is enabled."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    monkeypatch.setattr("hermes_memory.plugins.memory.supermemory._SupermemoryClient", FakeClient)
     _save_supermemory_config({
         "enable_custom_container_tags": True,
         "custom_containers": ["docs"],

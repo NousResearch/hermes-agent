@@ -5755,7 +5755,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Sync Honcho host blocks to all profiles
         try:
-            from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
+            from hermes_memory.plugins.memory.honcho.cli import sync_honcho_profiles_quiet
 
             synced = sync_honcho_profiles_quiet()
             if synced:
@@ -6262,7 +6262,7 @@ def cmd_profile(args):
             # Auto-clone Honcho config for the new profile (only with --clone/--clone-all)
             if clone or clone_all:
                 try:
-                    from plugins.memory.honcho.cli import clone_honcho_for_profile
+                    from hermes_memory.plugins.memory.honcho.cli import clone_honcho_for_profile
 
                     if clone_honcho_for_profile(name):
                         print(f"Honcho config cloned (peer: {name})")
@@ -7800,7 +7800,7 @@ Examples:
     # own argparse tree.  No hardcoded plugin commands in main.py.
     # =========================================================================
     try:
-        from plugins.memory import discover_plugin_cli_commands
+        from hermes_memory.plugins.memory import discover_plugin_cli_commands
 
         for cmd_info in discover_plugin_cli_commands():
             plugin_parser = subparsers.add_parser(

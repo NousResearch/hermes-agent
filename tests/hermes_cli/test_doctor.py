@@ -79,7 +79,7 @@ class TestHonchoDoctorConfigDetection:
         fake_config = SimpleNamespace(enabled=True, api_key="***")
 
         monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            "hermes_memory.plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
             lambda: fake_config,
         )
 
@@ -89,7 +89,7 @@ class TestHonchoDoctorConfigDetection:
         fake_config = SimpleNamespace(enabled=True, api_key="")
 
         monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            "hermes_memory.plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
             lambda: fake_config,
         )
 
@@ -214,7 +214,7 @@ class TestDoctorMemoryProviderSection:
     def test_honcho_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
         # Make honcho import fail
         monkeypatch.setitem(
-            sys.modules, "plugins.memory.honcho.client", None
+            sys.modules, "hermes_memory.plugins.memory.honcho.client", None
         )
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="honcho")
         assert "Memory Provider" in out
@@ -223,7 +223,7 @@ class TestDoctorMemoryProviderSection:
 
     def test_mem0_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
         # Make mem0 import fail
-        monkeypatch.setitem(sys.modules, "plugins.memory.mem0", None)
+        monkeypatch.setitem(sys.modules, "hermes_memory.plugins.memory.mem0", None)
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out

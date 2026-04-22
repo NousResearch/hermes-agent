@@ -92,7 +92,7 @@ def _has_provider_env_config(content: str) -> bool:
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_memory.plugins.memory.honcho.client import HonchoClientConfig
 
         cfg = HonchoClientConfig.from_global_config()
         return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
@@ -1108,7 +1108,7 @@ def run_doctor(args):
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
     elif _active_memory_provider == "honcho":
         try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+            from hermes_memory.plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
             hcfg = HonchoClientConfig.from_global_config()
             _honcho_cfg_path = resolve_config_path()
 
@@ -1120,7 +1120,7 @@ def run_doctor(args):
                 check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
                 issues.append("No Honcho API key — run 'hermes memory setup'")
             else:
-                from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
+                from hermes_memory.plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
                 reset_honcho_client()
                 try:
                     get_honcho_client(hcfg)
@@ -1138,7 +1138,7 @@ def run_doctor(args):
             check_warn("Honcho check failed", str(_e))
     elif _active_memory_provider == "mem0":
         try:
-            from plugins.memory.mem0 import _load_config as _load_mem0_config
+            from hermes_memory.plugins.memory.mem0 import _load_config as _load_mem0_config
             mem0_cfg = _load_mem0_config()
             mem0_key = mem0_cfg.get("api_key", "")
             if mem0_key:
@@ -1155,7 +1155,7 @@ def run_doctor(args):
     else:
         # Generic check for other memory providers (openviking, hindsight, etc.)
         try:
-            from plugins.memory import load_memory_provider
+            from hermes_memory.plugins.memory import load_memory_provider
             _provider = load_memory_provider(_active_memory_provider)
             if _provider and _provider.is_available():
                 check_ok(f"{_active_memory_provider} provider active")

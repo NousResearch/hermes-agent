@@ -58,7 +58,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
-    from plugins.memory import find_provider_dir
+    from hermes_memory.plugins.memory import find_provider_dir
 
     plugin_dir = find_provider_dir(provider_name)
     if not plugin_dir:
@@ -148,7 +148,7 @@ def _get_available_providers() -> list:
     Returns list of (name, description, provider_instance) tuples.
     """
     try:
-        from plugins.memory import discover_memory_providers, load_memory_provider
+        from hermes_memory.plugins.memory import discover_memory_providers, load_memory_provider
         raw = discover_memory_providers()
     except Exception:
         raw = []

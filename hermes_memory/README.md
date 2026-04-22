@@ -1,19 +1,27 @@
 # hermes_memory
 
-Bundled implementation of Hermes **curated persistent memory** and **memory provider orchestration**.
+Bundled Hermes **curated persistent memory**, **provider orchestration**, and **optional memory backends** you can reuse in other projects.
 
-## Contents
+## Layout
 
-| Module | Role |
-|--------|------|
-| `memory_provider.py` | Abstract `MemoryProvider` base class for plugins (`plugins/memory/<name>/`). |
-| `memory_manager.py` | `MemoryManager`, `build_memory_context_block`, `sanitize_context` — wires providers into `run_agent`. |
-| `builtin_memory_tool.py` | `MemoryStore`, `MEMORY.md` / `USER.md` I/O, `memory_tool` handler, `MEMORY_SCHEMA`. |
+| Path | Role |
+|------|------|
+| `memory_provider.py` | Abstract `MemoryProvider` base class |
+| `memory_manager.py` | `MemoryManager`, prefetch fencing (`build_memory_context_block`, `sanitize_context`) |
+| `builtin_memory_tool.py` | `MemoryStore`, `MEMORY.md` / `USER.md`, `memory_tool`, `MEMORY_SCHEMA` |
+| `plugins/memory/` | Bundled backends (Honcho, Mem0, Hindsight, …) — discovered via `load_memory_provider()` |
 
-Tool **registration** (`registry.register`) stays in `tools/memory_tool.py` so `tools/` auto-discovery continues to load the `memory` tool exactly once.
+Tool **registration** stays in repo `tools/memory_tool.py` (Hermes integrates with `tools.registry`). For reuse elsewhere, call `memory_tool(...)` or copy the schema from `MEMORY_SCHEMA`.
 
-## Related (not in this folder)
+## Imports
 
-- `plugins/memory/` — optional backends (Honcho, Mem0, …).
-- `run_agent.py` — session wiring, prefetch, background memory review.
-- `hermes_state.py` — **session transcript** storage (separate from curated memory).
+```python
+from hermes_memory import MemoryManager, MemoryStore, MemoryProvider
+from hermes_memory.plugins.memory import load_memory_provider, discover_memory_providers
+```
+
+Legacy shim: `from plugins.memory import load_memory_provider` still works in this repo (`plugins/memory/__init__.py` re-exports).
+
+## Sessions vs curated memory
+
+Long-running **conversation logs** are separate (Hermes uses `hermes_state.SessionDB`). This package is **curated facts + optional vector/service recall**, not full transcript storage.

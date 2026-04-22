@@ -13,10 +13,10 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.save_config") as save_config,
         patch(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            "hermes_memory.plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
             return_value=honcho_cfg,
         ) as from_global_config,
-        patch("plugins.memory.load_memory_provider") as load_memory_provider,
+        patch("hermes_memory.plugins.memory.load_memory_provider") as load_memory_provider,
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),

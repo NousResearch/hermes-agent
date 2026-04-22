@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from hermes_memory.plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
 
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
@@ -77,7 +77,7 @@ def _ensure_peer_exists(host_key: str | None = None) -> bool:
     was created or already exists, False on failure.
     """
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
+        from hermes_memory.plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
         hcfg = HonchoClientConfig.from_global_config(host=host_key)
         if not hcfg.enabled or not (hcfg.api_key or hcfg.base_url):
             return False
@@ -523,7 +523,7 @@ def cmd_setup(args) -> None:
     # --- Test connection ---
     print("  Testing connection... ", end="", flush=True)
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client, reset_honcho_client
+        from hermes_memory.plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client, reset_honcho_client
         reset_honcho_client()
         hcfg = HonchoClientConfig.from_global_config(host=_host_key())
         get_honcho_client(hcfg)
@@ -619,7 +619,7 @@ def cmd_status(args) -> None:
         return
 
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
+        from hermes_memory.plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
         hcfg = HonchoClientConfig.from_global_config(host=_host_key())
     except Exception as e:
         print(f"  Config error: {e}\n")
@@ -685,7 +685,7 @@ def _show_peer_cards(hcfg, client) -> None:
     just retrieved, not duplicated.
     """
     try:
-        from plugins.memory.honcho.session import HonchoSessionManager
+        from hermes_memory.plugins.memory.honcho.session import HonchoSessionManager
         mgr = HonchoSessionManager(honcho=client, config=hcfg)
         session_key = hcfg.resolve_session_name()
         mgr.get_or_create(session_key)
@@ -983,8 +983,8 @@ def cmd_identity(args) -> None:
     show = getattr(args, "show", False)
 
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
-        from plugins.memory.honcho.session import HonchoSessionManager
+        from hermes_memory.plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
+        from hermes_memory.plugins.memory.honcho.session import HonchoSessionManager
         hcfg = HonchoClientConfig.from_global_config(host=_host_key())
         client = get_honcho_client(hcfg)
         mgr = HonchoSessionManager(honcho=client, config=hcfg)
@@ -1148,12 +1148,12 @@ def cmd_migrate(args) -> None:
             answer = _prompt("  Upload user memory files to Honcho now?", default="y")
             if answer.lower() in ("y", "yes"):
                 try:
-                    from plugins.memory.honcho.client import (
+                    from hermes_memory.plugins.memory.honcho.client import (
                         HonchoClientConfig,
                         get_honcho_client,
                         reset_honcho_client,
                     )
-                    from plugins.memory.honcho.session import HonchoSessionManager
+                    from hermes_memory.plugins.memory.honcho.session import HonchoSessionManager
 
                     reset_honcho_client()
                     hcfg = HonchoClientConfig.from_global_config()
@@ -1198,12 +1198,12 @@ def cmd_migrate(args) -> None:
             answer = _prompt("  Seed AI identity from all detected files now?", default="y")
             if answer.lower() in ("y", "yes"):
                 try:
-                    from plugins.memory.honcho.client import (
+                    from hermes_memory.plugins.memory.honcho.client import (
                         HonchoClientConfig,
                         get_honcho_client,
                         reset_honcho_client,
                     )
-                    from plugins.memory.honcho.session import HonchoSessionManager
+                    from hermes_memory.plugins.memory.honcho.session import HonchoSessionManager
 
                     reset_honcho_client()
                     hcfg = HonchoClientConfig.from_global_config()

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from plugins.memory.hindsight import (
+from hermes_memory.plugins.memory.hindsight import (
     HindsightMemoryProvider,
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
@@ -98,7 +98,7 @@ def provider(tmp_path, monkeypatch):
     config_path.write_text(json.dumps(config))
 
     monkeypatch.setattr(
-        "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        "hermes_memory.plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
     )
 
     p = HindsightMemoryProvider()
@@ -125,7 +125,7 @@ def provider_with_config(tmp_path, monkeypatch):
         config_path.write_text(json.dumps(config))
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+            "hermes_memory.plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
         )
 
         p = HindsightMemoryProvider()
@@ -237,7 +237,7 @@ class TestConfig:
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""
         monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home",
+            "hermes_memory.plugins.memory.hindsight.get_hermes_home",
             lambda: tmp_path / "nonexistent",
         )
         monkeypatch.setenv("HINDSIGHT_MODE", "cloud")
@@ -589,7 +589,7 @@ class TestConfigSchema:
 class TestAvailability:
     def test_available_with_api_key(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home",
+            "hermes_memory.plugins.memory.hindsight.get_hermes_home",
             lambda: tmp_path / "nonexistent",
         )
         monkeypatch.setenv("HINDSIGHT_API_KEY", "test-key")
@@ -598,7 +598,7 @@ class TestAvailability:
 
     def test_not_available_without_config(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home",
+            "hermes_memory.plugins.memory.hindsight.get_hermes_home",
             lambda: tmp_path / "nonexistent",
         )
         p = HindsightMemoryProvider()
@@ -606,7 +606,7 @@ class TestAvailability:
 
     def test_available_in_local_mode(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home",
+            "hermes_memory.plugins.memory.hindsight.get_hermes_home",
             lambda: tmp_path / "nonexistent",
         )
         monkeypatch.setenv("HINDSIGHT_MODE", "local")

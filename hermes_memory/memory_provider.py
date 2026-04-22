@@ -11,7 +11,7 @@ prevent tool schema bloat and conflicting memory backends.
 
 Registration:
   1. Built-in: BuiltinMemoryProvider — always present, not removable.
-  2. Plugins: Ship in plugins/memory/<name>/, activated by memory.provider config.
+  2. Plugins: Ship in hermes_memory/plugins/memory/<name>/ (or user ``HERMES_HOME/plugins/``), activated by memory.provider config.
 
 Lifecycle (called by MemoryManager, wired in run_agent.py):
   initialize()          — connect, create resources, warm up

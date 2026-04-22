@@ -63,8 +63,8 @@ Track launch execution separately from product proof so the operator can close t
 
 ## Next move
 1. Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` to verify required files and the claimed publish path.
-2. Verify the actual Hermes publish session is signed into X; if the browser still lands on the logged-out page or login flow, run `bash starter-kits/agent-launch-closeout-kit/scripts/browser-auth-recovery.sh --prepare`, complete the recovery packet with screenshot evidence, and keep publish blocked until that proof exists.
-3. After a real signed-in proof event, run `bash starter-kits/agent-launch-closeout-kit/scripts/browser-auth-recovery.sh --verified --surface-url ... --screenshot-path ...` so this log, the live audit, and `x-access.json` refresh from the same evidence.
+2. Verify the actual Hermes publish session is signed into X; if the browser still lands on the logged-out page or login flow, run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh` to freeze the next exact `--verified` command and handoff artifact, then keep publish blocked until a fresh signed-in screenshot exists.
+3. After a real signed-in proof event, run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh --execute --screenshot-path /absolute/path/to/signed-in-proof.png` so this log, the live audit, and `x-access.json` refresh from the same evidence.
 4. Publish the launch thread against the proved starter-workflow line.
 5. If demo capture is still not ready, attach the proof-artifact still and do not delay publish.
 6. Capture the walkthrough immediately after posting and log the asset path here.

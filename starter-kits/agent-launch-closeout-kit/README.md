@@ -31,6 +31,26 @@ Current live pain to solve:
 
 The closeout kit is only credible if it can close that real gap cleanly.
 
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/publish-preflight.sh` | Check required files, auth vars, and browser-session marker |
+| `scripts/browser-auth-recovery.sh` | Generate recovery packet (`--prepare`) or record verified sign-in (`--verified`) |
+| `scripts/publish-unblock-helper.sh` | One-shot unblock helper: runs preflight, captures current state, emits a filled `--verified` command, and generates a timestamped handoff artifact |
+
+Run the unblock helper any time browser auth is the known blocker:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh
+```
+
+Use `--execute` mode only when the browser is already signed in and you have a fresh signed-in screenshot saved on disk:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh --execute --screenshot-path /absolute/path/to/signed-in-proof.png
+```
+
 ## Tue–Fri execution checklist
 - [ ] Audit the Agentic Cron Orchestration Kit proof surface and confirm the closeout state is still the live blocker.
 - [ ] Extract the canonical publish path from `agentic-cron-orchestration-kit/launch/publish-runbook.md`.
@@ -38,6 +58,7 @@ The closeout kit is only credible if it can close that real gap cleanly.
 - [ ] Assemble reusable closeout-kit files for publish, capture, logging, and asset indexing.
 - [ ] Validate the reusable files against the current pending-publish / pending-capture state as the before state.
 - [ ] Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` and surface any publish-auth gap before attempting browser or `x-cli` publish.
+- [ ] Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh` when browser auth is the blocker — it emits the exact `--verified` command and a timestamped handoff artifact so the next sign-in event converts directly into a publish unblock.
 - [ ] Verify the live publish session is actually signed into X (the `x-access.json` marker is not enough by itself).
 - [ ] If the marker is stale or the browser still lands on login, run `scripts/browser-auth-recovery.sh --prepare` and use the generated recovery packet before retrying publish.
 - [ ] After a real signed-in browser proof event, run `scripts/browser-auth-recovery.sh --verified --surface-url ... --screenshot-path ...` so the launch log, audit, and `x-access.json` marker all refresh from the same evidence.

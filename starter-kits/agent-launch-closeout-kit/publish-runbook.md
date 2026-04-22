@@ -25,7 +25,7 @@ Do not widen the claim to a fully proven four-job operating pack.
 
 ## Canonical publish order
 1. Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` before touching browser publish or `x-cli` so missing auth or missing source files are surfaced explicitly.
-2. In the same publish environment, open `https://x.com/home` or `https://x.com/compose/post` and verify the session is actually signed in. If X shows the logged-out landing page, a login redirect, or `Already have an account?`, treat the browser-session marker as stale, run `bash starter-kits/agent-launch-closeout-kit/scripts/browser-auth-recovery.sh --prepare`, and stop until the recovery packet has been completed with screenshot evidence.
+2. In the same publish environment, open `https://x.com/home` or `https://x.com/compose/post` and verify the session is actually signed in. If X shows the logged-out landing page, a login redirect, or `Already have an account?`, treat the browser-session marker as stale, run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh`, and stop until a fresh signed-in screenshot exists.
 3. Re-open the source launch thread and post it with no broader-claim edits.
 4. Attach the strongest proof-backed asset available:
    - primary: short walkthrough cut using `demo-captions.srt`
@@ -33,8 +33,9 @@ Do not widen the claim to a fully proven four-job operating pack.
    - last fallback: screenshot of `Preflight OK`
 5. Keep the CTA narrow: this is the fastest honest path to one recurring workflow, not a control plane.
 6. Use `starter-kits/agent-launch-closeout-kit/publish-trigger.md` as the one-screen operator card so the payload, attachment priority, and logging fields stay visible during the live post.
-7. Immediately record the post URL, timestamp, and attachment choice in `launch-execution-log.md`.
-8. Sync the weekly pipeline note, CEO note, factory note, and ship checklist from the same execution log.
+7. If browser auth is the live blocker, run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh` to emit the exact `--verified` command and freeze a timestamped handoff artifact for the next sign-in event.
+8. Immediately record the post URL, timestamp, and attachment choice in `launch-execution-log.md`.
+9. Sync the weekly pipeline note, CEO note, factory note, and ship checklist from the same execution log.
 
 ## Launch guardrails
 - Never imply that unpublished demo capture blocks the product ship decision.

@@ -121,7 +121,80 @@ def _get_default_output_dir() -> str:
     return str(get_hermes_dir("cache/audio", "audio_cache"))
 
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
-MAX_TEXT_LENGTH = 4000
+
+# ---------------------------------------------------------------------------
+# Per-provider input-character limits (from official provider docs).
+# A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
+# ElevenLabs is model-dependent (5k / 10k / 30k / 40k), Gemini caps at ~8k
+# input tokens.  Users can override any of these via
+# ``tts.<provider>.max_text_length`` in config.yaml.
+# ---------------------------------------------------------------------------
+PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
+    "edge": 5000,         # edge-tts practical sync limit
+    "openai": 4096,       # https://platform.openai.com/docs/guides/text-to-speech
+    "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
+    "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
+    "mistral": 4000,      # conservative; no published per-request cap
+    "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
+    "neutts": 2000,       # local model, quality falls off on long text
+    "kittentts": 2000,    # local 25MB model
+}
+
+# ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
+ELEVENLABS_MODEL_MAX_TEXT_LENGTH: Dict[str, int] = {
+    "eleven_v3": 5000,
+    "eleven_ttv_v3": 5000,
+    "eleven_multilingual_v2": 10000,
+    "eleven_multilingual_v1": 10000,
+    "eleven_english_sts_v2": 10000,
+    "eleven_english_sts_v1": 10000,
+    "eleven_flash_v2": 30000,
+    "eleven_flash_v2_5": 40000,
+}
+
+# Final fallback when provider isn't recognised at all.
+FALLBACK_MAX_TEXT_LENGTH = 4000
+
+# Back-compat alias. Prefer ``_resolve_max_text_length()`` for new code.
+MAX_TEXT_LENGTH = FALLBACK_MAX_TEXT_LENGTH
+
+
+def _resolve_max_text_length(
+    provider: Optional[str],
+    tts_config: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Return the input-character cap for *provider*.
+
+    Resolution order:
+      1. ``tts.<provider>.max_text_length`` (user override in config.yaml)
+      2. ElevenLabs model-aware table (keyed on configured ``model_id``)
+      3. ``PROVIDER_MAX_TEXT_LENGTH`` default
+      4. ``FALLBACK_MAX_TEXT_LENGTH`` (4000)
+
+    Non-positive or non-integer overrides fall through to the default so a
+    broken config can't accidentally disable truncation entirely.
+    """
+    if not provider:
+        return FALLBACK_MAX_TEXT_LENGTH
+    key = provider.lower().strip()
+    cfg = tts_config or {}
+    prov_cfg = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
+
+    override = prov_cfg.get("max_text_length") if prov_cfg else None
+    if isinstance(override, bool):
+        # bool is an int subclass; treat explicit booleans as "not set"
+        override = None
+    if isinstance(override, int) and override > 0:
+        return override
+
+    if key == "elevenlabs":
+        model_id = (prov_cfg or {}).get("model_id") or DEFAULT_ELEVENLABS_MODEL_ID
+        mapped = ELEVENLABS_MODEL_MAX_TEXT_LENGTH.get(str(model_id).strip())
+        if mapped:
+            return mapped
+
+    return PROVIDER_MAX_TEXT_LENGTH.get(key, FALLBACK_MAX_TEXT_LENGTH)
 
 
 # ===========================================================================
@@ -865,13 +938,18 @@ def text_to_speech_tool(
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
-    # Truncate very long text with a warning
-    if len(text) > MAX_TEXT_LENGTH:
-        logger.warning("TTS text too long (%d chars), truncating to %d", len(text), MAX_TEXT_LENGTH)
-        text = text[:MAX_TEXT_LENGTH]
-
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
+
+    # Truncate very long text with a warning. The cap is per-provider
+    # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
+    max_len = _resolve_max_text_length(provider, tts_config)
+    if len(text) > max_len:
+        logger.warning(
+            "TTS text too long for provider %s (%d chars), truncating to %d",
+            provider, len(text), max_len,
+        )
+        text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
@@ -1191,6 +1269,14 @@ def stream_tts_to_speaker(
         voice_id = el_config.get("voice_id", voice_id)
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))
+        # Per-sentence cap for the streaming path. Look up the cap against
+        # the *streaming* model_id (defaults to eleven_flash_v2_5 = 40k chars),
+        # not the sync model_id. A user override
+        # (tts.elevenlabs.max_text_length) still wins.
+        stream_max_len = _resolve_max_text_length(
+            "elevenlabs",
+            {**tts_config, "elevenlabs": {**el_config, "model_id": model_id}},
+        )
 
         api_key = os.getenv("ELEVENLABS_API_KEY", "")
         if not api_key:
@@ -1246,9 +1332,9 @@ def stream_tts_to_speaker(
             # Skip audio generation if no TTS client available
             if client is None:
                 return
-            # Truncate very long sentences
-            if len(cleaned) > MAX_TEXT_LENGTH:
-                cleaned = cleaned[:MAX_TEXT_LENGTH]
+            # Truncate very long sentences (ElevenLabs streaming path)
+            if len(cleaned) > stream_max_len:
+                cleaned = cleaned[:stream_max_len]
             try:
                 audio_iter = client.text_to_speech.convert(
                     text=cleaned,
@@ -1406,7 +1492,7 @@ TTS_SCHEMA = {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "The text to convert to speech. Keep under 4000 characters."
+                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
             },
             "output_path": {
                 "type": "string",

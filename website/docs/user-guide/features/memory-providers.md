@@ -359,7 +359,11 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `retain_async` | `true` | Process retain asynchronously on the server |
-| `tags` | — | Tags applied when storing memories |
+| `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
+| `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
+| `retain_source` | — | Optional `metadata.source` attached to retained memories |
+| `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
+| `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.

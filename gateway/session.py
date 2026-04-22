@@ -1147,6 +1147,10 @@ class SessionStore:
                     tool_name=message.get("tool_name"),
                     tool_calls=message.get("tool_calls"),
                     tool_call_id=message.get("tool_call_id"),
+                    reasoning=message.get("reasoning") if message.get("role") == "assistant" else None,
+                    reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
+                    reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
+                    codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1176,6 +1180,7 @@ class SessionStore:
                         tool_calls=msg.get("tool_calls"),
                         tool_call_id=msg.get("tool_call_id"),
                         reasoning=msg.get("reasoning") if role == "assistant" else None,
+                        reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                         reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                         codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     )

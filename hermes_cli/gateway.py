@@ -2639,9 +2639,120 @@ def _setup_dingtalk():
 
 
 def _setup_wecom():
-    """Configure WeCom (Enterprise WeChat) via the standard platform setup."""
-    wecom_platform = next(p for p in _PLATFORMS if p["key"] == "wecom")
-    _setup_standard_platform(wecom_platform)
+    """Interactive setup for WeCom — scan QR code or manual credential input."""
+    print()
+    print(color("  ─── 💬 WeCom (Enterprise WeChat) Setup ───", Colors.CYAN))
+
+    existing_bot_id = get_env_value("WECOM_BOT_ID")
+    existing_secret = get_env_value("WECOM_SECRET")
+    if existing_bot_id and existing_secret:
+        print()
+        print_success("WeCom is already configured.")
+        if not prompt_yes_no("  Reconfigure WeCom?", False):
+            return
+
+    # ── Choose setup method ──
+    print()
+    method_choices = [
+        "Scan QR code to obtain Bot ID and Secret automatically (recommended)",
+        "Enter existing Bot ID and Secret manually",
+    ]
+    method_idx = prompt_choice("  How would you like to set up WeCom?", method_choices, 0)
+
+    bot_id = None
+    secret = None
+
+    if method_idx == 0:
+        # ── QR scan flow ──
+        try:
+            from gateway.platforms.wecom import qr_scan_for_bot_info
+        except Exception as exc:
+            print_error(f"  WeCom QR scan import failed: {exc}")
+            qr_scan_for_bot_info = None
+
+        if qr_scan_for_bot_info is not None:
+            try:
+                credentials = qr_scan_for_bot_info()
+            except KeyboardInterrupt:
+                print()
+                print_warning("  WeCom setup cancelled.")
+                return
+            except Exception as exc:
+                print_warning(f"  QR scan failed: {exc}")
+                credentials = None
+            if credentials:
+                bot_id = credentials.get("bot_id", "")
+                secret = credentials.get("secret", "")
+                print_success("  ✔ QR scan successful! Bot ID and Secret obtained.")
+
+        if not bot_id or not secret:
+            print_info("  QR scan did not complete. Continuing with manual input.")
+            bot_id = None
+            secret = None
+
+    # ── Manual credential input ──
+    if not bot_id or not secret:
+        print()
+        print_info("  1. Go to WeCom Application → Workspace → Smart Robot -> Create smart robots")
+        print_info("  2. Select API Mode")
+        print_info("  3. Copy the Bot ID and Secret from the bot's credentials info")
+        print_info("  4. The bot connects via WebSocket — no public endpoint needed")
+        print()
+        bot_id = prompt("  Bot ID", password=False)
+        if not bot_id:
+            print_warning("  Skipped — WeCom won't work without a Bot ID.")
+            return
+        secret = prompt("  Secret", password=True)
+        if not secret:
+            print_warning("  Skipped — WeCom won't work without a Secret.")
+            return
+
+    # ── Save core credentials ──
+    save_env_value("WECOM_BOT_ID", bot_id)
+    save_env_value("WECOM_SECRET", secret)
+
+    # ── Allowed users (deny-by-default security) ──
+    print()
+    print_info("  The gateway DENIES all users by default for security.")
+    print_info("  Enter user IDs to create an allowlist, or leave empty.")
+    allowed = prompt("  Allowed user IDs (comma-separated, or empty)", password=False)
+    if allowed:
+        cleaned = allowed.replace(" ", "")
+        save_env_value("WECOM_ALLOWED_USERS", cleaned)
+        print_success("  Saved — only these users can interact with the bot.")
+    else:
+        print()
+        access_choices = [
+            "Enable open access (anyone can message the bot)",
+            "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+            "Disable direct messages",
+            "Skip for now (bot will deny all users until configured)",
+        ]
+        access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, 1)
+        if access_idx == 0:
+            save_env_value("WECOM_DM_POLICY", "open")
+            save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
+            print_warning("  Open access enabled — anyone can use your bot!")
+        elif access_idx == 1:
+            save_env_value("WECOM_DM_POLICY", "pairing")
+            print_success("  DM pairing mode — users will receive a code to request access.")
+            print_info("  Approve with: hermes pairing approve <platform> <code>")
+        elif access_idx == 2:
+            save_env_value("WECOM_DM_POLICY", "disabled")
+            print_warning("  Direct messages disabled.")
+        else:
+            print_info("  Skipped — configure later with 'hermes gateway setup'")
+
+    # ── Home channel (optional) ──
+    print()
+    print_info("  Chat ID for scheduled results and notifications.")
+    home = prompt("  Home chat ID (optional, for cron/notifications)", password=False)
+    if home:
+        save_env_value("WECOM_HOME_CHANNEL", home)
+        print_success(f"  Home channel set to {home}")
+
+    print()
+    print_success("💬 WeCom configured!")
 
 
 def _is_service_installed() -> bool:
@@ -3021,7 +3132,8 @@ def _setup_qqbot():
     if method_idx == 0:
         # ── QR scan-to-configure ──
         try:
-            credentials = _qqbot_qr_flow()
+            from gateway.platforms.qqbot import qr_register
+            credentials = qr_register()
         except KeyboardInterrupt:
             print()
             print_warning("  QQ Bot setup cancelled.")
@@ -3101,106 +3213,6 @@ def _setup_qqbot():
     print()
     print_success("🐧 QQ Bot configured!")
     print_info(f"  App ID: {credentials['app_id']}")
-
-
-def _qqbot_render_qr(url: str) -> bool:
-    """Try to render a QR code in the terminal. Returns True if successful."""
-    try:
-        import qrcode as _qr
-        qr = _qr.QRCode(border=1,error_correction=_qr.constants.ERROR_CORRECT_L)
-        qr.add_data(url)
-        qr.make(fit=True)
-        qr.print_ascii(invert=True)
-        return True
-    except Exception:
-        return False
-
-
-def _qqbot_qr_flow():
-    """Run the QR-code scan-to-configure flow.
-
-    Returns a dict with app_id, client_secret, user_openid on success,
-    or None on failure/cancel.
-    """
-    try:
-        from gateway.platforms.qqbot import (
-            create_bind_task, poll_bind_result, build_connect_url,
-            decrypt_secret, BindStatus,
-        )
-        from gateway.platforms.qqbot.constants import ONBOARD_POLL_INTERVAL
-    except Exception as exc:
-        print_error(f"  QQBot onboard import failed: {exc}")
-        return None
-
-    import asyncio
-    import time
-
-    MAX_REFRESHES = 3
-    refresh_count = 0
-
-    while refresh_count <= MAX_REFRESHES:
-        loop = asyncio.new_event_loop()
-
-        # ── Create bind task ──
-        try:
-            task_id, aes_key = loop.run_until_complete(create_bind_task())
-        except Exception as e:
-            print_warning(f"  Failed to create bind task: {e}")
-            loop.close()
-            return None
-
-        url = build_connect_url(task_id)
-
-        # ── Display QR code + URL ──
-        print()
-        if _qqbot_render_qr(url):
-            print(f"  Scan the QR code above, or open this URL directly:\n  {url}")
-        else:
-            print(f"  Open this URL in QQ on your phone:\n  {url}")
-            print_info("  Tip: pip install qrcode  to show a scannable QR code here")
-
-        # ── Poll loop (silent — keep QR visible at bottom) ──
-        try:
-            while True:
-                try:
-                    status, app_id, encrypted_secret, user_openid = loop.run_until_complete(
-                        poll_bind_result(task_id)
-                    )
-                except Exception:
-                    time.sleep(ONBOARD_POLL_INTERVAL)
-                    continue
-
-                if status == BindStatus.COMPLETED:
-                    client_secret = decrypt_secret(encrypted_secret, aes_key)
-                    print()
-                    print_success(f"  QR scan complete! (App ID: {app_id})")
-                    if user_openid:
-                        print_info(f"  Scanner's OpenID: {user_openid}")
-                    return {
-                        "app_id": app_id,
-                        "client_secret": client_secret,
-                        "user_openid": user_openid,
-                    }
-
-                if status == BindStatus.EXPIRED:
-                    refresh_count += 1
-                    if refresh_count > MAX_REFRESHES:
-                        print()
-                        print_warning(f"  QR code expired {MAX_REFRESHES} times — giving up.")
-                        return None
-                    print()
-                    print_warning(f"  QR code expired, refreshing... ({refresh_count}/{MAX_REFRESHES})")
-                    loop.close()
-                    break  # outer while creates a new task
-
-                time.sleep(ONBOARD_POLL_INTERVAL)
-        except KeyboardInterrupt:
-            loop.close()
-            raise
-        finally:
-            loop.close()
-
-    return None
 
 
 def _setup_signal():
@@ -3390,6 +3402,8 @@ def gateway_setup():
             _setup_feishu()
         elif platform["key"] == "qqbot":
             _setup_qqbot()
+        elif platform["key"] == "wecom":
+            _setup_wecom()
         else:
             _setup_standard_platform(platform)
 

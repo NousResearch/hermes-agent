@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
-import { imageTokenMeta } from '../domain/messages.js'
+import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
@@ -16,6 +16,7 @@ import type {
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -117,6 +118,7 @@ export function useMainApp(gw: GatewayClient) {
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const clipboardPasteRef = useRef<(quiet?: boolean) => Promise<void> | void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
+  const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
@@ -136,11 +138,29 @@ export function useMainApp(gw: GatewayClient) {
   const composer = useComposerState({
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
+    onImageAttached: info => {
+      sys(attachedImageNotice(info))
+    },
     submitRef
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
+
+  useEffect(() => {
+    void terminalParityHints()
+      .then(hints => {
+        for (const hint of hints) {
+          if (terminalHintsShownRef.current.has(hint.key)) {
+            continue
+          }
+
+          terminalHintsShownRef.current.add(hint.key)
+          turnController.pushActivity(hint.message, hint.tone)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const messageId = useCallback((msg: Msg) => {
     const hit = msgIdsRef.current.get(msg)

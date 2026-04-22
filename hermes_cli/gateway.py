@@ -994,8 +994,6 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
     if not is_linux():
         return None, "not supported on this platform"
 
-    import shutil
-
     if not shutil.which("loginctl"):
         return None, "loginctl not found"
 
@@ -1347,7 +1345,6 @@ def _ensure_linger_enabled() -> None:
         return
 
     import getpass
-    import shutil
 
     username = getpass.getuser()
     linger_file = Path(f"/var/lib/systemd/linger/{username}")
@@ -1656,7 +1653,6 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    import os
     return f"gui/{os.getuid()}"
 
 

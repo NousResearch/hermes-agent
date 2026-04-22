@@ -115,3 +115,27 @@ def test_final_assistant_content_can_leave_markdown_raw():
 
     output = _render_to_text(renderable)
     assert "***Bold italic***" in output
+
+
+def test_strip_mode_preserves_intraword_underscores_in_snake_case_identifiers():
+    renderable = _render_final_assistant_content(
+        "Let me look at test_case_with_underscores and SOME_CONST "
+        "then /tmp/snake_case_dir/file_with_name.py",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "test_case_with_underscores" in output
+    assert "SOME_CONST" in output
+    assert "snake_case_dir" in output
+    assert "file_with_name" in output
+
+
+def test_strip_mode_still_strips_boundary_underscore_emphasis():
+    renderable = _render_final_assistant_content(
+        "say _hi_ and __bold__ now",
+        mode="strip",
+    )
+
+    output = _render_to_text(renderable)
+    assert "say hi and bold now" in output

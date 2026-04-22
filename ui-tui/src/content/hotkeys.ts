@@ -4,18 +4,16 @@ const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
 
 export const HOTKEYS: [string, string][] = [
-  ...(
-    isMac
-      ? ([
-          ['Cmd+C', 'copy selection'],
-          ['Ctrl+C', 'interrupt / clear draft / exit']
-        ] as [string, string][])
-      : ([['Ctrl+C', 'copy selection / interrupt / clear draft / exit']] as [string, string][])
-  ),
+  ...(isMac
+    ? ([
+        ['Cmd+C', 'copy selection'],
+        ['Ctrl+C', 'interrupt / clear draft / exit']
+      ] as [string, string][])
+    : ([['Ctrl+C', 'copy selection / interrupt / clear draft / exit']] as [string, string][])),
   [action + '+D', 'exit'],
   [action + '+G', 'open $EDITOR for prompt'],
   [action + '+L', 'new session (clear)'],
-  [paste + '+V / /paste', 'paste clipboard image'],
+  [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
   [action + '+A/E', 'home / end of line'],

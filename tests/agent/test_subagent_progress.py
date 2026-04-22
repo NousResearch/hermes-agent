@@ -193,7 +193,7 @@ class TestBuildChildProgressCallback:
         
         # task_index=0 in a batch of 3 → prefix "[1]"
         cb0 = _build_child_progress_callback(0, "test goal", parent, task_count=3)
-        cb0("web_search", "test")
+        cb0("tool.started", "web_search", "test", {})
         output = buf.getvalue()
         assert "[1]" in output
 
@@ -201,7 +201,7 @@ class TestBuildChildProgressCallback:
         buf.truncate(0)
         buf.seek(0)
         cb2 = _build_child_progress_callback(2, "test goal", parent, task_count=3)
-        cb2("web_search", "test")
+        cb2("tool.started", "web_search", "test", {})
         output = buf.getvalue()
         assert "[3]" in output
 

@@ -33,7 +33,11 @@ import fal_client
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
+from tools.tool_backend_helpers import (
+    fal_key_is_configured,
+    managed_nous_tools_enabled,
+    prefers_gateway,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +188,38 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    "fal-ai/gpt-image-2": {
+        "display": "GPT Image 2",
+        "speed": "~20s",
+        "strengths": "SOTA text rendering + CJK, world-aware photorealism",
+        "price": "$0.04–0.06/image",
+        # GPT Image 2 uses FAL's standard preset enum (unlike 1.5's literal
+        # dimensions). We map to the 4:3 variants — the 16:9 presets
+        # (1024x576) fall below GPT-Image-2's 655,360 min-pixel requirement
+        # and would be rejected. 4:3 keeps us above the minimum on all
+        # three aspect ratios.
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_4_3",   # 1024x768
+            "square": "square_hd",            # 1024x1024
+            "portrait": "portrait_4_3",       # 768x1024
+        },
+        "defaults": {
+            # Same quality pinning as gpt-image-1.5: medium keeps Nous
+            # Portal billing predictable. "high" is 3-4x the per-image
+            # cost at the same size; "low" is too rough for production use.
+            "quality": "medium",
+            "num_images": 1,
+            "output_format": "png",
+        },
+        "supports": {
+            "prompt", "image_size", "quality", "num_images", "output_format",
+            "sync_mode",
+            # openai_api_key (BYOK) intentionally omitted — all users go
+            # through the shared FAL billing path.
+        },
+        "upscale": False,
+    },
     "fal-ai/ideogram/v3": {
         "display": "Ideogram V3",
         "speed": "~5s",
@@ -286,7 +322,7 @@ _managed_fal_client_lock = threading.Lock()
 def _resolve_managed_fal_gateway():
     """Return managed fal-queue gateway config when the user prefers the gateway
     or direct FAL credentials are absent."""
-    if os.getenv("FAL_KEY") and not prefers_gateway("image_gen"):
+    if fal_key_is_configured() and not prefers_gateway("image_gen"):
         return None
     return resolve_managed_tool_gateway("fal-queue")
 
@@ -623,7 +659,7 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
+        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             message = "FAL_KEY environment variable not set"
             if managed_nous_tools_enabled():
                 message += " and managed FAL gateway is unavailable"
@@ -734,7 +770,7 @@ def image_generate_tool(
 
 def check_fal_api_key() -> bool:
     """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
+    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
 
 
 def check_image_generation_requirements() -> bool:
@@ -742,7 +778,7 @@ def check_image_generation_requirements() -> bool:
     try:
         if not check_fal_api_key():
             return False
-        import fal_client  # noqa: F401 — SDK presence check
+        fal_client  # noqa: F401 — SDK presence check
         return True
     except ImportError:
         return False

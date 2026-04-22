@@ -185,6 +185,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-pro": 1000000,
     "mimo-v2-omni": 256000,
     "mimo-v2-flash": 256000,
+    "mimo-v2.5-pro": 1000000,
+    "mimo-v2.5": 1000000,
     "zai-org/GLM-5": 202752,
 }
 

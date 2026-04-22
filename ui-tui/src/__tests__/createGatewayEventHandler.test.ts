@@ -175,6 +175,26 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.text).toContain(cleaned)
   })
 
+  it('does not append inline_diff twice when assistant text already contains it', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const cleaned = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+    const assistantText = `Done. Here's the inline diff:\n\n\`\`\`diff\n${cleaned}\n\`\`\``
+
+    onEvent({
+      payload: { inline_diff: cleaned, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({
+      payload: { text: assistantText },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).toBe(assistantText)
+    expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
+  })
+
   it('shows setup panel for missing provider startup error', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

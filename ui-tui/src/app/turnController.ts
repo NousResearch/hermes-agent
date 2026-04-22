@@ -187,7 +187,7 @@ class TurnController {
   queueInlineDiff(diffText: string) {
     const text = diffText.trim()
 
-    if (!text) {
+    if (!text || this.pendingInlineDiffs.includes(text)) {
       return
     }
 
@@ -239,8 +239,9 @@ class TurnController {
     const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = split.text
-    const inlineDiffBlock = this.pendingInlineDiffs.length
-      ? `\`\`\`diff\n${this.pendingInlineDiffs.join('\n\n')}\n\`\`\``
+    const remainingInlineDiffs = this.pendingInlineDiffs.filter(diff => !finalText.includes(diff))
+    const inlineDiffBlock = remainingInlineDiffs.length
+      ? `\`\`\`diff\n${remainingInlineDiffs.join('\n\n')}\n\`\`\``
       : ''
     const mergedText = [finalText, inlineDiffBlock].filter(Boolean).join('\n\n')
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()

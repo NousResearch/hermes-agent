@@ -36,6 +36,13 @@ _TOOL_CALL_JSON_RE = re.compile(
 _STREAM_TOOL_START = "<tool_call>"
 _STREAM_TOOL_END = "</tool_call>"
 _EMPTY_MCP_CONFIG = json.dumps({"mcpServers": {}}, separators=(",", ":"))
+_DEFAULT_STRIPPED_RUNTIME_ENV = {
+    "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "1",
+    "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
+    "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
+}
 
 
 def _debug_log(message: str) -> None:
@@ -152,6 +159,20 @@ def _system_prompt_flag() -> str:
     if mode in {"append", "append-file"}:
         return "--append-system-prompt-file"
     return "--system-prompt-file"
+
+
+def _strip_runtime_enabled() -> bool:
+    raw = os.getenv("HERMES_CLAUDE_CLI_STRIP_RUNTIME", "").strip().lower()
+    if not raw:
+        return True
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _apply_runtime_env_defaults() -> None:
+    if not _strip_runtime_enabled():
+        return
+    for key, value in _DEFAULT_STRIPPED_RUNTIME_ENV.items():
+        os.environ.setdefault(key, value)
 
 
 @contextmanager
@@ -640,6 +661,7 @@ class ClaudeCLIClient:
         timeout: float | None = None,
         **_: Any,
     ):
+        _apply_runtime_env_defaults()
         self.api_key = api_key or "claude-cli"
         self.base_url = base_url or CLAUDE_CLI_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
@@ -881,7 +903,6 @@ class ClaudeCLIClient:
                     f"stdin_len={len(stdin_payload)} "
                     f"system_prompt_len={len(effective_system_prompt)}"
                 )
-
                 try:
                     proc = subprocess.Popen(
                         command,
@@ -1211,7 +1232,6 @@ class ClaudeCLIClient:
                 f"prompt_len={len(prompt_text)} "
                 f"system_prompt_len={len(system_prompt)}"
             )
-
             try:
                 proc = subprocess.run(
                     command,

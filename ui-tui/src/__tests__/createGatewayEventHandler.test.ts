@@ -195,6 +195,26 @@ describe('createGatewayEventHandler', () => {
     expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
   })
 
+  it('keeps tool trail terse when inline_diff is present', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { inline_diff: diff, name: 'review_diff', summary: diff, tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({
+      payload: { text: 'done' },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.tools?.[0]).toContain('Review Diff')
+    expect(appended[0]?.tools?.[0]).not.toContain('--- a/foo.ts')
+    expect(appended[0]?.text).toContain('```diff')
+  })
+
   it('shows setup panel for missing provider startup error', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

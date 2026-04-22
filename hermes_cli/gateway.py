@@ -333,6 +333,147 @@ def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
     return selected_system, result.stdout.strip() == "active"
 
 
+def _read_systemd_unit_properties(
+    system: bool = False,
+    properties: tuple[str, ...] = (
+        "ActiveState",
+        "SubState",
+        "Result",
+        "ExecMainStatus",
+    ),
+) -> dict[str, str]:
+    """Return selected ``systemctl show`` properties for the gateway unit."""
+    selected_system = _select_systemd_scope(system)
+    try:
+        result = _run_systemctl(
+            [
+                "show",
+                get_service_name(),
+                "--no-pager",
+                "--property",
+                ",".join(properties),
+            ],
+            system=selected_system,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+        return {}
+
+    if result.returncode != 0:
+        return {}
+
+    parsed: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key] = value.strip()
+    return parsed
+
+
+def _wait_for_systemd_service_restart(
+    *,
+    system: bool = False,
+    previous_pid: int | None = None,
+    timeout: float = 60.0,
+) -> bool:
+    """Wait for the gateway service to become active after a restart handoff."""
+    import time
+
+    svc = get_service_name()
+    scope_label = _service_scope_label(system).capitalize()
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        props = _read_systemd_unit_properties(system=system)
+        active_state = props.get("ActiveState", "")
+        sub_state = props.get("SubState", "")
+        new_pid = None
+        try:
+            from gateway.status import get_running_pid
+
+            new_pid = get_running_pid()
+        except Exception:
+            new_pid = None
+
+        if active_state == "active":
+            if new_pid and (previous_pid is None or new_pid != previous_pid):
+                print(f"✓ {scope_label} service restarted (PID {new_pid})")
+                return True
+            if previous_pid is None:
+                print(f"✓ {scope_label} service restarted")
+                return True
+
+        if active_state == "activating" and sub_state == "auto-restart":
+            time.sleep(1)
+            continue
+
+        time.sleep(2)
+
+    print(
+        f"⚠ {scope_label} service did not become active within {int(timeout)}s.\n"
+        f"  Check status: {'sudo ' if system else ''}hermes gateway status\n"
+        f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} -l --since '2 min ago'"
+    )
+    return False
+
+
+def _recover_pending_systemd_restart(system: bool = False, previous_pid: int | None = None) -> bool:
+    """Recover a planned service restart that is stuck in systemd state."""
+    props = _read_systemd_unit_properties(system=system)
+    if not props:
+        return False
+
+    try:
+        from gateway.status import read_runtime_status
+    except Exception:
+        return False
+
+    runtime_state = read_runtime_status() or {}
+    if not runtime_state.get("restart_requested"):
+        return False
+
+    active_state = props.get("ActiveState", "")
+    sub_state = props.get("SubState", "")
+    exec_main_status = props.get("ExecMainStatus", "")
+    result = props.get("Result", "")
+
+    if active_state == "activating" and sub_state == "auto-restart":
+        print("⏳ Service restart already pending — waiting for systemd relaunch...")
+        return _wait_for_systemd_service_restart(
+            system=system,
+            previous_pid=previous_pid,
+        )
+
+    if active_state == "failed" and (
+        exec_main_status == str(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+        or result == "exit-code"
+    ):
+        svc = get_service_name()
+        scope_label = _service_scope_label(system).capitalize()
+        print(f"↻ Clearing failed state for pending {scope_label.lower()} service restart...")
+        _run_systemctl(
+            ["reset-failed", svc],
+            system=system,
+            check=False,
+            timeout=30,
+        )
+        _run_systemctl(
+            ["start", svc],
+            system=system,
+            check=False,
+            timeout=90,
+        )
+        return _wait_for_systemd_service_restart(
+            system=system,
+            previous_pid=previous_pid,
+        )
+
+    return False
+
+
 def _probe_launchd_service_running() -> bool:
     if not get_launchd_plist_path().exists():
         return False
@@ -470,7 +611,8 @@ def stop_profile_gateway() -> bool:
         except (ProcessLookupError, PermissionError):
             break
 
-    remove_pid_file()
+    if get_running_pid() is None:
+        remove_pid_file()
     return True
 
 
@@ -1505,14 +1647,9 @@ def systemd_restart(system: bool = False):
 
     pid = get_running_pid()
     if pid is not None and _request_gateway_self_restart(pid):
-        # SIGUSR1 sent — the gateway will drain active agents, exit with
-        # code 75, and systemd will restart it after RestartSec (30s).
-        # Wait for the old process to die and the new one to become active
-        # so the CLI doesn't return while the service is still restarting.
         import time
         scope_label = _service_scope_label(system).capitalize()
         svc = get_service_name()
-        scope_cmd = _systemctl_cmd(system)
 
         # Phase 1: wait for old process to exit (drain + shutdown)
         print(f"⏳ {scope_label} service draining active work...")
@@ -1526,48 +1663,41 @@ def systemd_restart(system: bool = False):
         else:
             print(f"⚠ Old process (PID {pid}) still alive after 90s")
 
-        # Phase 2: wait for systemd to start the new process
-        print(f"⏳ Waiting for {svc} to restart...")
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            try:
-                result = subprocess.run(
-                    scope_cmd + ["is-active", svc],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if result.stdout.strip() == "active":
-                    # Verify it's a NEW process, not the old one somehow
-                    new_pid = get_running_pid()
-                    if new_pid and new_pid != pid:
-                        print(f"✓ {scope_label} service restarted (PID {new_pid})")
-                        return
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
-            time.sleep(2)
-
-        # Timed out — check final state
-        try:
-            result = subprocess.run(
-                scope_cmd + ["is-active", svc],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.stdout.strip() == "active":
-                print(f"✓ {scope_label} service restarted")
-                return
-        except Exception:
-            pass
-        print(
-            f"⚠ {scope_label} service did not become active within 60s.\n"
-            f"  Check status: {'sudo ' if system else ''}hermes gateway status\n"
-            f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} --since '2 min ago'"
+        # The gateway exits with code 75 for a planned service restart.
+        # systemd can sit in the RestartSec window or even wedge itself into a
+        # failed/rate-limited state if the operator asks for another restart in
+        # the middle of that handoff. Clear any stale failed state and kick the
+        # unit immediately so `hermes gateway restart` behaves idempotently.
+        _run_systemctl(
+            ["reset-failed", svc],
+            system=system,
+            check=False,
+            timeout=30,
         )
+        _run_systemctl(
+            ["start", svc],
+            system=system,
+            check=False,
+            timeout=90,
+        )
+        _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
+
+    if _recover_pending_systemd_restart(system=system, previous_pid=pid):
+        return
+
+    _run_systemctl(
+        ["reset-failed", get_service_name()],
+        system=system,
+        check=False,
+        timeout=30,
+    )
     _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
 
 
-def systemd_status(deep: bool = False, system: bool = False):
+def systemd_status(deep: bool = False, system: bool = False, full: bool = False):
     system = _select_systemd_scope(system)
     unit_path = get_systemd_unit_path(system=system)
     scope_flag = " --system" if system else ""
@@ -1590,8 +1720,12 @@ def systemd_status(deep: bool = False, system: bool = False):
         print(f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
         print()
 
+    status_cmd = ["status", get_service_name(), "--no-pager"]
+    if full:
+        status_cmd.append("-l")
+
     _run_systemctl(
-        ["status", get_service_name(), "--no-pager"],
+        status_cmd,
         system=system,
         capture_output=False,
         timeout=10,
@@ -1624,6 +1758,19 @@ def systemd_status(deep: bool = False, system: bool = False):
         for line in runtime_lines:
             print(f"  {line}")
 
+    unit_props = _read_systemd_unit_properties(system=system)
+    active_state = unit_props.get("ActiveState", "")
+    sub_state = unit_props.get("SubState", "")
+    exec_main_status = unit_props.get("ExecMainStatus", "")
+    result_code = unit_props.get("Result", "")
+    if active_state == "activating" and sub_state == "auto-restart":
+        print("  ⏳ Restart pending: systemd is waiting to relaunch the gateway")
+    elif active_state == "failed" and exec_main_status == str(GATEWAY_SERVICE_RESTART_EXIT_CODE):
+        print("  ⚠ Planned restart is stuck in systemd failed state (exit 75)")
+        print(f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}")
+    elif active_state == "failed" and result_code:
+        print(f"  ⚠ Systemd unit result: {result_code}")
+
     if system:
         print("✓ System service starts at boot without requiring systemd linger")
     elif deep:
@@ -1639,7 +1786,10 @@ def systemd_status(deep: bool = False, system: bool = False):
     if deep:
         print()
         print("Recent logs:")
-        subprocess.run(_journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"], timeout=10)
+        log_cmd = _journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"]
+        if full:
+            log_cmd.append("-l")
+        subprocess.run(log_cmd, timeout=10)
 
 
 # =============================================================================
@@ -3762,12 +3912,13 @@ def gateway_command(args):
     
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)
+        full = getattr(args, 'full', False)
         system = getattr(args, 'system', False)
         snapshot = get_gateway_runtime_snapshot(system=system)
         
         # Check for service first
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
-            systemd_status(deep, system=system)
+            systemd_status(deep, system=system, full=full)
             _print_gateway_process_mismatch(snapshot)
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)

@@ -65,7 +65,11 @@ class TestGatewayPidState:
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
 
-        assert status.get_running_pid() == os.getpid()
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.release_gateway_runtime_lock()
 
     def test_get_running_pid_accepts_script_style_gateway_cmdline(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -85,7 +89,11 @@ class TestGatewayPidState:
             lambda pid: "/venv/bin/python /repo/hermes_cli/main.py gateway run --replace",
         )
 
-        assert status.get_running_pid() == os.getpid()
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.release_gateway_runtime_lock()
 
     def test_get_running_pid_accepts_explicit_pid_path_without_cleanup(self, tmp_path, monkeypatch):
         other_home = tmp_path / "profile-home"
@@ -102,8 +110,81 @@ class TestGatewayPidState:
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
 
+        lock_path = other_home / "gateway.lock"
+        lock_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }))
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock_path=None: True)
+
         assert status.get_running_pid(pid_path, cleanup_stale=False) == os.getpid()
         assert pid_path.exists()
+
+    def test_runtime_lock_claims_and_releases_liveness(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert status.is_gateway_runtime_lock_active() is False
+        assert status.acquire_gateway_runtime_lock() is True
+        assert status.is_gateway_runtime_lock_active() is True
+
+        status.release_gateway_runtime_lock()
+
+        assert status.is_gateway_runtime_lock_active() is False
+
+    def test_get_running_pid_treats_pid_file_as_stale_without_runtime_lock(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+
+    def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": 99999,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+        monkeypatch.setattr(
+            status,
+            "_build_pid_record",
+            lambda: {
+                "pid": os.getpid(),
+                "kind": "hermes-gateway",
+                "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+                "start_time": 123,
+            },
+        )
+        assert status.acquire_gateway_runtime_lock() is True
+
+        def fake_kill(pid, sig):
+            if pid == 99999:
+                raise ProcessLookupError
+            return None
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        try:
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.release_gateway_runtime_lock()
 
 
 class TestGatewayRuntimeStatus:

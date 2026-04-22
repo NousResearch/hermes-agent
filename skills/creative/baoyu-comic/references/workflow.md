@@ -99,6 +99,8 @@ Save result and handle accordingly:
 
 **Use `clarify` one question at a time**, in priority order:
 
+> **Timeout handling (CRITICAL)**: if `clarify` returns `"The user did not provide a response within the time limit. Use your best judgement..."`, that is a per-question default, NOT blanket consent. Continue to the next question in the sequence — do not bail out of Step 2. Then, in your next user-visible message, explicitly surface every default that was taken (e.g. `"Defaulted style → ohmsha, narrative focus → concept explanation, audience → developers (clarify timed out on all three). Say the word to redirect."`). An unreported default is indistinguishable to the user from "the agent never asked."
+
 ### Question 1: Visual Style
 
 If a preset is recommended (see `auto-selection.md`), show it first:

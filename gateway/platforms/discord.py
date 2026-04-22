@@ -640,10 +640,19 @@ class DiscordAdapter(BasePlatformAdapter):
                         "DISCORD_IGNORE_NO_MENTION", "true"
                     ).lower() in ("true", "1", "yes")
                     if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-                        _free_channels = {ch.strip() for ch in _free_channels_raw.split(",") if ch.strip()}
+                        # Get free_response_channels from config.yaml first, then env var
+                        _free_channels_config = self.config.extra.get("free_response_channels", [])
+                        if _free_channels_config:
+                            _free_channels = {str(ch).strip() for ch in _free_channels_config if str(ch).strip()}
+                        else:
+                            _free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+                            _free_channels = {ch.strip() for ch in _free_channels_raw.split(",") if ch.strip()}
+                        
+                        # Check both channel ID and parent channel ID (for threads)
                         _channel_id = str(message.channel.id)
-                        if _channel_id not in _free_channels:
+                        _parent_id = str(getattr(message.channel, 'parent_id', '') or '')
+                        
+                        if _channel_id not in _free_channels and _parent_id not in _free_channels:
                             return
 
                 await self._handle_message(message)

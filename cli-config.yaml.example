@@ -578,6 +578,20 @@ platform_toolsets:
 # Run `hermes chat --list-toolsets` to see all toolsets and their tools.
 # Run `hermes chat --list-tools` to see every individual tool with descriptions.
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Discord-specific settings (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+# platforms:
+#   discord:
+#     reply_to_mode: "first"  # off | first | all
+#     extra:
+#       # Channels where bot responds without @mention (thread-friendly)
+#       # Supports both channel IDs and thread IDs
+#       free_response_channels:
+#         - "1234567890123456789"  # Channel ID
+#         - "9876543210987654321"  # Thread ID (parent channel also works)
+#       # Or use env var: DISCORD_FREE_RESPONSE_CHANNELS=123,456,789
 #
 # INDIVIDUAL TOOLSETS (compose your own):
 #   web          - web_search, web_extract

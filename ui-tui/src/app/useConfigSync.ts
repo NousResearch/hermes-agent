@@ -22,7 +22,7 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 }
 
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
-  raw === false ? 'off' : typeof raw === 'string' ? STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top' : 'top'
+  raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
 
 const MTIME_POLL_MS = 5000
 

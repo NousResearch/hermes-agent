@@ -257,6 +257,76 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
     )
 
 
+def test_init_feasibility_check_uses_aux_provider_model_context_length():
+    """Aux compression should reuse per-model context_length from providers config."""
+
+    class _StubCompressor:
+        def __init__(self, *args, **kwargs):
+            self.context_length = 200_000
+            self.threshold_tokens = 100_000
+            self.threshold_percent = 0.50
+
+        def get_tool_schemas(self):
+            return []
+
+        def on_session_start(self, *args, **kwargs):
+            return None
+
+    cfg = {
+        "providers": {
+            "local-kimi": {
+                "api": "http://127.0.0.1:8080/v1",
+                "models": {
+                    "kimi-code/kimi-code": {
+                        "context_length": 262_141,
+                    }
+                },
+            }
+        },
+        "auxiliary": {
+            "compression": {
+                "provider": "custom",
+                "model": "kimi-code/kimi-code",
+                "base_url": "http://127.0.0.1:8080/v1",
+            },
+        },
+    }
+    mock_client = MagicMock()
+    mock_client.base_url = "http://127.0.0.1:8080/v1"
+    mock_client.api_key = "sk-custom"
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("run_agent.ContextCompressor", new=_StubCompressor),
+        patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(mock_client, "kimi-code/kimi-code"),
+        ),
+        patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=262_141,
+        ) as mock_ctx_len,
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent._aux_compression_context_length_config == 262_141
+    mock_ctx_len.assert_called_once_with(
+        "kimi-code/kimi-code",
+        base_url="http://127.0.0.1:8080/v1",
+        api_key="sk-custom",
+        config_context_length=262_141,
+    )
+
+
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_warns_when_no_auxiliary_provider(mock_get_client):
     """Warning emitted when no auxiliary provider is configured."""

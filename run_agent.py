@@ -1575,6 +1575,48 @@ class AIAgent:
                 _aux_context_config = int(_aux_context_config)
             except (TypeError, ValueError):
                 _aux_context_config = None
+        if _aux_context_config is None and isinstance(_aux_cfg, dict):
+            _aux_model = str(_aux_cfg.get("model") or "").strip()
+            _aux_base_url = str(_aux_cfg.get("base_url") or "").strip().rstrip("/")
+            _aux_provider_key = str(_aux_cfg.get("provider") or "").strip().lower()
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+
+                _aux_custom_providers = get_compatible_custom_providers(_agent_cfg)
+            except Exception:
+                _aux_custom_providers = _agent_cfg.get("custom_providers")
+                if not isinstance(_aux_custom_providers, list):
+                    _aux_custom_providers = []
+            for _cp_entry in _aux_custom_providers:
+                if not isinstance(_cp_entry, dict):
+                    continue
+                _cp_url = str(_cp_entry.get("base_url") or "").strip().rstrip("/")
+                _cp_key = str(_cp_entry.get("provider_key") or "").strip().lower()
+                if _aux_base_url:
+                    if not _cp_url or _cp_url != _aux_base_url:
+                        continue
+                elif _aux_provider_key and _aux_provider_key != "custom":
+                    if not _cp_key or _cp_key != _aux_provider_key:
+                        continue
+                else:
+                    continue
+                _cp_models = _cp_entry.get("models", {})
+                if isinstance(_cp_models, dict):
+                    _cp_model_cfg = _cp_models.get(_aux_model, {})
+                    if isinstance(_cp_model_cfg, dict):
+                        _cp_ctx = _cp_model_cfg.get("context_length")
+                        if _cp_ctx is not None:
+                            try:
+                                _aux_context_config = int(_cp_ctx)
+                            except (TypeError, ValueError):
+                                logger.warning(
+                                    "Invalid context_length for auxiliary compression model %r in "
+                                    "custom_providers: %r — must be a plain integer "
+                                    "(e.g. 256000, not '256K'). Falling back to auto-detection.",
+                                    _aux_model or _cp_entry.get("model") or "?",
+                                    _cp_ctx,
+                                )
+                break
         self._aux_compression_context_length_config = _aux_context_config
 
         # Read explicit context_length override from model config

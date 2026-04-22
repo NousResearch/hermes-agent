@@ -1464,3 +1464,122 @@ class WeComAdapter(BasePlatformAdapter):
             "name": chat_id,
             "type": "group" if chat_id and chat_id.lower().startswith("group") else "dm",
         }
+
+
+# ------------------------------------------------------------------
+# QR code scan flow for obtaining bot credentials
+# ------------------------------------------------------------------
+
+_QR_GENERATE_URL = "https://work.weixin.qq.com/ai/qc/generate"
+_QR_QUERY_URL = "https://work.weixin.qq.com/ai/qc/query_result"
+_QR_CODE_PAGE = "https://work.weixin.qq.com/ai/qc/gen?source=hermes&scode="
+_QR_POLL_INTERVAL = 3  # seconds
+_QR_POLL_TIMEOUT = 300  # 5 minutes
+
+
+def qr_scan_for_bot_info(
+    *,
+    timeout_seconds: int = _QR_POLL_TIMEOUT,
+) -> Optional[Dict[str, str]]:
+    """Run the WeCom QR scan flow to obtain bot_id and secret.
+
+    Fetches a QR code from WeCom, renders it in the terminal, and polls
+    until the user scans it or the timeout expires.
+
+    Returns ``{"bot_id": ..., "secret": ...}`` on success, ``None`` on
+    failure or timeout.
+    """
+    try:
+        import urllib.request
+        import urllib.parse
+    except ImportError:  # pragma: no cover
+        logger.error("urllib is required for WeCom QR scan")
+        return None
+
+    generate_url = f"{_QR_GENERATE_URL}?source=hermes"
+
+    # ── Step 1: Fetch QR code ──
+    print("  Connecting to WeCom...", end="", flush=True)
+    try:
+        req = urllib.request.Request(generate_url, headers={"User-Agent": "HermesAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("WeCom QR: failed to fetch QR code: %s", exc)
+        print(f" failed: {exc}")
+        return None
+
+    data = raw.get("data") or {}
+    scode = str(data.get("scode") or "").strip()
+    auth_url = str(data.get("auth_url") or "").strip()
+
+    if not scode or not auth_url:
+        logger.error("WeCom QR: unexpected response format: %s", raw)
+        print(" failed: unexpected response format")
+        return None
+
+    print(" done.")
+
+    # ── Step 2: Render QR code in terminal ──
+    print()
+    qr_rendered = False
+    try:
+        import qrcode as _qrcode
+        qr = _qrcode.QRCode()
+        qr.add_data(auth_url)
+        qr.make(fit=True)
+        qr.print_ascii(invert=True)
+        qr_rendered = True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    page_url = f"{_QR_CODE_PAGE}{urllib.parse.quote(scode)}"
+    if qr_rendered:
+        print(f"\n  Scan the QR code above, or open this URL directly:\n  {page_url}")
+    else:
+        print(f"  Open this URL in WeCom on your phone:\n\n  {page_url}\n")
+        print("  Tip: pip install qrcode  to display a scannable QR code here next time")
+    print()
+    print("  Fetching configuration results...", end="", flush=True)
+
+    # ── Step 3: Poll for result ──
+    import time
+    deadline = time.time() + timeout_seconds
+    query_url = f"{_QR_QUERY_URL}?scode={urllib.parse.quote(scode)}"
+    poll_count = 0
+
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request(query_url, headers={"User-Agent": "HermesAgent/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.debug("WeCom QR poll error: %s", exc)
+            time.sleep(_QR_POLL_INTERVAL)
+            continue
+
+        poll_count += 1
+        if poll_count % 6 == 0:
+            print(".", end="", flush=True)
+
+        result_data = result.get("data") or {}
+        status = str(result_data.get("status") or "").lower()
+
+        if status == "success":
+            print()  # newline after "Fetching configuration results..." dots
+            bot_info = result_data.get("bot_info") or {}
+            bot_id = str(bot_info.get("botid") or bot_info.get("bot_id") or "").strip()
+            secret = str(bot_info.get("secret") or "").strip()
+            if bot_id and secret:
+                return {"bot_id": bot_id, "secret": secret}
+            logger.warning("WeCom QR: success but missing bot_info: %s", result_data)
+            print("  QR scan succeeded but bot info was not returned")
+            return None
+
+        time.sleep(_QR_POLL_INTERVAL)
+
+    print()  # newline after dots
+    print(f"  QR scan timed out ({timeout_seconds // 60} minutes). Please try again.")
+    return None

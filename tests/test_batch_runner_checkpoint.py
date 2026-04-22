@@ -186,3 +186,82 @@ class TestBatchWorkerResumeBehavior:
         assert result["discarded_no_reasoning"] == 1
         assert result["completed_prompts"] == [0]
         assert not batch_file.exists() or batch_file.read_text() == ""
+
+
+class _FakePool:
+    def __init__(self, results):
+        self._results = results
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def imap_unordered(self, func, tasks):
+        return iter(self._results)
+
+
+class _FakeProgress:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def add_task(self, *args, **kwargs):
+        return "task"
+
+    def update(self, *args, **kwargs):
+        return None
+
+
+class TestRunCheckpointAggregation:
+    def test_final_checkpoint_keeps_completed_prompts_unique(self, tmp_path, monkeypatch):
+        runner = BatchRunner.__new__(BatchRunner)
+        runner.run_name = "test_run"
+        runner.distribution = "default"
+        runner.max_iterations = 1
+        runner.base_url = None
+        runner.api_key = None
+        runner.model = "test-model"
+        runner.num_workers = 1
+        runner.verbose = False
+        runner.ephemeral_system_prompt = None
+        runner.log_prefix_chars = 0
+        runner.providers_allowed = None
+        runner.providers_ignored = None
+        runner.providers_order = None
+        runner.provider_sort = None
+        runner.max_tokens = None
+        runner.reasoning_config = None
+        runner.prefill_messages = None
+        runner.batch_size = 1
+        runner.dataset = [{"prompt": "hello"}]
+        runner.batches = [[(0, {"prompt": "hello"})]]
+        runner.output_dir = tmp_path / "out"
+        runner.output_dir.mkdir()
+        runner.checkpoint_file = runner.output_dir / "checkpoint.json"
+        runner.stats_file = runner.output_dir / "statistics.json"
+
+        fake_results = [{
+            "batch_num": 0,
+            "completed_prompts": [0],
+            "processed": 1,
+            "skipped": 0,
+            "discarded_no_reasoning": 0,
+            "tool_stats": {},
+            "reasoning_stats": {},
+        }]
+
+        monkeypatch.setattr("batch_runner.Pool", lambda *args, **kwargs: _FakePool(fake_results))
+        monkeypatch.setattr("batch_runner.Console", lambda *args, **kwargs: None)
+        monkeypatch.setattr("batch_runner.Progress", _FakeProgress)
+
+        runner.run()
+
+        checkpoint_data = json.loads(runner.checkpoint_file.read_text())
+        assert checkpoint_data["completed_prompts"] == [0]

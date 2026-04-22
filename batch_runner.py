@@ -951,13 +951,10 @@ class BatchRunner:
                     root_logger.setLevel(original_level)
         
         # Aggregate all batch statistics and update checkpoint
-        all_completed_prompts = list(completed_prompts_set)
+        all_completed_prompts = sorted(completed_prompts_set)
         total_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
         
         for batch_result in results:
-            # Add newly completed prompts
-            all_completed_prompts.extend(batch_result.get("completed_prompts", []))
-            
             # Aggregate tool stats
             for tool_name, stats in batch_result.get("tool_stats", {}).items():
                 if tool_name not in total_tool_stats:
@@ -1288,4 +1285,3 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
-

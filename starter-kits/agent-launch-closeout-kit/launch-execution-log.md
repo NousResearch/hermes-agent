@@ -14,8 +14,11 @@ Track launch execution separately from product proof so the operator can close t
 ## Live browser auth
 - Status: blocked by logged-out publish session
 - Audit file: `starter-kits/agent-launch-closeout-kit/live-browser-auth-audit.md`
-- Marker state: `~/.hermes/state/x-access.json` says browser-session ready for `KelEvur`
+- Marker state: `~/.hermes/state/x-access.json` currently says `status: stale` for `KelEvur`
 - Live browser result: `https://x.com/` shows the logged-out landing page and `compose/post` redirects into login
+- Recovery packet: `starter-kits/agent-launch-closeout-kit/auth-artifacts/browser-auth-recovery-2026-04-21T19-42-32-0500.md`
+- Latest failed live-check artifact: `starter-kits/agent-launch-closeout-kit/auth-artifacts/browser-auth-live-check-2026-04-21T20-18-51-0500.md`
+- Latest screenshot evidence: `/Users/hermesmasteragent/.hermes/cache/screenshots/browser_screenshot_50b1574757d6428eb925d97058c41ae5.png`
 - Consequence: do not mark publish unblocked until the actual Hermes publish session reaches a signed-in X surface
 
 ## Launch thread
@@ -60,7 +63,7 @@ Track launch execution separately from product proof so the operator can close t
 
 ## Next move
 1. Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` to verify required files and the claimed publish path.
-2. Verify the actual Hermes publish session is signed into X; if the browser still lands on the logged-out page or login flow, treat the browser-session marker as stale and keep publish blocked.
+2. Verify the actual Hermes publish session is signed into X; if the browser still lands on the logged-out page or login flow, run `bash starter-kits/agent-launch-closeout-kit/scripts/browser-auth-recovery.sh --prepare`, complete the recovery packet with screenshot evidence, and keep publish blocked until that proof exists.
 3. Publish the launch thread against the proved starter-workflow line.
 4. If demo capture is still not ready, attach the proof-artifact still and do not delay publish.
 5. Capture the walkthrough immediately after posting and log the asset path here.

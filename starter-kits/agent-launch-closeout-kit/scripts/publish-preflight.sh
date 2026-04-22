@@ -41,7 +41,18 @@ fi
 
 browser_ready=0
 browser_handle=""
+browser_status="missing"
 if [[ -f "$X_ACCESS_STATE_FILE" ]]; then
+  browser_status="$(python3 - <<'PY' "$X_ACCESS_STATE_FILE"
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    print(data.get("status", "unknown"))
+except Exception:
+    print("unknown")
+PY
+)"
   if grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' "$X_ACCESS_STATE_FILE" \
     && grep -Eq '"mode"[[:space:]]*:[[:space:]]*"browser-session"' "$X_ACCESS_STATE_FILE"; then
     browser_ready=1
@@ -73,7 +84,7 @@ if (( ${#missing_auth[@]} > 0 )) && (( browser_ready == 0 )); then
   else
     printf 'Env file checked: %s (missing)\n' "$ENV_FILE"
   fi
-  printf 'Browser-session state checked: %s\n' "$X_ACCESS_STATE_FILE"
+  printf 'Browser-session state checked: %s (status: %s)\n' "$X_ACCESS_STATE_FILE" "$browser_status"
   exit 3
 fi
 

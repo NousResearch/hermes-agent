@@ -1,0 +1,33 @@
+1
+00:00:00,000 --> 00:00:09,000
+Most agent setups are fake autonomy.
+They stop the second you stop prompting them.
+
+2
+00:00:09,000 --> 00:00:21,000
+This starter kit ships one honest recurring workflow first:
+preflight, path injection, schedule, evening doc sync.
+
+3
+00:00:21,000 --> 00:00:33,000
+Preflight checks the exact kit surface before you waste time.
+
+4
+00:00:33,000 --> 00:00:46,000
+No fake magic:
+you inject the real note paths and workspace path once.
+
+5
+00:00:46,000 --> 00:01:00,000
+Fresh-context proof is already recorded:
+one recurring workflow ran in 1.74 minutes.
+
+6
+00:01:00,000 --> 00:01:15,000
+The result is durable project state:
+updated notes, blocker, next move, and ship rhythm.
+
+7
+00:01:15,000 --> 00:01:27,000
+Ship one recurring workflow first.
+Expand the full operating pack after proof.

@@ -25,7 +25,7 @@ Do not widen the claim to a fully proven four-job operating pack.
 
 ## Canonical publish order
 1. Run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-preflight.sh` before touching browser publish or `x-cli` so missing auth or missing source files are surfaced explicitly.
-2. In the same publish environment, open `https://x.com/home` or `https://x.com/compose/post` and verify the session is actually signed in. If X shows the logged-out landing page, a login redirect, or `Already have an account?`, treat the browser-session marker as stale and stop.
+2. In the same publish environment, open `https://x.com/home` or `https://x.com/compose/post` and verify the session is actually signed in. If X shows the logged-out landing page, a login redirect, or `Already have an account?`, treat the browser-session marker as stale, run `bash starter-kits/agent-launch-closeout-kit/scripts/browser-auth-recovery.sh --prepare`, and stop until the recovery packet has been completed with screenshot evidence.
 3. Re-open the source launch thread and post it with no broader-claim edits.
 4. Attach the strongest proof-backed asset available:
    - primary: short walkthrough cut using `demo-captions.srt`
@@ -42,6 +42,7 @@ Do not widen the claim to a fully proven four-job operating pack.
 - If demo capture is still pending, publish against the proved claim anyway.
 - Never treat `~/.hermes/state/x-access.json` as enough publish proof by itself; the live publish session still has to be signed in.
 - Use `live-browser-auth-audit.md` whenever the marker and the real browser session disagree.
+- Use `scripts/browser-auth-recovery.sh` as the canonical stale-marker recovery path and require a screenshot-backed proof artifact before publish resumes.
 
 ## Block-end verification
 Closeout work does not count as "done" because the thread text or runbook exists. End the block with recorded proof in `starter-kits/agent-launch-closeout-kit/launch-execution-log.md`.
@@ -96,7 +97,8 @@ If either command fails, the work is still status narration. Update the executio
 
 ## Live auth audit
 - Latest audit: `starter-kits/agent-launch-closeout-kit/live-browser-auth-audit.md`
-- Current finding: `x-access.json` says ready, but the live Hermes browser session still reaches X's logged-out/login surfaces.
+- Recovery packet script: `starter-kits/agent-launch-closeout-kit/scripts/browser-auth-recovery.sh`
+- Current finding: `x-access.json` is currently `stale`, and the live Hermes browser session still reaches X's logged-out/login surfaces until a fresh signed-in proof is captured.
 - Blocking condition to clear: signed-in composer or signed-in home surface in the actual publish session.
 
 ## Fill-before-publish fields

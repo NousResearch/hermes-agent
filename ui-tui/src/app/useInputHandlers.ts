@@ -380,9 +380,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     // shift-tab flips yolo without spending a turn (claude-code parity)
     if (key.shift && key.tab && !cState.completions.length) {
+      if (!live.sid) {
+        return void actions.sys('yolo needs an active session')
+      }
+
       return void gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid })
-        .then(r => actions.sys(`yolo ${r?.value === '1' ? 'on' : 'off'}`))
+        .then(r => actions.sys(r ? `yolo ${r.value === '1' ? 'on' : 'off'}` : 'failed to toggle yolo'))
+        .catch(() => actions.sys('failed to toggle yolo'))
     }
 
     if (key.tab && cState.completions.length) {

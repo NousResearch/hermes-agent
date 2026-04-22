@@ -2528,7 +2528,8 @@ def _(rid, params: dict) -> dict:
 
     if key == "statusbar":
         raw = str(value or "").strip().lower()
-        d0 = _load_cfg().get("display") or {}
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
         current = _coerce_statusbar(d0.get("tui_statusbar", "top"))
 
         if raw in ("", "toggle"):
@@ -2659,7 +2660,10 @@ def _(rid, params: dict) -> dict:
         on = bool(_load_cfg().get("display", {}).get("tui_compact", False))
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "statusbar":
-        raw = _load_cfg().get("display", {}).get("tui_statusbar", "top")
+        display = _load_cfg().get("display")
+        raw = (
+            display.get("tui_statusbar", "top") if isinstance(display, dict) else "top"
+        )
         return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"

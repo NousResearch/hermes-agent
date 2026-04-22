@@ -105,4 +105,11 @@ describe('normalizeStatusBar', () => {
     expect(normalizeStatusBar('sideways')).toBe('top')
     expect(normalizeStatusBar(42)).toBe('top')
   })
+
+  it('trims whitespace and folds case', () => {
+    expect(normalizeStatusBar(' Bottom ')).toBe('bottom')
+    expect(normalizeStatusBar('TOP')).toBe('top')
+    expect(normalizeStatusBar('  on  ')).toBe('top')
+    expect(normalizeStatusBar('OFF')).toBe('off')
+  })
 })

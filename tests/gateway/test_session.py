@@ -181,7 +181,99 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Telegram" in prompt
-        assert "Home Chat" in prompt
+        assert "**Source:** Telegram (DM with user)" in prompt
+
+    def test_telegram_dm_prompt_omits_connected_platforms_and_delivery_block(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="fake-token",
+                    home_channel=HomeChannel(
+                        platform=Platform.TELEGRAM,
+                        chat_id="111",
+                        name="Home Chat",
+                    ),
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="111",
+            chat_name="Home Chat",
+            chat_type="dm",
+            user_name="Diego",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Source:** Telegram (DM with Diego)" in prompt
+        assert "**User:** Diego" in prompt
+        assert "Connected Platforms" not in prompt
+        assert "Home Channels (default destinations):" not in prompt
+        assert "Delivery options for scheduled tasks" not in prompt
+        assert '`"origin"`' not in prompt
+        assert '`"local"`' not in prompt
+
+    def test_telegram_group_prompt_keeps_connected_platforms_and_delivery_block(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="fake-token",
+                    home_channel=HomeChannel(
+                        platform=Platform.TELEGRAM,
+                        chat_id="111",
+                        name="Home Chat",
+                    ),
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_name="Ops Group",
+            chat_type="group",
+            user_name="Diego",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Connected Platforms" in prompt
+        assert "Home Channels (default destinations):" in prompt
+        assert "Delivery options for scheduled tasks" in prompt
+        assert '`"origin"`' in prompt
+        assert '`"local"`' in prompt
+
+    def test_slack_dm_prompt_keeps_connected_platforms_and_delivery_block(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=True,
+                    token="fake-token",
+                    home_channel=HomeChannel(
+                        platform=Platform.SLACK,
+                        chat_id="C111",
+                        name="Slack Home",
+                    ),
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D111",
+            chat_name="Slack DM",
+            chat_type="dm",
+            user_name="Diego",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Connected Platforms" in prompt
+        assert "Home Channels (default destinations):" in prompt
+        assert "Delivery options for scheduled tasks" in prompt
+        assert '`"origin"`' in prompt
+        assert '`"local"`' in prompt
 
     def test_discord_prompt(self):
         config = GatewayConfig(

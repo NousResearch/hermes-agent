@@ -282,49 +282,59 @@ def build_session_context_prompt(
             "that you can only read messages sent directly to you and respond."
         )
 
+    # Telegram DMs do not need routing/delivery metadata in the system prompt.
+    # Keeping the prompt lean reduces fixed per-turn overhead for the most common
+    # Commander-facing chat surface without affecting group/channel operations.
+    lean_telegram_dm = (
+        context.source.platform == Platform.TELEGRAM
+        and context.source.chat_type == "dm"
+    )
+
     # Connected platforms
-    platforms_list = ["local (files on this machine)"]
-    for p in context.connected_platforms:
-        if p != Platform.LOCAL:
-            platforms_list.append(f"{p.value}: Connected ✓")
-    
-    lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
-    
+    if not lean_telegram_dm:
+        platforms_list = ["local (files on this machine)"]
+        for p in context.connected_platforms:
+            if p != Platform.LOCAL:
+                platforms_list.append(f"{p.value}: Connected ✓")
+
+        lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
+
     # Home channels
-    if context.home_channels:
+    if context.home_channels and not lean_telegram_dm:
         lines.append("")
         lines.append("**Home Channels (default destinations):**")
         for platform, home in context.home_channels.items():
             hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
             lines.append(f"  - {platform.value}: {home.name} (ID: {hc_id})")
-    
+
     # Delivery options for scheduled tasks
-    lines.append("")
-    lines.append("**Delivery options for scheduled tasks:**")
-    
-    from hermes_constants import display_hermes_home
+    if not lean_telegram_dm:
+        lines.append("")
+        lines.append("**Delivery options for scheduled tasks:**")
 
-    # Origin delivery
-    if context.source.platform == Platform.LOCAL:
-        lines.append("- `\"origin\"` → Local output (saved to files)")
-    else:
-        _origin_label = context.source.chat_name or (
-            _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
+        from hermes_constants import display_hermes_home
+
+        # Origin delivery
+        if context.source.platform == Platform.LOCAL:
+            lines.append("- `\"origin\"` → Local output (saved to files)")
+        else:
+            _origin_label = context.source.chat_name or (
+                _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
+            )
+            lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
+
+        # Local always available
+        lines.append(
+            f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
         )
-        lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
 
-    # Local always available
-    lines.append(
-        f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
-    )
-    
-    # Platform home channels
-    for platform, home in context.home_channels.items():
-        lines.append(f"- `\"{platform.value}\"` → Home channel ({home.name})")
-    
-    # Note about explicit targeting
-    lines.append("")
-    lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+        # Platform home channels
+        for platform, home in context.home_channels.items():
+            lines.append(f"- `\"{platform.value}\"` → Home channel ({home.name})")
+
+        # Note about explicit targeting
+        lines.append("")
+        lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
     
     return "\n".join(lines)
 

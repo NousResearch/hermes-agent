@@ -95,6 +95,7 @@ AUTHOR_MAP = {
     "135070653+sgaofen@users.noreply.github.com": "sgaofen",
     "nocoo@users.noreply.github.com": "nocoo",
     "30841158+n-WN@users.noreply.github.com": "n-WN",
+    "tsuijinglei@gmail.com": "hiddenpuppy",
     "leoyuan0099@gmail.com": "keyuyuan",
     "bxzt2006@163.com": "Only-Code-A",
     "i@troy-y.org": "TroyMitchell911",

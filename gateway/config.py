@@ -616,6 +616,8 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
+                if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
+                    os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
 
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})

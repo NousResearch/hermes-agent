@@ -7,22 +7,24 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cron.jobs import (
-    parse_duration,
-    parse_schedule,
+    advance_next_run,
     compute_next_run,
     create_job,
-    load_jobs,
-    save_jobs,
+    delivery_retry_base_seconds,
+    delivery_retry_max_extra,
+    get_due_jobs,
     get_job,
     list_jobs,
-    update_job,
-    pause_job,
-    resume_job,
-    remove_job,
+    load_jobs,
     mark_job_run,
-    advance_next_run,
-    get_due_jobs,
+    parse_duration,
+    parse_schedule,
+    pause_job,
+    remove_job,
+    resume_job,
     save_job_output,
+    save_jobs,
+    update_job,
 )
 
 
@@ -572,3 +574,26 @@ class TestSaveJobOutput:
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
+
+
+class TestDeliveryRetryPolicy:
+    def test_defaults_without_env(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_DELIVERY_MAX_RETRIES", raising=False)
+        monkeypatch.delenv("HERMES_CRON_DELIVERY_RETRY_BASE_SECONDS", raising=False)
+        job = {"id": "j1"}
+        assert delivery_retry_max_extra(job) == 2
+        assert delivery_retry_base_seconds(job) == 5.0
+
+    def test_job_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_DELIVERY_MAX_RETRIES", "1")
+        monkeypatch.setenv("HERMES_CRON_DELIVERY_RETRY_BASE_SECONDS", "10")
+        job = {"id": "j2", "delivery_retry_max": 5, "delivery_retry_base_seconds": 2.5}
+        assert delivery_retry_max_extra(job) == 5
+        assert delivery_retry_base_seconds(job) == 2.5
+
+    def test_invalid_job_fields_fall_back_to_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_DELIVERY_MAX_RETRIES", "3")
+        monkeypatch.delenv("HERMES_CRON_DELIVERY_RETRY_BASE_SECONDS", raising=False)
+        job = {"id": "j3", "delivery_retry_max": "nope", "delivery_retry_base_seconds": []}
+        assert delivery_retry_max_extra(job) == 3
+        assert delivery_retry_base_seconds(job) == 5.0

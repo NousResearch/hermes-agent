@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -76,7 +77,14 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import (
+    advance_next_run,
+    delivery_retry_base_seconds,
+    delivery_retry_max_extra,
+    get_due_jobs,
+    mark_job_run,
+    save_job_output,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -252,7 +260,11 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
                 coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
 
             future = asyncio.run_coroutine_threadsafe(coro, loop)
-            result = future.result(timeout=30)
+            try:
+                result = future.result(timeout=30)
+            except TimeoutError:
+                future.cancel()
+                raise
             if result and not getattr(result, "success", True):
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
@@ -382,7 +394,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,
                     )
-                    send_result = future.result(timeout=60)
+                    try:
+                        send_result = future.result(timeout=60)
+                    except TimeoutError:
+                        future.cancel()
+                        raise
                     if send_result and not getattr(send_result, "success", True):
                         err = getattr(send_result, "error", "unknown")
                         logger.warning(
@@ -443,6 +459,83 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
+
+
+def _is_transient_delivery_failure(message: Optional[str]) -> bool:
+    """Return True if a delivery error string is worth retrying (network blips).
+
+    Conservative: unknown / configuration errors are not retried.
+    """
+    if not message:
+        return False
+    lower = message.lower()
+    if "no delivery target" in lower:
+        return False
+    if "unknown platform" in lower:
+        return False
+    if "failed to load gateway config" in lower:
+        return False
+    if "not configured" in lower and "enabled" in lower:
+        return False
+    transient_markers = (
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection refused",
+        "econnreset",
+        "etimedout",
+        "econnrefused",
+        "broken pipe",
+        "network is unreachable",
+        "temporarily unavailable",
+        " 502",
+        " 503",
+        " 504",
+        " 429",
+        "status 502",
+        "status 503",
+        "status 504",
+        "status 429",
+        "rate limit",
+        "too many requests",
+        "readerror",
+        "connecterror",
+        "remote end closed connection",
+        "temporary failure",
+    )
+    return any(m in lower for m in transient_markers)
+
+
+def _deliver_result_with_retries(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+) -> Optional[str]:
+    """Call :func:`_deliver_result` with bounded exponential backoff on transient failures."""
+    max_extra = delivery_retry_max_extra(job)
+    base = delivery_retry_base_seconds(job)
+    last_err: Optional[str] = None
+    total = max_extra + 1
+    for attempt in range(total):
+        last_err = _deliver_result(job, content, adapters=adapters, loop=loop)
+        if last_err is None:
+            return None
+        if attempt >= max_extra:
+            break
+        if not _is_transient_delivery_failure(last_err):
+            break
+        delay = min(base * (2**attempt), 60.0)
+        logger.info(
+            "Job '%s': delivery failed (attempt %d/%d), backing off %.1fs: %s",
+            job.get("id", "?"),
+            attempt + 1,
+            total,
+            delay,
+            last_err[:500],
+        )
+        time.sleep(delay)
+    return last_err
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
@@ -1029,15 +1122,41 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        executed = 0
+        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
+        # before any execution begins. This preserves at-most-once semantics.
         for job in due_jobs:
-            try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
+            advance_next_run(job["id"])
 
+        # Resolve max parallel workers: env var > config.yaml > unbounded.
+        # Set HERMES_CRON_MAX_PARALLEL=1 to restore serial behaviour.
+        _max_workers: Optional[int] = None
+        try:
+            _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
+            if _env_par:
+                _max_workers = int(_env_par) or None
+        except (ValueError, TypeError):
+            logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
+        if _max_workers is None:
+            try:
+                _ucfg = load_config() or {}
+                _cfg_par = (
+                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+                ).get("max_parallel_jobs")
+                if _cfg_par is not None:
+                    _max_workers = int(_cfg_par) or None
+            except Exception:
+                pass
+
+        if verbose:
+            logger.info(
+                "Running %d job(s) in parallel (max_workers=%s)",
+                len(due_jobs),
+                _max_workers if _max_workers else "unbounded",
+            )
+
+        def _process_job(job: dict) -> bool:
+            """Run one due job end-to-end: execute, save, deliver, mark."""
+            try:
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)
@@ -1046,7 +1165,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
+                # output is already saved above). Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
@@ -1056,7 +1175,9 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result_with_retries(
+                            job, deliver_content, adapters=adapters, loop=loop
+                        )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
@@ -1069,13 +1190,23 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                executed += 1
+                return True
 
             except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
+                logger.error("Error processing job %s: %s", job["id"], e)
                 mark_job_run(job["id"], False, str(e))
+                return False
 
-        return executed
+        # Run all due jobs concurrently, each in its own ContextVar copy
+        # so session/delivery state stays isolated per-thread.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
+            _futures = []
+            for job in due_jobs:
+                _ctx = contextvars.copy_context()
+                _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
+            _results = [f.result() for f in _futures]
+
+        return sum(_results)
     finally:
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)

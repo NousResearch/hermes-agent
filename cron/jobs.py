@@ -90,6 +90,81 @@ def ensure_dirs():
 
 
 # =============================================================================
+# Delivery retry policy (transient network failures; GitHub #13566)
+# Per-job keys override env defaults. Intentionally avoids config.yaml so
+# parallel PRs on hermes_cli/config.py are not required for v1.
+# =============================================================================
+
+_DELIVERY_RETRY_MAX_ENV = "HERMES_CRON_DELIVERY_MAX_RETRIES"
+_DELIVERY_RETRY_BASE_ENV = "HERMES_CRON_DELIVERY_RETRY_BASE_SECONDS"
+
+
+def _parse_int_env(name: str, default: int, lo: int, hi: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return max(lo, min(hi, default))
+    try:
+        return max(lo, min(hi, int(raw)))
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return max(lo, min(hi, default))
+
+
+def _parse_float_env(name: str, default: float, lo: float, hi: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return max(lo, min(hi, default))
+    try:
+        return max(lo, min(hi, float(raw)))
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return max(lo, min(hi, default))
+
+
+def delivery_retry_max_extra(job: Dict[str, Any]) -> int:
+    """Extra delivery attempts after the first failure (0 = single shot).
+
+    Clamped to [0, 10]. Job field ``delivery_retry_max`` overrides
+    ``HERMES_CRON_DELIVERY_MAX_RETRIES`` (default 2).
+    """
+    default = _parse_int_env(_DELIVERY_RETRY_MAX_ENV, 2, 0, 10)
+    raw = job.get("delivery_retry_max")
+    if raw is None:
+        return default
+    try:
+        return max(0, min(10, int(raw)))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Job %r: invalid delivery_retry_max=%r; using default from env",
+            job.get("id"),
+            raw,
+        )
+        return default
+
+
+def delivery_retry_base_seconds(job: Dict[str, Any]) -> float:
+    """Base delay in seconds for exponential backoff between delivery retries.
+
+    Actual sleep is ``min(base * 2**attempt, 60)``. Clamped to [1.0, 120.0].
+    Job field ``delivery_retry_base_seconds`` overrides
+    ``HERMES_CRON_DELIVERY_RETRY_BASE_SECONDS`` (default 5.0).
+    """
+    default = _parse_float_env(_DELIVERY_RETRY_BASE_ENV, 5.0, 1.0, 120.0)
+    raw = job.get("delivery_retry_base_seconds")
+    if raw is None:
+        return default
+    try:
+        return max(1.0, min(120.0, float(raw)))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Job %r: invalid delivery_retry_base_seconds=%r; using default from env",
+            job.get("id"),
+            raw,
+        )
+        return default
+
+
+# =============================================================================
 # Schedule Parsing
 # =============================================================================
 

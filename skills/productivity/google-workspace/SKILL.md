@@ -32,8 +32,20 @@ on CLI, Telegram, Discord, or any platform.
 Define a shorthand first:
 
 ```bash
-GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
+GSETUP="PYTHONPATH=${HERMES_HOME:-$HOME/.hermes}/hermes-agent ${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
 ```
+
+Why this form is safer on self-hosted Hermes installs:
+- `python` may not exist in `PATH`, or may point at the wrong interpreter.
+- `setup.py` imports `hermes_constants`, so the Hermes repo must be on `PYTHONPATH`.
+- Dependencies should be installed into the Hermes venv, not the system Python.
+
+Current local behavior note:
+- `scripts/setup.py` now auto-discovers the Hermes repo root and, when needed,
+  re-execs itself under the Hermes venv Python.
+- That means a direct command like `python3 .../setup.py --check` may also work
+  on self-hosted installs.
+- Keep the explicit `GSETUP` form above as the safest documented default.
 
 ### Step 0: Check if already set up
 
@@ -55,15 +67,16 @@ Calendar/Drive/Sheets/Docs?"**
   Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
   Load the himalaya skill and follow its setup instructions.
 
-- **Email + Calendar** → Continue with this skill, but use
-  `--services email,calendar` during auth so the consent screen only asks for
-  the scopes they actually need.
+- **Email + Calendar** → Continue with this skill.
 
-- **Calendar/Drive/Sheets/Docs only** → Continue with this skill and use a
-  narrower `--services` set like `calendar,drive,sheets,docs`.
+- **Calendar/Drive/Sheets/Docs only** → Continue with this skill.
 
-- **Full Workspace access** → Continue with this skill and use the default
-  `all` service set.
+- **Full Workspace access** → Continue with this skill.
+
+Important compatibility note:
+- The currently installed `scripts/setup.py` requests its built-in full scope set.
+- The script on this server does NOT currently support `--services` filtering.
+- If you need narrower scopes later, update the script first instead of documenting unsupported flags.
 
 **Question 2: "Does your Google account use Advanced Protection (hardware
 security keys required to sign in)? If you're not sure, you probably don't
@@ -94,7 +107,7 @@ Tell the user:
 >    Audience → Test users → Add users
 > 6. Download the JSON file and tell me the file path
 >
-> Important Hermes CLI note: if the file path starts with `/`, do NOT send only the bare path as its own message in the CLI, because it can be mistaken for a slash command. Send it in a sentence instead, like:
+> IMPORTANT: If the file path starts with `/`, do NOT send only the bare path as its own message in the CLI, because it can be mistaken for a slash command. Send it in a sentence instead, like:
 > `The JSON file path is: /home/user/Downloads/client_secret_....json`
 
 Once they provide the path:
@@ -110,19 +123,28 @@ explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
 
 ### Step 3: Get authorization URL
 
-Use the service set chosen in Step 1. Examples:
+Generate the authorization URL:
 
 ```bash
-$GSETUP --auth-url --services email,calendar --format json
-$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
-$GSETUP --auth-url --services all --format json
+$GSETUP --auth-url
 ```
 
-This returns JSON with an `auth_url` field and also saves the exact URL to
-`~/.hermes/google_oauth_last_url.txt`.
+Current behavior of the installed script:
+- prints the raw URL on stdout
+- stores a pending PKCE session in `~/.hermes/google_oauth_pending.json`
+- does NOT support `--services`
+- does NOT support `--format json`
+- does NOT currently save `~/.hermes/google_oauth_last_url.txt`
+
+Current `gws` backend compatibility note:
+- for Gmail search on this server, `gws gmail users messages get` with `format=metadata` did not reliably include `payload.headers`
+- that caused blank `from`, `to`, `subject`, and `date` fields in wrapper output even though snippets/labels were present
+- use `format=full` for Gmail search result hydration when header fields are needed
+- these `gws` backend behaviors affect the `scripts/google_api.py` wrapper, but you can continue to use the wrapper as documented here
+- this skill has been updated to reflect correct setup and behavior.
 
 Agent rules for this step:
-- Extract the `auth_url` field and send that exact URL to the user as a single line.
+- Send the exact printed URL to the user as a single line.
 - Tell the user that the browser will likely fail on `http://localhost:1` after approval, and that this is expected.
 - Tell them to copy the ENTIRE redirected URL from the browser address bar.
 - If the user gets `Error 403: access_denied`, send them directly to `https://console.cloud.google.com/auth/audience` to add themselves as a test user.
@@ -135,13 +157,12 @@ pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:
 
 ```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
+$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
 ```
 
 If `--auth-code` fails because the code expired, was already used, or came from
-an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
-immediately send the new URL to the user and have them retry with the newest
-browser redirect only.
+an older browser tab, rerun `$GSETUP --auth-url` to generate a fresh auth URL,
+then have the user retry with the newest browser redirect only.
 
 ### Step 5: Verify
 
@@ -163,8 +184,11 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 All commands go through the API script. Set `GAPI` as a shorthand:
 
 ```bash
-GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
+GAPI="PYTHONPATH=${HERMES_HOME:-$HOME/.hermes}/hermes-agent ${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
 ```
+
+Use the same pattern as `GSETUP` for the same reasons: correct interpreter,
+correct `PYTHONPATH`, and dependencies installed inside the Hermes venv.
 
 ### Gmail
 
@@ -180,11 +204,13 @@ $GAPI gmail get MESSAGE_ID
 # Send
 $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
-$GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
+$GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>'
+--body "Message text"
 
 # Reply (automatically threads and sets In-Reply-To)
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
-$GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
+$GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>'
+--body "Thanks"
 
 # Labels
 $GAPI gmail labels

@@ -1403,6 +1403,24 @@ class TestExecuteToolCalls:
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
 
+    def test_tool_completed_progress_callback_includes_function_result(self, agent):
+        tc = _mock_tool_call(name="terminal", arguments='{"command":"date -u"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        result = '{"output":"2026-04-21T14:36:21Z\\n","exit_code":0}'
+        agent.tool_progress_callback = MagicMock()
+
+        with patch("run_agent.handle_function_call", return_value=result):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        completed_calls = [
+            call for call in agent.tool_progress_callback.call_args_list
+            if call.args and call.args[0] == "tool.completed"
+        ]
+        assert completed_calls
+        assert completed_calls[-1].kwargs["function_result"] == result
+        assert completed_calls[-1].kwargs["is_error"] is False
+
     def test_quiet_tool_output_prints_without_progress_callback(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])

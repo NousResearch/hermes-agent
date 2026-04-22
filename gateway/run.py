@@ -9251,14 +9251,53 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+
+        def _build_terminal_result_progress(preview_result: Any) -> str | None:
+            """Return a short terminal stdout preview suitable for progress replacement."""
+            if not isinstance(preview_result, str) or not preview_result:
+                return None
+            try:
+                data = json.loads(preview_result)
+            except Exception:
+                return None
+            if not isinstance(data, dict):
+                return None
+            if data.get("exit_code") not in (0, None):
+                return None
+            output = data.get("output")
+            if not isinstance(output, str):
+                return None
+            preview_text = " ".join(output.split())
+            if not preview_text:
+                return None
+            from agent.display import get_tool_preview_max_len
+            _pl = get_tool_preview_max_len()
+            _cap = _pl if _pl > 0 else 40
+            if len(preview_text) > _cap:
+                return None
+            return preview_text
         
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in ("tool.started",):
+            if event_type == "tool.completed":
+                if progress_mode == "verbose" or tool_name != "terminal" or kwargs.get("is_error"):
+                    return
+                result_preview = _build_terminal_result_progress(kwargs.get("function_result"))
+                if not result_preview or tool_name != last_tool[0]:
+                    return
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(tool_name, default="⚙️")
+                msg = f"{emoji} {tool_name}: \"{result_preview}\""
+                last_progress_msg[0] = msg
+                repeat_count[0] = 0
+                progress_queue.put(("__replace_last__", msg))
+                return
+
+            # Only act on tool.started events beyond the completion upgrade path.
+            if event_type != "tool.started":
                 return
 
             # "new" mode: only report when tool changes
@@ -9373,6 +9412,13 @@ class GatewayRunner:
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__replace_last__":
+                        _, replacement = raw
+                        if progress_lines:
+                            progress_lines[-1] = replacement
+                        else:
+                            progress_lines.append(replacement)
+                        msg = progress_lines[-1]
                     else:
                         msg = raw
                         progress_lines.append(msg)
@@ -9442,6 +9488,12 @@ class GatewayRunner:
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            elif isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__replace_last__":
+                                _, replacement = raw
+                                if progress_lines:
+                                    progress_lines[-1] = replacement
+                                else:
+                                    progress_lines.append(replacement)
                             else:
                                 progress_lines.append(raw)
                         except Exception:

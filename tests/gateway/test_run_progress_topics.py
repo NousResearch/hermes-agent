@@ -110,6 +110,30 @@ class DelayedProgressAgent:
         }
 
 
+class TerminalCompletionPreviewAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "date -u +%Y-%m-%dT%H:%M:%SZ", {})
+        time.sleep(0.35)
+        self.tool_progress_callback(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            function_result='{"output":"2026-04-21T14:36:21Z\\n","exit_code":0}',
+            is_error=False,
+        )
+        time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class DelayedInterimAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -379,6 +403,54 @@ def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
     content = adapter.sent[0]["content"]
     # With a 200-char cap, the 165-char command should NOT be truncated
     assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_replaces_short_terminal_preview_with_result(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCompletionPreviewAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-preview",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == [
+        {
+            "chat_id": "12345",
+            "content": '💻 terminal: "date -u +%Y-%m-%dT%H:%M:%SZ"',
+            "reply_to": None,
+            "metadata": None,
+        }
+    ]
+    assert adapter.edits
+    assert adapter.edits[-1]["content"] == '💻 terminal: "2026-04-21T14:36:21Z"'
 
 
 class CommentaryAgent:

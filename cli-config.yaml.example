@@ -226,8 +226,23 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: Koyeb cloud execution
+# Commands run in Koyeb cloud sandboxes
+# Great for: Serverless execution, global deployment, GPU access
+# Requires: pip install koyeb-sdk, KOYEB_API_TOKEN env var
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "koyeb"
+#   cwd: "/root"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   koyeb_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   koyeb_instance_type: "micro"  # Options: micro, small, medium, large, xlarge, 2xlarge
+#   koyeb_region: "na"           # Options: na, eu, fr, etc.
+
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona, koyeb -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

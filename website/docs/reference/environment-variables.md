@@ -125,6 +125,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+| `KOYEB_API_TOKEN` | Koyeb cloud sandboxes ([koyeb.com](https://www.koyeb.com/)) |
 
 ### Nous Tool Gateway
 
@@ -141,7 +142,7 @@ These variables configure the [Tool Gateway](/docs/user-guide/features/tool-gate
 
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona` |
+| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona`, `koyeb` |
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
 | `TERMINAL_DOCKER_VOLUMES` | Additional Docker volume mounts (comma-separated `host:container` pairs) |
@@ -149,6 +150,7 @@ These variables configure the [Tool Gateway](/docs/user-guide/features/tool-gate
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
+| `TERMINAL_KOYEB_IMAGE` | Koyeb sandbox image |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Working directory for all terminal sessions |
@@ -166,7 +168,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_KEY` | Path to private key |
 | `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
-## Container Resources (Docker, Singularity, Modal, Daytona)
+## Container Resources (Docker, Singularity, Modal, Daytona, Koyeb)
 
 | Variable | Description |
 |----------|-------------|
@@ -175,6 +177,13 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_CONTAINER_DISK` | Disk in MB (default: 51200) |
 | `TERMINAL_CONTAINER_PERSISTENT` | Persist container filesystem across sessions (default: `true`) |
 | `TERMINAL_SANDBOX_DIR` | Host directory for workspaces and overlays (default: `~/.hermes/sandboxes/`) |
+
+## Koyeb Backend
+
+| Variable | Description |
+|----------|-------------|
+| `TERMINAL_KOYEB_INSTANCE_TYPE` | Koyeb instance type (default: `micro`). Options: `micro`, `small`, `medium`, `large`, `xlarge`, `2xlarge`, etc. |
+| `KOYEB_REGION` | Koyeb region (default: `na`). Options: `na`, `eu`, `fr`, etc. |
 
 ## Persistent Shell
 

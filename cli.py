@@ -8569,6 +8569,13 @@ class HermesCLI:
                         message,
                         response,
                         self.conversation_history,
+                        main_runtime={
+                            "model": self.model,
+                            "provider": self.provider,
+                            "base_url": self.base_url,
+                            "api_key": self.api_key,
+                            "api_mode": self.api_mode,
+                        },
                     )
                 except Exception:
                     pass

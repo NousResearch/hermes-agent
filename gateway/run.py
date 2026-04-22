@@ -10212,12 +10212,21 @@ class GatewayRunner:
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
+                    # Build main_runtime from the agent that handled this run
+                    _title_agent = agent_holder[0]
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
                         message,
                         final_response,
                         all_msgs,
+                        main_runtime={
+                            "model": getattr(_title_agent, "model", None),
+                            "provider": getattr(_title_agent, "provider", None),
+                            "base_url": getattr(_title_agent, "base_url", None),
+                            "api_key": getattr(_title_agent, "api_key", None),
+                            "api_mode": getattr(_title_agent, "api_mode", None),
+                        } if _title_agent else None,
                     )
                 except Exception:
                     pass

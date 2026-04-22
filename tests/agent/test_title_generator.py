@@ -150,7 +150,7 @@ class TestMaybeAutoTitle:
             # Wait for the daemon thread to complete
             import time
             time.sleep(0.3)
-            mock_auto.assert_called_once_with(db, "sess-1", "hello", "hi there")
+            mock_auto.assert_called_once_with(db, "sess-1", "hello", "hi there", None)
 
     def test_skips_if_no_response(self):
         db = MagicMock()

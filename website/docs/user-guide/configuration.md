@@ -83,17 +83,18 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, a Singularity/Apptainer container, or a Koyeb cloud sandbox.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | singularity
+  backend: local    # local | docker | ssh | modal | daytona | singularity | koyeb
   cwd: "."          # Working directory ("." = current dir for local, "/root" for containers)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  koyeb_image: "koyeb/sandbox:latest"                                       # Container image for Koyeb backend
 ```
 
 For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
@@ -108,6 +109,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| **koyeb** | Koyeb cloud sandbox | Full (cloud sandbox) | Serverless cloud execution |
 
 ### Local Backend
 
@@ -242,6 +244,28 @@ terminal:
 
 **Isolation:** Uses `--containall --no-home` for full namespace isolation without mounting the host home directory.
 
+### Koyeb Backend
+
+Runs commands in a [Koyeb](https://www.koyeb.com) cloud sandbox. Each task gets an isolated sandbox that is deleted on cleanup.
+
+```yaml
+terminal:
+  backend: koyeb
+  koyeb_image: "koyeb/sandbox:latest"
+```
+
+**Required:** `KOYEB_API_TOKEN` environment variable. Get one from the [Koyeb control panel](https://app.koyeb.com/account/api).
+
+**Install the SDK:**
+
+```bash
+pip install "hermes-agent[koyeb]"
+```
+
+**Lifecycle:** A new sandbox is created for each task and deleted when the agent cleans up. There is no persistent state between sessions.
+
+**File sync:** `~/.hermes/` credentials and skills are synced to the sandbox via a single tarball upload for fast initialization.
+
 ### Common Terminal Backend Issues
 
 If terminal commands fail immediately or the terminal tool is reported as disabled:
@@ -252,6 +276,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
+- **Koyeb** — Needs `KOYEB_API_TOKEN` and `pip install koyeb-sdk`. Run `hermes doctor` to check.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 

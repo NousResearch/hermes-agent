@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -314,6 +315,15 @@ def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
 # Log file reading
 # ---------------------------------------------------------------------------
 
+
+@dataclass
+class LogSnapshot:
+    """Single-read snapshot of a log file used by debug-share."""
+
+    path: Optional[Path]
+    tail_text: str
+    full_text: Optional[str]
+
 def _resolve_log_path(log_name: str) -> Optional[Path]:
     """Find the log file for *log_name*, falling back to the .1 rotation.
 
@@ -338,19 +348,77 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
-def _read_log_tail(log_name: str, num_lines: int) -> str:
-    """Read the last *num_lines* from a log file, or return a placeholder."""
-    from hermes_cli.logs import _read_last_n_lines
+def _capture_log_snapshot(
+    log_name: str,
+    *,
+    tail_lines: int,
+    max_bytes: int = _MAX_LOG_BYTES,
+) -> LogSnapshot:
+    """Capture a log once and derive summary/full-log views from it.
 
+    The report tail and standalone log upload must come from the same file
+    snapshot. Otherwise a rotation/truncate between reads can make the report
+    look newer than the uploaded ``agent.log`` paste.
+    """
     log_path = _resolve_log_path(log_name)
     if log_path is None:
-        return "(file not found)"
+        return LogSnapshot(path=None, tail_text="(file not found)", full_text=None)
 
     try:
-        lines = _read_last_n_lines(log_path, num_lines)
-        return "".join(lines).rstrip("\n")
+        size = log_path.stat().st_size
+        if size == 0:
+            return LogSnapshot(path=log_path, tail_text="(file not found)", full_text=None)
+
+        with open(log_path, "rb") as f:
+            if size <= max_bytes:
+                raw = f.read()
+                truncated = False
+            else:
+                # Read from the end until we have enough bytes for the
+                # standalone upload and enough newline context to render the
+                # summary tail from the same snapshot.
+                chunk_size = 8192
+                pos = size
+                chunks: list[bytes] = []
+                total = 0
+                newline_count = 0
+
+                while pos > 0 and (total < max_bytes or newline_count <= tail_lines + 1):
+                    read_size = min(chunk_size, pos)
+                    pos -= read_size
+                    f.seek(pos)
+                    chunk = f.read(read_size)
+                    chunks.insert(0, chunk)
+                    total += len(chunk)
+                    newline_count += chunk.count(b"\n")
+                    chunk_size = min(chunk_size * 2, 65536)
+
+                raw = b"".join(chunks)
+                truncated = pos > 0
+
+        full_raw = raw
+        if truncated and len(full_raw) > max_bytes:
+            full_raw = full_raw[-max_bytes:]
+            if b"\n" in full_raw:
+                # Drop the partial first line inside the truncated window so the
+                # pasted log still starts on a real log line.
+                full_raw = full_raw.split(b"\n", 1)[1]
+
+        all_text = raw.decode("utf-8", errors="replace")
+        tail_text = "".join(all_text.splitlines(keepends=True)[-tail_lines:]).rstrip("\n")
+
+        full_text = full_raw.decode("utf-8", errors="replace")
+        if truncated:
+            full_text = f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{full_text}"
+
+        return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)
     except Exception as exc:
-        return f"(error reading: {exc})"
+        return LogSnapshot(path=log_path, tail_text=f"(error reading: {exc})", full_text=None)
+
+
+def _read_log_tail(log_name: str, num_lines: int) -> str:
+    """Read the last *num_lines* from a log file, or return a placeholder."""
+    return _capture_log_snapshot(log_name, tail_lines=num_lines).tail_text
 
 
 def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[str]:
@@ -359,27 +427,17 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
     Returns the file content (last *max_bytes* if truncated), or None if the
     file doesn't exist or is empty.
     """
-    log_path = _resolve_log_path(log_name)
-    if log_path is None:
-        return None
+    return _capture_log_snapshot(log_name, tail_lines=1, max_bytes=max_bytes).full_text
 
-    try:
-        size = log_path.stat().st_size
-        if size == 0:
-            return None
 
-        if size <= max_bytes:
-            return log_path.read_text(encoding="utf-8", errors="replace")
-
-        # File is larger than max_bytes — read the tail.
-        with open(log_path, "rb") as f:
-            f.seek(size - max_bytes)
-            # Skip partial line at the seek point.
-            f.readline()
-            content = f.read().decode("utf-8", errors="replace")
-        return f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{content}"
-    except Exception:
-        return None
+def _capture_default_log_snapshots(log_lines: int) -> dict[str, LogSnapshot]:
+    """Capture all logs used by debug-share exactly once."""
+    errors_lines = min(log_lines, 100)
+    return {
+        "agent": _capture_log_snapshot("agent", tail_lines=log_lines),
+        "errors": _capture_log_snapshot("errors", tail_lines=errors_lines),
+        "gateway": _capture_log_snapshot("gateway", tail_lines=errors_lines),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +463,12 @@ def _capture_dump() -> str:
     return capture.getvalue()
 
 
-def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
+def collect_debug_report(
+    *,
+    log_lines: int = 200,
+    dump_text: str = "",
+    log_snapshots: Optional[dict[str, LogSnapshot]] = None,
+) -> str:
     """Build the summary debug report: system dump + log tails.
 
     Parameters
@@ -424,19 +487,22 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
         dump_text = _capture_dump()
     buf.write(dump_text)
 
+    if log_snapshots is None:
+        log_snapshots = _capture_default_log_snapshots(log_lines)
+
     # ── Recent log tails (summary only) ──────────────────────────────────
     buf.write("\n\n")
     buf.write(f"--- agent.log (last {log_lines} lines) ---\n")
-    buf.write(_read_log_tail("agent", log_lines))
+    buf.write(log_snapshots["agent"].tail_text)
     buf.write("\n\n")
 
     errors_lines = min(log_lines, 100)
     buf.write(f"--- errors.log (last {errors_lines} lines) ---\n")
-    buf.write(_read_log_tail("errors", errors_lines))
+    buf.write(log_snapshots["errors"].tail_text)
     buf.write("\n\n")
 
     buf.write(f"--- gateway.log (last {errors_lines} lines) ---\n")
-    buf.write(_read_log_tail("gateway", errors_lines))
+    buf.write(log_snapshots["gateway"].tail_text)
     buf.write("\n")
 
     return buf.getvalue()
@@ -459,10 +525,15 @@ def run_debug_share(args):
 
     # Capture dump once — prepended to every paste for context.
     dump_text = _capture_dump()
+    log_snapshots = _capture_default_log_snapshots(log_lines)
 
-    report = collect_debug_report(log_lines=log_lines, dump_text=dump_text)
-    agent_log = _read_full_log("agent")
-    gateway_log = _read_full_log("gateway")
+    report = collect_debug_report(
+        log_lines=log_lines,
+        dump_text=dump_text,
+        log_snapshots=log_snapshots,
+    )
+    agent_log = log_snapshots["agent"].full_text
+    gateway_log = log_snapshots["gateway"].full_text
 
     # Prepend dump header to each full log so every paste is self-contained.
     if agent_log:

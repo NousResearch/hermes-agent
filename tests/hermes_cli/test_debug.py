@@ -340,6 +340,55 @@ class TestRunDebugShare:
         assert "--- hermes dump ---" in gateway_paste
         assert "--- full gateway.log ---" in gateway_paste
 
+    def test_share_keeps_report_and_full_log_on_same_snapshot(self, hermes_home, capsys):
+        """A mid-run rotation must not make full agent.log older than the report."""
+        from hermes_cli.debug import run_debug_share, collect_debug_report as real_collect_debug_report
+
+        logs_dir = hermes_home / "logs"
+        (logs_dir / "agent.log").write_text(
+            "2026-04-22 12:00:00 INFO agent: newest line\n"
+        )
+        (logs_dir / "agent.log.1").write_text(
+            "2026-04-10 12:00:00 INFO agent: old rotated line\n"
+        )
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        uploaded_content = []
+
+        def _mock_upload(content, expiry_days=7):
+            uploaded_content.append(content)
+            return f"https://paste.rs/paste{len(uploaded_content)}"
+
+        def _wrapped_collect_debug_report(*, log_lines=200, dump_text="", log_snapshots=None):
+            report = real_collect_debug_report(
+                log_lines=log_lines,
+                dump_text=dump_text,
+                log_snapshots=log_snapshots,
+            )
+            # Simulate the live log rotating after the report is built but
+            # before the old implementation would have re-read agent.log for
+            # standalone upload.
+            (logs_dir / "agent.log").write_text("")
+            (logs_dir / "agent.log.1").write_text(
+                "2026-04-10 12:00:00 INFO agent: old rotated line\n"
+            )
+            return report
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.collect_debug_report", side_effect=_wrapped_collect_debug_report), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=_mock_upload):
+            run_debug_share(args)
+
+        report_paste = uploaded_content[0]
+        agent_paste = uploaded_content[1]
+        assert "2026-04-22 12:00:00 INFO agent: newest line" in report_paste
+        assert "2026-04-22 12:00:00 INFO agent: newest line" in agent_paste
+        assert "old rotated line" not in agent_paste
+
     def test_share_skips_missing_logs(self, tmp_path, monkeypatch, capsys):
         """Only uploads logs that exist."""
         home = tmp_path / ".hermes"

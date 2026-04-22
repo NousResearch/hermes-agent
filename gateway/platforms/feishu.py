@@ -67,6 +67,8 @@ try:
         GetChatRequest,
         GetMessageRequest,
         GetMessageResourceRequest,
+        ListMessagesRequest,
+        ListMessagesRequestBody,
         P2ImMessageMessageReadV1,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
@@ -3314,6 +3316,59 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    async def _fetch_chat_messages(
+        self,
+        chat_id: str,
+        *,
+        limit: int = 20,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> List[dict]:
+        """Fetch chat history messages.
+
+        Args:
+            chat_id: The chat ID to fetch messages from.
+            limit: Max messages to return (1-200, default 20).
+            start_time: Optional start time in unix timestamp (seconds).
+            end_time: Optional end time in unix timestamp (seconds).
+
+        Returns:
+            List of message dicts with keys: message_id, create_time, sender, msg_type, body, etc.
+        """
+        if not self._client:
+            return []
+        try:
+            request = ListMessagesRequest.builder()
+            request.container_id(chat_id)
+            request.container_id_type("chat")
+            request.page_size(limit)
+            if start_time:
+                request.start_time(start_time)
+            if end_time:
+                request.end_time(end_time)
+            response = await asyncio.to_thread(self._client.im.v1.message.list, request.build())
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "chat messages lookup failed")
+                logger.warning("[Feishu] Failed to fetch chat messages %s: [%s] %s", chat_id, code, msg)
+                return []
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            result = []
+            for item in items:
+                result.append({
+                    "message_id": getattr(item, "message_id", ""),
+                    "create_time": getattr(item, "create_time", ""),
+                    "sender": getattr(item, "sender", None),
+                    "msg_type": getattr(item, "msg_type", ""),
+                    "body": getattr(item, "body", None),
+                    "chat_id": getattr(item, "chat_id", ""),
+                    "updated": getattr(item, "updated", ""),
+                })
+            return result
+        except Exception:
+            logger.warning("[Feishu] Failed to fetch chat messages %s", chat_id, exc_info=True)
+            return []
 
     def _extract_text_from_raw_content(self, *, msg_type: str, raw_content: str) -> Optional[str]:
         normalized = normalize_feishu_message(message_type=msg_type, raw_content=raw_content)

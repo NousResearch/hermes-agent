@@ -31,7 +31,6 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_DOCKER_VOLUME_DEST_RE = re.compile(r"^.+:(?P<dst>/[^:]*?)(?::[^:]+)?$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -91,11 +90,17 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
 
 def _docker_volume_destination(spec: str) -> str:
     """Return the container destination path from a docker ``-v`` spec."""
-    match = _DOCKER_VOLUME_DEST_RE.match(spec.strip())
-    if not match:
+    parts = spec.strip().rsplit(":", 2)
+    if len(parts) < 2:
         return ""
 
-    destination = match.group("dst").rstrip("/")
+    destination = parts[-1]
+    if not destination.startswith("/"):
+        if len(parts) < 3 or not parts[-2].startswith("/"):
+            return ""
+        destination = parts[-2]
+
+    destination = destination.rstrip("/")
     return destination or "/"
 
 

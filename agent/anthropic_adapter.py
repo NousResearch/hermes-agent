@@ -1083,6 +1083,13 @@ def convert_messages_to_anthropic(
                     "name": fn.get("name", ""),
                     "input": parsed_args,
                 })
+            # Kimi's /coding endpoint (Anthropic protocol) requires assistant
+            # tool-call messages to carry reasoning_content when thinking is
+            # enabled.  Preserve it as a thinking block so Kimi can validate
+            # the message history.  See hermes-agent#13848.
+            reasoning_content = m.get("reasoning_content")
+            if reasoning_content and isinstance(reasoning_content, str):
+                blocks.append({"type": "thinking", "thinking": reasoning_content})
             # Anthropic rejects empty assistant content
             effective = blocks or content
             if not effective or effective == "":

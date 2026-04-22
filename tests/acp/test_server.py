@@ -21,6 +21,7 @@ from acp.schema import (
     PromptResponse,
     ResumeSessionResponse,
     SessionModelState,
+    SessionModeState,
     SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
@@ -165,6 +166,19 @@ class TestSessionOps:
         assert resp.models.available_models[0].model_id == "openai-codex:gpt-5.4"
         assert resp.models.available_models[0].description is not None
         assert "Provider:" in resp.models.available_models[0].description
+
+    @pytest.mark.asyncio
+    async def test_new_session_returns_mode_state(self, agent):
+        resp = await agent.new_session(cwd="/tmp")
+
+        assert isinstance(resp.modes, SessionModeState)
+        assert resp.modes.current_mode_id == "standard"
+        assert [mode.id for mode in resp.modes.available_modes] == [
+            "standard",
+            "auto",
+            "force-spar",
+            "force-moa",
+        ]
 
     @pytest.mark.asyncio
     async def test_available_commands_include_help(self, agent):
@@ -330,11 +344,15 @@ class TestSessionConfiguration:
     @pytest.mark.asyncio
     async def test_set_session_mode_returns_response(self, agent):
         new_resp = await agent.new_session(cwd="/tmp")
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
         resp = await agent.set_session_mode(mode_id="chat", session_id=new_resp.session_id)
         state = agent.session_manager.get_session(new_resp.session_id)
 
         assert isinstance(resp, SetSessionModeResponse)
-        assert getattr(state, "mode", None) == "chat"
+        assert getattr(state, "mode", None) == "standard"
+        mock_conn.session_update.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
@@ -468,6 +486,72 @@ class TestPrompt:
         assert isinstance(resp, PromptResponse)
         assert resp.stop_reason == "end_turn"
         state.agent.run_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_spar_routes_directly(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-spar"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(
+                return_value='{"approved": true, "summary": "ok", "issues": [], "final_response": "spar answer", "disagreement": false}'
+            ),
+        ):
+            resp = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="ship this fix")],
+                session_id=new_resp.session_id,
+            )
+
+        assert resp.stop_reason == "end_turn"
+        state.agent.run_conversation.assert_not_called()
+        assert state.history[-1]["content"] == "spar answer"
+
+    @pytest.mark.asyncio
+    async def test_prompt_auto_routes_review_tasks_to_spar(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "auto"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(
+                return_value='{"approved": true, "summary": "ok", "issues": [], "final_response": "auto spar answer", "disagreement": false}'
+            ),
+        ) as mock_spar:
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="review this PR and fix the regression")],
+                session_id=new_resp.session_id,
+            )
+
+        mock_spar.assert_awaited_once()
+        state.agent.run_conversation.assert_not_called()
+        assert state.history[-1]["content"] == "auto spar answer"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_routes_directly(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+            ),
+        ):
+            resp = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="analyze this hard problem")],
+                session_id=new_resp.session_id,
+            )
+
+        assert resp.stop_reason == "end_turn"
+        state.agent.run_conversation.assert_not_called()
+        assert state.history[-1]["content"] == "moa answer"
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):

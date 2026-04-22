@@ -17,6 +17,8 @@
 
 - **Judge disagreement visibility** — Spar now surfaces reviewer/judge disagreement instead of silently hiding it.
 
+- **ACP chat routing modes** — ACP sessions now persist and expose `standard`, `auto`, `force-spar`, and `force-moa` modes. Scarf and other ACP clients can switch modes explicitly instead of hoping the model picks the right path.
+
 - **Failure scars** — final Spar rejections and failed agent turns now write structured markdown scars under `HERMES_HOME/FAILURES/`.
 
 - **Campaign persistence** — `SessionDB` now supports durable multi-run campaign state with start/log/resume/close/prune operations.
@@ -28,6 +30,7 @@
 ## ⚠️ Upgrade Note
 
 - `spar` is **off by default** in toolset config. Enable it explicitly if you want the new adversarial review gate.
+- ACP `force-spar` / `force-moa` routing is stronger than normal tool availability: those modes call the routed engines directly once selected.
 - Campaign persistence adds a new `campaigns` table to `state.db` (schema version 7).
 
 ---

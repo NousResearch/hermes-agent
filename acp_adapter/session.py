@@ -125,6 +125,7 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    mode: str = "standard"
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
 
@@ -164,6 +165,7 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
+            mode="standard",
             cancel_event=threading.Event(),
         )
         with self._lock:
@@ -214,6 +216,7 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", original.model) or original.model,
+            mode=getattr(original, "mode", "standard") or "standard",
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
         )
@@ -379,12 +382,15 @@ class SessionManager:
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
+        mode = getattr(state, "mode", None)
         if isinstance(provider, str) and provider.strip():
             session_meta["provider"] = provider.strip()
         if isinstance(base_url, str) and base_url.strip():
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        if isinstance(mode, str) and mode.strip():
+            session_meta["mode"] = mode.strip()
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -395,7 +401,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -449,6 +455,7 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        restored_mode = "standard"
         mc = row.get("model_config")
         if mc:
             try:
@@ -458,6 +465,7 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    restored_mode = str(meta.get("mode") or restored_mode).strip() or "standard"
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -488,6 +496,7 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=model or getattr(agent, "model", "") or "",
+            mode=restored_mode,
             history=history,
             cancel_event=threading.Event(),
         )

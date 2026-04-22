@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from collections import defaultdict, deque
@@ -16,6 +17,7 @@ from acp.schema import (
     AvailableCommand,
     AvailableCommandsUpdate,
     ClientCapabilities,
+    CurrentModeUpdate,
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
     ImageContentBlock,
@@ -38,7 +40,9 @@ from acp.schema import (
     SessionCapabilities,
     SessionForkCapabilities,
     SessionListCapabilities,
+    SessionMode,
     SessionModelState,
+    SessionModeState,
     SessionResumeCapabilities,
     SessionInfo,
     TextContentBlock,
@@ -77,6 +81,63 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 # paginate against using `cursor` / `next_cursor`.
 _LIST_SESSIONS_PAGE_SIZE = 50
 
+_SESSION_MODES = (
+    {
+        "id": "standard",
+        "name": "Standard",
+        "description": "Use Hermes' default agent loop.",
+    },
+    {
+        "id": "auto",
+        "name": "Auto",
+        "description": "Auto-route coding gates to Spar and hard reasoning to MoA.",
+    },
+    {
+        "id": "force-spar",
+        "name": "Force Spar",
+        "description": "Always run the Spar builder-review-judge gate.",
+    },
+    {
+        "id": "force-moa",
+        "name": "Force MoA",
+        "description": "Always run Mixture of Agents.",
+    },
+)
+
+_VALID_SESSION_MODE_IDS = {mode["id"] for mode in _SESSION_MODES}
+_SPAR_AUTO_HINTS = (
+    "fix",
+    "implement",
+    "build",
+    "review",
+    "audit",
+    "ship",
+    "patch",
+    "refactor",
+    "bug",
+    "test",
+    "pr ",
+    "pull request",
+    "regression",
+    "deploy",
+)
+_MOA_AUTO_HINTS = (
+    "analyze",
+    "analysis",
+    "compare",
+    "research",
+    "brainstorm",
+    "strategy",
+    "math",
+    "proof",
+    "derive",
+    "reason",
+    "reasoning",
+    "hard problem",
+    "complex",
+    "difficult",
+)
+
 
 def _extract_text(
     prompt: list[
@@ -96,6 +157,85 @@ def _extract_text(
             parts.append(str(block.text))
         # Non-text blocks are ignored for now.
     return "\n".join(parts)
+
+
+def _normalize_mode_id(raw_mode: Any) -> str:
+    mode_id = str(raw_mode or "").strip().lower()
+    if mode_id in _VALID_SESSION_MODE_IDS:
+        return mode_id
+    return "standard"
+
+
+def _select_prompt_route(mode_id: str, user_text: str) -> str:
+    normalized = _normalize_mode_id(mode_id)
+    if normalized != "auto":
+        return normalized
+
+    lowered = f" {user_text.lower()} "
+    if any(token in lowered for token in _SPAR_AUTO_HINTS):
+        return "force-spar"
+    if any(token in lowered for token in _MOA_AUTO_HINTS):
+        return "force-moa"
+    return "standard"
+
+
+def _parse_tool_json(raw_text: str) -> dict[str, Any]:
+    payload = json.loads(raw_text)
+    if not isinstance(payload, dict):
+        raise ValueError("tool output must be a JSON object")
+    return payload
+
+
+def _format_moa_output(raw_text: str) -> str:
+    payload = _parse_tool_json(raw_text)
+    response = str(payload.get("response") or "").strip()
+    if bool(payload.get("success")) and response:
+        return response
+    error = str(payload.get("error") or "").strip()
+    if error:
+        return f"MoA failed: {error}"
+    if response:
+        return response
+    return "MoA failed without a usable response."
+
+
+def _format_spar_output(raw_text: str) -> str:
+    payload = _parse_tool_json(raw_text)
+    approved = bool(payload.get("approved"))
+    summary = str(payload.get("summary") or "").strip()
+    final_response = str(payload.get("final_response") or "").strip()
+    raw_issues = payload.get("issues") or []
+    if isinstance(raw_issues, str):
+        issues = [raw_issues.strip()] if raw_issues.strip() else []
+    elif isinstance(raw_issues, list):
+        issues = [str(item).strip() for item in raw_issues if str(item).strip()]
+    else:
+        issues = [str(raw_issues).strip()] if str(raw_issues).strip() else []
+    judge = payload.get("judge_verdict") if isinstance(payload.get("judge_verdict"), dict) else None
+    disagreement = bool(payload.get("disagreement"))
+
+    if approved:
+        if not disagreement:
+            return final_response or summary or "Spar approved the answer."
+        judge_summary = str((judge or {}).get("summary") or "").strip()
+        lines = [final_response or summary or "Spar approved the answer."]
+        if judge_summary:
+            lines.extend(["", f"Judge note: {judge_summary}"])
+        return "\n".join(line for line in lines if line).strip()
+
+    lines = ["Spar review rejected this answer after one fix pass."]
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if issues:
+        lines.append("Issues:")
+        lines.extend(f"{idx}. {issue}" for idx, issue in enumerate(issues, start=1))
+    if disagreement and judge:
+        judge_summary = str(judge.get("summary") or "").strip()
+        if judge_summary:
+            lines.append(f"Judge note: {judge_summary}")
+    if final_response:
+        lines.extend(["", "Latest draft (not approved):", final_response])
+    return "\n".join(lines).strip()
 
 
 class HermesACPAgent(acp.Agent):
@@ -226,6 +366,21 @@ class HermesACPAgent(acp.Agent):
         return SessionModelState(
             available_models=[ModelInfo(model_id=fallback_choice, name=model)],
             current_model_id=fallback_choice,
+        )
+
+    def _build_mode_state(self, state: SessionState) -> SessionModeState:
+        """Return the ACP mode selector payload for clients that surface routing modes."""
+        current_mode = _normalize_mode_id(getattr(state, "mode", "standard"))
+        return SessionModeState(
+            available_modes=[
+                SessionMode(
+                    id=spec["id"],
+                    name=spec["name"],
+                    description=spec["description"],
+                )
+                for spec in _SESSION_MODES
+            ],
+            current_mode_id=current_mode,
         )
 
     @staticmethod
@@ -385,6 +540,7 @@ class HermesACPAgent(acp.Agent):
         return NewSessionResponse(
             session_id=state.session_id,
             models=self._build_model_state(state),
+            modes=self._build_mode_state(state),
         )
 
     async def load_session(
@@ -401,7 +557,10 @@ class HermesACPAgent(acp.Agent):
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Loaded session %s", session_id)
         self._schedule_available_commands_update(session_id)
-        return LoadSessionResponse(models=self._build_model_state(state))
+        return LoadSessionResponse(
+            models=self._build_model_state(state),
+            modes=self._build_mode_state(state),
+        )
 
     async def resume_session(
         self,
@@ -417,7 +576,10 @@ class HermesACPAgent(acp.Agent):
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
         self._schedule_available_commands_update(state.session_id)
-        return ResumeSessionResponse(models=self._build_model_state(state))
+        return ResumeSessionResponse(
+            models=self._build_model_state(state),
+            modes=self._build_mode_state(state),
+        )
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         state = self.session_manager.get_session(session_id)
@@ -524,91 +686,127 @@ class HermesACPAgent(acp.Agent):
                     await self._conn.session_update(session_id, update)
                 return PromptResponse(stop_reason="end_turn")
 
-        logger.info("Prompt on session %s: %s", session_id, user_text[:100])
-
+        selected_mode = _normalize_mode_id(getattr(state, "mode", "standard"))
+        prompt_route = _select_prompt_route(selected_mode, user_text)
         conn = self._conn
-        loop = asyncio.get_running_loop()
 
         if state.cancel_event:
             state.cancel_event.clear()
 
-        tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
-        tool_call_meta: dict[str, dict[str, Any]] = {}
-        previous_approval_cb = None
-
-        if conn:
-            tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            thinking_cb = make_thinking_cb(conn, session_id, loop)
-            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            message_cb = make_message_cb(conn, session_id, loop)
-            approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
-        else:
-            tool_progress_cb = None
-            thinking_cb = None
-            step_cb = None
-            message_cb = None
-            approval_cb = None
-
-        agent = state.agent
-        agent.tool_progress_callback = tool_progress_cb
-        agent.thinking_callback = thinking_cb
-        agent.step_callback = step_cb
-        agent.message_callback = message_cb
-
-        # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
-        # Set it INSIDE _run_agent so the TLS write happens in the executor
-        # thread — setting it here would write to the event-loop thread's TLS,
-        # not the executor's. Also set HERMES_INTERACTIVE so approval.py
-        # takes the CLI-interactive path (which calls the registered
-        # callback via prompt_dangerous_approval) instead of the
-        # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
-        # ACP's conn.request_permission maps cleanly to the interactive
-        # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
-        # which requires a notify_cb registered in _gateway_notify_cbs.
-        previous_approval_cb = None
-        previous_interactive = None
-
-        def _run_agent() -> dict:
-            nonlocal previous_approval_cb, previous_interactive
-            if approval_cb:
-                try:
-                    from tools import terminal_tool as _terminal_tool
-                    previous_approval_cb = _terminal_tool._get_approval_callback()
-                    _terminal_tool.set_approval_callback(approval_cb)
-                except Exception:
-                    logger.debug("Could not set ACP approval callback", exc_info=True)
-            # Signal to tools.approval that we have an interactive callback
-            # and the non-interactive auto-approve path must not fire.
-            previous_interactive = os.environ.get("HERMES_INTERACTIVE")
-            os.environ["HERMES_INTERACTIVE"] = "1"
+        if prompt_route != "standard":
+            logger.info(
+                "Prompt on session %s via %s (mode=%s): %s",
+                session_id,
+                prompt_route,
+                selected_mode,
+                user_text[:100],
+            )
             try:
-                result = agent.run_conversation(
-                    user_message=user_text,
-                    conversation_history=state.history,
-                    task_id=session_id,
-                )
-                return result
-            except Exception as e:
-                logger.exception("Agent error in session %s", session_id)
-                return {"final_response": f"Error: {e}", "messages": state.history}
-            finally:
-                # Restore HERMES_INTERACTIVE.
-                if previous_interactive is None:
-                    os.environ.pop("HERMES_INTERACTIVE", None)
+                if prompt_route == "force-spar":
+                    from tools.spar_tool import spar_tool
+
+                    raw_output = await spar_tool(user_prompt=user_text)
+                    final_text = _format_spar_output(raw_output)
                 else:
-                    os.environ["HERMES_INTERACTIVE"] = previous_interactive
+                    from tools.mixture_of_agents_tool import mixture_of_agents_tool
+
+                    raw_output = await mixture_of_agents_tool(user_prompt=user_text)
+                    final_text = _format_moa_output(raw_output)
+                result = {
+                    "final_response": final_text,
+                    "messages": [
+                        *state.history,
+                        {"role": "user", "content": user_text},
+                        {"role": "assistant", "content": final_text},
+                    ],
+                }
+            except Exception as exc:
+                logger.exception("Mode-routed prompt failed in session %s", session_id)
+                error_text = f"Error: {exc}"
+                result = {
+                    "final_response": error_text,
+                    "messages": [
+                        *state.history,
+                        {"role": "user", "content": user_text},
+                        {"role": "assistant", "content": error_text},
+                    ],
+                }
+        else:
+            logger.info("Prompt on session %s: %s", session_id, user_text[:100])
+
+            loop = asyncio.get_running_loop()
+            tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
+            tool_call_meta: dict[str, dict[str, Any]] = {}
+
+            if conn:
+                tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+                thinking_cb = make_thinking_cb(conn, session_id, loop)
+                step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+                message_cb = make_message_cb(conn, session_id, loop)
+                approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
+            else:
+                tool_progress_cb = None
+                thinking_cb = None
+                step_cb = None
+                message_cb = None
+                approval_cb = None
+
+            agent = state.agent
+            agent.tool_progress_callback = tool_progress_cb
+            agent.thinking_callback = thinking_cb
+            agent.step_callback = step_cb
+            agent.message_callback = message_cb
+
+            # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
+            # Set it INSIDE _run_agent so the TLS write happens in the executor
+            # thread — setting it here would write to the event-loop thread's TLS,
+            # not the executor's. Also set HERMES_INTERACTIVE so approval.py
+            # takes the CLI-interactive path (which calls the registered
+            # callback via prompt_dangerous_approval) instead of the
+            # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
+            # ACP's conn.request_permission maps cleanly to the interactive
+            # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
+            # which requires a notify_cb registered in _gateway_notify_cbs.
+            previous_approval_cb = None
+            previous_interactive = None
+
+            def _run_agent() -> dict:
+                nonlocal previous_approval_cb, previous_interactive
                 if approval_cb:
                     try:
                         from tools import terminal_tool as _terminal_tool
-                        _terminal_tool.set_approval_callback(previous_approval_cb)
+                        previous_approval_cb = _terminal_tool._get_approval_callback()
+                        _terminal_tool.set_approval_callback(approval_cb)
                     except Exception:
-                        logger.debug("Could not restore approval callback", exc_info=True)
+                        logger.debug("Could not set ACP approval callback", exc_info=True)
+                previous_interactive = os.environ.get("HERMES_INTERACTIVE")
+                os.environ["HERMES_INTERACTIVE"] = "1"
+                try:
+                    return agent.run_conversation(
+                        user_message=user_text,
+                        conversation_history=state.history,
+                        task_id=session_id,
+                    )
+                except Exception as exc:
+                    logger.exception("Agent error in session %s", session_id)
+                    return {"final_response": f"Error: {exc}", "messages": state.history}
+                finally:
+                    if previous_interactive is None:
+                        os.environ.pop("HERMES_INTERACTIVE", None)
+                    else:
+                        os.environ["HERMES_INTERACTIVE"] = previous_interactive
+                    if approval_cb:
+                        try:
+                            from tools import terminal_tool as _terminal_tool
+                            _terminal_tool.set_approval_callback(previous_approval_cb)
+                        except Exception:
+                            logger.debug("Could not restore approval callback", exc_info=True)
 
-        try:
-            result = await loop.run_in_executor(_executor, _run_agent)
-        except Exception:
-            logger.exception("Executor error for session %s", session_id)
-            return PromptResponse(stop_reason="end_turn")
+            try:
+                result = await loop.run_in_executor(_executor, _run_agent)
+            except Exception:
+                logger.exception("Executor error for session %s", session_id)
+                return PromptResponse(stop_reason="end_turn")
 
         if result.get("messages"):
             state.history = result["messages"]
@@ -877,14 +1075,23 @@ class HermesACPAgent(acp.Agent):
     async def set_session_mode(
         self, mode_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModeResponse | None:
-        """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
+        """Persist and broadcast the editor-requested routing mode."""
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
             return None
-        setattr(state, "mode", mode_id)
+        normalized_mode = _normalize_mode_id(mode_id)
+        setattr(state, "mode", normalized_mode)
         self.session_manager.save_session(session_id)
-        logger.info("Session %s: mode switched to %s", session_id, mode_id)
+        if self._conn:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=CurrentModeUpdate(
+                    session_update="current_mode_update",
+                    current_mode_id=normalized_mode,
+                ),
+            )
+        logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
 
     async def set_config_option(

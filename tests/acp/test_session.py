@@ -35,6 +35,7 @@ class TestCreateSession:
         assert state.session_id
         assert state.history == []
         assert state.agent is not None
+        assert state.mode == "standard"
 
     def test_create_session_registers_task_cwd(self, manager, monkeypatch):
         calls = []
@@ -84,6 +85,13 @@ class TestForkSession:
         forked = manager.fork_session(original.session_id)
         assert forked is not None
         assert forked.session_id != original.session_id
+
+    def test_fork_session_copies_mode(self, manager):
+        original = manager.create_session()
+        original.mode = "force-spar"
+        forked = manager.fork_session(original.session_id)
+        assert forked is not None
+        assert forked.mode == "force-spar"
 
     def test_fork_nonexistent_returns_none(self, manager):
         assert manager.fork_session("bogus-id") is None
@@ -148,6 +156,7 @@ class TestPersistence:
         # cwd stored in model_config JSON
         mc = json.loads(row["model_config"])
         assert mc["cwd"] == "/project"
+        assert mc["mode"] == "standard"
 
     def test_get_session_restores_from_db(self, manager):
         """Simulate process restart: create session, drop from memory, get again."""
@@ -167,6 +176,7 @@ class TestPersistence:
         assert restored is not None
         assert restored.session_id == sid
         assert restored.cwd == "/work"
+        assert restored.mode == "standard"
         assert len(restored.history) == 2
         assert restored.history[0]["content"] == "hello"
         assert restored.history[1]["content"] == "hi there"
@@ -175,6 +185,7 @@ class TestPersistence:
 
     def test_save_session_updates_db(self, manager):
         state = manager.create_session()
+        state.mode = "force-moa"
         state.history.append({"role": "user", "content": "test"})
         manager.save_session(state.session_id)
 
@@ -182,6 +193,23 @@ class TestPersistence:
         messages = db.get_messages_as_conversation(state.session_id)
         assert len(messages) == 1
         assert messages[0]["content"] == "test"
+        row = db.get_session(state.session_id)
+        mc = json.loads(row["model_config"])
+        assert mc["mode"] == "force-moa"
+
+    def test_get_session_restores_persisted_mode(self, manager):
+        state = manager.create_session(cwd="/modes")
+        state.mode = "force-spar"
+        state.history.append({"role": "user", "content": "modeful"})
+        manager.save_session(state.session_id)
+        sid = state.session_id
+
+        with manager._lock:
+            del manager._sessions[sid]
+
+        restored = manager.get_session(sid)
+        assert restored is not None
+        assert restored.mode == "force-spar"
 
     def test_remove_session_deletes_from_db(self, manager):
         state = manager.create_session()

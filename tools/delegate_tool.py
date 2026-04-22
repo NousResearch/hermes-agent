@@ -849,6 +849,7 @@ def _build_child_agent(
         parent_id=parent_subagent_id,
         depth=tui_depth,
         model=effective_model_for_cb,
+        toolsets=child_toolsets,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations

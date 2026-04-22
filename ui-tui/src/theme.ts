@@ -94,7 +94,12 @@ export const DARK_THEME: Theme = {
     amber: '#FFBF00',
     bronze: '#CD7F32',
     cornsilk: '#FFF8DC',
-    dim: '#B8860B',
+    // Bumped from the old `#B8860B` darkgoldenrod (~53% luminance) which
+    // read as barely-visible on dark terminals for long body text.  The
+    // new value sits ~60% luminance — readable without losing the "muted /
+    // secondary" semantic.  Field labels still use `label` (65%) which
+    // stays brighter so hierarchy holds.
+    dim: '#CC9B1F',
     completionBg: '#FFFFFF',
     completionCurrentBg: mix('#FFFFFF', '#FFBF00', 0.25),
 
@@ -104,8 +109,11 @@ export const DARK_THEME: Theme = {
     warn: '#ffa726',
 
     prompt: '#FFF8DC',
-    sessionLabel: '#B8860B',
-    sessionBorder: '#B8860B',
+    // sessionLabel/sessionBorder intentionally track the `dim` value — they
+    // are "same role, same colour" by design.  fromSkin's banner_dim fallback
+    // relies on this pairing (#11300).
+    sessionLabel: '#CC9B1F',
+    sessionBorder: '#CC9B1F',
 
     statusBg: '#1a1a2e',
     statusFg: '#C0C0C0',

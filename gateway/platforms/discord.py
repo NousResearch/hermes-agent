@@ -829,17 +829,18 @@ class DiscordAdapter(BasePlatformAdapter):
     def _origin_context_history_limit(self) -> int:
         """Return how many source-channel messages to inject into new threads.
 
-        Default is disabled (0) so deployments must opt in explicitly via
-        config.extra.thread_origin_context_history_limit or the
-        DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT environment variable.
+        Default is 100 so new Discord threads inherit the most recent context
+        from the originating channel/thread unless the deployment explicitly
+        overrides or disables it via config.extra.thread_origin_context_history_limit
+        or the DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT environment variable.
         """
         configured = self.config.extra.get("thread_origin_context_history_limit")
         if configured is None:
-            configured = os.getenv("DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT", "0")
+            configured = os.getenv("DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT", "100")
         try:
             limit = int(configured)
         except (TypeError, ValueError):
-            return 0
+            return 100
         return max(0, min(limit, 100))
 
     async def on_processing_start(self, event: MessageEvent) -> None:

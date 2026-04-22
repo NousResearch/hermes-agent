@@ -110,6 +110,13 @@ def adapter():
     return adapter
 
 
+def test_origin_context_history_limit_defaults_to_100(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT", raising=False)
+    adapter.config.extra.pop("thread_origin_context_history_limit", None)
+
+    assert adapter._origin_context_history_limit() == 100
+
+
 # ------------------------------------------------------------------
 # /thread slash command registration
 # ------------------------------------------------------------------

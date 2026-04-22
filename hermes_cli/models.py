@@ -180,20 +180,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "grok-4.20-reasoning",
         "grok-4-1-fast-reasoning",
     ],
-    "nvidia": [
-        # NVIDIA flagship reasoning models
-        "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3-nano-30b-a3b",
-        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-        # Third-party agentic models hosted on build.nvidia.com
-        # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
-        "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
-        "z-ai/glm5",
-        "openai/gpt-oss-120b",
-    ],
+	"nvidia": [
+		# NVIDIA flagship reasoning models
+		"nvidia/nemotron-3-super-120b-a12b",
+		"nvidia/nemotron-3-nano-30b-a3b",
+		"nvidia/llama-3.3-nemotron-super-49b-v1.5",
+		# Third-party agentic models hosted on build.nvidia.com
+		# (map to OpenRouter defaults — users get familiar picks on NIM)
+		"z-ai/glm-5.1",
+		"minimaxai/minimax-m2.7",
+		"qwen/qwen3.5-397b-a17b",
+		"deepseek-ai/deepseek-v3.2",
+		"moonshotai/kimi-k2.6",
+		"minimaxai/minimax-m2.5",
+		"z-ai/glm5",
+		"openai/gpt-oss-120b",
+	],
     "kimi-coding": [
         "kimi-k2.6",
         "kimi-k2.5",
@@ -686,7 +688,6 @@ class ProviderEntry(NamedTuple):
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
-    ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, $5 free credit, no markup)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),

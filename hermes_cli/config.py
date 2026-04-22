@@ -1331,6 +1331,13 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "CRAWL4AI_PATH": {
+        "description": "Path to Crawl4AI crwl binary for local web scraping",
+        "prompt": "Path to crwl binary",
+        "default": "/opt/homebrew/bin/crwl",
+        "category": "tool",
+        "advanced": True,
+    },
     "FIRECRAWL_GATEWAY_URL": {
         "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
         "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",

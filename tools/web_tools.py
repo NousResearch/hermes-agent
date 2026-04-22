@@ -88,7 +88,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "crawl4ai"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +99,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("crawl4ai", _has_env("CRAWL4AI_PATH")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,7 +118,80 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "crawl4ai":
+        return _has_env("CRAWL4AI_PATH")
     return False
+
+# ─── Crawl4AI Client (CLI subprocess) ────────────────────────────────
+
+_crawl4ai_cache_key = None
+
+
+def _get_crawl4ai_path() -> str:
+    """Return path to crwl binary, or raise if not configured."""
+    path = os.getenv("CRAWL4AI_PATH", "").strip()
+    if not path:
+        raise RuntimeError("CRAWL4AI_PATH not set")
+    if not os.path.isfile(path):
+        raise RuntimeError(f"Crawl4AI not found at {path}")
+    return path
+
+
+async def _crawl4ai_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using Crawl4AI CLI.
+    
+    Uses `crwl crawl <url> -o markdown` for extraction.
+    """
+    import subprocess
+    from tools.interrupt import is_interrupted as _is_interrupted
+    
+    path = _get_crawl4ai_path()
+    results: List[Dict[str, Any]] = []
+    
+    for url in urls:
+        if _is_interrupted():
+            results.append({"url": url, "error": "Interrupted", "title": ""})
+            continue
+        
+        try:
+            logger.info("Crawl4AI extract: %s", url)
+            # Run synchronously in thread to avoid blocking
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    subprocess.run,
+                    [path, "crawl", url, "-o", "markdown"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                ),
+                timeout=65,
+            )
+            
+            if result.returncode != 0:
+                results.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": result.stderr or f"Exit code {result.returncode}",
+                })
+                continue
+            
+            # Parse markdown output
+            markdown_content = result.stdout.strip()
+            results.append({
+                "url": url,
+                "title": "",  # Crawl4AI doesn't provide title in basic output
+                "content": markdown_content,
+                "markdown": markdown_content,
+            })
+            
+        except asyncio.TimeoutError:
+            results.append({"url": url, "error": "Timeout after 60s", "title": ""})
+        except Exception as e:
+            results.append({"url": url, "error": str(e), "title": ""})
+    
+    return results
+
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -1118,6 +1192,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "crawl4ai":
+            # Crawl4AI is a crawler, not a search engine
+            return json.dumps({
+                "success": False,
+                "error": "Crawl4AI does not support web_search. Use web_extract or web_crawl instead, "
+                        "or set web.backend to firecrawl/parallel/tavily for search.",
+                "data": {"web": []}
+            }, ensure_ascii=False)
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1252,6 +1335,8 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "crawl4ai":
+                results = await _crawl4ai_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1628,6 +1713,81 @@ async def web_crawl_tool(
             return cleaned_result
 
         # web_crawl requires Firecrawl or the Firecrawl tool-gateway — Parallel has no crawl API
+        if backend == "crawl4ai":
+            # Crawl4AI supports crawl via CLI with --question for instructions
+            if not _has_env("CRAWL4AI_PATH"):
+                return json.dumps({
+                    "error": "web_crawl requires CRAWL4AI_PATH. Set path to crwl binary.",
+                    "success": False,
+                }, ensure_ascii=False)
+            
+            # Ensure URL has protocol
+            if not url.startswith(('http://', 'https://')):
+                url = f'https://{url}'
+            
+            # SSRF + policy check
+            if not is_safe_url(url):
+                return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                    "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
+            
+            blocked = check_website_access(url)
+            if blocked:
+                return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
+                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
+            
+            from tools.interrupt import is_interrupted as _is_int
+            if _is_int():
+                return tool_error("Interrupted", success=False)
+            
+            # Build command with optional instructions
+            path = _get_crawl4ai_path()
+            cmd = [path, "crawl", url, "-o", "markdown"]
+            if instructions:
+                cmd.extend(["--question", instructions])
+            
+            import subprocess
+            logger.info("Crawl4AI crawl: %s", url)
+            
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=120),
+                    timeout=125,
+                )
+            except asyncio.TimeoutError:
+                return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                    "error": "Timeout after 120s"}]}, ensure_ascii=False)
+            
+            if result.returncode != 0:
+                return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                    "error": result.stderr or f"Exit code {result.returncode}"}]}, ensure_ascii=False)
+            
+            content = result.stdout.strip()
+            processed = content
+            
+            # LLM processing if requested and content is long enough
+            if use_llm_processing and auxiliary_available and len(content) >= min_length:
+                try:
+                    processed = await asyncio.wait_for(
+                        asyncio.to_thread(process_content_with_llm, content, url, "", effective_model, min_length),
+                        timeout=60,
+                    )
+                    if processed:
+                        debug_call_data["compression_metrics"].append({
+                            "url": url, "original_size": len(content), "processed_size": len(processed),
+                            "compression_ratio": len(processed) / len(content), "model_used": effective_model
+                        })
+                        debug_call_data["pages_processed_with_llm"] += 1
+                except asyncio.TimeoutError:
+                    logger.warning("LLM processing timed out, returning raw content")
+            
+            trimmed_results = [{"url": url, "title": "", "content": processed, "error": None}]
+            result_json = json.dumps({"results": trimmed_results}, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            debug_call_data["pages_crawled"] = 1
+            _debug.log_call("web_crawl_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if not check_firecrawl_api_key():
             return json.dumps({
                 "error": "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, FIRECRAWL_API_URL"

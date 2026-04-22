@@ -745,6 +745,7 @@ class AIAgent:
         tool_gen_callback: callable = None,
         status_callback: callable = None,
         max_tokens: int = None,
+        api_max_retries: int = 100,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
         request_overrides: Dict[str, Any] = None,
@@ -797,6 +798,7 @@ class AIAgent:
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+            api_max_retries (int): Maximum API retry attempts before surfacing failure (default: 100)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
@@ -995,6 +997,7 @@ class AIAgent:
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+        self.api_max_retries = max(1, int(api_max_retries))
         self._force_ascii_payload = False
         
         # Anthropic prompt caching: auto-enabled for Claude models on native
@@ -9105,7 +9108,7 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = self.api_max_retries
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False

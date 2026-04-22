@@ -253,6 +253,15 @@ TOOL_CATEGORIES = {
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
             },
+            {
+                "name": "Crawl4AI Local",
+                "badge": "free · local",
+                "tag": "Open-source web crawler via CLI subprocess",
+                "web_backend": "crawl4ai",
+                "env_vars": [
+                    {"key": "CRAWL4AI_PATH", "prompt": "Path to crwl binary", "default": "/opt/homebrew/bin/crwl"},
+                ],
+            },
         ],
     },
     "image_gen": {

@@ -6625,7 +6625,7 @@ class AIAgent:
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
-            "zai", "bedrock",
+            "zai", "zai-cn", "zai-coding-cn", "zai-coding-global", "bedrock",
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()

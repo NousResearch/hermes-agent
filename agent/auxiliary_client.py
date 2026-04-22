@@ -62,10 +62,10 @@ _PROVIDER_ALIASES = {
     "x-ai": "xai",
     "x.ai": "xai",
     "grok": "xai",
-    "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
-    "zhipu": "zai",
+    "zhipu": "zai-cn",
+    "glm": "zai-cn",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
@@ -132,7 +132,10 @@ def _fixed_temperature_for_model(
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
-    "zai": "glm-4.5-flash",
+    "zai": "glm-4.7-flashx",
+    "zai-cn": "glm-4.7-flashx",
+    "zai-coding-cn": "glm-4.7",
+    "zai-coding-global": "glm-4.7",
     "kimi-coding": "kimi-k2-turbo-preview",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.7",
@@ -152,6 +155,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2-omni",
     "zai": "glm-5v-turbo",
+    "zai-cn": "glm-5v-turbo",
 }
 
 # OpenRouter app attribution headers
@@ -1534,7 +1538,8 @@ def resolve_provider_client(
     Args:
         provider: Provider identifier.  One of:
             "openrouter", "nous", "openai-codex" (or "codex"),
-            "zai", "kimi-coding", "minimax", "minimax-cn",
+            "zai", "zai-cn", "zai-coding-cn", "zai-coding-global",
+            "kimi-coding", "minimax", "minimax-cn",
             "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
             "auto" (full auto-detection chain).
         model: Model slug override.  If None, uses the provider's default

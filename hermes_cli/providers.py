@@ -87,8 +87,26 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "zai": HermesOverlay(
         transport="openai_chat",
-        extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        base_url_override="https://api.z.ai/api/paas/v4",
+        # GLM_API_KEY is a legacy fallback — see PROVIDER_REGISTRY["zai"].
+        extra_env_vars=("ZAI_API_KEY", "Z_AI_API_KEY", "GLM_API_KEY"),
+        base_url_env_var="ZAI_BASE_URL",
+    ),
+    "zai-cn": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://open.bigmodel.cn/api/paas/v4",
+        extra_env_vars=("GLM_API_KEY",),
         base_url_env_var="GLM_BASE_URL",
+    ),
+    "zai-coding-cn": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("GLM_CODING_API_KEY",),
+        base_url_env_var="GLM_CODING_BASE_URL",
+    ),
+    "zai-coding-global": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("ZAI_CODING_API_KEY",),
+        base_url_env_var="ZAI_CODING_BASE_URL",
     ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
@@ -187,11 +205,13 @@ ALIASES: Dict[str, str] = {
     # openrouter
     "openai": "openrouter",     # bare "openai" → route through aggregator
 
-    # zai
-    "glm": "zai",
+    # zai (Z.AI, api.z.ai)
     "z-ai": "zai",
     "z.ai": "zai",
-    "zhipu": "zai",
+
+    # zai-cn (Zhipu AI, open.bigmodel.cn)
+    "zhipu": "zai-cn",
+    "glm": "zai-cn",
 
     # xai
     "x-ai": "xai",

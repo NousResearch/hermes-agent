@@ -18,7 +18,7 @@ Configuration in config.yaml:
           group_allow_from: ["group_openid_1"]
           stt:                             # Voice-to-text config (optional)
             provider: "zai"                # zai (GLM-ASR), openai (Whisper), etc.
-            baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
+            baseUrl: "https://open.bigmodel.cn/api/paas/v4"
             apiKey: "your-stt-api-key"     # or set QQ_STT_API_KEY env var
             model: "glm-asr"               # glm-asr, whisper-1, etc.
 
@@ -1612,10 +1612,19 @@ class QQAdapter(BasePlatformAdapter):
             if api_key:
                 provider = stt_cfg.get("provider", "zai")
                 # Map provider to base URL
+                # GLM-ASR is only served from open.bigmodel.cn/api/paas/v4 — it
+                # is not hosted on the coding/paas endpoints. Map both direct
+                # API and Coding Plan providers to that URL so STT still works
+                # regardless of which zai-family plan the user has configured.
                 _PROVIDER_BASE_URLS = {
-                    "zai": "https://open.bigmodel.cn/api/coding/paas/v4",
+                    "zai": "https://open.bigmodel.cn/api/paas/v4",
                     "openai": "https://api.openai.com/v1",
-                    "glm": "https://open.bigmodel.cn/api/coding/paas/v4",
+                    "zai-cn": "https://open.bigmodel.cn/api/paas/v4",
+                    "zai-coding-cn": "https://open.bigmodel.cn/api/paas/v4",
+                    "zai-coding-global": "https://open.bigmodel.cn/api/paas/v4",
+                    # Legacy alias — kept for forward compatibility with older
+                    # channels.qqbot.stt.provider values.
+                    "glm": "https://open.bigmodel.cn/api/paas/v4",
                 }
                 base_url = _PROVIDER_BASE_URLS.get(provider, "")
                 if base_url:
@@ -1623,7 +1632,11 @@ class QQAdapter(BasePlatformAdapter):
                         "base_url": base_url,
                         "api_key": api_key,
                         "model": model
-                                 or ("glm-asr" if provider in ("zai", "glm") else "whisper-1"),
+                                 or (
+                            "glm-asr"
+                            if provider in ("zai", "zai-cn", "zai-coding-cn", "zai-coding-global", "glm")
+                            else "whisper-1"
+                        ),
                     }
 
         # 2. QQ-specific env vars (set by `hermes setup gateway` / `hermes gateway`)
@@ -1631,7 +1644,7 @@ class QQAdapter(BasePlatformAdapter):
         if qq_stt_key:
             base_url = os.getenv(
                 "QQ_STT_BASE_URL",
-                "https://open.bigmodel.cn/api/coding/paas/v4",
+                "https://open.bigmodel.cn/api/paas/v4",
             )
             model = os.getenv("QQ_STT_MODEL", "glm-asr")
             return {

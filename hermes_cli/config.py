@@ -995,15 +995,15 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "GLM_API_KEY": {
-        "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
-        "prompt": "Z.AI / GLM API key",
-        "url": "https://z.ai/",
+        "description": "Zhipu AI (open.bigmodel.cn) API key",
+        "prompt": "Zhipu AI API key",
+        "url": "https://open.bigmodel.cn/",
         "password": True,
         "category": "provider",
         "advanced": True,
     },
     "ZAI_API_KEY": {
-        "description": "Z.AI API key (alias for GLM_API_KEY)",
+        "description": "Z.AI (api.z.ai) API key",
         "prompt": "Z.AI API key",
         "url": "https://z.ai/",
         "password": True,
@@ -1011,7 +1011,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "Z_AI_API_KEY": {
-        "description": "Z.AI API key (alias for GLM_API_KEY)",
+        "description": "Z.AI API key (alias for ZAI_API_KEY)",
         "prompt": "Z.AI API key",
         "url": "https://z.ai/",
         "password": True,
@@ -1019,8 +1019,16 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "GLM_BASE_URL": {
-        "description": "Z.AI / GLM base URL override",
-        "prompt": "Z.AI / GLM base URL (leave empty for default)",
+        "description": "Zhipu AI base URL override",
+        "prompt": "Zhipu AI base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ZAI_BASE_URL": {
+        "description": "Z.AI Global base URL override",
+        "prompt": "Z.AI Global base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -3043,14 +3051,17 @@ _FALLBACK_COMMENT = """
 # overload (529), service errors (503), or connection failures.
 #
 # Supported providers:
-#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — hermes auth) — OpenAI Codex
-#   nous         (OAuth — hermes auth) — Nous Portal
-#   zai          (ZAI_API_KEY)         — Z.AI / GLM
-#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
-#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
-#   minimax      (MINIMAX_API_KEY)     — MiniMax
-#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   openrouter        (OPENROUTER_API_KEY)   — routes to any model
+#   openai-codex      (OAuth — hermes auth)  — OpenAI Codex
+#   nous              (OAuth — hermes auth)  — Nous Portal
+#   zai               (ZAI_API_KEY)          — Z.AI — api.z.ai
+#   zai-cn            (GLM_API_KEY)          — Zhipu AI — open.bigmodel.cn
+#   zai-coding-global (ZAI_CODING_API_KEY)   — Z.AI Coding Plan
+#   zai-coding-cn     (GLM_CODING_API_KEY)   — Zhipu AI Coding Plan
+#   kimi-coding       (KIMI_API_KEY)         — Kimi / Moonshot
+#   kimi-coding-cn    (KIMI_CN_API_KEY)      — Kimi / Moonshot (China)
+#   minimax           (MINIMAX_API_KEY)      — MiniMax
+#   minimax-cn        (MINIMAX_CN_API_KEY)   — MiniMax (China)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -3074,14 +3085,17 @@ _COMMENTED_SECTIONS = """
 # overload (529), service errors (503), or connection failures.
 #
 # Supported providers:
-#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — hermes auth) — OpenAI Codex
-#   nous         (OAuth — hermes auth) — Nous Portal
-#   zai          (ZAI_API_KEY)         — Z.AI / GLM
-#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
-#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
-#   minimax      (MINIMAX_API_KEY)     — MiniMax
-#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   openrouter        (OPENROUTER_API_KEY)   — routes to any model
+#   openai-codex      (OAuth — hermes auth)  — OpenAI Codex
+#   nous              (OAuth — hermes auth)  — Nous Portal
+#   zai               (ZAI_API_KEY)          — Z.AI — api.z.ai
+#   zai-cn            (GLM_API_KEY)          — Zhipu AI — open.bigmodel.cn
+#   zai-coding-global (ZAI_CODING_API_KEY)   — Z.AI Coding Plan
+#   zai-coding-cn     (GLM_CODING_API_KEY)   — Zhipu AI Coding Plan
+#   kimi-coding       (KIMI_API_KEY)         — Kimi / Moonshot
+#   kimi-coding-cn    (KIMI_CN_API_KEY)      — Kimi / Moonshot (China)
+#   minimax           (MINIMAX_API_KEY)      — MiniMax
+#   minimax-cn        (MINIMAX_CN_API_KEY)   — MiniMax (China)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #

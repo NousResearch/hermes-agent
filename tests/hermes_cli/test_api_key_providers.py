@@ -31,7 +31,10 @@ class TestProviderRegistry:
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
-        ("zai", "Z.AI / GLM", "api_key"),
+        ("zai", "Z.AI", "api_key"),
+        ("zai-cn", "Zhipu AI", "api_key"),
+        ("zai-coding-cn", "Zhipu AI Coding Plan", "api_key"),
+        ("zai-coding-global", "Z.AI Coding Plan", "api_key"),
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
@@ -49,8 +52,15 @@ class TestProviderRegistry:
 
     def test_zai_env_vars(self):
         pconfig = PROVIDER_REGISTRY["zai"]
-        assert pconfig.api_key_env_vars == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
+        # GLM_API_KEY is a legacy fallback kept to avoid breaking upgrades.
+        assert pconfig.api_key_env_vars == ("ZAI_API_KEY", "Z_AI_API_KEY", "GLM_API_KEY")
+        assert pconfig.base_url_env_var == "ZAI_BASE_URL"
+
+    def test_zai_cn_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["zai-cn"]
+        assert pconfig.api_key_env_vars == ("GLM_API_KEY",)
         assert pconfig.base_url_env_var == "GLM_BASE_URL"
+        assert pconfig.inference_base_url == "https://open.bigmodel.cn/api/paas/v4"
 
     def test_xai_env_vars(self):
         pconfig = PROVIDER_REGISTRY["xai"]
@@ -129,8 +139,9 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
-    "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-    "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "GLM_API_KEY", "GLM_BASE_URL", "ZAI_API_KEY", "Z_AI_API_KEY", "ZAI_BASE_URL",
+    "GLM_CODING_API_KEY", "GLM_CODING_BASE_URL", "ZAI_CODING_API_KEY", "ZAI_CODING_BASE_URL",
+    "KIMI_API_KEY", "KIMI_CN_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
@@ -165,14 +176,17 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
-    def test_alias_glm(self):
-        assert resolve_provider("glm") == "zai"
+    def test_explicit_zai_cn(self):
+        assert resolve_provider("zai-cn") == "zai-cn"
 
     def test_alias_z_ai(self):
         assert resolve_provider("z-ai") == "zai"
 
     def test_alias_zhipu(self):
-        assert resolve_provider("zhipu") == "zai"
+        assert resolve_provider("zhipu") == "zai-cn"
+
+    def test_alias_glm(self):
+        assert resolve_provider("glm") == "zai-cn"
 
     def test_alias_kimi(self):
         assert resolve_provider("kimi") == "kimi-coding"
@@ -202,7 +216,7 @@ class TestResolveProvider:
         assert resolve_provider("kilo-gateway") == "kilocode"
 
     def test_alias_case_insensitive(self):
-        assert resolve_provider("GLM") == "zai"
+        assert resolve_provider("GLM") == "zai-cn"
         assert resolve_provider("Z-AI") == "zai"
         assert resolve_provider("Kimi") == "kimi-coding"
 
@@ -234,7 +248,7 @@ class TestResolveProvider:
 
     def test_auto_detects_glm_key(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "test-glm-key")
-        assert resolve_provider("auto") == "zai"
+        assert resolve_provider("auto") == "zai-cn"
 
     def test_auto_detects_zai_key(self, monkeypatch):
         monkeypatch.setenv("ZAI_API_KEY", "test-zai-key")
@@ -274,6 +288,12 @@ class TestResolveProvider:
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
         assert resolve_provider("auto") == "openrouter"
 
+    def test_openrouter_takes_priority_over_zai(self, monkeypatch):
+        """OpenRouter API key should win over ZAI in auto-detection."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+        assert resolve_provider("auto") == "openrouter"
+
     def test_auto_does_not_select_copilot_from_github_token(self, monkeypatch):
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
         with pytest.raises(AuthError, match="No inference provider configured"):
@@ -292,19 +312,27 @@ class TestApiKeyProviderStatus:
         assert status["logged_in"] is False
 
     def test_configured_provider(self, monkeypatch):
-        monkeypatch.setenv("GLM_API_KEY", "test-key-123")
+        monkeypatch.setenv("ZAI_API_KEY", "test-key-123")
         status = get_api_key_provider_status("zai")
         assert status["configured"] is True
         assert status["logged_in"] is True
-        assert status["key_source"] == "GLM_API_KEY"
+        assert status["key_source"] == "ZAI_API_KEY"
         assert "z.ai" in status["base_url"].lower() or "api.z.ai" in status["base_url"]
 
     def test_fallback_env_var(self, monkeypatch):
-        """ZAI_API_KEY should work when GLM_API_KEY is not set."""
-        monkeypatch.setenv("ZAI_API_KEY", "zai-fallback-key")
+        """Z_AI_API_KEY should work when ZAI_API_KEY is not set."""
+        monkeypatch.setenv("Z_AI_API_KEY", "z-ai-fallback-key")
         status = get_api_key_provider_status("zai")
         assert status["configured"] is True
-        assert status["key_source"] == "ZAI_API_KEY"
+        assert status["key_source"] == "Z_AI_API_KEY"
+
+    def test_zai_cn_configured_provider(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-test-key-123")
+        status = get_api_key_provider_status("zai-cn")
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["key_source"] == "GLM_API_KEY"
+        assert "bigmodel.cn" in status["base_url"].lower()
 
     def test_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-key")
@@ -359,13 +387,42 @@ class TestApiKeyProviderStatus:
 class TestResolveApiKeyProviderCredentials:
 
     def test_resolve_zai_with_key(self, monkeypatch):
-        monkeypatch.setenv("GLM_API_KEY", "glm-secret-key")
-        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        monkeypatch.setenv("ZAI_API_KEY", "zai-secret-key")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["provider"] == "zai"
-        assert creds["api_key"] == "glm-secret-key"
+        assert creds["api_key"] == "zai-secret-key"
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+        assert creds["source"] == "ZAI_API_KEY"
+
+    def test_resolve_zai_cn_with_key(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-secret-key")
+        creds = resolve_api_key_provider_credentials("zai-cn")
+        assert creds["provider"] == "zai-cn"
+        assert creds["api_key"] == "glm-secret-key"
+        assert creds["base_url"] == "https://open.bigmodel.cn/api/paas/v4"
         assert creds["source"] == "GLM_API_KEY"
+
+    def test_legacy_zai_falls_back_to_glm_key(self, monkeypatch):
+        """Pre-refactor configs (provider: zai + GLM_API_KEY) must not break.
+
+        The `zai` provider still routes to api.z.ai; the endpoint will 401
+        if the GLM key only works against open.bigmodel.cn, but at least
+        credential resolution no longer returns empty.
+        """
+        monkeypatch.setenv("GLM_API_KEY", "legacy-glm-key")
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["provider"] == "zai"
+        assert creds["api_key"] == "legacy-glm-key"
+        assert creds["source"] == "GLM_API_KEY"
+        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+    def test_zai_prefers_zai_key_over_glm(self, monkeypatch):
+        """When both keys are present, ZAI_API_KEY wins over GLM_API_KEY."""
+        monkeypatch.setenv("ZAI_API_KEY", "native-zai")
+        monkeypatch.setenv("GLM_API_KEY", "legacy-glm")
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["api_key"] == "native-zai"
+        assert creds["source"] == "ZAI_API_KEY"
 
     def test_resolve_copilot_with_github_token(self, monkeypatch):
         monkeypatch.setenv("GITHUB_TOKEN", "gh-env-secret")
@@ -464,9 +521,15 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["base_url"] == "https://custom.kilo.example/v1"
 
     def test_resolve_with_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+        monkeypatch.setenv("ZAI_BASE_URL", "https://custom.zai.example/v4")
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://custom.zai.example/v4"
+
+    def test_resolve_zai_cn_with_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
         monkeypatch.setenv("GLM_BASE_URL", "https://custom.glm.example/v4")
-        creds = resolve_api_key_provider_credentials("zai")
+        creds = resolve_api_key_provider_credentials("zai-cn")
         assert creds["base_url"] == "https://custom.glm.example/v4"
 
     def test_resolve_without_key_returns_empty(self):
@@ -478,22 +541,20 @@ class TestResolveApiKeyProviderCredentials:
         with pytest.raises(AuthError):
             resolve_api_key_provider_credentials("nous")
 
-    def test_glm_key_priority(self, monkeypatch):
-        """GLM_API_KEY takes priority over ZAI_API_KEY."""
-        monkeypatch.setenv("GLM_API_KEY", "primary")
-        monkeypatch.setenv("ZAI_API_KEY", "secondary")
-        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+    def test_zai_key_priority(self, monkeypatch):
+        """ZAI_API_KEY takes priority over Z_AI_API_KEY."""
+        monkeypatch.setenv("ZAI_API_KEY", "primary")
+        monkeypatch.setenv("Z_AI_API_KEY", "secondary")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == "primary"
-        assert creds["source"] == "GLM_API_KEY"
+        assert creds["source"] == "ZAI_API_KEY"
 
-    def test_zai_key_fallback(self, monkeypatch):
-        """ZAI_API_KEY used when GLM_API_KEY not set."""
-        monkeypatch.setenv("ZAI_API_KEY", "secondary")
-        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+    def test_z_ai_key_fallback(self, monkeypatch):
+        """Z_AI_API_KEY used when ZAI_API_KEY not set."""
+        monkeypatch.setenv("Z_AI_API_KEY", "secondary")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == "secondary"
-        assert creds["source"] == "ZAI_API_KEY"
+        assert creds["source"] == "Z_AI_API_KEY"
 
 
 # =============================================================================
@@ -503,13 +564,22 @@ class TestResolveApiKeyProviderCredentials:
 class TestRuntimeProviderResolution:
 
     def test_runtime_zai(self, monkeypatch):
-        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setenv("ZAI_API_KEY", "zai-key")
         from hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="zai")
         assert result["provider"] == "zai"
         assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "glm-key"
+        assert result["api_key"] == "zai-key"
         assert "z.ai" in result["base_url"] or "api.z.ai" in result["base_url"]
+
+    def test_runtime_zai_cn(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="zai-cn")
+        assert result["provider"] == "zai-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "glm-key"
+        assert "bigmodel.cn" in result["base_url"]
 
     def test_runtime_kimi(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-key")
@@ -518,6 +588,15 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "kimi-key"
+
+    def test_runtime_kimi_cn(self, monkeypatch):
+        monkeypatch.setenv("KIMI_CN_API_KEY", "kimi-cn-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="kimi-coding-cn")
+        assert result["provider"] == "kimi-coding-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "kimi-cn-key"
+        assert "moonshot.cn" in result["base_url"]
 
     def test_runtime_minimax(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
@@ -858,58 +937,114 @@ class TestKimiCodeCredentialAutoDetect:
         assert creds["base_url"] == "https://override.example/v1"
 
     def test_non_kimi_providers_unaffected(self, monkeypatch):
-        """Ensure the auto-detect logic doesn't leak to other providers."""
-        monkeypatch.setenv("GLM_API_KEY", "sk-kim...isnt")
-        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        """Ensure the Kimi auto-detect logic doesn't leak to other providers."""
+        monkeypatch.setenv("ZAI_API_KEY", "sk-kim...isnt")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
 
 
-class TestZaiEndpointAutoDetect:
-    """Test that resolve_api_key_provider_credentials auto-detects Z.AI endpoints."""
+class TestZaiAndZaiCnStaticEndpoints:
+    """Both zai and zai-cn now use static endpoints — no probing."""
 
-    def test_probe_success_returns_detected_url(self, monkeypatch):
-        monkeypatch.setenv("GLM_API_KEY", "glm-coding-key")
-        monkeypatch.setattr(
-            "hermes_cli.auth.detect_zai_endpoint",
-            lambda *a, **kw: {
-                "id": "coding-global",
-                "base_url": "https://api.z.ai/api/coding/paas/v4",
-                "model": "glm-4.7",
-                "label": "Global (Coding Plan)",
-            },
-        )
-        creds = resolve_api_key_provider_credentials("zai")
-        assert creds["base_url"] == "https://api.z.ai/api/coding/paas/v4"
-
-    def test_probe_failure_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("GLM_API_KEY", "glm-key")
-        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+    def test_zai_always_global(self, monkeypatch):
+        """ZAI_API_KEY should always route to api.z.ai (Global)."""
+        monkeypatch.setenv("ZAI_API_KEY", "zai-key")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
 
-    def test_env_override_skips_probe(self, monkeypatch):
-        """GLM_BASE_URL should always win without probing."""
+    def test_zai_cn_always_china(self, monkeypatch):
+        """GLM_API_KEY should always route to open.bigmodel.cn (China)."""
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
-        monkeypatch.setenv("GLM_BASE_URL", "https://custom.example/v4")
-        probe_called = False
+        creds = resolve_api_key_provider_credentials("zai-cn")
+        assert creds["base_url"] == "https://open.bigmodel.cn/api/paas/v4"
 
-        def _never_called(*a, **kw):
-            nonlocal probe_called
-            probe_called = True
-            return None
-
-        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _never_called)
+    def test_zai_env_override(self, monkeypatch):
+        """ZAI_BASE_URL overrides the default zai base URL."""
+        monkeypatch.setenv("ZAI_API_KEY", "zai-key")
+        monkeypatch.setenv("ZAI_BASE_URL", "https://custom.zai.example/v4")
         creds = resolve_api_key_provider_credentials("zai")
-        assert creds["base_url"] == "https://custom.example/v4"
-        assert not probe_called
+        assert creds["base_url"] == "https://custom.zai.example/v4"
 
-    def test_no_key_skips_probe(self, monkeypatch):
-        """Without an API key, no probe should occur."""
-        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+    def test_zai_cn_env_override(self, monkeypatch):
+        """GLM_BASE_URL overrides the default zai-cn base URL."""
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setenv("GLM_BASE_URL", "https://custom.glm.example/v4")
+        creds = resolve_api_key_provider_credentials("zai-cn")
+        assert creds["base_url"] == "https://custom.glm.example/v4"
+
+    def test_zai_no_key(self):
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == ""
+        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
 
+    def test_zai_cn_no_key(self):
+        creds = resolve_api_key_provider_credentials("zai-cn")
+        assert creds["api_key"] == ""
+        assert creds["base_url"] == "https://open.bigmodel.cn/api/paas/v4"
+
+
+# =============================================================================
+# Z.AI Coding Plan provider tests
+# =============================================================================
+
+class TestZaiCodingPlanProviders:
+    """Test that zai-coding-* providers use static endpoints (no probing)."""
+
+    @pytest.mark.parametrize("provider_id,expected_base,key_env", [
+        ("zai-coding-cn", "https://open.bigmodel.cn/api/coding/paas/v4", "GLM_CODING_API_KEY"),
+        ("zai-coding-global", "https://api.z.ai/api/coding/paas/v4", "ZAI_CODING_API_KEY"),
+    ])
+    def test_static_base_url(self, provider_id, expected_base, key_env, monkeypatch):
+        monkeypatch.setenv(key_env, "test-key")
+        creds = resolve_api_key_provider_credentials(provider_id)
+        assert creds["base_url"] == expected_base
+
+    @pytest.mark.parametrize("provider_id,key_env", [
+        ("zai-coding-cn", "GLM_CODING_API_KEY"),
+        ("zai-coding-global", "ZAI_CODING_API_KEY"),
+    ])
+    def test_uses_own_api_key(self, provider_id, key_env, monkeypatch):
+        monkeypatch.setenv(key_env, "coding-key")
+        creds = resolve_api_key_provider_credentials(provider_id)
+        assert creds["api_key"] == "coding-key"
+        assert creds["source"] == key_env
+
+    def test_non_coding_env_var_does_not_leak(self, monkeypatch):
+        """GLM_BASE_URL (zai-cn's env) should NOT affect zai-coding-cn."""
+        monkeypatch.setenv("GLM_CODING_API_KEY", "glm-key")
+        monkeypatch.setenv("GLM_BASE_URL", "https://custom.example/v4")
+        creds = resolve_api_key_provider_credentials("zai-coding-cn")
+        assert creds["base_url"] == "https://open.bigmodel.cn/api/coding/paas/v4"
+
+    @pytest.mark.parametrize("provider_id,key_env,base_env", [
+        ("zai-coding-cn", "GLM_CODING_API_KEY", "GLM_CODING_BASE_URL"),
+        ("zai-coding-global", "ZAI_CODING_API_KEY", "ZAI_CODING_BASE_URL"),
+    ])
+    def test_own_base_url_env_overrides_default(self, provider_id, key_env, base_env, monkeypatch):
+        """Coding plan providers honor their own base_url env var when set."""
+        monkeypatch.setenv(key_env, "coding-key")
+        monkeypatch.setenv(base_env, "https://proxy.example/coding/v4")
+        creds = resolve_api_key_provider_credentials(provider_id)
+        assert creds["base_url"] == "https://proxy.example/coding/v4"
+
+    @pytest.mark.parametrize("provider_id,key_env,base_env", [
+        ("zai-coding-cn", "GLM_CODING_API_KEY", "GLM_CODING_BASE_URL"),
+        ("zai-coding-global", "ZAI_CODING_API_KEY", "ZAI_CODING_BASE_URL"),
+    ])
+    def test_provider_registered(self, provider_id, key_env, base_env):
+        assert provider_id in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY[provider_id]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.api_key_env_vars == (key_env,)
+        assert pconfig.base_url_env_var == base_env
+
+    def test_resolve_provider_aliases(self):
+        assert resolve_provider("glm-coding-cn") == "zai-coding-cn"
+        assert resolve_provider("glm-coding-global") == "zai-coding-global"
+
+    def test_zai_coding_anthropic_not_registered(self):
+        """zai-coding-anthropic is no longer a separate provider — protocol is a sub-choice."""
+        assert "zai-coding-anthropic" not in PROVIDER_REGISTRY
 
 # =============================================================================
 # Kimi / Moonshot model list isolation tests

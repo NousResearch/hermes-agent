@@ -435,17 +435,25 @@ class TrajectoryCompressor:
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""
         url = self.config.base_url or ""
+        url_lower = url.lower()
         if base_url_host_matches(url, "openrouter.ai"):
             return "openrouter"
         if base_url_host_matches(url, "nousresearch.com"):
             return "nous"
         if (
             base_url_hostname(url) == "chatgpt.com"
-            and "/backend-api/codex" in url.lower()
+            and "/backend-api/codex" in url_lower
         ):
             return "codex"
-        if base_url_host_matches(url, "z.ai"):
-            return "zai"
+        # Z.AI family — distinguish Coding Plan from direct API by path.
+        # Host alone isn't enough: api.z.ai hosts both /api/paas/v4 (direct)
+        # and /api/coding/paas/v4 (Coding Plan); same for open.bigmodel.cn.
+        # base_url_host_matches compares *hostnames only*, so path suffixes
+        # passed to it would never match — we inspect the path ourselves.
+        if base_url_host_matches(url, "api.z.ai"):
+            return "zai-coding-global" if "/coding/paas" in url_lower else "zai"
+        if base_url_host_matches(url, "open.bigmodel.cn"):
+            return "zai-coding-cn" if "/coding/paas" in url_lower else "zai-cn"
         if (
             base_url_host_matches(url, "moonshot.ai")
             or base_url_host_matches(url, "moonshot.cn")

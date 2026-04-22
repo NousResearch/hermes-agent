@@ -447,6 +447,77 @@ class TestExplicitProviderRouting:
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
+    def test_explicit_openrouter(self, monkeypatch):
+        """provider='openrouter' should use OPENROUTER_API_KEY."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-explicit")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("openrouter")
+            assert client is not None
+
+    def test_explicit_kimi(self, monkeypatch):
+        """provider='kimi-coding' should use KIMI_API_KEY."""
+        monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("kimi-coding")
+            assert client is not None
+
+    def test_explicit_minimax(self, monkeypatch):
+        """provider='minimax' should use MINIMAX_API_KEY."""
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("minimax")
+            assert client is not None
+
+    def test_explicit_deepseek(self, monkeypatch):
+        """provider='deepseek' should use DEEPSEEK_API_KEY."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("deepseek")
+            assert client is not None
+
+    def test_explicit_zai(self, monkeypatch):
+        """provider='zai' should use ZAI_API_KEY."""
+        monkeypatch.setenv("ZAI_API_KEY", "zai-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("zai")
+            assert client is not None
+
+    def test_explicit_zai_cn(self, monkeypatch):
+        """provider='zai-cn' should use GLM_API_KEY."""
+        monkeypatch.setenv("GLM_API_KEY", "glm-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("zai-cn")
+            assert client is not None
+
+    def test_explicit_google_alias_uses_gemini_credentials(self):
+        """provider='google' should route through the gemini API-key provider."""
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "gemini-key",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("google", model="gemini-3.1-pro-preview")
+
+        assert client is not None
+        assert model == "gemini-3.1-pro-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "gemini-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    def test_explicit_unknown_returns_none(self, monkeypatch):
+        """Unknown provider should return None."""
+        client, model = resolve_provider_client("nonexistent-provider")
+        assert client is None
+
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

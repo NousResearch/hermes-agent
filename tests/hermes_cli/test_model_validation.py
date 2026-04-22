@@ -59,8 +59,13 @@ class TestParseModelInput:
         assert model == "anthropic/claude-sonnet-4.5"
 
     def test_provider_alias_resolved(self):
-        provider, model = parse_model_input("glm:glm-5", "openrouter")
+        provider, model = parse_model_input("z-ai:glm-5", "openrouter")
         assert provider == "zai"
+        assert model == "glm-5"
+
+    def test_zai_cn_is_own_provider(self):
+        provider, model = parse_model_input("zai-cn:glm-5", "openrouter")
+        assert provider == "zai-cn"
         assert model == "glm-5"
 
     def test_no_slash_no_colon_keeps_provider(self):
@@ -151,7 +156,8 @@ class TestNormalizeProvider:
         assert normalize_provider("") == "openrouter"
 
     def test_known_aliases(self):
-        assert normalize_provider("glm") == "zai"
+        assert normalize_provider("glm") == "zai-cn"
+        assert normalize_provider("z-ai") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("github-copilot") == "copilot"

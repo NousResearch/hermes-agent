@@ -25,7 +25,6 @@ from hermes_cli.auth import (
     _load_auth_store,
     _load_provider_state,
     _resolve_kimi_base_url,
-    _resolve_zai_base_url,
     _save_auth_store,
     _save_provider_state,
     read_credential_pool,
@@ -1216,8 +1215,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         base_url = env_url or pconfig.inference_base_url
         if provider == "kimi-coding":
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
-        elif provider == "zai":
-            base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)
         changed |= _upsert_entry(
             entries,
             provider,

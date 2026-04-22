@@ -88,6 +88,9 @@ _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
 # provider/ prefix when users copy the aggregator form into config.yaml.
 _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
+    "zai-cn",
+    "zai-coding-cn",
+    "zai-coding-global",
     "kimi-coding",
     "kimi-coding-cn",
     "minimax",

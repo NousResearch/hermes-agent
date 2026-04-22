@@ -41,8 +41,14 @@ _PROVIDER_ENV_HINTS = (
     "OPENAI_BASE_URL",
     "NOUS_API_KEY",
     "GLM_API_KEY",
+    "GLM_BASE_URL",
     "ZAI_API_KEY",
     "Z_AI_API_KEY",
+    "ZAI_BASE_URL",
+    "GLM_CODING_API_KEY",
+    "GLM_CODING_BASE_URL",
+    "ZAI_CODING_API_KEY",
+    "ZAI_CODING_BASE_URL",
     "KIMI_API_KEY",
     "KIMI_CN_API_KEY",
     "MINIMAX_API_KEY",
@@ -910,7 +916,10 @@ def run_doctor(args):
     # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
     # If supports_models_endpoint is False, we skip the health check and just show "configured"
     _apikey_providers = [
-        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
+        ("Z.AI",                   ("ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models",                "ZAI_BASE_URL", True),
+        ("Zhipu AI",               ("GLM_API_KEY",),                "https://open.bigmodel.cn/api/paas/v4/models",        "GLM_BASE_URL", True),
+        ("Z.AI Coding Plan",       ("ZAI_CODING_API_KEY",),         "https://api.z.ai/api/coding/paas/v4/models",         "ZAI_CODING_BASE_URL", True),
+        ("Zhipu AI Coding Plan",   ("GLM_CODING_API_KEY",),         "https://open.bigmodel.cn/api/coding/paas/v4/models", "GLM_CODING_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
@@ -934,7 +943,7 @@ def run_doctor(args):
             if _key:
                 break
         if _key:
-            _label = _pname.ljust(20)
+            _label = _pname.ljust(24)
             # Some providers (like MiniMax) don't support /models endpoint
             if not _supports_health_check:
                 print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}")

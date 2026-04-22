@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "zai-cn", "zai-coding-cn", "zai-coding-global", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
@@ -234,6 +234,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "chatgpt.com": "openai",
     "api.anthropic.com": "anthropic",
     "api.z.ai": "zai",
+    "open.bigmodel.cn": "zai-cn",
     "api.moonshot.ai": "kimi-coding",
     "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",

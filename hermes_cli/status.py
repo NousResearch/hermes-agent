@@ -120,7 +120,10 @@ def show_status(args):
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
-        "Z.AI/GLM": "GLM_API_KEY",
+        "Z.AI": "ZAI_API_KEY",
+        "Zhipu AI": "GLM_API_KEY",
+        "Z.AI Coding Plan": "ZAI_CODING_API_KEY",
+        "Zhipu AI Coding Plan": "GLM_CODING_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
@@ -139,12 +142,12 @@ def show_status(args):
         value = get_env_value(env_var) or ""
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
-        print(f"  {name:<12}  {check_mark(has_key)} {display}")
+        print(f"  {name:<20}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
-    print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
+    print(f"  {'Anthropic':<20}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================
     # Auth Providers (OAuth)
@@ -250,10 +253,13 @@ def show_status(args):
     print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
 
     apikey_providers = {
-        "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
-        "Kimi / Moonshot":  ("KIMI_API_KEY",),
-        "MiniMax":          ("MINIMAX_API_KEY",),
-        "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
+        "Z.AI":                  ("ZAI_API_KEY", "Z_AI_API_KEY"),
+        "Zhipu AI":              ("GLM_API_KEY",),
+        "Z.AI Coding Plan":      ("ZAI_CODING_API_KEY",),
+        "Zhipu AI Coding Plan":  ("GLM_CODING_API_KEY",),
+        "Kimi / Moonshot":       ("KIMI_API_KEY",),
+        "MiniMax":               ("MINIMAX_API_KEY",),
+        "MiniMax (China)":       ("MINIMAX_CN_API_KEY",),
     }
     for pname, env_vars in apikey_providers.items():
         key_val = ""

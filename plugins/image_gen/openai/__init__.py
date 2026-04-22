@@ -1,28 +1,22 @@
 """OpenAI image generation backend.
 
-Exposes the ``openai`` image generation API as an :class:`ImageGenProvider`
-implementation. Supports four model families:
+Exposes OpenAI's ``gpt-image-2`` model as an :class:`ImageGenProvider`
+implementation. We intentionally only support this one model — the older
+``gpt-image-1.5`` / ``gpt-image-1`` / ``dall-e-*`` models are slower, lower
+quality, or have quirky parameter constraints (dall-e-2 squares only, etc.)
+with nothing to gain.
 
-* ``gpt-image-1.5`` (default) — newest, highest quality
-* ``gpt-image-1`` — prior generation
-* ``dall-e-3`` — legacy DALL-E 3
-* ``dall-e-2`` — legacy DALL-E 2 (only 256/512/1024 squares)
+Outputs are base64 JSON → saved under ``$HERMES_HOME/cache/images/``.
 
-Outputs:
-
-* gpt-image-* → base64 JSON → saved under ``$HERMES_HOME/cache/images/``
-* dall-e-3 → URL passthrough
-* dall-e-2 → URL passthrough
-
-Config overrides live at ``image_gen.openai.*`` in ``config.yaml``; the
-``quality`` knob is honored for gpt-image / dalle3 families.
+Config overrides live at ``image_gen.openai.*`` in ``config.yaml``. Today
+that's just ``quality`` (``low`` / ``medium`` / ``high`` / ``auto``).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -37,91 +31,26 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Model catalog
+# Model
 # ---------------------------------------------------------------------------
-#
-# ``family`` determines how aspect_ratio maps to a ``size`` string and which
-# request parameters the API accepts. Three families:
-#
-#   "gpt_image"  — gpt-image-1.5 / gpt-image-1; supports 1024x1024 /
-#                  1536x1024 / 1024x1536; returns b64 by default.
-#   "dalle3"     — dall-e-3; supports 1024x1024 / 1792x1024 / 1024x1792;
-#                  returns URL.
-#   "dalle2"     — dall-e-2; squares only (256/512/1024); returns URL.
 
-_OPENAI_MODELS: Dict[str, Dict[str, Any]] = {
-    "gpt-image-1.5": {
-        "display": "GPT Image 1.5",
-        "speed": "~10s",
-        "strengths": "Highest quality, strong prompt adherence, text rendering",
-        "price": "varies",
-        "family": "gpt_image",
-        "sizes": {
-            "landscape": "1536x1024",
-            "square": "1024x1024",
-            "portrait": "1024x1536",
-        },
-        "default_quality": "auto",
-    },
-    "gpt-image-1": {
-        "display": "GPT Image 1",
-        "speed": "~10s",
-        "strengths": "Prior-gen GPT image",
-        "price": "varies",
-        "family": "gpt_image",
-        "sizes": {
-            "landscape": "1536x1024",
-            "square": "1024x1024",
-            "portrait": "1024x1536",
-        },
-        "default_quality": "auto",
-    },
-    "gpt-image-1-mini": {
-        "display": "GPT Image 1 Mini",
-        "speed": "~5s",
-        "strengths": "Faster, cheaper GPT image",
-        "price": "varies",
-        "family": "gpt_image",
-        "sizes": {
-            "landscape": "1536x1024",
-            "square": "1024x1024",
-            "portrait": "1024x1536",
-        },
-        "default_quality": "auto",
-    },
-    "dall-e-3": {
-        "display": "DALL·E 3",
-        "speed": "~8s",
-        "strengths": "Legacy DALL-E 3",
-        "price": "$0.04-0.12 / image",
-        "family": "dalle3",
-        "sizes": {
-            "landscape": "1792x1024",
-            "square": "1024x1024",
-            "portrait": "1024x1792",
-        },
-        "default_quality": "standard",
-    },
-    "dall-e-2": {
-        "display": "DALL·E 2",
-        "speed": "~5s",
-        "strengths": "Legacy DALL-E 2 (squares only)",
-        "price": "$0.016-0.020 / image",
-        "family": "dalle2",
-        "sizes": {
-            "landscape": "1024x1024",
-            "square": "1024x1024",
-            "portrait": "1024x1024",
-        },
-        "default_quality": None,
+MODEL_ID = "gpt-image-2"
+
+MODEL_META: Dict[str, Any] = {
+    "display": "GPT Image 2",
+    "speed": "~15-50s",
+    "strengths": "Highest quality, strong prompt adherence, excellent text rendering",
+    "price": "varies",
+    "sizes": {
+        "landscape": "1536x1024",
+        "square": "1024x1024",
+        "portrait": "1024x1536",
     },
 }
 
-DEFAULT_OPENAI_MODEL = "gpt-image-1.5"
-
 
 def _load_openai_config() -> Dict[str, Any]:
-    """Read ``image_gen`` and ``image_gen.openai`` from config.yaml."""
+    """Read ``image_gen`` from config.yaml (returns {} on any failure)."""
     try:
         from hermes_cli.config import load_config
 
@@ -133,41 +62,13 @@ def _load_openai_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which OpenAI model to use and return ``(model_id, meta)``.
-
-    Lookup order:
-
-    1. ``OPENAI_IMAGE_MODEL`` env var (escape hatch for scripts/tests)
-    2. ``image_gen.openai.model`` from config.yaml
-    3. ``image_gen.model`` if it starts with ``gpt-image`` / ``dall-e``
-    4. :data:`DEFAULT_OPENAI_MODEL`
-    """
-    env_override = os.environ.get("OPENAI_IMAGE_MODEL")
-    if env_override and env_override in _OPENAI_MODELS:
-        return env_override, _OPENAI_MODELS[env_override]
-
-    cfg = _load_openai_config()
-    openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
-    candidate = openai_cfg.get("model") if isinstance(openai_cfg, dict) else None
-    if not candidate:
-        top = cfg.get("model")
-        if isinstance(top, str) and top in _OPENAI_MODELS:
-            candidate = top
-
-    if isinstance(candidate, str) and candidate in _OPENAI_MODELS:
-        return candidate, _OPENAI_MODELS[candidate]
-
-    return DEFAULT_OPENAI_MODEL, _OPENAI_MODELS[DEFAULT_OPENAI_MODEL]
-
-
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
 
 
 class OpenAIImageGenProvider(ImageGenProvider):
-    """OpenAI images.generate backend."""
+    """OpenAI ``images.generate`` backend — gpt-image-2 only."""
 
     @property
     def name(self) -> str:
@@ -187,22 +88,18 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return True
 
     def list_models(self) -> List[Dict[str, Any]]:
-        """Return catalog entries for the model picker."""
-        out: List[Dict[str, Any]] = []
-        for model_id, meta in _OPENAI_MODELS.items():
-            out.append(
-                {
-                    "id": model_id,
-                    "display": meta.get("display", model_id),
-                    "speed": meta.get("speed", ""),
-                    "strengths": meta.get("strengths", ""),
-                    "price": meta.get("price", ""),
-                }
-            )
-        return out
+        return [
+            {
+                "id": MODEL_ID,
+                "display": MODEL_META["display"],
+                "speed": MODEL_META["speed"],
+                "strengths": MODEL_META["strengths"],
+                "price": MODEL_META["price"],
+            }
+        ]
 
     def default_model(self) -> Optional[str]:
-        return DEFAULT_OPENAI_MODEL
+        return MODEL_ID
 
     def generate(
         self,
@@ -243,41 +140,23 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        model_id, meta = _resolve_model()
-        family = meta["family"]
-        size = meta["sizes"].get(aspect, meta["sizes"]["square"])
+        size = MODEL_META["sizes"].get(aspect, MODEL_META["sizes"]["square"])
 
         payload: Dict[str, Any] = {
-            "model": model_id,
+            "model": MODEL_ID,
             "prompt": prompt,
             "size": size,
             "n": 1,
         }
 
+        # gpt-image-2 unconditionally returns b64_json and REJECTS
+        # ``response_format`` as an unknown parameter. Don't send it.
         cfg = _load_openai_config()
         openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
-        if not isinstance(openai_cfg, dict):
-            openai_cfg = {}
-
-        if family == "gpt_image":
-            # gpt-image-* returns b64_json unconditionally and REJECTS
-            # ``response_format`` as an unknown parameter (verified live
-            # April 2026: 400 invalid_request_error). Don't send it.
-            quality = openai_cfg.get("quality") or meta.get("default_quality")
-            if quality and quality != "auto":
+        if isinstance(openai_cfg, dict):
+            quality = openai_cfg.get("quality")
+            if isinstance(quality, str) and quality and quality != "auto":
                 payload["quality"] = quality
-        elif family == "dalle3":
-            payload["response_format"] = "url"
-            quality = openai_cfg.get("quality") or meta.get("default_quality")
-            if quality and quality in {"standard", "hd"}:
-                payload["quality"] = quality
-        elif family == "dalle2":
-            payload["response_format"] = "url"
-            # dalle2 only accepts 256x256 / 512x512 / 1024x1024. Our sizes
-            # table already clamps to 1024x1024 but surface a clear error
-            # if someone overrode it out-of-range.
-            if payload["size"] not in {"256x256", "512x512", "1024x1024"}:
-                payload["size"] = "1024x1024"
 
         try:
             client = openai.OpenAI()
@@ -288,7 +167,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 error=f"OpenAI image generation failed: {exc}",
                 error_type="api_error",
                 provider="openai",
-                model=model_id,
+                model=MODEL_ID,
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
@@ -299,39 +178,39 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 error="OpenAI returned no image data",
                 error_type="empty_response",
                 provider="openai",
-                model=model_id,
+                model=MODEL_ID,
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
 
         first = data[0]
-        url = getattr(first, "url", None)
         b64 = getattr(first, "b64_json", None)
+        url = getattr(first, "url", None)
         revised_prompt = getattr(first, "revised_prompt", None)
 
         if b64:
             try:
-                saved_path = save_b64_image(
-                    b64, prefix=f"openai_{model_id.replace('.', '-')}"
-                )
+                saved_path = save_b64_image(b64, prefix="openai_gpt-image-2")
             except Exception as exc:
                 return error_response(
                     error=f"Could not save image to cache: {exc}",
                     error_type="io_error",
                     provider="openai",
-                    model=model_id,
+                    model=MODEL_ID,
                     prompt=prompt,
                     aspect_ratio=aspect,
                 )
             image_ref = str(saved_path)
         elif url:
+            # Defensive — gpt-image-2 returns b64, but fall back gracefully
+            # if OpenAI ever changes the response shape.
             image_ref = url
         else:
             return error_response(
-                error="OpenAI response contained neither URL nor b64_json",
+                error="OpenAI response contained neither b64_json nor URL",
                 error_type="empty_response",
                 provider="openai",
-                model=model_id,
+                model=MODEL_ID,
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
@@ -342,7 +221,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
         return success_response(
             image=image_ref,
-            model=model_id,
+            model=MODEL_ID,
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai",

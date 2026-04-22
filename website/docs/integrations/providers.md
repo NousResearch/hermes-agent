@@ -133,7 +133,7 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 :::
 
 :::warning
-Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model — by default Gemini Flash via OpenRouter. An `OPENROUTER_API_KEY` enables these tools automatically. You can also configure which model and provider these tools use — see [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models).
+Even when using Nous Portal, Codex, or a custom endpoint, some tools use separate auxiliary routing. Vision and lightweight summaries still auto-detect auxiliary backends; MoA now defaults to a direct multi-provider stack (Xiaomi MiMo v2 Pro aggregator with MiniMax and DeepSeek references). You can override those routes under `auxiliary` in config.yaml — see [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models).
 :::
 
 :::tip Nous Tool Gateway

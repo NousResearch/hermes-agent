@@ -383,7 +383,11 @@ TOOL_CATEGORIES = {
 # Used as a fallback for tools like vision/moa that just need an API key.
 TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
-    "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
+    "moa": [
+        ("XIAOMI_API_KEY", "https://platform.xiaomimimo.com"),
+        ("MINIMAX_API_KEY", "https://www.minimax.io/"),
+        ("DEEPSEEK_API_KEY", "https://platform.deepseek.com/api_keys"),
+    ],
 }
 
 
@@ -700,6 +704,14 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
 
             _provider, client, _model = resolve_vision_provider_client()
             return client is not None
+        except Exception:
+            return False
+
+    if ts_key == "moa":
+        try:
+            from tools.mixture_of_agents_tool import check_moa_requirements
+
+            return check_moa_requirements()
         except Exception:
             return False
 
@@ -1411,6 +1423,24 @@ def _configure_simple_requirements(ts_key: str):
                 save_config(_cfg)
                 if is_native_openai:
                     save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
+                _print_success("    Saved")
+            else:
+                _print_warning("    Skipped")
+        return
+
+    if ts_key == "moa":
+        if _toolset_has_keys("moa"):
+            return
+        print()
+        print(color("  Mixture of Agents uses a Xiaomi MiMo v2 Pro aggregator plus at least one reference provider (MiniMax or DeepSeek):", Colors.YELLOW))
+        for var, url in TOOLSET_ENV_REQUIREMENTS.get("moa", []):
+            if get_env_value(var):
+                continue
+            if url:
+                _print_info(f"  Get key at: {url}")
+            value = _prompt(f"    {var}", password=True)
+            if value and value.strip():
+                save_env_value(var, value.strip())
                 _print_success("    Saved")
             else:
                 _print_warning("    Skipped")

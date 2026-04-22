@@ -537,6 +537,27 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
         },
+        "moa": {
+            "timeout": 180,
+            "extra_body": {},
+            "reference_models": [
+                {
+                    "provider": "minimax",
+                    "model": "MiniMax-M2.7",
+                    "label": "minimax/MiniMax-M2.7",
+                },
+                {
+                    "provider": "deepseek",
+                    "model": "deepseek-reasoner",
+                    "label": "deepseek/deepseek-reasoner",
+                },
+            ],
+            "aggregator_model": {
+                "provider": "xiaomi",
+                "model": "mimo-v2-pro",
+                "label": "xiaomi/mimo-v2-pro",
+            },
+        },
         "skills_hub": {
             "provider": "auto",
             "model": "",
@@ -930,7 +951,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "OPENROUTER_API_KEY": {
-        "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
+        "description": "OpenRouter API key (for vision and optional OpenRouter-routed auxiliary tasks)",
         "prompt": "OpenRouter API key",
         "url": "https://openrouter.ai/keys",
         "password": True,

@@ -364,11 +364,18 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
 
-    # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
-    if get_env_value("OPENROUTER_API_KEY"):
+    # Mixture of Agents — default direct stack is Xiaomi aggregator + MiniMax/DeepSeek references
+    try:
+        from tools.mixture_of_agents_tool import check_moa_requirements
+
+        moa_available = check_moa_requirements()
+    except Exception:
+        moa_available = False
+
+    if moa_available:
         tool_status.append(("Mixture of Agents", True, None))
     else:
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
+        tool_status.append(("Mixture of Agents", False, "XIAOMI_API_KEY + (MINIMAX_API_KEY or DEEPSEEK_API_KEY)"))
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:

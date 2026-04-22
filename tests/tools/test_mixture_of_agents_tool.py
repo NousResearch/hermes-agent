@@ -8,37 +8,28 @@ import pytest
 moa = importlib.import_module("tools.mixture_of_agents_tool")
 
 
-def test_moa_defaults_track_current_openrouter_frontier_models():
+def test_moa_defaults_track_current_direct_provider_stack():
     assert moa.REFERENCE_MODELS == [
-        "anthropic/claude-opus-4.6",
-        "google/gemini-3-pro-preview",
-        "openai/gpt-5.4-pro",
-        "deepseek/deepseek-v3.2",
+        "minimax/MiniMax-M2.7",
+        "deepseek/deepseek-reasoner",
     ]
-    assert moa.AGGREGATOR_MODEL == "anthropic/claude-opus-4.6"
+    assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2-pro"
 
 
 @pytest.mark.asyncio
 async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_failure(monkeypatch):
-    fake_client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(
-                create=AsyncMock(side_effect=RuntimeError("rate limited"))
-            )
-        )
-    )
     warn = MagicMock()
     err = MagicMock()
 
-    monkeypatch.setattr(moa, "_get_openrouter_client", lambda: fake_client)
+    monkeypatch.setattr(moa, "async_call_llm", AsyncMock(side_effect=RuntimeError("rate limited")))
     monkeypatch.setattr(moa.logger, "warning", warn)
     monkeypatch.setattr(moa.logger, "error", err)
 
     model, message, success = await moa._run_reference_model_safe(
-        "openai/gpt-5.4-pro", "hello", max_retries=2
+        {"provider": "minimax", "model": "MiniMax-M2.7"}, "hello", max_retries=2
     )
 
-    assert model == "openai/gpt-5.4-pro"
+    assert model == "minimax/MiniMax-M2.7"
     assert success is False
     assert "failed after 2 attempts" in message
     assert warn.call_count == 2
@@ -48,12 +39,26 @@ async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_fail
 
 
 @pytest.mark.asyncio
+async def test_reference_model_empty_final_attempt_is_failure(monkeypatch):
+    monkeypatch.setattr(moa, "async_call_llm", AsyncMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=None, reasoning=None, reasoning_content=None, reasoning_details=None))]
+    )))
+
+    model, message, success = await moa._run_reference_model_safe(
+        {"provider": "minimax", "model": "MiniMax-M2.7"}, "hello", max_retries=1
+    )
+
+    assert model == "minimax/MiniMax-M2.7"
+    assert success is False
+    assert "empty reasoning-only content" in message
+
+
+@pytest.mark.asyncio
 async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(
         moa,
         "_run_reference_model_safe",
-        AsyncMock(return_value=("anthropic/claude-opus-4.6", "ok", True)),
+        AsyncMock(return_value=("minimax/MiniMax-M2.7", "ok", True)),
     )
     monkeypatch.setattr(
         moa,
@@ -65,6 +70,7 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
         "_debug",
         SimpleNamespace(log_call=MagicMock(), save=MagicMock(), active=False),
     )
+    monkeypatch.setattr(moa, "_route_is_available", lambda route: True)
 
     err = MagicMock()
     monkeypatch.setattr(moa.logger, "error", err)
@@ -72,7 +78,7 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
     result = json.loads(
         await moa.mixture_of_agents_tool(
             "solve this",
-            reference_models=["anthropic/claude-opus-4.6"],
+            reference_models=[{"provider": "minimax", "model": "MiniMax-M2.7"}],
         )
     )
 
@@ -80,3 +86,39 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
     assert "Error in MoA processing" in result["error"]
     err.assert_called_once()
     assert err.call_args.kwargs.get("exc_info") is True
+
+
+def test_check_moa_requirements_accepts_direct_provider_stack(monkeypatch):
+    available = {
+        "xiaomi/mimo-v2-pro",
+        "minimax/MiniMax-M2.7",
+    }
+
+    monkeypatch.setattr(
+        moa,
+        "_route_is_available",
+        lambda route: moa._route_label(route) in available,
+    )
+
+    assert moa.check_moa_requirements() is True
+
+
+def test_get_moa_configuration_reads_configured_route_overrides(monkeypatch):
+    monkeypatch.setattr(
+        moa,
+        "_load_moa_task_config",
+        lambda: {
+            "reference_models": [
+                {"provider": "deepseek", "model": "deepseek-chat"},
+            ],
+            "aggregator_model": {
+                "provider": "xiaomi",
+                "model": "mimo-v2-flash",
+            },
+        },
+    )
+
+    config = moa.get_moa_configuration()
+
+    assert config["reference_models"] == ["deepseek/deepseek-chat"]
+    assert config["aggregator_model"] == "xiaomi/mimo-v2-flash"

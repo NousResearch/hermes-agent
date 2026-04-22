@@ -117,7 +117,7 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `mixture_of_agents` | Route a hard problem through multiple frontier LLMs collaboratively. Makes 5 API calls (4 reference models + 1 aggregator) with maximum reasoning effort — use sparingly for genuinely difficult problems. Best for: complex math, advanced alg… | OPENROUTER_API_KEY |
+| `mixture_of_agents` | Route a hard problem through multiple LLMs collaboratively. Default stack: Xiaomi MiMo v2 Pro as aggregator with direct MiniMax and DeepSeek reference models. Requires Xiaomi plus at least one reference-provider key. Use sparingly for genuine… | XIAOMI_API_KEY, plus MINIMAX_API_KEY or DEEPSEEK_API_KEY |
 
 ## `rl` toolset
 
@@ -179,5 +179,3 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `text_to_speech` | Convert text to speech audio. Returns a MEDIA: path that the platform delivers as a voice message. On Telegram it plays as a voice bubble, on Discord/WhatsApp as an audio attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider… | — |
-
-

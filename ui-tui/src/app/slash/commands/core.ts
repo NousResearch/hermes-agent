@@ -240,22 +240,28 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys('usage: /terminal-setup [auto|vscode|cursor|windsurf]')
       }
 
-      const runner = !target || target === 'auto' ? configureDetectedTerminalKeybindings() : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
+      const runner =
+        !target || target === 'auto'
+          ? configureDetectedTerminalKeybindings()
+          : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
 
-      void runner.then(result => {
-        if (ctx.stale()) {
-          return
-        }
+      void runner
+        .then(result => {
+          if (ctx.stale()) {
+            return
+          }
 
-        ctx.transcript.sys(result.message)
-        if (result.success && result.requiresRestart) {
-          ctx.transcript.sys('restart the IDE terminal for the new keybindings to take effect')
-        }
-      }).catch(error => {
-        if (!ctx.stale()) {
-          ctx.transcript.sys(`terminal setup failed: ${String(error)}`)
-        }
-      })
+          ctx.transcript.sys(result.message)
+
+          if (result.success && result.requiresRestart) {
+            ctx.transcript.sys('restart the IDE terminal for the new keybindings to take effect')
+          }
+        })
+        .catch(error => {
+          if (!ctx.stale()) {
+            ctx.transcript.sys(`terminal setup failed: ${String(error)}`)
+          }
+        })
     }
   },
 
@@ -266,6 +272,34 @@ export const coreCommands: SlashCommand[] = [
       const text = ctx.gateway.gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20)))
 
       text ? ctx.transcript.page(text, 'Logs') : ctx.transcript.sys('no gateway logs')
+    }
+  },
+
+  {
+    help: 'view current transcript (user + assistant messages)',
+    name: 'history',
+    run: (arg, ctx) => {
+      // The CLI-side `/history` runs in a detached slash-worker subprocess
+      // that never sees the TUI's turns — it only surfaces whatever was
+      // persisted before this process started.  Render the TUI's own
+      // transcript so `/history` actually reflects what the user just did.
+      const items = ctx.local.getHistoryItems().filter(m => m.role === 'user' || m.role === 'assistant')
+
+      if (!items.length) {
+        return ctx.transcript.sys('no conversation yet')
+      }
+
+      const preview = Math.max(80, parseInt(arg, 10) || 400)
+
+      const lines = items.map((m, i) => {
+        const tag = m.role === 'user' ? `You #${i + 1}` : `Hermes #${i + 1}`
+        const body = m.text.trim() || (m.tools?.length ? `(${m.tools.length} tool calls)` : '(empty)')
+        const clipped = body.length > preview ? `${body.slice(0, preview).trimEnd()}…` : body
+
+        return `[${tag}]\n${clipped}`
+      })
+
+      ctx.transcript.page(lines.join('\n\n'), 'History')
     }
   },
 

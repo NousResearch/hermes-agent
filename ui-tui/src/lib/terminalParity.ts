@@ -1,4 +1,9 @@
-import { detectVSCodeLikeTerminal, isRemoteShellSession, shouldPromptForTerminalSetup, type FileOps } from './terminalSetup.js'
+import {
+  detectVSCodeLikeTerminal,
+  type FileOps,
+  isRemoteShellSession,
+  shouldPromptForTerminalSetup
+} from './terminalSetup.js'
 
 export type MacTerminalHint = {
   key: string
@@ -31,7 +36,10 @@ export async function terminalParityHints(
   const ctx = detectMacTerminalContext(env)
   const hints: MacTerminalHint[] = []
 
-  if (ctx.vscodeLike && (await shouldPromptForTerminalSetup({ env, fileOps: options?.fileOps, homeDir: options?.homeDir }))) {
+  if (
+    ctx.vscodeLike &&
+    (await shouldPromptForTerminalSetup({ env, fileOps: options?.fileOps, homeDir: options?.homeDir }))
+  ) {
     hints.push({
       key: 'ide-setup',
       tone: 'info',
@@ -43,7 +51,8 @@ export async function terminalParityHints(
     hints.push({
       key: 'apple-terminal',
       tone: 'warn',
-      message: 'Apple Terminal detected · use /paste for image-only clipboard fallback, and try Ctrl+A / Ctrl+E / Ctrl+U if Cmd+←/→/⌫ gets rewritten'
+      message:
+        'Apple Terminal detected · use /paste for image-only clipboard fallback, and try Ctrl+A / Ctrl+E / Ctrl+U if Cmd+←/→/⌫ gets rewritten'
     })
   }
 
@@ -51,7 +60,8 @@ export async function terminalParityHints(
     hints.push({
       key: 'tmux',
       tone: 'warn',
-      message: 'tmux detected · clipboard copy/paste uses passthrough when available; allow-passthrough improves OSC52 reliability'
+      message:
+        'tmux detected · clipboard copy/paste uses passthrough when available; allow-passthrough improves OSC52 reliability'
     })
   }
 
@@ -59,7 +69,8 @@ export async function terminalParityHints(
     hints.push({
       key: 'remote',
       tone: 'warn',
-      message: 'SSH session detected · text clipboard can bridge via OSC52, but image clipboard and local screenshot paths still depend on the machine running Hermes'
+      message:
+        'SSH session detected · text clipboard can bridge via OSC52, but image clipboard and local screenshot paths still depend on the machine running Hermes'
     })
   }
 

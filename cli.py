@@ -371,7 +371,6 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "delegation": {
             "max_iterations": 45,  # Max tool-calling turns per child agent
-            "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
             "model": "",       # Subagent model override (empty = inherit parent model)
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
@@ -1155,11 +1154,11 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
-    plain = re.sub(r"___([^_]+)___", r"\1", plain)
+    plain = re.sub(r"(?<!\w)___([^_]+)___(?!\w)", r"\1", plain)
     plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", plain)
-    plain = re.sub(r"__([^_]+)__", r"\1", plain)
+    plain = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", r"\1", plain)
     plain = re.sub(r"\*([^*]+)\*", r"\1", plain)
-    plain = re.sub(r"_([^_]+)_", r"\1", plain)
+    plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
     return plain.strip("\n")
@@ -8371,6 +8370,17 @@ class HermesCLI:
 
             def run_agent():
                 nonlocal result
+                # Set callbacks inside the agent thread so thread-local storage
+                # in terminal_tool is populated for this thread.  The main thread
+                # registration (run() line ~9046) is invisible here because
+                # _callback_tls is threading.local().  Matches the pattern used
+                # by acp_adapter/server.py for ACP sessions.
+                set_sudo_password_callback(self._sudo_password_callback)
+                set_approval_callback(self._approval_callback)
+                try:
+                    set_secret_capture_callback(self._secret_capture_callback)
+                except Exception:
+                    pass
                 agent_message = _voice_prefix + message if _voice_prefix else message
                 # Prepend pending model switch note so the model knows about the switch
                 _msn = getattr(self, '_pending_model_switch_note', None)
@@ -8396,6 +8406,15 @@ class HermesCLI:
                         "failed": True,
                         "error": _summary,
                     }
+                finally:
+                    # Clear thread-local callbacks so a reused thread doesn't
+                    # hold stale references to a disposed CLI instance.
+                    try:
+                        set_sudo_password_callback(None)
+                        set_approval_callback(None)
+                        set_secret_capture_callback(None)
+                    except Exception:
+                        pass
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP

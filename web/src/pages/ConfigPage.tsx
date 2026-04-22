@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   Code,
   Download,
@@ -75,6 +75,8 @@ export default function ConfigPage() {
   const [schema, setSchema] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
   const [defaults, setDefaults] = useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [yamlMode, setYamlMode] = useState(false);
@@ -92,17 +94,28 @@ export default function ConfigPage() {
     return cat.charAt(0).toUpperCase() + cat.slice(1);
   }
 
-  useEffect(() => {
-    api.getConfig().then(setConfig).catch(() => {});
-    api
-      .getSchema()
-      .then((resp) => {
-        setSchema(resp.fields as Record<string, Record<string, unknown>>);
-        setCategoryOrder(resp.category_order ?? []);
+  const loadPage = useCallback(() => {
+    setLoading(true);
+    setError(null);
+
+    Promise.all([
+      api.getConfig(),
+      api.getSchema(),
+      api.getDefaults(),
+    ])
+      .then(([nextConfig, nextSchema, nextDefaults]) => {
+        setConfig(nextConfig);
+        setSchema(nextSchema.fields as Record<string, Record<string, unknown>>);
+        setCategoryOrder(nextSchema.category_order ?? []);
+        setDefaults(nextDefaults);
       })
-      .catch(() => {});
-    api.getDefaults().then(setDefaults).catch(() => {});
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadPage();
+  }, [loadPage]);
 
   // Set active category when categories load
   useEffect(() => {
@@ -228,12 +241,29 @@ export default function ConfigPage() {
   };
 
   /* ---- Loading ---- */
-  if (!config || !schema) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
     );
+  }
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
+          <p className="text-sm text-destructive">{error}</p>
+          <Button size="sm" variant="outline" onClick={loadPage}>
+            {t.common.retry}
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!config || !schema) {
+    return null;
   }
 
   /* ---- Render field list (shared between search & normal) ---- */

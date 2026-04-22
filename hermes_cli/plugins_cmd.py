@@ -122,7 +122,15 @@ def _read_manifest(plugin_dir: Path) -> dict:
         import yaml
 
         with open(manifest_file) as f:
-            return yaml.safe_load(f) or {}
+            manifest = yaml.safe_load(f) or {}
+        if not isinstance(manifest, dict):
+            logger.warning(
+                "Expected plugin.yaml in %s to contain a mapping, got %s",
+                plugin_dir,
+                type(manifest).__name__,
+            )
+            return {}
+        return manifest
     except Exception as e:
         logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
         return {}

@@ -155,6 +155,13 @@ class TestReadManifest:
         result = _read_manifest(tmp_path)
         assert result == {}
 
+    def test_valid_yaml_with_non_mapping_root_returns_empty_and_logs(self, tmp_path, caplog):
+        (tmp_path / "plugin.yaml").write_text("- not\n- a\n- mapping\n")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins_cmd"):
+            result = _read_manifest(tmp_path)
+        assert result == {}
+        assert any("Expected plugin.yaml in" in r.message for r in caplog.records)
+
 
 # ── cmd_install tests ─────────────────────────────────────────────────────────
 

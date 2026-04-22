@@ -198,11 +198,11 @@ HTTP_REQUEST_SCHEMA = {
             },
             "headers": {
                 "type": "object",
-                "description": "Request headers as key-value pairs (e.g., {"Authorization": "Bearer token"})",
+                "description": "Request headers as key-value pairs (e.g., {\"Authorization\": \"Bearer token\"})",
             },
             "params": {
                 "type": "object",
-                "description": "URL query parameters as key-value pairs (e.g., {"page": "1", "limit": "10"})",
+                "description": "URL query parameters as key-value pairs (e.g., {\"page\": \"1\", \"limit\": \"10\"})",
             },
             "json": {
                 "type": "object",

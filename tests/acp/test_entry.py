@@ -1,5 +1,10 @@
 """Tests for acp_adapter.entry startup wiring."""
 
+import pytest
+
+# ACP SDK is an optional dependency — skip tests if not installed
+pytest.importorskip("acp")
+
 import acp
 
 from acp_adapter import entry

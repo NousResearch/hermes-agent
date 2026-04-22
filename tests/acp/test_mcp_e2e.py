@@ -14,6 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# ACP SDK is an optional dependency — skip tests if not installed
+pytest.importorskip("acp")
+
 import acp
 from acp.schema import (
     EnvVariable,

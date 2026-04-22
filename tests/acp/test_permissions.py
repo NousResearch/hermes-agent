@@ -6,6 +6,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# ACP SDK is an optional dependency — skip tests if not installed
+pytest.importorskip("acp")
+
+
 from acp.schema import (
     AllowedOutcome,
     DeniedOutcome,

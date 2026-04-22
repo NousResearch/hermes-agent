@@ -436,7 +436,7 @@ def _coerce_number(value: str, integer_only: bool = False):
         return value
     # Guard against inf/nan before int() conversion
     if f != f or f == float("inf") or f == float("-inf"):
-        return f
+        return value
     # If it looks like an integer (no fractional part), return int
     if f == int(f):
         return int(f)

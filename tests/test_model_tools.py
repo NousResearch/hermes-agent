@@ -137,3 +137,47 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+
+# =========================================================================
+# _coerce_number — nan/inf handling
+# =========================================================================
+
+class TestCoerceNumber:
+    """Verify _coerce_number returns original string for nan/inf (not float)."""
+
+    def test_nan_returns_string(self):
+        from model_tools import _coerce_number
+        result = _coerce_number("nan")
+        assert result == "nan"
+        assert isinstance(result, str)
+
+    def test_inf_returns_string(self):
+        from model_tools import _coerce_number
+        result = _coerce_number("inf")
+        assert result == "inf"
+        assert isinstance(result, str)
+
+    def test_negative_inf_returns_string(self):
+        from model_tools import _coerce_number
+        result = _coerce_number("-inf")
+        assert result == "-inf"
+        assert isinstance(result, str)
+
+    def test_normal_integer_returns_int(self):
+        from model_tools import _coerce_number
+        result = _coerce_number("42")
+        assert result == 42
+        assert isinstance(result, int)
+
+    def test_normal_float_returns_float(self):
+        from model_tools import _coerce_number
+        result = _coerce_number("3.14")
+        assert result == 3.14
+        assert isinstance(result, float)
+
+    def test_invalid_number_returns_string(self):
+        from model_tools import _coerce_number
+        result = _coerce_number("not_a_number")
+        assert result == "not_a_number"
+        assert isinstance(result, str)

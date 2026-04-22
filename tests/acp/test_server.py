@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
+# ACP SDK is an optional dependency — skip tests if not installed
+pytest.importorskip("acp")
+
 import acp
 from acp.agent.router import build_agent_router
 from acp.schema import (

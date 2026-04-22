@@ -1182,6 +1182,15 @@ def _run_browser_command(
         # used during CLI discovery.
         browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+
+        # Tell the agent-browser daemon to self-terminate after being idle
+        # for our configured inactivity timeout.  This is the daemon-side
+        # counterpart to our Python-side _cleanup_inactive_browser_sessions
+        # — the daemon kills itself and its Chrome children when no CLI
+        # commands arrive within the window.  Added in agent-browser 0.24.
+        if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
+            idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
+            browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
         
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file

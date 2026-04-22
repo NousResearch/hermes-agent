@@ -3384,7 +3384,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 )
 
             from hermes_cli.models import (
-                _PROVIDER_MODELS, get_pricing_for_provider, filter_nous_free_models,
+                _PROVIDER_MODELS, get_pricing_for_provider,
                 check_nous_free_tier, partition_nous_models_by_tier,
             )
             model_ids = _PROVIDER_MODELS.get("nous", [])
@@ -3393,7 +3393,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             unavailable_models: list = []
             if model_ids:
                 pricing = get_pricing_for_provider("nous")
-                model_ids = filter_nous_free_models(model_ids, pricing)
                 free_tier = check_nous_free_tier()
                 if free_tier:
                     model_ids, unavailable_models = partition_nous_models_by_tier(

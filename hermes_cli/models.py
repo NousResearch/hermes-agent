@@ -362,17 +362,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
 _PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
 
 # ---------------------------------------------------------------------------
-# Nous Portal free-model filtering
+# Nous Portal free-model helper
 # ---------------------------------------------------------------------------
-# Models that are ALLOWED to appear when priced as free on Nous Portal.
-# Any other free model is hidden — prevents promotional/temporary free models
-# from cluttering the selection when users are paying subscribers.
-# Models in this list are ALSO filtered out if they are NOT free (i.e. they
-# should only appear in the menu when they are genuinely free).
-_NOUS_ALLOWED_FREE_MODELS: frozenset[str] = frozenset({
-    "xiaomi/mimo-v2-pro",
-    "xiaomi/mimo-v2-omni",
-})
+# The Nous Portal models endpoint is the source of truth for which models
+# are currently offered (free or paid). We trust whatever it returns and
+# surface it to users as-is — no local allowlist filtering.
 
 
 def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
@@ -384,35 +378,6 @@ def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
         return float(p.get("prompt", "1")) == 0 and float(p.get("completion", "1")) == 0
     except (TypeError, ValueError):
         return False
-
-
-def filter_nous_free_models(
-    model_ids: list[str],
-    pricing: dict[str, dict[str, str]],
-) -> list[str]:
-    """Filter the Nous Portal model list according to free-model policy.
-
-    Rules:
-      • Paid models that are NOT in the allowlist → keep (normal case).
-      • Free models that are NOT in the allowlist → drop.
-      • Allowlist models that ARE free → keep.
-      • Allowlist models that are NOT free → drop.
-    """
-    if not pricing:
-        return model_ids  # no pricing data — can't filter, show everything
-
-    result: list[str] = []
-    for mid in model_ids:
-        free = _is_model_free(mid, pricing)
-        if mid in _NOUS_ALLOWED_FREE_MODELS:
-            # Allowlist model: only show when it's actually free
-            if free:
-                result.append(mid)
-        else:
-            # Regular model: keep only when it's NOT free
-            if not free:
-                result.append(mid)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +443,7 @@ def partition_nous_models_by_tier(
 ) -> tuple[list[str], list[str]]:
     """Split Nous models into (selectable, unavailable) based on user tier.
 
-    For paid-tier users: all models are selectable, none unavailable
-    (free-model filtering is handled separately by ``filter_nous_free_models``).
+    For paid-tier users: all models are selectable, none unavailable.
 
     For free-tier users: only free models are selectable; paid models
     are returned as unavailable (shown grayed out in the menu).

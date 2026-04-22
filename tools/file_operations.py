@@ -65,6 +65,22 @@ def _get_safe_write_root() -> Optional[str]:
     return _shared_get_safe_write_root()
 
 
+def _is_read_denied(path: str) -> bool:
+    """Return True if path targets a sensitive credential/key file.
+
+    Mirrors the write deny list for reads.  Without this, an agent can
+    ``read_file("~/.ssh/id_ed25519")`` and exfiltrate the key via any
+    outbound channel (web search query, tool parameter, message send).
+    """
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    if resolved in WRITE_DENIED_PATHS:
+        return True
+    for prefix in WRITE_DENIED_PREFIXES:
+        if resolved.startswith(prefix):
+            return True
+    return False
+
+
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     return _shared_is_write_denied(path)
@@ -449,18 +465,22 @@ class ShellFileOperations(FileOperations):
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
-        
+
         Args:
             path: File path (absolute or relative to cwd)
             offset: Line number to start from (1-indexed, default 1)
             limit: Maximum lines to return (default 500, max 2000)
-        
+
         Returns:
             ReadResult with content, metadata, or error info
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Block reads of sensitive credential/key files
+        if _is_read_denied(path):
+            return ReadResult(error=f"Read denied: '{path}' is a protected credential/key file.")
+
         # Clamp limit
         limit = min(limit, MAX_LINES)
         
@@ -594,6 +614,8 @@ class ShellFileOperations(FileOperations):
         Uses cat so the full file is returned regardless of size.
         """
         path = self._expand_path(path)
+        if _is_read_denied(path):
+            return ReadResult(error=f"Read denied: '{path}' is a protected credential/key file.")
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:

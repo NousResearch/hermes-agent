@@ -672,3 +672,25 @@ def test_register_skill_group_handler_dispatches_command(adapter):
     # The callback name should reflect the skill
     assert "gif_search" in gif_cmd.callback.__name__
 
+
+def test_register_skill_group_skips_oversized_payload(adapter):
+    """Oversized /skill payloads should be skipped before Discord sync."""
+    mock_categories = {
+        "mlops": [
+            (f"skill-{i}", "x" * 100, f"/skill-{i}")
+            for i in range(60)
+        ],
+    }
+
+    with (
+        patch(
+            "hermes_cli.commands.discord_skill_commands_by_category",
+            return_value=(mock_categories, [], 0),
+        ),
+        patch.object(adapter, "_estimate_discord_app_command_size", return_value=9001),
+    ):
+        adapter._register_slash_commands()
+
+    tree = adapter._client.tree
+    assert "skill" not in tree.commands
+

@@ -10,6 +10,7 @@ Uses discord.py library for:
 """
 
 import asyncio
+import json
 import logging
 import os
 import struct
@@ -23,6 +24,7 @@ from typing import Callable, Dict, Optional, Any
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+DISCORD_APP_COMMAND_MAX_JSON_BYTES = 8000
 
 try:
     import discord
@@ -1877,13 +1879,28 @@ class DiscordAdapter(BasePlatformAdapter):
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
 
+    def _estimate_discord_app_command_size(self, command, tree) -> Optional[int]:
+        """Return the minified JSON payload size for a Discord app command.
+
+        Discord rejects oversized app-command payloads with error 50035,
+        e.g. ``Command exceeds maximum size (8000)``.  The generated ``/skill``
+        tree can legitimately fit Discord's structural limits while still
+        exceeding the serialized JSON limit, so we size-check before sync.
+        """
+        try:
+            payload = command.to_dict(tree)
+            return len(json.dumps(payload, separators=(",", ":")))
+        except Exception:
+            return None
+
     def _register_skill_group(self, tree) -> None:
         """Register a ``/skill`` command group with category subcommand groups.
 
         Skills are organized by their directory category under ``SKILLS_DIR``.
         Each category becomes a subcommand group; root-level skills become
         direct subcommands.  Discord supports 25 subcommand groups × 25
-        subcommands each = 625 skills — well beyond the old 100-command cap.
+        subcommands each = 625 skills, but the serialized command payload must
+        also stay under Discord's 8000-byte limit.
         """
         try:
             from hermes_cli.commands import discord_skill_commands_by_category
@@ -1941,9 +1958,26 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     cat_group.add_command(cmd)
 
+            total = sum(len(v) for v in categories.values()) + len(uncategorized)
+            payload_size = self._estimate_discord_app_command_size(skill_group, tree)
+            if payload_size is not None and payload_size > DISCORD_APP_COMMAND_MAX_JSON_BYTES:
+                logger.warning(
+                    "[%s] Skipping /skill group: payload=%d bytes exceeds Discord's %d-byte app-command limit. "
+                    "Skills remain available via text slash commands; this suppresses startup sync failures.",
+                    self.name,
+                    payload_size,
+                    DISCORD_APP_COMMAND_MAX_JSON_BYTES,
+                )
+                if hidden:
+                    logger.warning(
+                        "[%s] %d additional skill(s) already exceeded Discord subcommand limits before payload sizing",
+                        self.name,
+                        hidden,
+                    )
+                return
+
             tree.add_command(skill_group)
 
-            total = sum(len(v) for v in categories.values()) + len(uncategorized)
             logger.info(
                 "[%s] Registered /skill group: %d skill(s) across %d categories"
                 " + %d uncategorized",

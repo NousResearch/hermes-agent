@@ -19,6 +19,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from utils import normalize_proxy_env_vars
 
 try:
     import anthropic as _anthropic_sdk
@@ -265,6 +266,14 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
+    """Return True for Kimi's /coding endpoint that requires claude-code UA."""
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -292,8 +301,14 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     return _COMMON_BETAS
 
 
-def build_anthropic_client(api_key: str, base_url: str = None):
+def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
+
+    If *timeout* is provided it overrides the default 900s read timeout.  The
+    connect timeout stays at 10s.  Callers pass this from the per-provider /
+    per-model ``request_timeout_seconds`` config so Anthropic-native and
+    Anthropic-compatible providers respect the same knob as OpenAI-wire
+    providers.
 
     Returns an anthropic.Anthropic instance.
     """
@@ -302,19 +317,32 @@ def build_anthropic_client(api_key: str, base_url: str = None):
             "The 'anthropic' package is required for the Anthropic provider. "
             "Install it with: pip install 'anthropic>=0.39.0'"
         )
+
+    normalize_proxy_env_vars()
+
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
-        "timeout": Timeout(timeout=900.0, connect=10.0),
+        "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
     }
     if normalized_base_url:
         kwargs["base_url"] = normalized_base_url
     common_betas = _common_betas_for_base_url(normalized_base_url)
 
-    if _requires_bearer_auth(normalized_base_url):
+    if _is_kimi_coding_endpoint(base_url):
+        # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
+        # to be recognized as a valid Coding Agent. Without it, returns 403.
+        # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
+        kwargs["api_key"] = api_key
+        kwargs["default_headers"] = {
+            "User-Agent": "claude-code/0.1.0",
+            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
+        }
+    elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
-        # Authorization: Bearer even for regular API keys. Route those endpoints
+        # Authorization: Bearer *** for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.
         # Check this before OAuth token shape detection because MiniMax secrets do
         # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
@@ -1055,6 +1083,31 @@ def convert_messages_to_anthropic(
                     "name": fn.get("name", ""),
                     "input": parsed_args,
                 })
+            # Kimi's /coding endpoint (Anthropic protocol) requires assistant
+            # tool-call messages to carry reasoning_content when thinking is
+            # enabled server-side.  Preserve it as a thinking block so Kimi
+            # can validate the message history.  See hermes-agent#13848.
+            #
+            # Accept empty string "" — _copy_reasoning_content_for_api()
+            # injects "" as a tier-3 fallback for Kimi tool-call messages
+            # that had no reasoning.  Kimi requires the field to exist, even
+            # if empty.
+            #
+            # Prepend (not append): Anthropic protocol requires thinking
+            # blocks before text and tool_use blocks.
+            #
+            # Guard: only add when reasoning_details didn't already contribute
+            # thinking blocks.  On native Anthropic, reasoning_details produces
+            # signed thinking blocks — adding another unsigned one from
+            # reasoning_content would create a duplicate (same text) that gets
+            # downgraded to a spurious text block on the last assistant message.
+            reasoning_content = m.get("reasoning_content")
+            _already_has_thinking = any(
+                isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+                for b in blocks
+            )
+            if isinstance(reasoning_content, str) and not _already_has_thinking:
+                blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
             # Anthropic rejects empty assistant content
             effective = blocks or content
             if not effective or effective == "":
@@ -1210,6 +1263,7 @@ def convert_messages_to_anthropic(
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+    _is_kimi = _is_kimi_coding_endpoint(base_url)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1221,7 +1275,25 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _is_third_party or idx != last_assistant_idx:
+        if _is_kimi:
+            # Kimi's /coding endpoint enables thinking server-side and
+            # requires unsigned thinking blocks on replayed assistant
+            # tool-call messages.  Strip signed Anthropic blocks (Kimi
+            # can't validate signatures) but preserve the unsigned ones
+            # we synthesised from reasoning_content above.
+            new_content = []
+            for b in m["content"]:
+                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
+                    new_content.append(b)
+                    continue
+                if b.get("signature") or b.get("data"):
+                    # Anthropic-signed block — Kimi can't validate, strip
+                    continue
+                # Unsigned thinking (synthesised from reasoning_content) —
+                # keep it: Kimi needs it for message-history validation.
+                new_content.append(b)
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif _is_third_party or idx != last_assistant_idx:
             # Third-party endpoint: strip ALL thinking blocks from every
             # assistant message — signatures are Anthropic-proprietary.
             # Direct Anthropic: strip from non-latest assistant messages only.
@@ -1398,11 +1470,25 @@ def build_anthropic_kwargs(
     # MiniMax Anthropic-compat endpoints support thinking (manual mode only,
     # not adaptive).  Haiku does NOT support extended thinking — skip entirely.
     #
+    # Kimi's /coding endpoint speaks the Anthropic Messages protocol but has
+    # its own thinking semantics: when ``thinking.enabled`` is sent, Kimi
+    # validates the message history and requires every prior assistant
+    # tool-call message to carry OpenAI-style ``reasoning_content``.  The
+    # Anthropic path never populates that field, and
+    # ``convert_messages_to_anthropic`` strips all Anthropic thinking blocks
+    # on third-party endpoints — so the request fails with HTTP 400
+    # "thinking is enabled but reasoning_content is missing in assistant
+    # tool call message at index N".  Kimi's reasoning is driven server-side
+    # on the /coding route, so skip Anthropic's thinking parameter entirely
+    # for that host.  (Kimi on chat_completions enables thinking via
+    # extra_body in the ChatCompletionsTransport — see #13503.)
+    #
     # On 4.7+ the `thinking.display` field defaults to "omitted", which
     # silently hides reasoning text that Hermes surfaces in its CLI. We
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
-    if reasoning_config and isinstance(reasoning_config, dict):
+    _is_kimi_coding = _is_kimi_coding_endpoint(base_url)
+    if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
@@ -1517,4 +1603,43 @@ def normalize_anthropic_response(
             reasoning_details=reasoning_details or None,
         ),
         finish_reason,
+    )
+
+
+def normalize_anthropic_response_v2(
+    response,
+    strip_tool_prefix: bool = False,
+) -> "NormalizedResponse":
+    """Normalize Anthropic response to NormalizedResponse.
+
+    Wraps the existing normalize_anthropic_response() and maps its output
+    to the shared transport types.  This allows incremental migration —
+    one call site at a time — without changing the original function.
+    """
+    from agent.transports.types import NormalizedResponse, build_tool_call
+
+    assistant_msg, finish_reason = normalize_anthropic_response(response, strip_tool_prefix)
+
+    tool_calls = None
+    if assistant_msg.tool_calls:
+        tool_calls = [
+            build_tool_call(
+                id=tc.id,
+                name=tc.function.name,
+                arguments=tc.function.arguments,
+            )
+            for tc in assistant_msg.tool_calls
+        ]
+
+    provider_data = {}
+    if getattr(assistant_msg, "reasoning_details", None):
+        provider_data["reasoning_details"] = assistant_msg.reasoning_details
+
+    return NormalizedResponse(
+        content=assistant_msg.content,
+        tool_calls=tool_calls,
+        finish_reason=finish_reason,
+        reasoning=getattr(assistant_msg, "reasoning", None),
+        usage=None,  # Anthropic usage is on the raw response, not the normaliser
+        provider_data=provider_data or None,
     )

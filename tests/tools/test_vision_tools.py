@@ -366,6 +366,66 @@ class TestErrorLoggingExcInfo:
             assert warning_records[0].exc_info is not None
 
 
+class TestVisionConfig:
+    @pytest.mark.asyncio
+    async def test_vision_uses_configured_temperature_and_timeout(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Configured image analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={
+                "auxiliary": {"vision": {"temperature": 1, "timeout": 77}}
+            }),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe this", "test/model"))
+
+        assert result["success"] is True
+        assert mock_llm.await_args.kwargs["temperature"] == 1.0
+        assert mock_llm.await_args.kwargs["timeout"] == 77.0
+
+    @pytest.mark.asyncio
+    async def test_vision_defaults_temperature_when_config_omits_it(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Default image analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe this", "test/model"))
+
+        assert result["success"] is True
+        assert mock_llm.await_args.kwargs["temperature"] == 0.1
+        assert mock_llm.await_args.kwargs["timeout"] == 120.0
+
+
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio
     async def test_local_non_image_file_rejected_before_llm_call(self, tmp_path):

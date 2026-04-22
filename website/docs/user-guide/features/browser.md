@@ -327,6 +327,36 @@ Check the browser console for any JavaScript errors
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
 
+### `browser_cdp`
+
+Raw Chrome DevTools Protocol passthrough — the escape hatch for browser operations not covered by the other tools. Use for native dialog handling, iframe-scoped evaluation, cookie/network control, or any CDP verb the agent needs.
+
+**Only available when a CDP endpoint is reachable at session start** — meaning `/browser connect` has attached to a running Chrome, or `browser.cdp_url` is set in `config.yaml`. The default local agent-browser mode, Camofox, and cloud providers (Browserbase, Browser Use, Firecrawl) do not currently expose CDP to this tool — cloud providers have per-session CDP URLs but live-session routing is a follow-up.
+
+**CDP method reference:** https://chromedevtools.github.io/devtools-protocol/ — the agent can `web_extract` a specific method's page to look up parameters and return shape.
+
+Common patterns:
+
+```
+# List tabs (browser-level, no target_id)
+browser_cdp(method="Target.getTargets")
+
+# Handle a native JS dialog on a tab
+browser_cdp(method="Page.handleJavaScriptDialog",
+            params={"accept": true, "promptText": ""},
+            target_id="<tabId>")
+
+# Evaluate JS in a specific tab
+browser_cdp(method="Runtime.evaluate",
+            params={"expression": "document.title", "returnByValue": true},
+            target_id="<tabId>")
+
+# Get all cookies
+browser_cdp(method="Network.getAllCookies")
+```
+
+Browser-level methods (`Target.*`, `Browser.*`, `Storage.*`) omit `target_id`. Page-level methods (`Page.*`, `Runtime.*`, `DOM.*`, `Emulation.*`) require a `target_id` from `Target.getTargets`. Each call is independent — sessions do not persist between calls.
+
 ## Practical Examples
 
 ### Filling Out a Web Form

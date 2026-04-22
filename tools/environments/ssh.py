@@ -1,5 +1,6 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
+import hashlib
 import logging
 import os
 import shlex
@@ -47,7 +48,18 @@ class SSHEnvironment(BaseEnvironment):
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
-        self.control_socket = self.control_dir / f"{user}@{host}:{port}.sock"
+        # Keep the socket filename short and deterministic so the full path
+        # stays under the 104-byte sun_path limit that macOS enforces on
+        # Unix domain sockets. A raw ``user@host:port`` — especially with an
+        # IPv6 host — plus the 16-byte random suffix SSH appends in
+        # ControlMaster mode easily exceeds the limit under macOS's
+        # deeply-nested $TMPDIR (e.g. /var/folders/xx/yy/T/). Hashing the
+        # triple keeps the path stable across reconnects so ControlMaster
+        # reuse still works.
+        _socket_id = hashlib.sha256(
+            f"{user}@{host}:{port}".encode()
+        ).hexdigest()[:16]
+        self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()
         self._establish_connection()
         self._remote_home = self._detect_remote_home()

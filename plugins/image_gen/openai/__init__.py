@@ -156,6 +156,20 @@ class OpenAIImageGenProvider(ImageGenProvider):
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
 
+    def get_setup_schema(self) -> Dict[str, Any]:
+        return {
+            "name": "OpenAI",
+            "badge": "paid",
+            "tag": "gpt-image-2 at low/medium/high quality tiers",
+            "env_vars": [
+                {
+                    "key": "OPENAI_API_KEY",
+                    "prompt": "OpenAI API key",
+                    "url": "https://platform.openai.com/api-keys",
+                },
+            ],
+        }
+
     def generate(
         self,
         prompt: str,

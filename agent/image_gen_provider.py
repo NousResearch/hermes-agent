@@ -93,6 +93,33 @@ class ImageGenProvider(abc.ABC):
         """
         return []
 
+    def get_setup_schema(self) -> Dict[str, Any]:
+        """Return provider metadata for the ``hermes tools`` picker.
+
+        Used by ``tools_config.py`` to inject this provider as a row in
+        the Image Generation provider list. Shape::
+
+            {
+                "name": "OpenAI",                     # picker label
+                "badge": "paid",                      # optional short tag
+                "tag": "One-line description...",     # optional subtitle
+                "env_vars": [                         # keys to prompt for
+                    {"key": "OPENAI_API_KEY",
+                     "prompt": "OpenAI API key",
+                     "url": "https://platform.openai.com/api-keys"},
+                ],
+            }
+
+        Default: minimal entry derived from ``display_name``. Override to
+        expose API key prompts and custom badges.
+        """
+        return {
+            "name": self.display_name,
+            "badge": "",
+            "tag": "",
+            "env_vars": [],
+        }
+
     def default_model(self) -> Optional[str]:
         """Return the default model id, or None if not applicable."""
         models = self.list_models()

@@ -562,6 +562,118 @@ class TestGetChildSessionIds:
         assert children == ["child"]
 
 
+class TestNoiseReduction:
+    """Tests for noise reduction in term indexing.
+
+    Tool-role messages (structured JSON output) produce junk terms like
+    'output', 'exit_code', 'null', 'true', 'false'. Pure numeric tokens
+    ('0', '1', '2') are never useful search targets. JSON key names that
+    appear in tool output schemas should be treated as stop words.
+    """
+
+    def test_tool_role_messages_not_indexed(self, db):
+        """Tool-role messages should be skipped entirely during indexing."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            session_id="s1",
+            role="tool",
+            content='{"output": "docker is running", "exit_code": 0}',
+            tool_name="terminal",
+        )
+
+        # Tool output should NOT index any terms from the JSON blob
+        # Even though 'docker' appears in the output string, it's inside
+        # structured JSON from a tool call, not natural language
+        cursor = db._conn.execute(
+            "SELECT COUNT(*) FROM term_index WHERE session_id = 's1'"
+        )
+        assert cursor.fetchone()[0] == 0
+
+    def test_assistant_role_still_indexed(self, db):
+        """Non-tool messages should still be indexed normally."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="docker deploy")
+        db.append_message(
+            session_id="s1", role="assistant", content="docker is now running"
+        )
+
+        results = db.search_by_terms(["docker"])
+        assert len(results) >= 1
+
+    def test_pure_numeric_tokens_filtered(self):
+        """Pure numeric tokens should be excluded from term extraction."""
+        from term_index import extract_terms
+
+        terms = extract_terms("exit code 0 with 42 errors in 123 steps")
+        # These numeric tokens provide zero search value
+        for num in ["0", "42", "123"]:
+            assert num not in terms, f"Pure numeric '{num}' should be filtered"
+
+        # But word tokens should survive
+        assert "exit" in terms
+        assert "code" in terms
+        assert "errors" in terms
+        assert "steps" in terms
+
+    def test_json_key_stopwords_filtered(self):
+        """Common JSON schema keys from tool output should be stop words."""
+        from stop_words import is_stop_word
+
+        json_keys = [
+            "output",
+            "exit_code",
+            "error",
+            "null",
+            "true",
+            "false",
+            "status",
+            "content",
+            "message",
+            "cleared",
+            "success",
+        ]
+        for key in json_keys:
+            assert is_stop_word(key), f"JSON key '{key}' should be a stop word"
+
+    def test_json_key_stopwords_in_extract_terms(self):
+        """JSON key stop words should be filtered by extract_terms."""
+        from term_index import extract_terms
+
+        # Simulates typical tool output content
+        terms = extract_terms(
+            '{"output": "hello world", "exit_code": 0, "error": null, "success": true}'
+        )
+        for junk in ["output", "exit_code", "error", "null", "success", "true", "false"]:
+            assert junk not in terms, f"JSON key '{junk}' should be filtered"
+
+        # Actual content words should survive
+        assert "hello" in terms
+        assert "world" in terms
+
+    def test_reindex_skips_tool_messages(self, db):
+        """reindex_term_index should not index tool-role messages."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="deploy docker")
+        db.append_message(
+            session_id="s1",
+            role="tool",
+            content='{"output": "docker running", "exit_code": 0}',
+        )
+
+        # Clear and reindex
+        db._conn.execute("DELETE FROM term_index")
+        db._conn.commit()
+        db.reindex_term_index()
+
+        # Tool message terms should not be in index
+        cursor = db._conn.execute(
+            "SELECT term FROM term_index WHERE session_id = 's1'"
+        )
+        indexed_terms = [row[0] for row in cursor.fetchall()]
+        for junk in ["output", "exit_code", "0"]:
+            assert junk not in indexed_terms, f"'{junk}' should not be indexed from tool messages"
+
+
 class TestCJKFallbackInFastSearch:
     """CJK queries should fall through to the slow path even when fast=True.
 

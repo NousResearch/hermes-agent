@@ -173,12 +173,14 @@ const ComposerPane = memo(function ComposerPane({
         </Text>
       )}
 
-      {status.showStickyPrompt && (
+      {status.showStickyPrompt ? (
         <Text color={ui.theme.color.dim} wrap="truncate-end">
           <Text color={ui.theme.color.label}>↳ </Text>
 
           {status.stickyPrompt}
         </Text>
+      ) : (
+        <Text> </Text>
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />

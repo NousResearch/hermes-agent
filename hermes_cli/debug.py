@@ -383,7 +383,7 @@ def _capture_log_snapshot(
                 total = 0
                 newline_count = 0
 
-                while pos > 0 and (total < max_bytes or newline_count <= tail_lines + 1):
+                while pos > 0 and (total < max_bytes or newline_count <= tail_lines + 1) and total < max_bytes * 2:
                     read_size = min(chunk_size, pos)
                     pos -= read_size
                     f.seek(pos)
@@ -398,10 +398,14 @@ def _capture_log_snapshot(
 
         full_raw = raw
         if truncated and len(full_raw) > max_bytes:
-            full_raw = full_raw[-max_bytes:]
-            if b"\n" in full_raw:
-                # Drop the partial first line inside the truncated window so the
-                # pasted log still starts on a real log line.
+            cut = len(full_raw) - max_bytes
+            # Check whether the cut lands exactly on a line boundary.  If the
+            # byte just before the cut position is a newline the first retained
+            # byte starts a complete line and we should keep it.  Only drop a
+            # partial first line when we're genuinely mid-line.
+            on_boundary = cut > 0 and full_raw[cut - 1 : cut] == b"\n"
+            full_raw = full_raw[cut:]
+            if not on_boundary and b"\n" in full_raw:
                 full_raw = full_raw.split(b"\n", 1)[1]
 
         all_text = raw.decode("utf-8", errors="replace")

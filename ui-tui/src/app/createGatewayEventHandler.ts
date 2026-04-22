@@ -263,19 +263,27 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.complete':
-        turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
+        {
+          const inlineDiffText =
+            ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
-        if (ev.payload.inline_diff && getUiState().inlineDiffs) {
-          const diffText = stripAnsi(String(ev.payload.inline_diff))
+          turnController.recordToolComplete(
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            inlineDiffText ? '' : ev.payload.summary
+          )
 
-          if (!diffText.trim()) {
+          if (!inlineDiffText) {
             return
           }
 
           // Keep inline diffs attached to the assistant completion body so
           // they render in the same message flow, not as a standalone system
           // artifact that can look out-of-place around tool rows.
-          turnController.queueInlineDiff(diffText)
+          turnController.queueInlineDiff(inlineDiffText)
+
+          return
         }
 
         return

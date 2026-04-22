@@ -347,7 +347,7 @@ export default function AnalyticsPage() {
             <SummaryCard
               icon={TrendingUp}
               label={t.analytics.apiCalls}
-              value={String(data.daily.reduce((sum, d) => sum + d.sessions, 0))}
+              value={String(data.totals.total_api_calls ?? data.daily.reduce((sum, d) => sum + d.sessions, 0))}
               sub={t.analytics.acrossModels.replace("{count}", String(data.by_model.length))}
             />
           </div>

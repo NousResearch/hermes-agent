@@ -410,24 +410,33 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
-    # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
-    if pool_result:
-        # Propagate the model name even when using pooled credentials —
-        # the pool doesn't know about the custom_providers model field.
-        model_name = custom_provider.get("model")
-        if model_name:
-            pool_result["model"] = model_name
-        return pool_result
+    # When the custom provider has its own api_key, use it directly instead of
+    # querying the credential pool.  The pool matches by base_url, so when
+    # multiple custom providers share the same base_url (e.g. a single New API
+    # gateway), the pool may return credentials from the wrong provider.
+    own_api_key = (explicit_api_key or "").strip() or str(custom_provider.get("api_key", "") or "").strip()
+    if not own_api_key:
+        env_key_name = str(custom_provider.get("key_env", "") or "").strip()
+        if env_key_name:
+            own_api_key = os.getenv(env_key_name, "").strip()
 
-    api_key_candidates = [
-        (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
-        os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
-        os.getenv("OPENAI_API_KEY", "").strip(),
-        os.getenv("OPENROUTER_API_KEY", "").strip(),
-    ]
-    api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
+    if has_usable_secret(own_api_key):
+        api_key = own_api_key
+    else:
+        # Only fall back to the credential pool when the provider itself
+        # does not carry an api_key (e.g. key was supplied via env only).
+        pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
+        if pool_result:
+            model_name = custom_provider.get("model")
+            if model_name:
+                pool_result["model"] = model_name
+            return pool_result
+
+        api_key_candidates = [
+            os.getenv("OPENAI_API_KEY", "").strip(),
+            os.getenv("OPENROUTER_API_KEY", "").strip(),
+        ]
+        api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     result = {
         "provider": "custom",

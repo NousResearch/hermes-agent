@@ -136,6 +136,9 @@ class LiveKitAdapter(BasePlatformAdapter):
         # Pause audio capture during TTS playback
         self._paused = False
 
+        # Per-participant speech state (for listening-start/stop events)
+        self._speaking_participants: set[str] = set()
+
     @staticmethod
     def _find_default_avatar() -> str:
         """Look for a default avatar image in ~/.hermes/."""
@@ -275,6 +278,7 @@ class LiveKitAdapter(BasePlatformAdapter):
         self._local_track = None
         self._audio_buffers.clear()
         self._last_audio_time.clear()
+        self._speaking_participants.clear()
         logger.info("[%s] Disconnected", self.name)
 
     # -- LiveKit event handlers ---------------------------------------------
@@ -385,6 +389,7 @@ class LiveKitAdapter(BasePlatformAdapter):
             task.cancel()
         self._audio_buffers.pop(identity, None)
         self._last_audio_time.pop(identity, None)
+        self._speaking_participants.discard(identity)
 
     # -- Audio capture and processing ---------------------------------------
 
@@ -444,6 +449,14 @@ class LiveKitAdapter(BasePlatformAdapter):
                     if rms > RMS_SILENCE_FLOOR:
                         # Active speech — update timestamp
                         self._last_audio_time[identity] = time.monotonic()
+                        # Emit listening-start on first loud chunk of an utterance
+                        if identity not in self._speaking_participants:
+                            self._speaking_participants.add(identity)
+                            asyncio.create_task(
+                                self._publish_agent_event(
+                                    "agent:listening-start", {"identity": identity}
+                                )
+                            )
                         continue
 
                     # Silent — check if silence has lasted long enough
@@ -467,12 +480,26 @@ class LiveKitAdapter(BasePlatformAdapter):
                         # Too short — discard as noise
                         self._audio_buffers[identity] = bytearray()
                         self._last_audio_time.pop(identity, None)
+                        # False alarm — revert the listening-start we sent
+                        if identity in self._speaking_participants:
+                            self._speaking_participants.discard(identity)
+                            asyncio.create_task(
+                                self._publish_agent_event(
+                                    "agent:listening-stop", {"identity": identity}
+                                )
+                            )
                         continue
 
                     # Extract the utterance (speech portion only) and reset
                     pcm_data = bytes(buf[:speech_end])
                     self._audio_buffers[identity] = bytearray()
                     self._last_audio_time.pop(identity, None)
+                    self._speaking_participants.discard(identity)
+                    asyncio.create_task(
+                        self._publish_agent_event(
+                            "agent:listening-stop", {"identity": identity}
+                        )
+                    )
 
                     logger.info("[%s] Utterance from %s: %.1fs audio", self.name, identity, duration)
                     asyncio.create_task(self._process_voice_input(identity, pcm_data))
@@ -509,6 +536,12 @@ class LiveKitAdapter(BasePlatformAdapter):
 
             logger.info("[%s] Transcript from %s: %s", self.name, identity, transcript[:80])
 
+            # Publish the final user transcript so clients can update their UI.
+            await self._publish_agent_event(
+                "agent:user-transcript",
+                {"transcript": transcript, "final": True, "identity": identity},
+            )
+
             # Build message event
             source = self.build_source(
                 chat_id=self._room_name,
@@ -527,11 +560,36 @@ class LiveKitAdapter(BasePlatformAdapter):
                 timestamp=datetime.now(tz=timezone.utc),
             )
 
+            # Agent is about to invoke the LLM.
+            await self._publish_agent_event("agent:thinking-start")
             await self.handle_message(event)
         except Exception as e:
             logger.error("[%s] Error processing voice from %s: %s", self.name, identity, e)
 
     # -- Outbound messaging -------------------------------------------------
+
+    async def _publish_agent_event(
+        self, event_type: str, payload: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Publish an agent:* lifecycle event as JSON on the default data topic.
+
+        Consumed by voice-agent.desktop (and any compatible client) to drive
+        UI state — listening/thinking/speaking indicators and live transcript
+        display. Topic is deliberately unset: the desktop client routes
+        messages with no topic (or any topic other than "hermes-chat") to its
+        JSON/event handler.
+        """
+        if not self._room:
+            return
+        try:
+            import json as _json
+            msg = {"type": event_type, "payload": payload or {}}
+            await self._room.local_participant.publish_data(
+                _json.dumps(msg).encode("utf-8"), reliable=True
+            )
+        except Exception as e:
+            # Never let UI telemetry break the voice flow.
+            logger.debug("[%s] agent event publish failed (%s): %s", self.name, event_type, e)
 
     async def send(
         self,
@@ -548,6 +606,11 @@ class LiveKitAdapter(BasePlatformAdapter):
             data = content.encode("utf-8")
             await self._room.local_participant.publish_data(
                 data, reliable=True, topic="hermes-chat"
+            )
+            # Mirror the content as an agent-transcript event so clients that
+            # render a conversation log can add an assistant message.
+            await self._publish_agent_event(
+                "agent:agent-transcript", {"transcript": content, "final": True}
             )
             return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
         except Exception as e:
@@ -583,6 +646,8 @@ class LiveKitAdapter(BasePlatformAdapter):
             samples_per_frame = SAMPLE_RATE // 50  # 20ms frames
             bytes_per_frame = samples_per_frame * NUM_CHANNELS * 2  # 16-bit
 
+            await self._publish_agent_event("agent:speaking-start")
+
             offset = 0
             while offset < len(pcm_data):
                 chunk = pcm_data[offset:offset + bytes_per_frame]
@@ -602,10 +667,12 @@ class LiveKitAdapter(BasePlatformAdapter):
             # Brief pause after playback before resuming capture
             await asyncio.sleep(0.3)
             self._paused = False
+            await self._publish_agent_event("agent:speaking-stop")
 
             return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
         except Exception as e:
             self._paused = False
+            await self._publish_agent_event("agent:speaking-stop")
             logger.error("[%s] TTS playback error: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 

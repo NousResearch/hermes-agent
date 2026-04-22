@@ -158,14 +158,27 @@ class TestCaptureLogSnapshot:
         assert snap.full_text is None
         assert snap.tail_text == "(file not found)"
 
-    def test_returns_none_for_empty(self, hermes_home):
-        # Truncate agent.log to empty
+    def test_empty_primary_reports_file_empty(self, hermes_home):
+        """Empty primary (no .1 fallback) surfaces as '(file empty)', not missing."""
         (hermes_home / "logs" / "agent.log").write_text("")
 
         from hermes_cli.debug import _capture_log_snapshot
         snap = _capture_log_snapshot("agent", tail_lines=10)
         assert snap.full_text is None
-        assert snap.tail_text == "(file not found)"
+        assert snap.tail_text == "(file empty)"
+
+    def test_race_truncate_after_resolve_reports_empty(self, hermes_home, monkeypatch):
+        """If the log is truncated between resolve and stat, say 'empty', not 'missing'."""
+        log_path = hermes_home / "logs" / "agent.log"
+        from hermes_cli import debug
+
+        monkeypatch.setattr(debug, "_resolve_log_path", lambda _name: log_path)
+        log_path.write_text("")
+
+        snap = debug._capture_log_snapshot("agent", tail_lines=10)
+        assert snap.path == log_path
+        assert snap.full_text is None
+        assert snap.tail_text == "(file empty)"
 
     def test_truncates_large_file(self, hermes_home):
         """Files larger than max_bytes get tail-truncated."""

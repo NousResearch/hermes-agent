@@ -1076,7 +1076,9 @@ class SessionDB:
             # Insert terms into inverted index (delayed import avoids
             # circular dependency — hermes_state is imported by nearly
             # everything at startup, term_index must not be top-level)
-            if content:
+            # Skip tool-role messages: their structured JSON output produces
+            # noise terms (field names, numeric values) with no search value.
+            if content and role != "tool":
                 try:
                     from term_index import extract_terms
                     terms = extract_terms(content)
@@ -1605,7 +1607,7 @@ class SessionDB:
             # Read batch outside write lock
             with self._lock:
                 cursor = self._conn.execute(
-                    "SELECT id, session_id, content FROM messages ORDER BY id LIMIT ? OFFSET ?",
+                    "SELECT id, session_id, role, content FROM messages ORDER BY id LIMIT ? OFFSET ?",
                     (batch_size, offset),
                 )
                 rows = cursor.fetchall()
@@ -1613,11 +1615,14 @@ class SessionDB:
             if not rows:
                 break
 
-            # Extract terms for the batch
+            # Extract terms for the batch, skipping tool-role messages
             entries = []
             for row in rows:
                 msg_id = row["id"]
                 session_id = row["session_id"]
+                # Skip tool messages — structured JSON output produces noise terms
+                if row["role"] == "tool":
+                    continue
                 content = row["content"] or ""
                 terms = extract_terms(content)
                 for term in terms:

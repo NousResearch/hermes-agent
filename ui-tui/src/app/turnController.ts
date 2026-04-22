@@ -185,7 +185,13 @@ class TurnController {
   }
 
   queueInlineDiff(diffText: string) {
-    const text = diffText.trim()
+    // Strip CLI chrome the gateway emits before the unified diff (e.g. a
+    // leading "┊ review diff" header written by `_emit_inline_diff` for the
+    // terminal printer). That header only makes sense as stdout dressing,
+    // not inside a markdown ```diff block.
+    const text = diffText
+      .replace(/^\s*┊[^\n]*\n?/, '')
+      .trim()
 
     if (!text || this.pendingInlineDiffs.includes(text)) {
       return
@@ -239,7 +245,13 @@ class TurnController {
     const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = split.text
-    const remainingInlineDiffs = this.pendingInlineDiffs.filter(diff => !finalText.includes(diff))
+    // Skip appending if the assistant already narrated the diff inside a
+    // markdown fence of its own — otherwise we render two stacked diff
+    // blocks for the same edit.
+    const assistantAlreadyHasDiff = /```(?:diff|patch)\b/i.test(finalText)
+    const remainingInlineDiffs = assistantAlreadyHasDiff
+      ? []
+      : this.pendingInlineDiffs.filter(diff => !finalText.includes(diff))
     const inlineDiffBlock = remainingInlineDiffs.length
       ? `\`\`\`diff\n${remainingInlineDiffs.join('\n\n')}\n\`\`\``
       : ''

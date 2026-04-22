@@ -121,7 +121,7 @@ delegate_task(
 
 When you provide a `tasks` array, subagents run in **parallel** using a thread pool:
 
-- **Maximum concurrency:** 5 tasks by default (configurable via `delegation.max_concurrent_children`, absolute cap of 8)
+- **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order

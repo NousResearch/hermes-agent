@@ -27,7 +27,7 @@ export interface StateSetter<T> {
   (value: SetStateAction<T>): void
 }
 
-export type StatusBarMode = 'bottom' | 'off' | 'on' | 'top'
+export type StatusBarMode = 'bottom' | 'off' | 'top'
 
 export interface SelectionApi {
   clearSelection: () => void

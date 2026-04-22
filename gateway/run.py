@@ -4435,7 +4435,15 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            # Fall back to message_id so media attachments thread under the
+            # user's original message even when the platform left
+            # source.thread_id blank (e.g. Slack DM top-level messages,
+            # where thread_id is intentionally None but the text reply path
+            # still threads via reply_to).  Without this fallback the file
+            # upload lands as a separate top-level message, split away from
+            # the text that references it.
+            _thread_parent = event.source.thread_id or event.message_id
+            _thread_meta = {"thread_id": _thread_parent} if _thread_parent else None
 
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}

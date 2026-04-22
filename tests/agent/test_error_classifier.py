@@ -298,9 +298,15 @@ class TestClassifyApiError:
         assert result.retryable is False
 
     def test_404_generic(self):
+        # Generic 404 with no "model not found" signal — common for local
+        # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths.  Treat
+        # as unknown (retryable) so the real error surfaces, rather than
+        # claiming the model is missing and silently falling back.
         e = MockAPIError("Not Found", status_code=404)
         result = classify_api_error(e)
-        assert result.reason == FailoverReason.model_not_found
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+        assert result.should_fallback is False
 
     # ── Payload too large ──
 

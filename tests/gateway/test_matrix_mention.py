@@ -83,6 +83,29 @@ def _make_event(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timestamp_scale", ("seconds", "milliseconds"))
+async def test_recent_timestamp_not_dropped_by_startup_grace(timestamp_scale):
+    adapter = _make_adapter(extra={"require_mention": False})
+    adapter._background_read_receipt = MagicMock()
+    _set_dm(adapter)
+
+    now = time.time()
+    raw_ts = int(now) if timestamp_scale == "seconds" else int(now * 1000)
+    adapter._startup_ts = now - 1
+    event = SimpleNamespace(
+        sender="@alice:example.org",
+        event_id=f"$evt-{timestamp_scale}",
+        room_id="!room1:example.org",
+        timestamp=raw_ts,
+        content={"body": "hello", "msgtype": "m.text"},
+    )
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Mention detection helpers
 # ---------------------------------------------------------------------------

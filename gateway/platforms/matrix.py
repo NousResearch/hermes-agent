@@ -231,9 +231,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._closing = False
         self._startup_ts: float = 0.0
 
-        # Positive DM cache: room_id -> True once we have authoritative
-        # evidence the room is a DM. We avoid negative caching because fresh
-        # Matrix rooms can have incomplete local membership state.
+        # Authoritative DM cache: room_id -> bool once we have a reliable
+        # answer from m.direct or complete membership data. We avoid writing
+        # negative entries from mere m.direct absence because fresh rooms may
+        # appear there late.
         self._dm_rooms: Dict[str, bool] = {}
         # Set of room IDs we've joined
         self._joined_rooms: Set[str] = set()
@@ -327,6 +328,22 @@ class MatrixAdapter(BasePlatformAdapter):
         if isinstance(raw, (list, tuple, set)):
             return {str(item).strip() for item in raw if str(item).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    @staticmethod
+    def _normalize_event_timestamp(raw_ts: Any) -> float:
+        """Normalize Matrix event timestamps to Unix seconds.
+
+        mautrix payloads have historically exposed timestamps in milliseconds,
+        while newer releases expose seconds. Accept both to keep startup-grace
+        filtering stable across SDK versions.
+        """
+        try:
+            event_ts = float(raw_ts)
+        except (TypeError, ValueError):
+            return 0.0
+        if event_ts <= 0:
+            return 0.0
+        return event_ts / 1000.0 if event_ts >= 10_000_000_000 else event_ts
 
     # ------------------------------------------------------------------
     # E2EE helpers
@@ -664,11 +681,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 rooms_join = sync_data.get("rooms", {}).get("join", {})
                 self._joined_rooms.clear()
                 self._joined_rooms.update(rooms_join.keys())
-                # Store the next_batch token so incremental syncs start
-                # from where the initial sync left off.
                 nb = sync_data.get("next_batch")
-                if nb:
-                    await client.sync_store.put_next_batch(nb)
                 logger.info(
                     "Matrix: initial sync complete, joined %d rooms",
                     len(self._joined_rooms),
@@ -678,12 +691,16 @@ class MatrixAdapter(BasePlatformAdapter):
 
                 # Dispatch events from the initial sync so the OlmMachine
                 # receives to-device key shares queued while we were offline.
-                try:
-                    tasks = client.handle_sync(sync_data)
-                    if tasks:
-                        await asyncio.gather(*tasks)
-                except Exception as exc:
-                    logger.warning("Matrix: initial sync event dispatch error: %s", exc)
+                if await self._dispatch_sync_payload(
+                    client,
+                    sync_data,
+                    context="initial sync",
+                ):
+                    # Persist the initial sync token only after dispatch
+                    # succeeded, otherwise the background sync would skip the
+                    # same events on the next poll.
+                    if nb:
+                        await client.sync_store.put_next_batch(nb)
             else:
                 logger.warning(
                     "Matrix: initial sync returned unexpected type %s",
@@ -1128,6 +1145,28 @@ class MatrixAdapter(BasePlatformAdapter):
     # Sync loop
     # ------------------------------------------------------------------
 
+    async def _dispatch_sync_payload(
+        self,
+        client: Any,
+        sync_data: dict,
+        *,
+        context: str,
+    ) -> bool:
+        """Dispatch a sync payload and report whether all handlers succeeded."""
+        try:
+            tasks = client.handle_sync(sync_data)
+            logger.debug(
+                "Matrix: %s handle_sync queued %d task(s)",
+                context,
+                len(tasks) if tasks else 0,
+            )
+            if tasks:
+                await asyncio.gather(*tasks)
+            return True
+        except Exception as exc:
+            logger.warning("Matrix: %s event dispatch error: %s", context, exc)
+            return False
+
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
         client = self._client
@@ -1194,25 +1233,18 @@ class MatrixAdapter(BasePlatformAdapter):
                         "set" if next_batch else "none",
                     )
 
-                    # Advance the sync token so the next request is
-                    # incremental instead of a full initial sync.
                     nb = sync_data.get("next_batch")
-                    if nb:
-                        next_batch = nb
-                        await client.sync_store.put_next_batch(nb)
-
-                    # Dispatch events to registered handlers so that
-                    # _on_room_message / _on_reaction / _on_invite fire.
-                    try:
-                        tasks = client.handle_sync(sync_data)
-                        logger.debug(
-                            "Matrix: handle_sync queued %d task(s)",
-                            len(tasks) if tasks else 0,
-                        )
-                        if tasks:
-                            await asyncio.gather(*tasks)
-                    except Exception as exc:
-                        logger.warning("Matrix: sync event dispatch error: %s", exc)
+                    if await self._dispatch_sync_payload(
+                        client,
+                        sync_data,
+                        context="sync",
+                    ):
+                        # Advance the sync token only after every queued
+                        # handler completed successfully. Otherwise the next
+                        # sync would skip events we failed to dispatch.
+                        if nb:
+                            next_batch = nb
+                            await client.sync_store.put_next_batch(nb)
                 else:
                     logger.debug(
                         "Matrix: sync returned non-dict payload of type %s",
@@ -1276,7 +1308,7 @@ class MatrixAdapter(BasePlatformAdapter):
             or getattr(event, "server_timestamp", None)
             or 0
         )
-        event_ts = raw_ts / 1000.0 if raw_ts else 0.0
+        event_ts = self._normalize_event_timestamp(raw_ts)
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
             return
 
@@ -2026,32 +2058,29 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _is_dm_room(self, room_id: str) -> bool:
         """Check if a room is a DM."""
-        if self._dm_rooms.get(room_id, False):
-            logger.debug("Matrix: DM detection for %s via cache: True", room_id)
-            return True
+        cached = self._dm_rooms.get(room_id)
+        if cached is not None:
+            logger.debug("Matrix: DM detection for %s via cache: %s", room_id, cached)
+            return cached
 
         # Prefer authoritative local membership state when available.
         state_store = getattr(self._client, "state_store", None) if self._client else None
         if state_store and hasattr(state_store, "get_members"):
             try:
-                has_full_member_list = True
-                source = "state_store_legacy"
+                has_full_member_list = False
                 if hasattr(state_store, "has_full_member_list"):
                     has_full_member_list = await state_store.has_full_member_list(room_id)
-                    source = "state_store_full"
                 if has_full_member_list:
                     members = await state_store.get_members(room_id)
                     member_count = len(members or [])
                     is_dm = member_count == 2
                     logger.debug(
-                        "Matrix: DM detection for %s via %s (members=%d): %s",
+                        "Matrix: DM detection for %s via state_store_full (members=%d): %s",
                         room_id,
-                        source,
                         member_count,
                         is_dm,
                     )
-                    if is_dm:
-                        self._dm_rooms[room_id] = True
+                    self._dm_rooms[room_id] = is_dm
                     return is_dm
             except Exception as exc:
                 logger.debug(
@@ -2073,8 +2102,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     member_count,
                     is_dm,
                 )
-                if is_dm:
-                    self._dm_rooms[room_id] = True
+                self._dm_rooms[room_id] = is_dm
                 return is_dm
             except Exception as exc:
                 logger.debug(

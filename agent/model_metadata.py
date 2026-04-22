@@ -263,6 +263,8 @@ _CONTAINER_LOCAL_SUFFIXES = (
     ".containers.internal",
     ".lima.internal",
 )
+# mDNS / Bonjour / Avahi — RFC 6762 reserves `.local` for link-local hostnames
+_MDNS_LOCAL_SUFFIXES = (".local",)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -364,6 +366,9 @@ def is_local_endpoint(base_url: str) -> bool:
         return True
     # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
     if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
+        return True
+    # mDNS / Bonjour hostnames (e.g. mac-studio.local) — always LAN-scoped
+    if any(host.endswith(suffix) for suffix in _MDNS_LOCAL_SUFFIXES):
         return True
     # RFC-1918 private ranges, link-local, and Tailscale CGNAT
     try:

@@ -34,7 +34,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, resolve_hermes_home
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
@@ -795,7 +795,57 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return "\n".join(parts)
 
 
+def _resolve_job_hermes_home(job: dict) -> Path:
+    return resolve_hermes_home(profile=job.get("profile"), hermes_home=job.get("hermes_home"))
+
+
+def _run_job_in_bound_home(job: dict, hermes_home: Path) -> tuple[bool, str, str, Optional[str]]:
+    hermes_home = hermes_home.expanduser().resolve()
+    if not hermes_home.exists() or not hermes_home.is_dir():
+        error = f"Bound Hermes home does not exist or is not a directory: {hermes_home}"
+        return False, f"# Cron Job Failure\n\n```\n{error}\n```\n", "", error
+    child_env = os.environ.copy()
+    child_env["HERMES_HOME"] = str(hermes_home)
+    payload = json.dumps(job)
+    runner = (
+        "import json, sys; "
+        "from cron.scheduler import _run_job_local; "
+        "job=json.loads(sys.stdin.read()); "
+        "result=_run_job_local(job); "
+        "print(json.dumps({'success': result[0], 'output': result[1], 'final_response': result[2], 'error': result[3]}))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", runner],
+        input=payload,
+        capture_output=True,
+        text=True,
+        env=child_env,
+        cwd=str(hermes_home),
+    )
+    if proc.returncode != 0:
+        error = (proc.stderr or proc.stdout or "subprocess execution failed").strip()
+        return False, f"# Cron Job Failure\n\n```\n{error}\n```\n", "", error
+    raw_stdout = (proc.stdout or "").strip()
+    candidate = raw_stdout.splitlines()[-1].strip() if raw_stdout else ""
+    try:
+        parsed = json.loads(candidate)
+    except Exception as exc:
+        raw = (proc.stdout or proc.stderr or "").strip()
+        error = f"Failed to parse child result: {exc}"
+        return False, f"# Cron Job Failure\n\n```\n{error}\n{raw}\n```\n", "", error
+    return bool(parsed.get("success")), str(parsed.get("output") or ""), str(parsed.get("final_response") or ""), parsed.get("error")
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    target_home = _resolve_job_hermes_home(job)
+    current_home = _hermes_home.expanduser().resolve()
+    if target_home != current_home:
+        logger.info("Running job '%s' in bound Hermes home: %s", job.get("name", job.get("id", "?")), target_home)
+        return _run_job_in_bound_home(job, target_home)
+    return _run_job_local(job)
+
+
+def _run_job_local(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -803,6 +853,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     from run_agent import AIAgent
+    from tools.website_policy import (
+        reset_unattended_strict_website_policy,
+        set_unattended_strict_website_policy,
+    )
+
+    unattended_policy_token = set_unattended_strict_website_policy(True)
     
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
@@ -1226,6 +1282,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
+        reset_unattended_strict_website_policy(unattended_policy_token)
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

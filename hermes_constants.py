@@ -31,8 +31,6 @@ def get_default_hermes_root() -> Path:
     returns ``<root>`` so that ``profile list`` can see all profiles.
     Works both for standard (``~/.hermes/profiles/coder``) and Docker
     (``/opt/data/profiles/coder``) layouts.
-
-    Import-safe — no dependencies beyond stdlib.
     """
     native_home = Path.home() / ".hermes"
     env_home = os.environ.get("HERMES_HOME", "")
@@ -41,20 +39,62 @@ def get_default_hermes_root() -> Path:
     env_path = Path(env_home)
     try:
         env_path.resolve().relative_to(native_home.resolve())
-        # HERMES_HOME is under ~/.hermes (normal or profile mode)
         return native_home
     except ValueError:
         pass
-
-    # Docker / custom deployment.
-    # Check if this is a profile path: <root>/profiles/<name>
-    # If the immediate parent dir is named "profiles", the root is
-    # the grandparent — this covers Docker profiles correctly.
     if env_path.parent.name == "profiles":
         return env_path.parent.parent
-
-    # Not a profile path — HERMES_HOME itself is the root
     return env_path
+
+
+def resolve_hermes_home(profile: str | None = None, hermes_home: str | Path | None = None) -> Path:
+    """Resolve an explicit Hermes home or named profile into an absolute path."""
+    root = get_default_hermes_root().expanduser().resolve()
+    profiles_root = (root / "profiles").resolve()
+    if hermes_home:
+        resolved = Path(hermes_home).expanduser().resolve()
+        if resolved == root:
+            return resolved
+        try:
+            rel = resolved.relative_to(profiles_root)
+        except ValueError as exc:
+            raise ValueError(f"Invalid Hermes home outside allowed profile roots: {resolved}") from exc
+        if len(rel.parts) != 1 or not rel.parts[0]:
+            raise ValueError(f"Invalid Hermes home outside allowed profile roots: {resolved}")
+        return resolved
+    if profile is not None:
+        normalized = str(profile).strip()
+        if not normalized or normalized == "default":
+            return root
+        if normalized in {".", ".."} or "/" in normalized or "\\" in normalized or Path(normalized).name != normalized:
+            raise ValueError(f"Invalid Hermes profile name: {normalized!r}")
+        return (profiles_root / normalized).resolve()
+    return get_hermes_home().expanduser().resolve()
+
+
+def infer_profile_name(home: Path | str | None) -> str | None:
+    """Infer a profile name from a Hermes home path when possible."""
+    if not home:
+        return None
+    path = Path(home).expanduser().resolve()
+    candidates = []
+    for candidate in (get_default_hermes_root(), Path.home() / ".hermes"):
+        resolved = Path(candidate).expanduser().resolve()
+        if resolved not in candidates:
+            candidates.append(resolved)
+
+    for root in candidates:
+        if path == root:
+            return "default"
+        profiles_root = (root / "profiles").resolve()
+        try:
+            rel = path.relative_to(profiles_root)
+        except ValueError:
+            continue
+        parts = rel.parts
+        if len(parts) == 1 and parts[0]:
+            return parts[0]
+    return None
 
 
 def get_optional_skills_dir(default: Path | None = None) -> Path:

@@ -15,7 +15,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, resolve_hermes_home, infer_profile_name
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -62,12 +62,27 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     return normalized
 
 
+def _normalize_job_binding(profile: Optional[str] = None, hermes_home: Optional[str] = None) -> Dict[str, Any]:
+    resolved_home = resolve_hermes_home(profile=profile, hermes_home=hermes_home)
+    if hermes_home is not None:
+        inferred_profile = infer_profile_name(resolved_home)
+    else:
+        inferred_profile = str(profile).strip() if isinstance(profile, str) and str(profile).strip() else infer_profile_name(resolved_home)
+    return {
+        "profile": inferred_profile,
+        "hermes_home": str(resolved_home),
+    }
+
+
 def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
     normalized = dict(job)
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
+    binding = _normalize_job_binding(normalized.get("profile"), normalized.get("hermes_home"))
+    normalized["profile"] = binding["profile"]
+    normalized["hermes_home"] = binding["hermes_home"]
     return normalized
 
 
@@ -435,6 +450,8 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    profile: Optional[str] = None,
+    hermes_home: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -466,6 +483,8 @@ def create_job(
                 terminal/file/code_exec tools use it as their working directory
                 (via TERMINAL_CWD).  When unset, the old behaviour is preserved
                 (no context files injected, tools use the scheduler's cwd).
+        profile: Optional target profile name for cron execution.
+        hermes_home: Optional explicit Hermes home override for cron execution.
 
     Returns:
         The created job dict
@@ -508,6 +527,8 @@ def create_job(
     else:
         context_from = None
 
+    binding = _normalize_job_binding(profile=profile, hermes_home=hermes_home)
+
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
         "id": job_id,
@@ -520,6 +541,8 @@ def create_job(
         "base_url": normalized_base_url,
         "script": normalized_script,
         "context_from": context_from,
+        "profile": binding["profile"],
+        "hermes_home": binding["hermes_home"],
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
@@ -583,13 +606,24 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
 
-        updated = _apply_skill_fields({**job, **updates})
+        merged = {**job, **updates}
+        if "profile" in updates and "hermes_home" not in updates:
+            merged.pop("hermes_home", None)
+        updated = _apply_skill_fields(merged)
         schedule_changed = "schedule" in updates
 
         if "skills" in updates or "skill" in updates:
             normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
             updated["skills"] = normalized_skills
             updated["skill"] = normalized_skills[0] if normalized_skills else None
+
+        if "profile" in updates or "hermes_home" in updates:
+            binding = _normalize_job_binding(
+                profile=updated.get("profile"),
+                hermes_home=updated.get("hermes_home") if "hermes_home" in updates else (None if "profile" in updates else updated.get("hermes_home")),
+            )
+            updated["profile"] = binding["profile"]
+            updated["hermes_home"] = binding["hermes_home"]
 
         if schedule_changed:
             updated_schedule = updated["schedule"]

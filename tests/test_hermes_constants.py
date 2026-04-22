@@ -7,7 +7,12 @@ from unittest.mock import patch
 import pytest
 
 import hermes_constants
-from hermes_constants import get_default_hermes_root, is_container
+from hermes_constants import (
+    get_default_hermes_root,
+    infer_profile_name,
+    is_container,
+    resolve_hermes_home,
+)
 
 
 class TestGetDefaultHermesRoot:
@@ -61,6 +66,81 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
+
+
+class TestResolveHermesHome:
+    def test_explicit_hermes_home_wins(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        explicit = root / "profiles" / "custom-home"
+        explicit.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        resolved = resolve_hermes_home(profile="coder", hermes_home=explicit)
+        assert resolved == explicit.resolve()
+
+    def test_explicit_hermes_home_outside_root_rejected(self, tmp_path, monkeypatch):
+        outside = tmp_path / "outside-home"
+        outside.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        with pytest.raises(ValueError, match="Invalid Hermes home outside allowed profile roots"):
+            resolve_hermes_home(hermes_home=outside)
+
+    def test_explicit_hermes_home_non_profile_descendant_rejected(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        invalid = root / "cron"
+        invalid.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        with pytest.raises(ValueError, match="Invalid Hermes home outside allowed profile roots"):
+            resolve_hermes_home(hermes_home=invalid)
+
+    def test_invalid_profile_name_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        with pytest.raises(ValueError, match="Invalid Hermes profile name"):
+            resolve_hermes_home(profile="../../escape")
+
+    def test_default_profile_resolves_to_root(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ignored"))
+        assert resolve_hermes_home(profile="default") == root.resolve()
+
+    def test_named_profile_resolves_under_root(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        (root / "profiles" / "coder").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        assert resolve_hermes_home(profile="coder") == (root / "profiles" / "coder").resolve()
+
+    def test_without_inputs_uses_current_home(self, tmp_path, monkeypatch):
+        current = tmp_path / ".hermes" / "profiles" / "research"
+        current.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(current))
+        assert resolve_hermes_home() == current.resolve()
+
+
+class TestInferProfileName:
+    def test_infers_default_for_root_home(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert infer_profile_name(root) == "default"
+
+    def test_infers_named_profile_under_root(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert infer_profile_name(profile) == "coder"
+
+    def test_returns_none_for_non_profile_path(self, tmp_path, monkeypatch):
+        other = tmp_path / "not-hermes"
+        other.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert infer_profile_name(other) is None
 
 
 class TestIsContainer:

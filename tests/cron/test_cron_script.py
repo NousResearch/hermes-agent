@@ -44,6 +44,60 @@ def cron_env(tmp_path, monkeypatch):
 class TestJobScriptField:
     """Test that the script field is stored and retrieved correctly."""
 
+    def test_create_job_with_profile_binding(self, cron_env):
+        from cron.jobs import create_job
+
+        job = create_job(prompt="Hello", schedule="every 1h", profile="coder")
+        assert job["profile"] == "coder"
+        assert job["hermes_home"] == str((cron_env / "profiles" / "coder").resolve())
+
+    def test_create_job_with_explicit_hermes_home_infers_profile(self, cron_env):
+        from cron.jobs import create_job
+
+        explicit = cron_env / "profiles" / "ops"
+        explicit.mkdir(parents=True)
+        job = create_job(prompt="Hello", schedule="every 1h", hermes_home=str(explicit))
+        assert job["profile"] == "ops"
+        assert job["hermes_home"] == str(explicit.resolve())
+
+    def test_create_job_rejects_non_profile_hermes_home(self, cron_env):
+        from cron.jobs import create_job
+
+        invalid = cron_env / "cron"
+        with pytest.raises(ValueError, match="Invalid Hermes home outside allowed profile roots"):
+            create_job(prompt="Hello", schedule="every 1h", hermes_home=str(invalid))
+
+    def test_update_job_profile_binding_recomputes_home(self, cron_env):
+        from cron.jobs import create_job, update_job
+
+        job = create_job(prompt="Hello", schedule="every 1h")
+        updated = update_job(job["id"], {"profile": "secure-voice"})
+        assert updated["profile"] == "secure-voice"
+        assert updated["hermes_home"] == str((cron_env / "profiles" / "secure-voice").resolve())
+
+    def test_explicit_hermes_home_overrides_conflicting_profile_label(self, cron_env):
+        from cron.jobs import create_job
+
+        explicit = cron_env / "profiles" / "ops"
+        explicit.mkdir(parents=True)
+        job = create_job(prompt="Hello", schedule="every 1h", profile="coder", hermes_home=str(explicit))
+        assert job["profile"] == "ops"
+        assert job["hermes_home"] == str(explicit.resolve())
+
+    def test_cronjob_tool_create_with_profile_binding(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            profile="secure-voice",
+        ))
+        assert result["success"] is True
+        assert result["job"]["profile"] == "secure-voice"
+        assert result["job"]["hermes_home"] == str((cron_env / "profiles" / "secure-voice").resolve())
+
     def test_create_job_with_script(self, cron_env):
         from cron.jobs import create_job, get_job
 
@@ -90,6 +144,31 @@ class TestJobScriptField:
 
 class TestRunJobScript:
     """Test the _run_job_script() function."""
+
+    def test_run_job_uses_bound_home_subprocess_for_other_profile(self, cron_env, monkeypatch):
+        from cron import scheduler as sched_mod
+
+        target_home = cron_env / "profiles" / "secure-voice"
+        target_home.mkdir(parents=True)
+        seen = {}
+
+        monkeypatch.setattr(sched_mod, "_hermes_home", cron_env)
+
+        def fake_bound(job, hermes_home):
+            seen["job"] = job
+            seen["home"] = hermes_home
+            return True, "bound", "[SILENT]", None
+
+        def fake_local(job):
+            raise AssertionError("local runner should not be used for bound-home jobs")
+
+        monkeypatch.setattr(sched_mod, "_run_job_in_bound_home", fake_bound)
+        monkeypatch.setattr(sched_mod, "_run_job_local", fake_local)
+
+        result = sched_mod.run_job({"id": "j1", "name": "job", "prompt": "x", "hermes_home": str(target_home)})
+
+        assert result == (True, "bound", "[SILENT]", None)
+        assert seen["home"] == target_home.resolve()
 
     def test_successful_script(self, cron_env):
         from cron.scheduler import _run_job_script

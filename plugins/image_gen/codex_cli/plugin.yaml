@@ -1,0 +1,5 @@
+name: codex_cli
+version: 1.0.0
+description: "Codex CLI image generation backend using Codex's built-in image_gen tool. Saves generated images under $CODEX_HOME/generated_images/."
+author: NousResearch
+kind: backend

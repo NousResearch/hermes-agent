@@ -319,6 +319,14 @@ DANGEROUS_PATTERNS = [
     (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (r'>\s*/etc/', "overwrite system config"),
+    # systemctl targeting hermes-gateway specifically — must appear before the
+    # generic systemctl pattern so it matches first.  Using systemctl restart
+    # from inside a gateway session kills the process without writing the
+    # .clean_shutdown marker, so the next startup runs suspend_recently_active()
+    # on all sessions.  The agent should use /restart instead, which triggers
+    # a graceful shutdown that writes the marker.
+    (r'\bsystemctl\s+.*\b(stop|restart)\b.*\bhermes-gateway\b',
+     "systemctl stop/restart hermes-gateway (use /restart for graceful shutdown)"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),

@@ -644,6 +644,29 @@ class TestGatewayProtection:
         assert dangerous is True
         assert "stop/restart" in desc
 
+    def test_systemctl_restart_hermes_gateway_specific(self):
+        """systemctl restart hermes-gateway should suggest /restart."""
+        cmd = "systemctl --user restart hermes-gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "hermes-gateway" in desc
+        assert "/restart" in desc
+
+    def test_systemctl_stop_hermes_gateway_flagged(self):
+        """systemctl stop hermes-gateway should also be flagged."""
+        cmd = "systemctl --user stop hermes-gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "hermes-gateway" in desc
+
+    def test_systemctl_restart_other_service_still_flagged(self):
+        """systemctl restart of a non-hermes service still hits generic pattern."""
+        cmd = "systemctl restart nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        # Generic pattern, not the hermes-gateway specific one
+        assert "hermes-gateway" not in desc
+
     def test_pkill_hermes_detected(self):
         """pkill targeting hermes/gateway processes must be caught."""
         cmd = 'pkill -f "cli.py --gateway"'

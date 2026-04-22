@@ -902,7 +902,9 @@ DEFAULT_CONFIG = {
         # When true, prune ended sessions older than retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Only touches ended sessions — active sessions are always preserved.
-        "auto_prune": True,
+        # Default false: session history is valuable for search recall, and
+        # silently deleting it could surprise users.  Opt in explicitly.
+        "auto_prune": False,
         # How many days of ended-session history to keep.  Matches the
         # default of ``hermes sessions prune``.
         "retention_days": 90,

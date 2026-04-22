@@ -386,15 +386,15 @@ Key tables in `state.db`:
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Ended sessions older than `sessions.retention_days` (default 90) are auto-pruned at CLI/gateway startup
+- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions older than `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
-Configure in `~/.hermes/config.yaml`:
+Default is **off** — session history is valuable for `session_search` recall, and silently deleting it could surprise users. Enable in `~/.hermes/config.yaml`:
 
 ```yaml
 sessions:
-  auto_prune: true          # set to false to disable auto-pruning
+  auto_prune: true          # opt in — default is false
   retention_days: 90        # keep ended sessions this many days
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
   min_interval_hours: 24    # don't re-run the sweep more often than this
@@ -417,5 +417,5 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::tip
-Most users will never need to run `hermes sessions prune` manually — the auto-prune at startup keeps `state.db` bounded. Manual pruning is useful when you want a tighter retention window (e.g. 7 days) than the default, or want to filter by source.
+The database grows slowly (typical: 10-15 MB for hundreds of sessions) and session history powers `session_search` recall across past conversations, so auto-prune ships disabled. Enable it if you're running a heavy gateway/cron workload where `state.db` is meaningfully affecting performance (observed failure mode: 384 MB state.db with ~1000 sessions slowing down FTS5 inserts and `/resume` listing). Use `hermes sessions prune` for one-off cleanup without turning on the automatic sweep.
 :::

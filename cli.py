@@ -929,7 +929,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     try:
         from hermes_cli.config import load_config as _load_full_config
         cfg = (_load_full_config().get("sessions") or {})
-        if not cfg.get("auto_prune", True):
+        if not cfg.get("auto_prune", False):
             return
         session_db.maybe_auto_prune_and_vacuum(
             retention_days=int(cfg.get("retention_days", 90)),

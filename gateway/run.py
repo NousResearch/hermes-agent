@@ -721,7 +721,7 @@ class GatewayRunner:
             try:
                 from hermes_cli.config import load_config as _load_full_config
                 _sess_cfg = (_load_full_config().get("sessions") or {})
-                if _sess_cfg.get("auto_prune", True):
+                if _sess_cfg.get("auto_prune", False):
                     self._session_db.maybe_auto_prune_and_vacuum(
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),

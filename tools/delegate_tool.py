@@ -547,6 +547,9 @@ def _build_child_agent(
 
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
+        missing_toolsets = [t for t in toolsets if t not in parent_toolsets]
+        if missing_toolsets:
+            raise ValueError(f"Requested toolsets {missing_toolsets} are not available in the parent agent. Use available toolsets or check your configuration.")
         child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)

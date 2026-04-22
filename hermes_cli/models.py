@@ -130,12 +130,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "z-ai/glm-5-turbo",
         "x-ai/grok-4.20-beta",
         "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "arcee-ai/trinity-large-preview:free",
         "arcee-ai/trinity-large-thinking",
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
-        "openrouter/elephant-alpha",
     ],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [

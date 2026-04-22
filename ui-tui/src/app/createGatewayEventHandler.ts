@@ -2,7 +2,7 @@ import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type { CommandsCatalogResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
-import { formatToolCall } from '../lib/text.js'
+import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress } from '../types.js'
 
@@ -263,10 +263,27 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.complete':
-        turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
+        {
+          const inlineDiffText =
+            ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
-        if (ev.payload.inline_diff && getUiState().inlineDiffs) {
-          sys(ev.payload.inline_diff)
+          turnController.recordToolComplete(
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            inlineDiffText ? '' : ev.payload.summary
+          )
+
+          if (!inlineDiffText) {
+            return
+          }
+
+          // Keep inline diffs attached to the assistant completion body so
+          // they render in the same message flow, not as a standalone system
+          // artifact that can look out-of-place around tool rows.
+          turnController.queueInlineDiff(inlineDiffText)
+
+          return
         }
 
         return

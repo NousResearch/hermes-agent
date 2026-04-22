@@ -104,6 +104,35 @@ const fmtDur = (seconds?: number): string => {
   return s === 0 ? `${m}m` : `${m}m ${s}s`
 }
 
+/** Server duration if present; else live edge from `startedAt` (running / queued). */
+const displayElapsedSeconds = (item: SubagentProgress, nowMs: number): number | null => {
+  if (item.durationSeconds != null) {
+    return item.durationSeconds
+  }
+
+  if (item.startedAt != null && (item.status === 'running' || item.status === 'queued')) {
+    return Math.max(0, (nowMs - item.startedAt) / 1000)
+  }
+
+  return null
+}
+
+/** Like fmtDur but allows 0s for just-started / still-running rows. */
+const fmtElapsedLabel = (seconds: number): string => {
+  if (seconds < 0) {
+    return ''
+  }
+
+  if (seconds < 60) {
+    return `${Math.max(0, Math.round(seconds))}s`
+  }
+
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds - m * 60)
+
+  return s === 0 ? `${m}m` : `${m}m ${s}s`
+}
+
 const indentFor = (depth: number): string => '  '.repeat(Math.max(0, depth))
 const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
@@ -229,8 +258,11 @@ function GanttStrip({
   const totalSeconds = (globalEnd - globalStart) / 1000
 
   // 5-col id gutter ("  12  ") so the bar doesn't press against the id.
+  // 10-col right reserve: pad + up to `12m 30s`-style label without
+  // truncate-end against a full-width bar.
   const idGutter = 5
-  const barWidth = Math.max(10, cols - idGutter - 2)
+  const labelReserve = 10
+  const barWidth = Math.max(10, cols - idGutter - labelReserve)
   const startIdx = Math.max(0, Math.min(Math.max(0, spans.length - maxRows), cursor - Math.floor(maxRows / 2)))
   const shown = spans.slice(startIdx, startIdx + maxRows)
 
@@ -242,15 +274,26 @@ function GanttStrip({
     return ' '.repeat(s) + '█'.repeat(fill) + ' '.repeat(Math.max(0, barWidth - s - fill))
   }
 
-  // Tick ruler + second labels.  Fixed-length char array guarantees
-  // `.length === barWidth` (an earlier padEnd+skip loop wrapped to a
-  // second row which looked like garbled duplicated labels).
-  const ruler = Array.from({ length: barWidth }, (_, i) => (i > 0 && i % 10 === 0 ? '┼' : '─')).join('')
+  // Wall-clock axis: more ticks on short windows so the scale visibly
+  // “counts up” with `now` instead of a single 0/10s pair.
+  const charStep = totalSeconds < 20 && barWidth > 20 ? 5 : 10
+
+  const ruler = Array.from({ length: barWidth }, (_, i) => {
+    if (i > 0 && i % 10 === 0) {
+      return '┼'
+    }
+
+    if (i > 0 && i % 5 === 0) {
+      return '·'
+    }
+
+    return '─'
+  }).join('')
 
   const rulerLabels = (() => {
     const chars = new Array(barWidth).fill(' ')
 
-    for (let pos = 0; pos < barWidth; pos += 10) {
+    for (let pos = 0; pos < barWidth; pos += charStep) {
       const secs = (pos / barWidth) * totalSeconds
       const label = pos === 0 ? '0' : secs >= 1 ? `${Math.round(secs)}s` : `${secs.toFixed(1)}s`
 
@@ -268,7 +311,7 @@ function GanttStrip({
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color={t.color.dim}>
-        Timeline · {fmtDur(totalSeconds)}
+        Timeline · {fmtElapsedLabel(Math.max(0, totalSeconds))}
         {windowLabel}
       </Text>
 
@@ -277,21 +320,24 @@ function GanttStrip({
         const { color } = statusGlyph(node.item, t)
         const accent = active ? t.color.amber : t.color.dim
 
-        const durLabel = node.item.durationSeconds
-          ? fmtDur(node.item.durationSeconds)
-          : node.item.status === 'running'
-            ? 'running'
-            : ''
+        const elSec = displayElapsedSeconds(node.item, now)
+        const elLabel = elSec != null ? fmtElapsedLabel(elSec) : ''
 
         return (
           <Text key={node.item.id} wrap="truncate-end">
             <Text bold={active} color={accent}>
-              {formatRowId(idx)}{'  '}
+              {formatRowId(idx)}
+              {'  '}
             </Text>
 
             <Text color={active ? t.color.amber : color}>{bar(startAt, endAt)}</Text>
 
-            {durLabel ? <Text color={accent}> {durLabel}</Text> : null}
+            {elLabel ? (
+              <Text color={accent}>
+                {'   '}
+                {elLabel}
+              </Text>
+            ) : null}
           </Text>
         )
       })}
@@ -301,7 +347,7 @@ function GanttStrip({
         {ruler}
       </Text>
 
-      {totalSeconds >= 2 ? (
+      {totalSeconds > 0 ? (
         <Text color={t.color.dim} dim>
           {'    '}
           {rulerLabels}
@@ -504,6 +550,7 @@ function ListRow({
   active,
   index,
   node,
+  now,
   peak,
   t,
   width
@@ -511,6 +558,7 @@ function ListRow({
   active: boolean
   index: number
   node: SubagentNode
+  now: number
   peak: number
   t: Theme
   width: number
@@ -523,35 +571,24 @@ function ListRow({
   const goal = compactPreview(node.item.goal || 'subagent', width - 24 - node.item.depth * 2)
   const tools = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
-  const dur = fmtDur(node.item.durationSeconds)
+  const elSec = displayElapsedSeconds(node.item, now)
+  const elapsed = elSec != null ? fmtElapsedLabel(elSec) : ''
 
   // Selection pattern mirrors sessionPicker: inverse + amber for contrast
   // across any theme, body stays cornsilk, stats dim.
   const fg = active ? t.color.amber : t.color.cornsilk
 
-  // Heat marker + glyph occupy a fixed 3-char gutter so the goal text
-  // aligns across hot and cool rows.  One space on each side of the glyph
-  // gives the status dot breathing room — otherwise it reads glued to the
-  // heat bar and the goal text.
-  const prefix = heatMarker ? (
-    <Text color={heatMarker}>▍ </Text>
-  ) : (
-    <Text>{'  '}</Text>
-  )
-
   return (
     <Text bold={active} color={fg} inverse={active} wrap="truncate-end">
-      {active ? '▸ ' : '  '}
-      <Text color={active ? fg : t.color.dim}>{formatRowId(index)}  </Text>
+      {' '}
+      <Text color={active ? fg : t.color.dim}>{formatRowId(index)} </Text>
       {indentFor(node.item.depth)}
-      {prefix}
-      <Text color={active ? fg : color}>{glyph}</Text>
-      {'   '}
-      {goal}
+      {heatMarker ? <Text color={heatMarker}>▍</Text> : null}
+      <Text color={active ? fg : color}>{glyph}</Text> {goal}
       <Text color={active ? fg : t.color.dim}>
         {tools}
         {kids}
-        {dur ? ` · ${dur}` : ''}
+        {elapsed ? ` · ${elapsed}` : ''}
       </Text>
     </Text>
   )
@@ -943,19 +980,22 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     ? `caps d${delegation.maxSpawnDepth}/${delegation.maxConcurrentChildren ?? '?'}`
     : ''
 
-  // One-line title.  An earlier version had a separate "subtitle" with the
-  // full snapshot label; narrow terminals wrapped it instead of truncating,
-  // which looked like the header was double-rendered.
+  // Single header line — title · metrics.  An earlier "title + subtitle"
+  // variant wrapped on narrow terminals which looked like the header was
+  // rendering twice, and a one-line header makes it obvious at a glance
+  // whether the turn is live or finished.
   const title = (() => {
     if (!replayMode || !effectiveSnapshot) {
       return `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
     }
 
     const at = new Date(effectiveSnapshot.finishedAt).toLocaleTimeString()
-    const position = historyIndex > 0 ? `Replay · ${historyIndex}/${history.length}` : 'Last turn'
+    const position = historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'
 
-    return `${position}  ·  finished ${at}`
+    return `${position} · finished ${at}`
   })()
+
+  const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
 
   const controlsHint = replayMode
     ? ' · controls locked'
@@ -970,15 +1010,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   return (
     <Box alignItems="stretch" flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
       <Box flexDirection="column" marginBottom={1}>
-        <Text bold color={replayMode ? t.color.bronze : t.color.gold} wrap="truncate-end">
-          {title}
-        </Text>
-
-        <Text color={t.color.dim} wrap="truncate-end">
-          {formatSummary(totals)}
-          {spark ? `  ${spark}` : ''}
-          {capsLabel ? `  ${capsLabel}` : ''}
-          {mix ? `  · ${mix}` : ''}
+        <Text wrap="truncate-end">
+          <Text bold color={replayMode ? t.color.bronze : t.color.gold}>
+            {title}
+          </Text>
+          {metaLine ? (
+            <Text color={t.color.dim}>
+              {'   '}
+              {metaLine}
+            </Text>
+          ) : null}
         </Text>
       </Box>
 
@@ -997,6 +1038,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
                 index={listWindowStart + i}
                 key={node.item.id}
                 node={node}
+                now={now}
                 peak={peak}
                 t={t}
                 width={cols}

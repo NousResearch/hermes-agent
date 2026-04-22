@@ -868,7 +868,12 @@ def _on_tool_progress(
         if _kwargs.get("toolsets"):
             payload["toolsets"] = [str(t) for t in _kwargs["toolsets"]]
         # Per-branch rollups emitted on subagent.complete (features 1+2+4).
-        for int_key in ("input_tokens", "output_tokens", "reasoning_tokens", "api_calls"):
+        for int_key in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "api_calls",
+        ):
             val = _kwargs.get(int_key)
             if val is not None:
                 try:
@@ -1738,16 +1743,20 @@ def _(rid, params: dict) -> dict:
 # Layout:  $HERMES_HOME/spawn-trees/<session_id>/<timestamp>.json
 # Each file contains { session_id, started_at, finished_at, subagents: [...] }.
 
+
 def _spawn_trees_root():
     from pathlib import Path as _P
     from hermes_constants import get_hermes_home
+
     root = get_hermes_home() / "spawn-trees"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _spawn_tree_session_dir(session_id: str):
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown"
+    safe = (
+        "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown"
+    )
     d = _spawn_trees_root() / safe
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -1797,6 +1806,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4000, "subagents list required")
 
     from datetime import datetime
+
     started_at = params.get("started_at")
     finished_at = params.get("finished_at") or time.time()
     label = str(params.get("label") or "")
@@ -1816,14 +1826,17 @@ def _(rid, params: dict) -> dict:
     except OSError as exc:
         return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
 
-    _append_spawn_tree_index(d, {
-        "path": str(path),
-        "session_id": session_id,
-        "started_at": payload["started_at"],
-        "finished_at": payload["finished_at"],
-        "label": label,
-        "count": len(subagents),
-    })
+    _append_spawn_tree_index(
+        d,
+        {
+            "path": str(path),
+            "session_id": session_id,
+            "started_at": payload["started_at"],
+            "finished_at": payload["finished_at"],
+            "label": label,
+            "count": len(subagents),
+        },
+    )
 
     return _ok(rid, {"path": str(path), "session_id": session_id})
 
@@ -1845,7 +1858,9 @@ def _(rid, params: dict) -> dict:
         indexed = _read_spawn_tree_index(d)
         if indexed:
             # Skip index entries whose snapshot file was manually deleted.
-            entries.extend(e for e in indexed if (p := e.get("path")) and Path(p).exists())
+            entries.extend(
+                e for e in indexed if (p := e.get("path")) and Path(p).exists()
+            )
             continue
 
         # Fallback for legacy (pre-index) sessions: full scan.  O(N) reads
@@ -1860,14 +1875,16 @@ def _(rid, params: dict) -> dict:
                 except Exception:
                     raw = {}
                 subagents = raw.get("subagents") or []
-                entries.append({
-                    "path": str(p),
-                    "session_id": raw.get("session_id") or d.name,
-                    "finished_at": raw.get("finished_at") or stat.st_mtime,
-                    "started_at": raw.get("started_at"),
-                    "label": raw.get("label") or "",
-                    "count": len(subagents) if isinstance(subagents, list) else 0,
-                })
+                entries.append(
+                    {
+                        "path": str(p),
+                        "session_id": raw.get("session_id") or d.name,
+                        "finished_at": raw.get("finished_at") or stat.st_mtime,
+                        "started_at": raw.get("started_at"),
+                        "label": raw.get("label") or "",
+                        "count": len(subagents) if isinstance(subagents, list) else 0,
+                    }
+                )
             except OSError:
                 continue
 
@@ -1878,6 +1895,7 @@ def _(rid, params: dict) -> dict:
 @method("spawn_tree.load")
 def _(rid, params: dict) -> dict:
     from pathlib import Path
+
     raw_path = str(params.get("path") or "").strip()
     if not raw_path:
         return _err(rid, 4000, "path required")

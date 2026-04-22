@@ -460,7 +460,11 @@ class TurnController {
     patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
   }
 
-  upsertSubagent(p: SubagentEventPayload, patch: (current: SubagentProgress) => Partial<SubagentProgress>) {
+  upsertSubagent(
+    p: SubagentEventPayload,
+    patch: (current: SubagentProgress) => Partial<SubagentProgress>,
+    opts: { createIfMissing?: boolean } = { createIfMissing: true }
+  ) {
     // Stable id: prefer the server-issued subagent_id (survives nested
     // grandchildren + cross-tree joins).  Fall back to the composite key
     // for older gateways that omit the field — those produce a flat list.
@@ -468,6 +472,14 @@ class TurnController {
 
     patchTurnState(state => {
       const existing = state.subagents.find(item => item.id === id)
+
+      // Late events (subagent.complete/tool/progress arriving after message.complete
+      // has already fired idle()) would otherwise resurrect a finished
+      // subagent into turn.subagents and block the "finished" title on the
+      // /agents overlay.  When `createIfMissing` is false we drop silently.
+      if (!existing && !opts.createIfMissing) {
+        return state
+      }
 
       const base: SubagentProgress = existing ?? {
         depth: p.depth ?? 0,

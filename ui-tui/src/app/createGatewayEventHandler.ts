@@ -141,8 +141,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // Terminal statuses are never overwritten by late-arriving live events —
   // otherwise a stale `subagent.start` / `spawn_requested` can clobber a
   // `failed` or `interrupted` terminal state (Copilot review #14045).
-  const isTerminalStatus = (s: SubagentProgress['status']) =>
-    s === 'completed' || s === 'failed' || s === 'interrupted'
+  const isTerminalStatus = (s: SubagentProgress['status']) => s === 'completed' || s === 'failed' || s === 'interrupted'
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
@@ -410,10 +409,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        turnController.upsertSubagent(ev.payload, c => ({
-          status: keepTerminalElseRunning(c.status),
-          thinking: pushThinking(c.thinking, text)
-        }))
+        // Update-only: never resurrect subagents whose spawn_requested/start
+        // we missed or that already flushed via message.complete.
+        turnController.upsertSubagent(
+          ev.payload,
+          c => ({
+            status: keepTerminalElseRunning(c.status),
+            thinking: pushThinking(c.thinking, text)
+          }),
+          { createIfMissing: false }
+        )
 
         return
       }
@@ -424,10 +429,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload.tool_preview ?? ev.payload.text ?? ''
         )
 
-        turnController.upsertSubagent(ev.payload, c => ({
-          status: keepTerminalElseRunning(c.status),
-          tools: pushTool(c.tools, line)
-        }))
+        turnController.upsertSubagent(
+          ev.payload,
+          c => ({
+            status: keepTerminalElseRunning(c.status),
+            tools: pushTool(c.tools, line)
+          }),
+          { createIfMissing: false }
+        )
 
         return
       }
@@ -439,20 +448,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        turnController.upsertSubagent(ev.payload, c => ({
-          notes: pushNote(c.notes, text),
-          status: keepTerminalElseRunning(c.status)
-        }))
+        turnController.upsertSubagent(
+          ev.payload,
+          c => ({
+            notes: pushNote(c.notes, text),
+            status: keepTerminalElseRunning(c.status)
+          }),
+          { createIfMissing: false }
+        )
 
         return
       }
 
       case 'subagent.complete':
-        turnController.upsertSubagent(ev.payload, c => ({
-          durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
-          status: ev.payload.status ?? 'completed',
-          summary: ev.payload.summary || ev.payload.text || c.summary
-        }))
+        turnController.upsertSubagent(
+          ev.payload,
+          c => ({
+            durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
+            status: ev.payload.status ?? 'completed',
+            summary: ev.payload.summary || ev.payload.text || c.summary
+          }),
+          { createIfMissing: false }
+        )
 
         return
 

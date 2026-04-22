@@ -122,6 +122,44 @@ _E2EE_INSTALL_HINT = (
     "Install with: pip install 'mautrix[encryption]'  (requires libolm C library)"
 )
 
+_MATRIX_IMAGE_FILENAME_EXTS = frozenset({
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".heic",
+    ".heif",
+    ".avif",
+})
+
+
+def _looks_like_matrix_image_filename(text: str) -> bool:
+    """Return True when Matrix image body text is probably just a transport filename.
+
+    Matrix ``m.image`` events commonly populate ``content.body`` with the uploaded
+    filename when the user did not add a caption. Treating that raw filename as
+    user-authored text confuses downstream vision enrichment.
+    """
+    candidate = str(text or "").strip()
+    if not candidate or "\n" in candidate or candidate.endswith("/"):
+        return False
+
+    name = Path(candidate).name
+    if not name or name != candidate:
+        return False
+
+    suffix = Path(name).suffix.lower()
+    if not suffix:
+        return False
+
+    guessed_type, _ = mimetypes.guess_type(name)
+    if guessed_type and guessed_type.startswith("image/"):
+        return True
+    return suffix in _MATRIX_IMAGE_FILENAME_EXTS
+
 
 def _check_e2ee_deps() -> bool:
     """Return True if mautrix E2EE dependencies (python-olm) are available."""
@@ -1619,6 +1657,9 @@ class MatrixAdapter(BasePlatformAdapter):
         if ctx is None:
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
+
+        if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
+            body = ""
 
         allow_http_fallback = bool(http_url) and not is_encrypted_media
         media_urls = (

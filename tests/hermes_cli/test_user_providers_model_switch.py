@@ -6,6 +6,8 @@ are exposed in the model picker.
 """
 
 import pytest
+
+from hermes_cli.config import get_compatible_custom_providers
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli import runtime_provider as rp
 
@@ -350,6 +352,41 @@ def test_list_authenticated_providers_no_duplicate_labels_across_schemas(monkeyp
     assert len(labels) == len(set(labels)), (
         f"Duplicate labels across picker rows: {labels}"
     )
+
+
+def test_list_authenticated_providers_skips_builtin_compat_duplicates(monkeypatch):
+    """Compatibility rows from ``providers:`` must not re-add built-ins as
+    ``custom:*`` entries.
+
+    Regression: a built-in provider such as ``deepseek`` could already be
+    emitted from the curated provider list, then section 4 added the
+    compatibility-generated ``custom:deepseek`` row because it only checked the
+    full custom slug against ``seen_slugs``.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {"deepseek": {}})
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
+    cfg = {
+        "providers": {
+            "deepseek": {
+                "base_url": "https://api.deepseek.com",
+                "models": {
+                    "deepseek-chat": {},
+                    "deepseek-reasoner": {},
+                },
+            }
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="deepseek",
+        user_providers=cfg["providers"],
+        custom_providers=get_compatible_custom_providers(cfg),
+        max_models=50,
+    )
+
+    deepseek_rows = [p for p in providers if "deepseek" in p["slug"].lower()]
+    assert [(p["slug"], p["source"]) for p in deepseek_rows] == [("deepseek", "built-in")]
 
 
 # =============================================================================

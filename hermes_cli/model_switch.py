@@ -1159,7 +1159,12 @@ def list_authenticated_providers(
                         groups[slug]["models"].append(m)
 
         for slug, grp in groups.items():
-            if slug.lower() in seen_slugs:
+            # ``get_compatible_custom_providers()`` turns ``providers:``
+            # entries into ``custom:<name>`` compatibility rows. If a
+            # built-in/provider-key row already emitted ``deepseek``,
+            # the compatibility row should not add ``custom:deepseek``.
+            base_slug = slug[7:] if slug.startswith("custom:") else slug
+            if slug.lower() in seen_slugs or base_slug.lower() in seen_slugs:
                 continue
             # Skip if section 3 already emitted this endpoint under its
             # ``providers:`` dict key — matches on (display_name, base_url),

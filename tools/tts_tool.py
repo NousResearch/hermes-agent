@@ -6,7 +6,7 @@ Supports seven TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
-- MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
+- MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY (or MINIMAX_CN_API_KEY for China region)
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
@@ -479,9 +479,9 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     """
     import requests
 
-    api_key = os.getenv("MINIMAX_API_KEY", "")
+    api_key = os.getenv("MINIMAX_API_KEY") or os.getenv("MINIMAX_CN_API_KEY", "")
     if not api_key:
-        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
+        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/ (or MINIMAX_CN_API_KEY for China region)")
 
     mm_config = tts_config.get("minimax", {})
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
@@ -1158,7 +1158,7 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
-    if os.getenv("MINIMAX_API_KEY"):
+    if os.getenv("MINIMAX_API_KEY") or os.getenv("MINIMAX_CN_API_KEY"):
         return True
     if os.getenv("XAI_API_KEY"):
         return True
@@ -1470,7 +1470,7 @@ if __name__ == "__main__":
         "    API Key:  "
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
-    print(f"  MiniMax:    {'API key set' if os.getenv('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  MiniMax:    {'API key set' if os.getenv('MINIMAX_API_KEY') or os.getenv('MINIMAX_CN_API_KEY') else 'not set (MINIMAX_API_KEY or MINIMAX_CN_API_KEY for China)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

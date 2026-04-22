@@ -40,6 +40,16 @@ describe('applyDisplay', () => {
     expect(s.streaming).toBe(false)
   })
 
+  it('coerces legacy true + "on" alias to top', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tui_statusbar: true as unknown as 'on' } } }, setBell)
+    expect($uiState.get().statusBar).toBe('top')
+
+    applyDisplay({ config: { display: { tui_statusbar: 'on' } } }, setBell)
+    expect($uiState.get().statusBar).toBe('top')
+  })
+
   it('applies v1 parity defaults when display fields are missing', () => {
     const setBell = vi.fn()
 
@@ -50,7 +60,7 @@ describe('applyDisplay', () => {
     expect(s.inlineDiffs).toBe(true)
     expect(s.showCost).toBe(false)
     expect(s.showReasoning).toBe(false)
-    expect(s.statusBar).toBe('on')
+    expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
   })
 
@@ -77,22 +87,22 @@ describe('applyDisplay', () => {
 })
 
 describe('normalizeStatusBar', () => {
-  it('maps legacy bool to on/off', () => {
-    expect(normalizeStatusBar(true)).toBe('on')
+  it('maps legacy bool + on alias to top/off', () => {
+    expect(normalizeStatusBar(true)).toBe('top')
     expect(normalizeStatusBar(false)).toBe('off')
+    expect(normalizeStatusBar('on')).toBe('top')
   })
 
-  it('passes through the new string enum', () => {
-    expect(normalizeStatusBar('on')).toBe('on')
+  it('passes through the canonical enum', () => {
     expect(normalizeStatusBar('off')).toBe('off')
-    expect(normalizeStatusBar('bottom')).toBe('bottom')
     expect(normalizeStatusBar('top')).toBe('top')
+    expect(normalizeStatusBar('bottom')).toBe('bottom')
   })
 
-  it('defaults missing/unknown values to on', () => {
-    expect(normalizeStatusBar(undefined)).toBe('on')
-    expect(normalizeStatusBar(null)).toBe('on')
-    expect(normalizeStatusBar('sideways')).toBe('on')
-    expect(normalizeStatusBar(42)).toBe('on')
+  it('defaults missing/unknown values to top', () => {
+    expect(normalizeStatusBar(undefined)).toBe('top')
+    expect(normalizeStatusBar(null)).toBe('top')
+    expect(normalizeStatusBar('sideways')).toBe('top')
+    expect(normalizeStatusBar(42)).toBe('top')
   })
 })

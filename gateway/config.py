@@ -578,6 +578,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                if plat == Platform.DISCORD and "thread_origin_context_history_limit" in platform_cfg:
+                    bridged["thread_origin_context_history_limit"] = platform_cfg["thread_origin_context_history_limit"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):
@@ -623,6 +625,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                if "thread_origin_context_history_limit" in discord_cfg and not os.getenv("DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT"):
+                    os.environ["DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT"] = str(discord_cfg["thread_origin_context_history_limit"])
                 # ignored_channels: channels where bot never responds (even when mentioned)
                 ic = discord_cfg.get("ignored_channels")
                 if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):

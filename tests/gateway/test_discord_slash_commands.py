@@ -246,11 +246,40 @@ async def test_handle_thread_create_slash_dispatches_session_when_message_provid
     )
 
     adapter._dispatch_thread_session = AsyncMock()
+    adapter._build_origin_thread_context = AsyncMock(return_value="")
+    adapter._origin_context_history_limit = MagicMock(return_value=100)
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Hello Hermes", 1440)
 
     adapter._dispatch_thread_session.assert_awaited_once_with(
         interaction, "555", "Planning", "Hello Hermes",
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_thread_create_slash_includes_origin_thread_context(adapter):
+    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
+    origin_thread = _FakeThreadChannel(channel_id=200, name="source-thread")
+    origin_thread.parent.create_thread = AsyncMock(return_value=created_thread)
+    interaction = SimpleNamespace(
+        channel=origin_thread,
+        channel_id=200,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    adapter._dispatch_thread_session = AsyncMock()
+    adapter._build_origin_thread_context = AsyncMock(return_value="origin context block")
+    adapter._origin_context_history_limit = MagicMock(return_value=100)
+
+    await adapter._handle_thread_create_slash(interaction, "Planning", "Hello Hermes", 1440)
+
+    adapter._dispatch_thread_session.assert_awaited_once_with(
+        interaction,
+        "555",
+        "Planning",
+        "origin context block\n\nHello Hermes",
     )
 
 
@@ -352,6 +381,52 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
     assert "TestGuild" in event.source.chat_name
+
+
+@pytest.mark.asyncio
+async def test_build_origin_thread_context_formats_last_messages_oldest_first(adapter):
+    channel = _FakeThreadChannel(channel_id=200, name="source-thread")
+    newest = _fake_history_message(content="latest reply", display_name="Bob")
+    oldest = _fake_history_message(content="first message", display_name="Alice")
+    attachment_only = _fake_history_message(content="", display_name="Carol", attachments=[SimpleNamespace(filename="spec.pdf")])
+    channel.history = MagicMock(return_value=_AsyncHistory([newest, attachment_only, oldest]))
+
+    interaction = SimpleNamespace(channel=channel, channel_id=200)
+
+    context = await adapter._build_origin_thread_context(interaction)
+
+    channel.history.assert_called_once_with(limit=100)
+    assert 'originating Discord thread "source-thread"' in context
+    assert "[Alice] first message" in context
+    assert "[Carol] [Attachments: spec.pdf]" in context
+    assert "[Bob] latest reply" in context
+    assert context.index("[Alice] first message") < context.index("[Carol] [Attachments: spec.pdf]") < context.index("[Bob] latest reply")
+
+
+@pytest.mark.asyncio
+async def test_build_origin_thread_context_formats_last_channel_messages(adapter):
+    channel = _FakeTextChannel(channel_id=123, name="general")
+    newest = _fake_history_message(content="latest reply", display_name="Bob")
+    oldest = _fake_history_message(content="first message", display_name="Alice")
+    channel.history = MagicMock(return_value=_AsyncHistory([newest, oldest]))
+
+    interaction = SimpleNamespace(channel=channel, channel_id=123)
+
+    context = await adapter._build_origin_thread_context(interaction)
+
+    channel.history.assert_called_once_with(limit=100)
+    assert 'originating Discord channel "general"' in context
+    assert "[Alice] first message" in context
+    assert "[Bob] latest reply" in context
+
+
+@pytest.mark.asyncio
+async def test_build_origin_thread_context_returns_empty_without_history(adapter):
+    interaction = SimpleNamespace(channel=SimpleNamespace(id=123, name="general"), channel_id=123)
+
+    context = await adapter._build_origin_thread_context(interaction)
+
+    assert context == ""
 
 
 # ------------------------------------------------------------------
@@ -539,6 +614,34 @@ class _FakeThreadChannel(_discord_mod.Thread):
         self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
 
 
+class _AsyncHistory:
+    def __init__(self, items):
+        self._items = list(items)
+        self._iter = None
+
+    def __aiter__(self):
+        self._iter = iter(self._items)
+        return self
+
+    async def __anext__(self):
+        if self._iter is None:
+            self._iter = iter(self._items)
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+
+def _fake_history_message(*, content="Hello", display_name="Jezza", attachments=None):
+    return SimpleNamespace(
+        author=SimpleNamespace(display_name=display_name, name=display_name, bot=False),
+        content=content,
+        clean_content=content,
+        attachments=attachments or [],
+    )
+
+
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):
     return SimpleNamespace(
         author=SimpleNamespace(id=author_id, display_name=display_name, bot=False),
@@ -578,6 +681,42 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     assert event.source.chat_id == "999"  # redirected to thread
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_prepends_origin_channel_context(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT", "100")
+
+    thread = SimpleNamespace(id=999, name="Hello")
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    channel = _FakeTextChannel()
+    current = _fake_history_message(content="Hello world", display_name="Jezza")
+    current.id = 12345
+    previous = _fake_history_message(content="Prior context", display_name="Alice")
+    previous.id = 12344
+    channel.history = MagicMock(return_value=_AsyncHistory([current, previous]))
+
+    msg = _fake_message(channel, content="Hello world")
+
+    await adapter._handle_message(msg)
+
+    assert len(captured_events) == 1
+    event = captured_events[0]
+    channel.history.assert_called_once_with(limit=100)
+    assert 'originating Discord channel "general"' in event.text
+    assert "[Alice] Prior context" in event.text
+    assert "[Jezza] Hello world" not in event.text
+    assert event.text.endswith("Hello world")
 
 
 @pytest.mark.asyncio

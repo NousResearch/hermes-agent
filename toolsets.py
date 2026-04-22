@@ -78,6 +78,30 @@ TOOLSETS = {
         "tools": ["web_search"],
         "includes": []
     },
+
+    "trackermane": {
+        "description": "Primary DealSeek UGC analytics from TrackerMane metadata + historical snapshots",
+        "tools": [
+            "tracker_get_overview", "tracker_search_videos",
+            "tracker_search_accounts", "tracker_get_video_details",
+        ],
+        "includes": []
+    },
+
+    "sideshift": {
+        "description": "Secondary DealSeek UGC program analytics from SideShift",
+        "tools": [
+            "sideshift_get_overview", "sideshift_get_creators",
+            "sideshift_get_posts", "sideshift_get_post",
+        ],
+        "includes": []
+    },
+
+    "ugc_analytics": {
+        "description": "DealSeek UGC analytics bundle: TrackerMane primary plus SideShift fallback",
+        "tools": [],
+        "includes": ["trackermane", "sideshift"]
+    },
     
     "vision": {
         "description": "Image analysis and vision tools",

@@ -393,6 +393,35 @@ class TestOptionalEnvVarsRegistry:
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
 
+    def test_ugc_analytics_env_vars_registered(self):
+        """TrackerMane + SideShift env vars are exposed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        for key in (
+            "TRACKERMANE_POSTGRES_URL",
+            "TRACKERMANE_CLICKHOUSE_URL",
+            "SIDESHIFT_API_KEY",
+            "SIDESHIFT_API_BASE_URL",
+        ):
+            assert key in OPTIONAL_ENV_VARS
+            assert OPTIONAL_ENV_VARS[key]["category"] == "tool"
+
+    def test_ugc_analytics_env_vars_in_env_vars_by_version(self):
+        """TrackerMane + SideShift env vars participate in config migration prompts."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION
+
+        all_vars = []
+        for vars_list in ENV_VARS_BY_VERSION.values():
+            all_vars.extend(vars_list)
+
+        for key in (
+            "TRACKERMANE_POSTGRES_URL",
+            "TRACKERMANE_CLICKHOUSE_URL",
+            "SIDESHIFT_API_KEY",
+            "SIDESHIFT_API_BASE_URL",
+        ):
+            assert key in all_vars
+
 
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""
@@ -459,7 +488,7 @@ class TestCustomProviderCompatibility:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 19
+        assert raw["_config_version"] == 20
         assert raw["providers"]["openai-direct"] == {
             "api": "https://api.openai.com/v1",
             "api_key": "test-key",
@@ -606,7 +635,7 @@ class TestInterimAssistantMessageConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 19
+        assert raw["_config_version"] == 20
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True
 
@@ -626,6 +655,6 @@ class TestDiscordChannelPromptsConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 19
+        assert raw["_config_version"] == 20
         assert raw["discord"]["auto_thread"] is True
         assert raw["discord"]["channel_prompts"] == {}

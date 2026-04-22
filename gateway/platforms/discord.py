@@ -826,6 +826,22 @@ class DiscordAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no")
 
+    def _origin_context_history_limit(self) -> int:
+        """Return how many source-channel messages to inject into new threads.
+
+        Default is disabled (0) so deployments must opt in explicitly via
+        config.extra.thread_origin_context_history_limit or the
+        DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT environment variable.
+        """
+        configured = self.config.extra.get("thread_origin_context_history_limit")
+        if configured is None:
+            configured = os.getenv("DISCORD_THREAD_ORIGIN_CONTEXT_LIMIT", "0")
+        try:
+            limit = int(configured)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(limit, 100))
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
         if not self._reactions_enabled():
@@ -2370,10 +2386,91 @@ class DiscordAdapter(BasePlatformAdapter):
         if thread_id:
             self._threads.mark(thread_id)
 
-        # If a message was provided, kick off a new Hermes session in the thread
+        # If a message was provided, kick off a new Hermes session in the thread.
+        # When the slash command was invoked from inside an existing Discord
+        # thread, prepend the originating thread's recent history so the new
+        # session starts with the source context that motivated the new thread.
         starter = (message or "").strip()
+        origin_limit = self._origin_context_history_limit()
         if starter and thread_id:
-            await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
+            origin_context = ""
+            if origin_limit > 0:
+                origin_context = await self._build_origin_thread_context(interaction, limit=origin_limit)
+            session_starter = f"{origin_context}\n\n{starter}" if origin_context else starter
+            await self._dispatch_thread_session(interaction, thread_id, thread_name, session_starter)
+
+    async def _build_origin_thread_context(
+        self,
+        origin: Any,
+        limit: int = 100,
+        *,
+        exclude_message_id: Optional[str] = None,
+    ) -> str:
+        """Return formatted recent history for the channel/thread that spawned a new thread.
+
+        This is used anywhere Hermes creates a Discord thread so the new
+        session inherits recent context from the originating channel or thread,
+        not just the immediate starter prompt.
+        """
+        if hasattr(origin, "channel") or hasattr(origin, "channel_id"):
+            channel = await self._resolve_interaction_channel(origin)
+        else:
+            channel = origin
+        if channel is None:
+            return ""
+
+        history_method = getattr(channel, "history", None)
+        if history_method is None:
+            return ""
+
+        try:
+            collected = []
+            async for msg in history_method(limit=limit):
+                collected.append(msg)
+        except Exception as exc:
+            logger.warning("[%s] Failed to collect origin thread history for %s: %s", self.name, getattr(channel, "id", "?"), exc)
+            return ""
+
+        if not collected:
+            return ""
+
+        collected.reverse()  # Discord returns newest-first by default.
+        lines: list[str] = []
+        for msg in collected:
+            msg_id = getattr(msg, "id", None)
+            if exclude_message_id is not None and str(msg_id) == str(exclude_message_id):
+                continue
+
+            author = getattr(getattr(msg, "author", None), "display_name", None)
+            if not author:
+                author = getattr(getattr(msg, "author", None), "name", None) or "Unknown"
+
+            content = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
+            attachments = getattr(msg, "attachments", None) or []
+            if attachments:
+                attachment_names = [getattr(att, "filename", None) or "attachment" for att in attachments]
+                attachment_note = f"[Attachments: {', '.join(attachment_names)}]"
+                content = f"{content}\n{attachment_note}" if content else attachment_note
+
+            if not content:
+                continue
+
+            lines.append(f"[{author}] {content}")
+
+        if not lines:
+            return ""
+
+        origin_name = getattr(channel, "name", None) or "source thread"
+        origin_kind = "thread" if isinstance(channel, discord.Thread) else "channel"
+        return (
+            "Use the following recent conversation from the originating Discord "
+            f"{origin_kind} "
+            f'"{origin_name}" as background context for this new thread. '
+            f"This is the last {len(lines)} messages, ordered oldest to newest:\n"
+            "---\n"
+            + "\n".join(lines)
+            + "\n---"
+        )
 
     async def _dispatch_thread_session(
         self,
@@ -3138,6 +3235,18 @@ class DiscordAdapter(BasePlatformAdapter):
         event_text = message.content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+
+        if auto_threaded_channel is not None:
+            origin_limit = self._origin_context_history_limit()
+            origin_context = ""
+            if origin_limit > 0:
+                origin_context = await self._build_origin_thread_context(
+                    message.channel,
+                    limit=origin_limit,
+                    exclude_message_id=str(getattr(message, "id", "") or ""),
+                )
+            if origin_context:
+                event_text = f"{origin_context}\n\n{event_text}" if event_text else origin_context
 
         # Defense-in-depth: prevent empty user messages from entering session
         # (can happen when user sends @mention-only with no other text)

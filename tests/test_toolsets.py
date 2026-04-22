@@ -100,6 +100,13 @@ class TestResolveMultipleToolsets:
         # No duplicates
         assert len(tools) == len(set(tools))
 
+    def test_ugc_analytics_bundle(self):
+        tools = resolve_multiple_toolsets(["ugc_analytics"])
+        assert "tracker_get_overview" in tools
+        assert "tracker_get_video_details" in tools
+        assert "sideshift_get_overview" in tools
+        assert "sideshift_get_post" in tools
+
     def test_empty_list(self):
         assert resolve_multiple_toolsets([]) == []
 

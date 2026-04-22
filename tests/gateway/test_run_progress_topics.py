@@ -58,6 +58,13 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
+    SUPPORTS_MESSAGE_EDITING = False
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        raise AssertionError("non-editable adapters should not receive edit_message calls")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -502,6 +509,7 @@ async def _run_with_agent(
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
+    adapter_cls=ProgressCaptureAdapter,
 ):
     if config_data:
         import yaml
@@ -516,7 +524,7 @@ async def _run_with_agent(
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter(platform=platform)
+    adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
@@ -664,6 +672,26 @@ async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeyp
 
     assert result.get("already_sent") is not True
     assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_bluebubbles_uses_commentary_send_path_for_quick_replies(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-bluebubbles-commentary",
+        config_data={"display": {"interim_assistant_messages": True}},
+        platform=Platform.BLUEBUBBLES,
+        chat_id="iMessage;-;user@example.com",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is not True
+    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
-import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
@@ -595,17 +595,6 @@ export const ToolTrail = memo(function ToolTrail({
       setOpenMeta(false)
     }
   }, [detailsMode])
-
-  const latestErrorId = useMemo(
-    () => activity.reduce((max, i) => (i.tone === 'error' && i.id > max ? i.id : max), -1),
-    [activity]
-  )
-
-  useEffect(() => {
-    if (latestErrorId >= 0) {
-      setOpenMeta(true)
-    }
-  }, [latestErrorId])
 
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 

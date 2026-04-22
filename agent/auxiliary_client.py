@@ -1885,6 +1885,24 @@ def resolve_provider_client(
                        "directly supported, try 'auto'", provider)
         return None, None
 
+    elif pconfig.auth_type == "aws_sdk":
+        # Bedrock provider — wrap AnthropicBedrock in AnthropicAuxiliaryClient
+        try:
+            from agent.bedrock_adapter import has_aws_credentials, resolve_bedrock_region
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+        except ImportError as exc:
+            logger.warning("resolve_provider_client: bedrock imports failed: %s", exc)
+            return None, None
+        if not has_aws_credentials():
+            logger.warning("resolve_provider_client: bedrock requested but no AWS credentials found")
+            return None, None
+        region = resolve_bedrock_region()
+        real_client = build_anthropic_bedrock_client(region)
+        final_model = _normalize_resolved_model(model or _read_main_model(), provider)
+        client = AnthropicAuxiliaryClient(real_client, final_model, "aws-sdk", f"https://bedrock-runtime.{region}.amazonaws.com")
+        logger.info("resolve_provider_client: bedrock (%s, region=%s)", final_model, region)
+        return (_to_async_client(client, final_model) if async_mode else (client, final_model))
+
     logger.warning("resolve_provider_client: unhandled auth_type %s for %s",
                    pconfig.auth_type, provider)
     return None, None

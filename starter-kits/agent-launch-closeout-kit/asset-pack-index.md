@@ -58,6 +58,8 @@ Required fields:
 - Demo capture runbook: `starter-kits/agent-launch-closeout-kit/demo-capture-runbook.md`
 - Demo capture helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh`
 - Demo headless finalize helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-headless-finalize.sh`
+- Demo post-finalize verifier: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-post-finalize-verify.sh`
+- Demo post-finalize smoke test: `starter-kits/agent-launch-closeout-kit/scripts/verify-demo-capture-post-finalize.sh`
 - Demo workspace launcher (macOS): `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-launcher.sh`
 - Captions file: `starter-kits/agentic-cron-orchestration-kit/launch/demo-captions.srt`
 - Edited asset path: record in `starter-kits/agent-launch-closeout-kit/launch-execution-log.md`

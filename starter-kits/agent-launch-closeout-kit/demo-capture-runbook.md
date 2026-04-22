@@ -70,6 +70,18 @@ bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh --finalize \
 
 Use that lower-level command directly only when you intentionally need to override the headless helper's session-packet defaults.
 
+Then verify the real launch log and asset files before updating the weekly notes:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-post-finalize-verify.sh
+```
+
+For a temp-file smoke test of that verifier, run:
+
+```bash
+bash starter-kits/agent-launch-closeout-kit/scripts/verify-demo-capture-post-finalize.sh
+```
+
 Then show the proof artifact:
 
 ```bash

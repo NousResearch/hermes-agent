@@ -174,46 +174,51 @@ posted_url = sys.argv[5]
 notes = sys.argv[6]
 text = log_path.read_text()
 
-# Match the Demo walkthrough section robustly using regex that tolerates
-# field-order variation and extra/missing optional fields.
-pattern = re.compile(
-    r'(## Demo walkthrough\n)'
-    r'(- Status: )(pending capture|captured on[^\n]*)\n'
-    r'(- Readiness packet: [^\n]+\n)'
-    r'(- Capture helper: [^\n]+\n)'
-    r'((?:- Headless finalize helper: [^\n]+\n)?)'
-    r'(- Trigger card: [^\n]+\n)'
-    r'(- Source files:\n)((?:  - [^\n]+\n)+)'
-    r'(- Done criteria:\n)((?:  - [^\n]+\n)+)'
-    r'(- Record after capture:\n)((?:  - [^\n]*\n)*)',
-    re.MULTILINE
+section_match = re.search(
+    r'^## Demo walkthrough\n(?P<body>.*?)(?=^## |\Z)',
+    text,
+    re.MULTILINE | re.DOTALL,
 )
+if not section_match:
+    raise SystemExit('Demo walkthrough section not found in launch-execution-log.md')
 
+body = section_match.group('body')
+lines = body.splitlines()
+new_lines = []
+status_replaced = False
+record_block_found = False
 
-def replacement(m):
-    parts = [
-        m.group(1),                           # ## Demo walkthrough
-        m.group(2), f"captured on {duration}\n",
-        m.group(4),                           # - Readiness packet
-        m.group(5),                           # - Capture helper
-        m.group(6),                           # optional - Headless finalize helper
-        m.group(7),                           # - Trigger card
-        m.group(8), m.group(9),               # - Source files: + items
-        m.group(10), m.group(11),             # - Done criteria: + items
-        "- Recorded asset:\n",
-        f"  - Recording path: {recording_path}\n",
-        f"  - Duration: {duration}\n",
-        f"  - Edited asset path: {edited_asset_path}\n",
-        f"  - Posted URL (if published): {posted_url}\n",
-        f"  - Notes: {notes}\n",
-    ]
-    return ''.join(parts)
+for line in lines:
+    if line.startswith('- Status: '):
+        new_lines.append(f'- Status: captured on {duration}')
+        status_replaced = True
+        continue
+    if line.startswith('- Record after capture:') or line.startswith('- Recorded asset:'):
+        record_block_found = True
+        break
+    new_lines.append(line)
 
-new_text, count = pattern.subn(replacement, text)
-if count == 0:
-    raise SystemExit("Demo walkthrough block not found in expected format in launch-execution-log.md")
-new_text = new_text.replace("- [ ] Demo walkthrough captured", "- [x] Demo walkthrough captured", 1)
-new_text = new_text.replace("- [ ] Final attachment choice recorded here", "- [x] Final attachment choice recorded here", 1)
+if not status_replaced:
+    raise SystemExit('Demo walkthrough status line not found in launch-execution-log.md')
+if not record_block_found:
+    raise SystemExit('Demo walkthrough record block not found in launch-execution-log.md')
+
+if new_lines and new_lines[-1] != '':
+    new_lines.append('')
+new_lines.extend([
+    '- Recorded asset:',
+    f'  - Recording path: {recording_path}',
+    f'  - Duration: {duration}',
+    f'  - Edited asset path: {edited_asset_path}',
+    f'  - Posted URL (if published): {posted_url}',
+    f'  - Notes: {notes}',
+    '',
+])
+
+new_section = '## Demo walkthrough\n' + '\n'.join(new_lines)
+new_text = text[:section_match.start()] + new_section + text[section_match.end():]
+new_text = new_text.replace('- [ ] Demo walkthrough captured', '- [x] Demo walkthrough captured', 1)
+new_text = new_text.replace('- [ ] Final attachment choice recorded here', '- [x] Final attachment choice recorded here', 1)
 log_path.write_text(new_text)
 PY
 

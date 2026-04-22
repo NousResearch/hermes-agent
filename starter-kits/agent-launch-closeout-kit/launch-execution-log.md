@@ -39,6 +39,7 @@ Track launch execution separately from product proof so the operator can close t
 - Readiness packet: `starter-kits/agent-launch-closeout-kit/demo-artifacts/latest-demo-capture-readiness.md`
 - Capture helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture.sh`
 - Headless finalize helper: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-headless-finalize.sh`
+- Post-finalize verifier: `starter-kits/agent-launch-closeout-kit/scripts/demo-capture-post-finalize-verify.sh`
 - Trigger card: `starter-kits/agent-launch-closeout-kit/demo-trigger.md`
 - Source files:
   - `starter-kits/agentic-cron-orchestration-kit/launch/demo-outline.md`
@@ -72,4 +73,4 @@ Track launch execution separately from product proof so the operator can close t
 3. After a real signed-in proof event, run `bash starter-kits/agent-launch-closeout-kit/scripts/publish-unblock-helper.sh --execute --screenshot-path /absolute/path/to/signed-in-proof.png` so this log, the live audit, and `x-access.json` refresh from the same evidence.
 4. Publish the launch thread against the proved starter-workflow line.
 5. If demo capture is still not ready, attach the proof-artifact still and do not delay publish.
-6. Capture the walkthrough immediately after posting and log the asset path here.
+6. Capture the walkthrough immediately after posting, run `bash starter-kits/agent-launch-closeout-kit/scripts/demo-capture-post-finalize-verify.sh`, then log the verified asset path here.

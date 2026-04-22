@@ -1759,8 +1759,11 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         # Per-channel ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
+        from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
         _channel_prompt = resolve_channel_prompt(
+            self.config.extra, channel_id, None,
+        )
+        _auto_skill = resolve_channel_skills(
             self.config.extra, channel_id, None,
         )
 
@@ -1791,6 +1794,7 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
             reply_to_text=reply_to_text,
+            auto_skill=_auto_skill,
         )
 
         # Only react when bot is directly addressed (DM or @mention).

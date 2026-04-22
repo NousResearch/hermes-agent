@@ -9,12 +9,46 @@ declare global {
 }
 let _sessionToken: string | null = null;
 
+function readStoredProfile(): string | null {
+  try {
+    const stored = window.localStorage.getItem("hermes.activeProfile");
+    return stored && stored !== "default" ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+let _profileName: string | null = readStoredProfile();
+
+export function setActiveProfile(name: string | null) {
+  _profileName = name && name !== "default" ? name : null;
+  try {
+    if (_profileName) {
+      window.localStorage.setItem("hermes.activeProfile", _profileName);
+    } else {
+      window.localStorage.setItem("hermes.activeProfile", "default");
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function getActiveProfile(): string | null {
+  if (_profileName === null) {
+    _profileName = readStoredProfile();
+  }
+  return _profileName;
+}
+
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  // Inject the session token into all /api/ requests.
+  // Inject the session token + selected profile into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (_profileName && !headers.has("X-Hermes-Profile")) {
+    headers.set("X-Hermes-Profile", _profileName);
   }
   const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
@@ -36,6 +70,11 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getProfiles: () => fetchJSON<ProfilesResponse>("/api/profiles"),
+  resolveProfile: (name: string) =>
+    fetchJSON<{ name: string; home: string }>(
+      `/api/profiles/resolve?name=${encodeURIComponent(name)}`,
+    ),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -402,6 +441,22 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+}
+
+export interface ProfileInfo {
+  name: string;
+  path: string;
+  is_default: boolean;
+  gateway_running: boolean;
+  model: string | null;
+  provider: string | null;
+  has_env: boolean;
+  skill_count: number;
+}
+
+export interface ProfilesResponse {
+  active: string;
+  profiles: ProfileInfo[];
 }
 
 // ── Model info types ──────────────────────────────────────────────────

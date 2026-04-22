@@ -35,6 +35,7 @@ import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
+import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { useI18n } from "@/i18n";
 import { usePlugins } from "@/plugins";
 import type { RegisteredPlugin } from "@/plugins";
@@ -214,6 +215,7 @@ export default function App() {
 
           <Grid className="h-full shrink-0 !border-t-0 !border-b-0">
             <Cell className="flex items-center gap-2 !p-0 !px-2 sm:!px-4">
+              <ProfileSwitcher />
               <ThemeSwitcher />
               <LanguageSwitcher />
               <Typography

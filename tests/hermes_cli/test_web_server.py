@@ -548,6 +548,62 @@ class TestNewEndpoints:
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
 
+    def test_sessions_respect_profile_header(self, tmp_path, monkeypatch):
+        import hermes_state
+        from hermes_constants import get_hermes_home
+
+        profile_home = get_hermes_home() / "profiles" / "minion1"
+        profile_home.mkdir(parents=True, exist_ok=True)
+
+        root_db = hermes_state.SessionDB(db_path=get_hermes_home() / "state.db")
+        try:
+            root_db.create_session(session_id="root-session", source="cli")
+        finally:
+            root_db.close()
+
+        profile_db = hermes_state.SessionDB(db_path=profile_home / "state.db")
+        try:
+            profile_db.create_session(session_id="profile-session", source="cli")
+        finally:
+            profile_db.close()
+
+        resp = self.client.get("/api/sessions", headers={"X-Hermes-Profile": "minion1"})
+        assert resp.status_code == 200
+        ids = [s["id"] for s in resp.json()["sessions"]]
+        assert "profile-session" in ids
+        assert "root-session" not in ids
+
+    def test_cron_list_respects_profile_header(self):
+        from cron.jobs import save_jobs
+        from hermes_constants import get_hermes_home
+        import importlib
+        import cron.jobs as cron_jobs
+
+        root_home = get_hermes_home()
+        profile_home = root_home / "profiles" / "okx-trader"
+        (root_home / "cron").mkdir(parents=True, exist_ok=True)
+        (profile_home / "cron").mkdir(parents=True, exist_ok=True)
+
+        save_jobs([{"id": "root-job", "enabled": True}])
+
+        monkey_env = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(profile_home)
+        try:
+            cron_jobs = importlib.reload(cron_jobs)
+            cron_jobs.save_jobs([{"id": "profile-job", "enabled": True}])
+        finally:
+            if monkey_env is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = monkey_env
+            importlib.reload(cron_jobs)
+
+        resp = self.client.get("/api/cron/jobs", headers={"X-Hermes-Profile": "okx-trader"})
+        assert resp.status_code == 200
+        ids = [j["id"] for j in resp.json()]
+        assert "profile-job" in ids
+        assert "root-job" not in ids
+
     def test_cron_job_not_found(self):
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404

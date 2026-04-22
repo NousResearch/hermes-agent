@@ -47,6 +47,8 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from hermes_cli.profiles import list_profiles
+from hermes_cli.profiles import resolve_profile_env
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -95,6 +97,8 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/status",
+    "/api/profiles",
+    "/api/profiles/resolve",
     "/api/config/defaults",
     "/api/config/schema",
     "/api/model/info",
@@ -102,6 +106,58 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
 })
+
+
+# ---------------------------------------------------------------------------
+# Profile (multi-agent) context
+# ---------------------------------------------------------------------------
+
+
+def _parse_profile_header(request: Request) -> str | None:
+    """Read the selected Hermes profile name from request headers.
+
+    The dashboard can view/configure different Hermes profiles by sending:
+
+        X-Hermes-Profile: <profile>
+
+    The special name "default" maps to ~/.hermes.
+    """
+    raw = request.headers.get("x-hermes-profile")
+    if not raw:
+        return None
+    name = str(raw).strip()
+    return name or None
+
+
+def _profile_home_from_request(request: Request) -> Path:
+    """Resolve the profile-scoped HERMES_HOME for this request."""
+    name = _parse_profile_header(request)
+    if not name:
+        return get_hermes_home()
+    try:
+        return Path(resolve_profile_env(name)).resolve()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unknown profile: {name}") from exc
+
+
+def _with_profile_env(profile_home: Path):
+    """Temporarily set HERMES_HOME while executing a handler."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(profile_home)
+        try:
+            yield
+        finally:
+            if old is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old
+
+    return _cm()
+
 
 
 def _require_token(request: Request) -> None:
@@ -213,6 +269,43 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Profile endpoints (multi-agent support)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/profiles")
+async def get_profiles():
+    """List all Hermes profiles (default + named)."""
+    profiles = []
+    for p in list_profiles():
+        profiles.append(
+            {
+                "name": p.name,
+                "path": str(p.path),
+                "is_default": bool(p.is_default),
+                "gateway_running": bool(p.gateway_running),
+                "model": p.model,
+                "provider": p.provider,
+                "has_env": bool(p.has_env),
+                "skill_count": int(p.skill_count),
+            }
+        )
+    return {
+        "active": os.environ.get("HERMES_HOME") or str(get_hermes_home()),
+        "profiles": profiles,
+    }
+
+
+@app.get("/api/profiles/resolve")
+async def resolve_profile(name: str):
+    """Resolve a profile name to its HERMES_HOME path."""
+    try:
+        return {"name": name, "home": resolve_profile_env(name)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -457,109 +550,103 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
 
 
 @app.get("/api/status")
-async def get_status():
-    current_ver, latest_ver = check_config_version()
+async def get_status(request: Request):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        current_ver, latest_ver = check_config_version()
 
-    # --- Gateway liveness detection ---
-    # Try local PID check first (same-host).  If that fails and a remote
-    # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
-    # dashboard works when the gateway runs in a separate container.
-    gateway_pid = get_running_pid()
-    gateway_running = gateway_pid is not None
-    remote_health_body: dict | None = None
+        # --- Gateway liveness detection ---
+        # Try local PID check first (same-host). If that fails and a remote
+        # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
+        # dashboard works when the gateway runs in a separate container.
+        gateway_pid = get_running_pid()
+        gateway_running = gateway_pid is not None
+        remote_health_body: dict | None = None
 
-    if not gateway_running and _GATEWAY_HEALTH_URL:
-        loop = asyncio.get_event_loop()
-        alive, remote_health_body = await loop.run_in_executor(
-            None, _probe_gateway_health
-        )
-        if alive:
-            gateway_running = True
-            # PID from the remote container (display only — not locally valid)
-            if remote_health_body:
-                gateway_pid = remote_health_body.get("pid")
-
-    gateway_state = None
-    gateway_platforms: dict = {}
-    gateway_exit_reason = None
-    gateway_updated_at = None
-    configured_gateway_platforms: set[str] | None = None
-    try:
-        from gateway.config import load_gateway_config
-
-        gateway_config = load_gateway_config()
-        configured_gateway_platforms = {
-            platform.value for platform in gateway_config.get_connected_platforms()
-        }
-    except Exception:
-        configured_gateway_platforms = None
-
-    # Prefer the detailed health endpoint response (has full state) when the
-    # local runtime status file is absent or stale (cross-container).
-    runtime = read_runtime_status()
-    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
-        runtime = remote_health_body
-
-    if runtime:
-        gateway_state = runtime.get("gateway_state")
-        gateway_platforms = runtime.get("platforms") or {}
-        if configured_gateway_platforms is not None:
-            gateway_platforms = {
-                key: value
-                for key, value in gateway_platforms.items()
-                if key in configured_gateway_platforms
-            }
-        gateway_exit_reason = runtime.get("exit_reason")
-        gateway_updated_at = runtime.get("updated_at")
-        if not gateway_running:
-            gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
-            gateway_platforms = {}
-        elif gateway_running and remote_health_body is not None:
-            # The health probe confirmed the gateway is alive, but the local
-            # runtime status file may be stale (cross-container).  Override
-            # stopped/None state so the dashboard shows the correct badge.
-            if gateway_state in (None, "stopped"):
-                gateway_state = "running"
-
-    # If there was no runtime info at all but the health probe confirmed alive,
-    # ensure we still report the gateway as running (no shared volume scenario).
-    if gateway_running and gateway_state is None and remote_health_body is not None:
-        gateway_state = "running"
-
-    active_sessions = 0
-    try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            sessions = db.list_sessions_rich(limit=50)
-            now = time.time()
-            active_sessions = sum(
-                1 for s in sessions
-                if s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+        if not gateway_running and _GATEWAY_HEALTH_URL:
+            loop = asyncio.get_event_loop()
+            alive, remote_health_body = await loop.run_in_executor(
+                None, _probe_gateway_health
             )
-        finally:
-            db.close()
-    except Exception:
-        pass
+            if alive:
+                gateway_running = True
+                if remote_health_body:
+                    gateway_pid = remote_health_body.get("pid")
 
-    return {
-        "version": __version__,
-        "release_date": __release_date__,
-        "hermes_home": str(get_hermes_home()),
-        "config_path": str(get_config_path()),
-        "env_path": str(get_env_path()),
-        "config_version": current_ver,
-        "latest_config_version": latest_ver,
-        "gateway_running": gateway_running,
-        "gateway_pid": gateway_pid,
-        "gateway_health_url": _GATEWAY_HEALTH_URL,
-        "gateway_state": gateway_state,
-        "gateway_platforms": gateway_platforms,
-        "gateway_exit_reason": gateway_exit_reason,
-        "gateway_updated_at": gateway_updated_at,
-        "active_sessions": active_sessions,
-    }
+        gateway_state = None
+        gateway_platforms: dict = {}
+        gateway_exit_reason = None
+        gateway_updated_at = None
+        configured_gateway_platforms: set[str] | None = None
+        try:
+            from gateway.config import load_gateway_config
+
+            gateway_config = load_gateway_config()
+            configured_gateway_platforms = {
+                platform.value for platform in gateway_config.get_connected_platforms()
+            }
+        except Exception:
+            configured_gateway_platforms = None
+
+        runtime = read_runtime_status()
+        if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+            runtime = remote_health_body
+
+        if runtime:
+            gateway_state = runtime.get("gateway_state")
+            gateway_platforms = runtime.get("platforms") or {}
+            if configured_gateway_platforms is not None:
+                gateway_platforms = {
+                    key: value
+                    for key, value in gateway_platforms.items()
+                    if key in configured_gateway_platforms
+                }
+            gateway_exit_reason = runtime.get("exit_reason")
+            gateway_updated_at = runtime.get("updated_at")
+            if not gateway_running:
+                gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
+                gateway_platforms = {}
+            elif gateway_running and remote_health_body is not None:
+                if gateway_state in (None, "stopped"):
+                    gateway_state = "running"
+
+        if gateway_running and gateway_state is None and remote_health_body is not None:
+            gateway_state = "running"
+
+        active_sessions = 0
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                sessions = db.list_sessions_rich(limit=50)
+                now = time.time()
+                active_sessions = sum(
+                    1 for s in sessions
+                    if s.get("ended_at") is None
+                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                )
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+        return {
+            "version": __version__,
+            "release_date": __release_date__,
+            "hermes_home": str(get_hermes_home()),
+            "config_path": str(get_config_path()),
+            "env_path": str(get_env_path()),
+            "config_version": current_ver,
+            "latest_config_version": latest_ver,
+            "gateway_running": gateway_running,
+            "gateway_pid": gateway_pid,
+            "gateway_health_url": _GATEWAY_HEALTH_URL,
+            "gateway_state": gateway_state,
+            "gateway_platforms": gateway_platforms,
+            "gateway_exit_reason": gateway_exit_reason,
+            "gateway_updated_at": gateway_updated_at,
+            "active_sessions": active_sessions,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -585,11 +672,12 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
 
 
-def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
+def _spawn_hermes_action(subcommand: List[str], name: str, *, profile_home: Path | None = None) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
-    Uses the running interpreter's ``hermes_cli.main`` module so the action
-    inherits the same venv/PYTHONPATH the web server is using.
+    When *profile_home* is provided, the child process runs with that
+    HERMES_HOME so actions (restart, update, etc.) operate on the selected
+    profile rather than the dashboard server's own environment.
     """
     log_file_name = _ACTION_LOG_FILES[name]
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -601,12 +689,16 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
 
     cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
 
+    env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
+    if profile_home is not None:
+        env["HERMES_HOME"] = str(profile_home)
+
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
+        "env": env,
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = (
@@ -636,10 +728,11 @@ def _tail_lines(path: Path, n: int) -> List[str]:
 
 
 @app.post("/api/gateway/restart")
-async def restart_gateway():
+async def restart_gateway(request: Request):
     """Kick off a ``hermes gateway restart`` in the background."""
+    profile_home = _profile_home_from_request(request)
     try:
-        proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+        proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart", profile_home=profile_home)
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
@@ -651,10 +744,11 @@ async def restart_gateway():
 
 
 @app.post("/api/hermes/update")
-async def update_hermes():
+async def update_hermes(request: Request):
     """Kick off ``hermes update`` in the background."""
+    profile_home = _profile_home_from_request(request)
     try:
-        proc = _spawn_hermes_action(["update"], "hermes-update")
+        proc = _spawn_hermes_action(["update"], "hermes-update", profile_home=profile_home)
     except Exception as exc:
         _log.exception("Failed to spawn hermes update")
         raise HTTPException(status_code=500, detail=f"Failed to start update: {exc}")
@@ -695,67 +789,66 @@ async def get_action_status(name: str, lines: int = 200):
 
 
 @app.get("/api/sessions")
-async def get_sessions(limit: int = 20, offset: int = 0):
+async def get_sessions(request: Request, limit: int = 20, offset: int = 0):
+    profile_home = _profile_home_from_request(request)
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
-            total = db.session_count()
-            now = time.time()
-            for s in sessions:
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
-        finally:
-            db.close()
-    except Exception as e:
+        with _with_profile_env(profile_home):
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                sessions = db.list_sessions_rich(limit=limit, offset=offset)
+                total = db.session_count()
+                now = time.time()
+                for s in sessions:
+                    s["is_active"] = (
+                        s.get("ended_at") is None
+                        and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    )
+                return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            finally:
+                db.close()
+    except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
+async def search_sessions(request: Request, q: str = "", limit: int = 20):
     """Full-text search across session message content using FTS5."""
     if not q or not q.strip():
         return {"results": []}
+    profile_home = _profile_home_from_request(request)
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            # Auto-add prefix wildcards so partial words match
-            # e.g. "nimb" → "nimb*" matches "nimby"
-            # Preserve quoted phrases and existing wildcards as-is
-            import re
-            terms = []
-            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
-                if token.startswith('"') or token.endswith("*"):
-                    terms.append(token)
-                else:
-                    terms.append(token + "*")
-            prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
-            seen: dict = {}
-            for m in matches:
-                sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
-            return {"results": list(seen.values())}
-        finally:
-            db.close()
+        with _with_profile_env(profile_home):
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                # Auto-add prefix wildcards so partial words match
+                # e.g. "nimb" → "nimb*" matches "nimby"
+                # Preserve quoted phrases and existing wildcards as-is
+                import re
+                terms = []
+                for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+                    if token.startswith('"') or token.endswith("*"):
+                        terms.append(token)
+                    else:
+                        terms.append(token + "*")
+                prefix_query = " ".join(terms)
+                matches = db.search_messages(query=prefix_query, limit=limit)
+                # Group by session_id — return unique sessions with their best snippet
+                seen: dict = {}
+                for m in matches:
+                    sid = m["session_id"]
+                    if sid not in seen:
+                        seen[sid] = m
+                results = list(seen.values())
+                return {"results": results}
+            finally:
+                db.close()
     except Exception:
         _log.exception("GET /api/sessions/search failed")
         raise HTTPException(status_code=500, detail="Search failed")
+
 
 
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -782,10 +875,12 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.get("/api/config")
-async def get_config():
-    config = _normalize_config_for_web(load_config())
-    # Strip internal keys that the frontend shouldn't see or send back
-    return {k: v for k, v in config.items() if not k.startswith("_")}
+async def get_config(request: Request):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        config = _normalize_config_for_web(load_config())
+        # Strip internal keys that the frontend shouldn't see or send back
+        return {k: v for k, v in config.items() if not k.startswith("_")}
 
 
 @app.get("/api/config/defaults")
@@ -939,18 +1034,23 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.put("/api/config")
-async def update_config(body: ConfigUpdate):
+async def save_config_endpoint(request: Request, body: ConfigUpdate):
+    profile_home = _profile_home_from_request(request)
     try:
-        save_config(_denormalize_config_from_web(body.config))
-        return {"ok": True}
-    except Exception as e:
+        with _with_profile_env(profile_home):
+            config = _denormalize_config_from_web(body.config)
+            save_config(config)
+            return {"ok": True}
+    except Exception:
         _log.exception("PUT /api/config failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/env")
-async def get_env_vars():
-    env_on_disk = load_env()
+async def get_env_vars(request: Request):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        env_on_disk = load_env()
     result = {}
     for var_name, info in OPTIONAL_ENV_VARS.items():
         value = env_on_disk.get(var_name)
@@ -968,9 +1068,11 @@ async def get_env_vars():
 
 
 @app.put("/api/env")
-async def set_env_var(body: EnvVarUpdate):
+async def set_env_var(request: Request, body: EnvVarUpdate):
+    profile_home = _profile_home_from_request(request)
     try:
-        save_env_value(body.key, body.value)
+        with _with_profile_env(profile_home):
+            save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
     except Exception as e:
         _log.exception("PUT /api/env failed")
@@ -978,9 +1080,11 @@ async def set_env_var(body: EnvVarUpdate):
 
 
 @app.delete("/api/env")
-async def remove_env_var(body: EnvVarDelete):
+async def remove_env_var(request: Request, body: EnvVarDelete):
+    profile_home = _profile_home_from_request(request)
     try:
-        removed = remove_env_value(body.key)
+        with _with_profile_env(profile_home):
+            removed = remove_env_value(body.key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
         return {"ok": True, "key": body.key}
@@ -992,7 +1096,7 @@ async def remove_env_var(body: EnvVarDelete):
 
 
 @app.post("/api/env/reveal")
-async def reveal_env_var(body: EnvVarReveal, request: Request):
+async def reveal_env_var(request: Request, body: EnvVarReveal):
     """Return the real (unredacted) value of a single env var.
 
     Protected by:
@@ -1012,8 +1116,10 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
     _reveal_timestamps.append(now)
 
     # --- Reveal ---
-    env_on_disk = load_env()
-    value = env_on_disk.get(body.key)
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        env_on_disk = load_env()
+        value = env_on_disk.get(body.key)
     if value is None:
         raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
 
@@ -1888,43 +1994,49 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
-    try:
-        sid = db.resolve_session_id(session_id)
-        session = db.get_session(sid) if sid else None
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        return session
-    finally:
-        db.close()
+async def get_session_detail(request: Request, session_id: str):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            sid = db.resolve_session_id(session_id)
+            session = db.get_session(sid) if sid else None
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return session
+        finally:
+            db.close()
 
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
-    try:
-        sid = db.resolve_session_id(session_id)
-        if not sid:
-            raise HTTPException(status_code=404, detail="Session not found")
-        messages = db.get_messages(sid)
-        return {"session_id": sid, "messages": messages}
-    finally:
-        db.close()
+async def get_session_messages(request: Request, session_id: str):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            sid = db.resolve_session_id(session_id)
+            if not sid:
+                raise HTTPException(status_code=404, detail="Session not found")
+            messages = db.get_messages(sid)
+            return {"session_id": sid, "messages": messages}
+        finally:
+            db.close()
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session_endpoint(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
-    try:
-        if not db.delete_session(session_id):
-            raise HTTPException(status_code=404, detail="Session not found")
-        return {"ok": True}
-    finally:
-        db.close()
+async def delete_session_endpoint(request: Request, session_id: str):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            if not db.delete_session(session_id):
+                raise HTTPException(status_code=404, detail="Session not found")
+            return {"ok": True}
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -2002,74 +2114,92 @@ class CronJobUpdate(BaseModel):
 
 
 @app.get("/api/cron/jobs")
-async def list_cron_jobs():
-    from cron.jobs import list_jobs
-    return list_jobs(include_disabled=True)
+async def list_cron_jobs(request: Request):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        import importlib
+        import cron.jobs as cron_jobs
+        cron_jobs = importlib.reload(cron_jobs)
+        return cron_jobs.list_jobs(include_disabled=True)
 
 
 @app.get("/api/cron/jobs/{job_id}")
-async def get_cron_job(job_id: str):
-    from cron.jobs import get_job
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+async def get_cron_job(request: Request, job_id: str):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from cron.jobs import get_job
+        job = get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
 
 
 @app.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate):
-    from cron.jobs import create_job
-    try:
-        job = create_job(prompt=body.prompt, schedule=body.schedule,
-                         name=body.name, deliver=body.deliver)
-        return job
-    except Exception as e:
-        _log.exception("POST /api/cron/jobs failed")
-        raise HTTPException(status_code=400, detail=str(e))
+async def create_cron_job(request: Request, body: CronJobCreate):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from cron.jobs import create_job
+        try:
+            job = create_job(prompt=body.prompt, schedule=body.schedule,
+                             name=body.name, deliver=body.deliver)
+            return job
+        except Exception as e:
+            _log.exception("POST /api/cron/jobs failed")
+            raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate):
-    from cron.jobs import update_job
-    job = update_job(job_id, body.updates)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+async def update_cron_job(request: Request, job_id: str, body: CronJobUpdate):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from cron.jobs import update_job
+        job = update_job(job_id, body.updates)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
 
 
 @app.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str):
-    from cron.jobs import pause_job
-    job = pause_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+async def pause_cron_job(request: Request, job_id: str):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from cron.jobs import pause_job
+        job = pause_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
 
 
 @app.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str):
-    from cron.jobs import resume_job
-    job = resume_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+async def resume_cron_job(request: Request, job_id: str):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from cron.jobs import resume_job
+        job = resume_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
 
 
 @app.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str):
-    from cron.jobs import trigger_job
-    job = trigger_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+async def trigger_cron_job(request: Request, job_id: str):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from cron.jobs import trigger_job
+        job = trigger_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
 
 
 @app.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str):
-    from cron.jobs import remove_job
-    if not remove_job(job_id):
-        raise HTTPException(status_code=404, detail="Job not found")
-    return {"ok": True}
+async def delete_cron_job(request: Request, job_id: str):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from cron.jobs import remove_job
+        if not remove_job(job_id):
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -2083,60 +2213,66 @@ class SkillToggle(BaseModel):
 
 
 @app.get("/api/skills")
-async def get_skills():
-    from tools.skills_tool import _find_all_skills
-    from hermes_cli.skills_config import get_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    skills = _find_all_skills(skip_disabled=True)
-    for s in skills:
-        s["enabled"] = s["name"] not in disabled
-    return skills
+async def get_skills(request: Request):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from tools.skills_tool import _find_all_skills
+        from hermes_cli.skills_config import get_disabled_skills
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        skills = _find_all_skills(skip_disabled=True)
+        for s in skills:
+            s["enabled"] = s["name"] not in disabled
+        return skills
 
 
 @app.put("/api/skills/toggle")
-async def toggle_skill(body: SkillToggle):
-    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    if body.enabled:
-        disabled.discard(body.name)
-    else:
-        disabled.add(body.name)
-    save_disabled_skills(config, disabled)
-    return {"ok": True, "name": body.name, "enabled": body.enabled}
+async def toggle_skill(request: Request, body: SkillToggle):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        if body.enabled:
+            disabled.discard(body.name)
+        else:
+            disabled.add(body.name)
+        save_disabled_skills(config, disabled)
+        return {"ok": True, "name": body.name, "enabled": body.enabled}
 
 
 @app.get("/api/tools/toolsets")
-async def get_toolsets():
-    from hermes_cli.tools_config import (
-        _get_effective_configurable_toolsets,
-        _get_platform_tools,
-        _toolset_has_keys,
-    )
-    from toolsets import resolve_toolset
+async def get_toolsets(request: Request):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        from hermes_cli.tools_config import (
+            _get_effective_configurable_toolsets,
+            _get_platform_tools,
+            _toolset_has_keys,
+        )
+        from toolsets import resolve_toolset
 
-    config = load_config()
-    enabled_toolsets = _get_platform_tools(
-        config,
-        "cli",
-        include_default_mcp_servers=False,
-    )
-    result = []
-    for name, label, desc in _get_effective_configurable_toolsets():
-        try:
-            tools = sorted(set(resolve_toolset(name)))
-        except Exception:
-            tools = []
-        is_enabled = name in enabled_toolsets
-        result.append({
-            "name": name, "label": label, "description": desc,
-            "enabled": is_enabled,
-            "available": is_enabled,
-            "configured": _toolset_has_keys(name, config),
-            "tools": tools,
-        })
-    return result
+        config = load_config()
+        enabled_toolsets = _get_platform_tools(
+            config,
+            "cli",
+            include_default_mcp_servers=False,
+        )
+        result = []
+        for name, label, desc in _get_effective_configurable_toolsets():
+            try:
+                tools = sorted(set(resolve_toolset(name)))
+            except Exception:
+                tools = []
+            is_enabled = name in enabled_toolsets
+            result.append({
+                "name": name, "label": label, "description": desc,
+                "enabled": is_enabled,
+                "available": is_enabled,
+                "configured": _toolset_has_keys(name, config),
+                "tools": tools,
+            })
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -2149,23 +2285,27 @@ class RawConfigUpdate(BaseModel):
 
 
 @app.get("/api/config/raw")
-async def get_config_raw():
-    path = get_config_path()
-    if not path.exists():
-        return {"yaml": ""}
-    return {"yaml": path.read_text(encoding="utf-8")}
+async def get_config_raw(request: Request):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        path = get_config_path()
+        if not path.exists():
+            return {"yaml": ""}
+        return {"yaml": path.read_text(encoding="utf-8")}
 
 
 @app.put("/api/config/raw")
-async def update_config_raw(body: RawConfigUpdate):
-    try:
-        parsed = yaml.safe_load(body.yaml_text)
-        if not isinstance(parsed, dict):
-            raise HTTPException(status_code=400, detail="YAML must be a mapping")
-        save_config(parsed)
-        return {"ok": True}
-    except yaml.YAMLError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+async def update_config_raw(request: Request, body: RawConfigUpdate):
+    profile_home = _profile_home_from_request(request)
+    with _with_profile_env(profile_home):
+        try:
+            parsed = yaml.safe_load(body.yaml_text)
+            if not isinstance(parsed, dict):
+                raise HTTPException(status_code=400, detail="YAML must be a mapping")
+            save_config(parsed)
+            return {"ok": True}
+        except yaml.YAMLError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
 
 # ---------------------------------------------------------------------------

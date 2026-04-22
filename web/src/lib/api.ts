@@ -193,6 +193,111 @@ export const api = {
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
 
+  // Skills Hub — Search
+  searchSkills: (q: string, source = "all", limit = 20) =>
+    fetchJSON<SkillSearchResult[]>(
+      `/api/skills/search?q=${encodeURIComponent(q)}&source=${source}&limit=${limit}`,
+    ),
+
+  // Skills Hub — Browse
+  browseSkills: (page = 1, pageSize = 20, source = "all") =>
+    fetchJSON<SkillBrowseResult>(
+      `/api/skills/browse?page=${page}&page_size=${pageSize}&source=${source}`,
+    ),
+
+  // Skills Hub — Inspect
+  inspectSkill: (name: string) =>
+    fetchJSON<Record<string, unknown>>(`/api/skills/inspect?name=${encodeURIComponent(name)}`),
+
+  // Skills Hub — Installed (detailed, with hub metadata)
+  getInstalledSkills: () => fetchJSON<HubSkillInfo[]>("/api/skills/installed"),
+
+  // Skills Hub — Install
+  installSkill: (identifier: string, category = "", force = false) =>
+    fetchJSON<SkillInstallResult>("/api/skills/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier, category, force }),
+    }),
+
+  // Skills Hub — Uninstall
+  uninstallSkill: (name: string) =>
+    fetchJSON<{ ok: boolean; name: string; message: string }>(
+      `/api/skills/uninstall/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+
+  // Skills Hub — Check Updates
+  checkSkillUpdates: (name?: string) =>
+    fetchJSON<SkillUpdateCheck[]>(
+      `/api/skills/check-updates${name ? `?name=${encodeURIComponent(name)}` : ""}`,
+    ),
+
+  // Skills Hub — Update
+  updateSkill: (name?: string) =>
+    fetchJSON<{ ok: boolean; updated: number; skills: string[] }>("/api/skills/update", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+
+  // Skills Hub — Audit
+  auditSkills: (name?: string) =>
+    fetchJSON<SkillAuditResult[]>(
+      `/api/skills/audit${name ? `?name=${encodeURIComponent(name)}` : ""}`,
+    ),
+
+  // Skills Hub — Taps
+  listTaps: () => fetchJSON<TapInfo[]>("/api/skills/taps"),
+  addTap: (repo: string, path = "skills/") =>
+    fetchJSON<{ ok: boolean; repo: string }>("/api/skills/taps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo, path }),
+    }),
+  removeTap: (repo: string) =>
+    fetchJSON<{ ok: boolean; repo: string }>(
+      `/api/skills/taps/${encodeURIComponent(repo)}`,
+      { method: "DELETE" },
+    ),
+
+  // Skills Hub — Snapshot
+  exportSnapshot: () => fetchJSON<SkillSnapshot>("/api/skills/snapshot/export"),
+  importSnapshot: (data: SkillSnapshot, force = false) =>
+    fetchJSON<{ ok: boolean; installed: number; errors: { name: string; error: string }[] }>(
+      "/api/skills/snapshot/import",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data, force }),
+      },
+    ),
+
+  // Skills Hub — Publish
+  publishSkill: (skillPath: string, target = "github", repo = "") =>
+    fetchJSON<{ ok: boolean; name: string; message: string }>("/api/skills/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skill_path: skillPath, target, repo }),
+    }),
+
+  // Skills Hub — Create
+  createSkill: (
+    name: string,
+    displayName = "",
+    description = "",
+    category = "",
+    tags = "",
+    icon = "",
+  ) =>
+    fetchJSON<{ ok: boolean; name: string; path: string }>("/api/skills/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, display_name: displayName, description, category, tags, icon }),
+    }),
+
+
+
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
@@ -387,6 +492,66 @@ export interface ToolsetInfo {
   configured: boolean;
   tools: string[];
 }
+
+export interface HubSkillInfo extends SkillInfo {
+  type: "builtin" | "local" | "hub";
+  source: string;
+  identifier?: string;
+  trust_level?: string;
+  install_path?: string;
+  installed_at?: string;
+  content_hash?: string;
+}
+
+export interface SkillSearchResult {
+  name: string;
+  description: string;
+  source: string;
+  trust: string;
+  identifier: string;
+}
+
+export interface SkillBrowseResult {
+  skills: SkillSearchResult[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface SkillInstallResult {
+  ok: boolean;
+  name: string;
+  install_path: string;
+}
+
+export interface SkillUpdateCheck {
+  name: string;
+  identifier: string;
+  current_hash: string;
+  latest_hash: string;
+  status: string;
+}
+
+export interface SkillAuditResult {
+  name: string;
+  source: string;
+  verdict: string;
+  findings_count: number;
+  findings: { severity: string; category: string; description: string }[];
+}
+
+export interface TapInfo {
+  repo: string;
+  path: string;
+}
+
+export interface SkillSnapshot {
+  hermes_version: string;
+  exported_at: string;
+  skills: { name: string; source: string; identifier: string; category: string }[];
+  taps: TapInfo[];
+}
+
 
 export interface SessionSearchResult {
   session_id: string;

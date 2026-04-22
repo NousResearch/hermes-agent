@@ -2082,6 +2082,37 @@ class SkillToggle(BaseModel):
     enabled: bool
 
 
+class SkillInstallBody(BaseModel):
+    identifier: str
+    category: str = ""
+    force: bool = False
+
+class SkillUpdateBody(BaseModel):
+    name: Optional[str] = None
+
+class SkillPublishBody(BaseModel):
+    skill_path: str
+    target: str = "github"
+    repo: str = ""
+
+class SkillCreateBody(BaseModel):
+    name: str
+    display_name: str = ""
+    description: str = ""
+    category: str = ""
+    tags: str = ""
+    icon: str = ""
+
+class SnapshotImportBody(BaseModel):
+    data: dict
+    force: bool = False
+
+class TapAddBody(BaseModel):
+    repo: str
+    path: str = "skills/"
+
+
+
 @app.get("/api/skills")
 async def get_skills():
     from tools.skills_tool import _find_all_skills
@@ -2105,6 +2136,526 @@ async def toggle_skill(body: SkillToggle):
         disabled.add(body.name)
     save_disabled_skills(config, disabled)
     return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Search
+# ---------------------------------------------------------------------------
+
+@app.get("/api/skills/search")
+async def search_skills(q: str = "", source: str = "all", limit: int = 20):
+    """Search skills across registries."""
+    if not q.strip():
+        return []
+    try:
+        from tools.skills_hub import GitHubAuth, create_source_router, unified_search
+        auth = GitHubAuth()
+        sources = create_source_router(auth)
+        results = unified_search(q, sources, source_filter=source, limit=limit)
+        return [
+            {
+                "name": r.name,
+                "description": r.description,
+                "source": r.source,
+                "trust": r.trust_level,
+                "identifier": r.identifier,
+            }
+            for r in results
+        ]
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Browse
+# ---------------------------------------------------------------------------
+
+@app.get("/api/skills/browse")
+async def browse_skills(page: int = 1, page_size: int = 20, source: str = "all"):
+    """Browse available skills with pagination."""
+    try:
+        from hermes_cli.skills_hub import browse_skills as _browse
+        return _browse(page=page, page_size=page_size, source=source)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Inspect
+# ---------------------------------------------------------------------------
+
+@app.get("/api/skills/inspect")
+async def inspect_skill(name: str = ""):
+    """Get detailed info about a skill (installed or remote)."""
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "name parameter required"})
+    try:
+        from hermes_cli.skills_hub import inspect_skill as _inspect
+        result = _inspect(name)
+        if result is None:
+            return JSONResponse(status_code=404, content={"error": f"Skill \'{name}\' not found"})
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Installed (detailed, with hub metadata)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/skills/installed")
+async def get_installed_skills():
+    """List installed skills with full metadata (hub-installed + builtin + local)."""
+    try:
+        from tools.skills_tool import _find_all_skills
+        from tools.skills_hub import HubLockFile
+        from hermes_cli.skills_config import get_disabled_skills
+
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        all_skills = _find_all_skills(skip_disabled=False)
+        lock = HubLockFile()
+        installed_map = {e["name"]: e for e in lock.list_installed()}
+
+        result = []
+        for s in all_skills:
+            entry = {
+                "name": s.get("name", ""),
+                "description": s.get("description", ""),
+                "category": s.get("category", ""),
+                "enabled": s["name"] not in disabled,
+                "type": "local",
+                "source": "",
+            }
+            if s["name"] in installed_map:
+                hub = installed_map[s["name"]]
+                entry["type"] = "hub"
+                entry["source"] = hub.get("source", "")
+                entry["identifier"] = hub.get("identifier", "")
+                entry["trust_level"] = hub.get("trust_level", "")
+                entry["install_path"] = hub.get("install_path", "")
+                entry["installed_at"] = hub.get("installed_at", "")
+                entry["content_hash"] = hub.get("content_hash", "")
+            result.append(entry)
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Install
+# ---------------------------------------------------------------------------
+
+@app.post("/api/skills/install")
+async def install_skill(body: SkillInstallBody):
+    """Install a skill from a registry."""
+    try:
+        from hermes_cli.skills_hub import do_install
+        from tools.skills_hub import HubLockFile
+
+        if not body.force:
+            lock = HubLockFile()
+            existing = lock.get_installed(body.identifier)
+            if not existing and "/" not in body.identifier:
+                from tools.skills_tool import _find_all_skills
+                for s in _find_all_skills(skip_disabled=False):
+                    if s.get("name") == body.identifier:
+                        return JSONResponse(status_code=409, content={
+                            "error": f"\'{body.identifier}\' is already installed locally",
+                        })
+
+        class _SilentConsole:
+            def print(self, *a, **k): pass
+            def status(self, *a, **k):
+                class _Ctx:
+                    def __enter__(self): return self
+                    def __exit__(self, *a): pass
+                return _Ctx()
+
+        c = _SilentConsole()
+        do_install(body.identifier, category=body.category, force=body.force,
+                   console=c, skip_confirm=True)
+
+        lock = HubLockFile()
+        installed = lock.get_installed(body.identifier)
+        if not installed and "/" in body.identifier:
+            parts = body.identifier.split("/")
+            for entry in lock.list_installed():
+                if entry.get("identifier") == body.identifier or entry.get("name") == parts[-1]:
+                    installed = entry
+                    break
+
+        skill_name = installed.get("name", body.identifier) if installed else body.identifier
+        install_path = installed.get("install_path", "") if installed else ""
+
+        return {"ok": True, "name": skill_name, "install_path": install_path}
+    except SystemExit:
+        return JSONResponse(status_code=500, content={"error": "Installation failed"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Uninstall
+# ---------------------------------------------------------------------------
+
+@app.delete("/api/skills/uninstall/{name}")
+async def uninstall_skill(name: str):
+    """Uninstall a hub-installed skill."""
+    try:
+        from tools.skills_hub import uninstall_skill as _raw_uninstall
+
+        success, msg = _raw_uninstall(name)
+        if not success:
+            return JSONResponse(status_code=404, content={"error": msg})
+
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+
+        return {"ok": True, "name": name, "message": msg}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Check Updates
+# ---------------------------------------------------------------------------
+
+@app.get("/api/skills/check-updates")
+async def check_skill_updates(name: Optional[str] = None):
+    """Check for available updates to installed skills."""
+    try:
+        from tools.skills_hub import check_for_skill_updates
+        results = check_for_skill_updates(name=name)
+        for r in results:
+            r.pop("bundle", None)
+        return results
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Update
+# ---------------------------------------------------------------------------
+
+@app.put("/api/skills/update")
+async def update_skill(body: SkillUpdateBody):
+    """Update hub-installed skills."""
+    try:
+        from tools.skills_hub import HubLockFile, check_for_skill_updates
+        from hermes_cli.skills_hub import do_install
+
+        updates = [e for e in check_for_skill_updates(name=body.name)
+                    if e.get("status") == "update_available"]
+
+        if not updates:
+            return {"ok": True, "updated": 0, "message": "No updates available"}
+
+        class _SilentConsole:
+            def print(self, *a, **k): pass
+            def status(self, *a, **k):
+                class _Ctx:
+                    def __enter__(self): return self
+                    def __exit__(self, *a): pass
+                return _Ctx()
+
+        c = _SilentConsole()
+        updated_names = []
+        for entry in updates:
+            try:
+                lock = HubLockFile()
+                installed = lock.get_installed(entry["name"])
+                category = ""
+                if installed:
+                    ip = installed.get("install_path", "")
+                    if "/" in ip:
+                        category = str(Path(ip).parent)
+                do_install(entry["identifier"], category=category,
+                           force=True, console=c, skip_confirm=True)
+                updated_names.append(entry["name"])
+            except Exception:
+                pass
+
+        return {"ok": True, "updated": len(updated_names), "skills": updated_names}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Audit
+# ---------------------------------------------------------------------------
+
+@app.get("/api/skills/audit")
+async def audit_skills(name: Optional[str] = None):
+    """Re-run security scan on installed hub skills."""
+    try:
+        from tools.skills_hub import HubLockFile, SKILLS_DIR
+        from tools.skills_guard import scan_skill
+
+        lock = HubLockFile()
+        installed = lock.list_installed()
+        if name:
+            installed = [e for e in installed if e["name"] == name]
+
+        results = []
+        for entry in installed:
+            skill_path = SKILLS_DIR / entry["install_path"]
+            if not skill_path.exists():
+                results.append({"name": entry["name"], "status": "path_missing"})
+                continue
+            scan_result = scan_skill(skill_path, source=entry.get("identifier", entry.get("source", "")))
+            results.append({
+                "name": entry["name"],
+                "source": entry.get("source", ""),
+                "verdict": scan_result.verdict,
+                "findings_count": len(scan_result.findings),
+                "findings": [
+                    {"severity": f.severity, "category": f.category, "description": f.description}
+                    for f in scan_result.findings
+                ],
+            })
+        return results
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Taps
+# ---------------------------------------------------------------------------
+
+@app.get("/api/skills/taps")
+async def list_taps():
+    """List configured taps (custom skill sources)."""
+    try:
+        from tools.skills_hub import TapsManager
+        return TapsManager().list_taps()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/skills/taps")
+async def add_tap(body: TapAddBody):
+    """Add a new tap (custom skill source)."""
+    try:
+        from tools.skills_hub import TapsManager
+        mgr = TapsManager()
+        if mgr.add(body.repo, body.path):
+            return {"ok": True, "repo": body.repo}
+        return JSONResponse(status_code=409, content={"error": f"Tap \'{body.repo}\' already exists"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.delete("/api/skills/taps/{repo:path}")
+async def remove_tap(repo: str):
+    """Remove a tap by repo name."""
+    try:
+        from tools.skills_hub import TapsManager
+        mgr = TapsManager()
+        if mgr.remove(repo):
+            return {"ok": True, "repo": repo}
+        return JSONResponse(status_code=404, content={"error": f"Tap \'{repo}\' not found"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Snapshot Export
+# ---------------------------------------------------------------------------
+
+@app.get("/api/skills/snapshot/export")
+async def export_snapshot():
+    """Export current skill configuration as a portable JSON snapshot."""
+    try:
+        from tools.skills_hub import HubLockFile, TapsManager
+        import datetime
+
+        lock = HubLockFile()
+        taps_mgr = TapsManager()
+        installed = lock.list_installed()
+        tap_list = taps_mgr.list_taps()
+
+        def _derive_category(install_path: str) -> str:
+            if not install_path or "/" not in install_path:
+                return ""
+            parts = Path(install_path).parts
+            return "/".join(p for p in parts[:-1] if p not in (".", "skills"))
+
+        return {
+            "hermes_version": __version__,
+            "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "skills": [
+                {
+                    "name": e["name"],
+                    "source": e.get("source", ""),
+                    "identifier": e.get("identifier", ""),
+                    "category": _derive_category(e.get("install_path", "")),
+                }
+                for e in installed
+            ],
+            "taps": tap_list,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Snapshot Import
+# ---------------------------------------------------------------------------
+
+@app.post("/api/skills/snapshot/import")
+async def import_snapshot(body: SnapshotImportBody):
+    """Re-install skills from a snapshot."""
+    try:
+        from tools.skills_hub import TapsManager
+        from hermes_cli.skills_hub import do_install
+
+        snapshot = body.data
+
+        taps = snapshot.get("taps", [])
+        if taps:
+            mgr = TapsManager()
+            for tap in taps:
+                repo = tap.get("repo", "")
+                if repo:
+                    mgr.add(repo, tap.get("path", "skills/"))
+
+        skills = snapshot.get("skills", [])
+        installed_count = 0
+        errors = []
+
+        class _SilentConsole:
+            def print(self, *a, **k): pass
+            def status(self, *a, **k):
+                class _Ctx:
+                    def __enter__(self): return self
+                    def __exit__(self, *a): pass
+                return _Ctx()
+
+        c = _SilentConsole()
+        for entry in skills:
+            identifier = entry.get("identifier", "")
+            if not identifier:
+                continue
+            try:
+                do_install(identifier, category=entry.get("category", ""),
+                           force=body.force, console=c, skip_confirm=True)
+                installed_count += 1
+            except Exception as ex:
+                errors.append({"name": entry.get("name", identifier), "error": str(ex)})
+
+        return {"ok": True, "installed": installed_count, "errors": errors}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Publish
+# ---------------------------------------------------------------------------
+
+@app.post("/api/skills/publish")
+async def publish_skill(body: SkillPublishBody):
+    """Publish a local skill to a registry."""
+    try:
+        from tools.skills_hub import SKILLS_DIR, GitHubAuth
+        from tools.skills_guard import scan_skill
+
+        path = Path(body.skill_path)
+        if not path.is_absolute():
+            path = SKILLS_DIR / path
+        if not path.exists() or not (path / "SKILL.md").exists():
+            return JSONResponse(status_code=400, content={"error": f"No SKILL.md found at {path}"})
+
+        skill_md = (path / "SKILL.md").read_text(encoding="utf-8")
+        fm = {}
+        if skill_md.startswith("---"):
+            import re
+            match = re.search(r'\n---\s*\n', skill_md[3:])
+            if match:
+                try:
+                    fm = yaml.safe_load(skill_md[3:match.start() + 3]) or {}
+                except yaml.YAMLError:
+                    pass
+
+        description = fm.get("description", "")
+        if not description:
+            return JSONResponse(status_code=400, content={"error": "SKILL.md must have a \'description\' in frontmatter"})
+
+        scan_result = scan_skill(path, source="self")
+        if scan_result.verdict == "dangerous":
+            return JSONResponse(status_code=403, content={"error": "Cannot publish a skill with DANGEROUS verdict"})
+
+        if body.target == "github":
+            if not body.repo:
+                return JSONResponse(status_code=400, content={"error": "repo is required for GitHub publish"})
+            auth = GitHubAuth()
+            if not auth.is_authenticated():
+                return JSONResponse(status_code=401, content={"error": "GitHub authentication required"})
+
+            from hermes_cli.skills_hub import _github_publish
+            skill_name = fm.get("name", path.name)
+            success, msg = _github_publish(path, skill_name, body.repo, auth)
+            if success:
+                return {"ok": True, "name": skill_name, "message": msg}
+            return JSONResponse(status_code=500, content={"error": msg})
+        else:
+            return JSONResponse(status_code=400, content={"error": f"Unknown target: {body.target}. Use \'github\'"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Skills Hub — Create Skill
+# ---------------------------------------------------------------------------
+
+@app.post("/api/skills/create")
+async def create_skill(body: SkillCreateBody):
+    """Create a new local skill from template."""
+    try:
+        from tools.skills_hub import SKILLS_DIR, _validate_skill_name, _validate_category_name
+
+        try:
+            name = _validate_skill_name(body.name)
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
+
+        skill_dir = SKILLS_DIR / name
+        if skill_dir.exists():
+            return JSONResponse(status_code=409, content={"error": f"Skill \'{name}\' already exists at {skill_dir}"})
+
+        category = body.category.strip()
+        if category:
+            try:
+                category = _validate_category_name(category)
+            except ValueError:
+                return JSONResponse(status_code=400, content={"error": f"Invalid category: {category}"})
+
+        display_name = body.display_name.strip() or name
+        description = body.description.strip() or f"Custom skill: {display_name}"
+        tags = [t.strip() for t in body.tags.split(",") if t.strip()] if body.tags.strip() else []
+
+        frontmatter = {"name": name, "description": description}
+        if category:
+            frontmatter["category"] = category
+        if tags:
+            frontmatter["tags"] = tags
+        if body.icon.strip():
+            frontmatter["icon"] = body.icon.strip()
+
+        fm_yaml = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True).strip()
+        skill_md = f"---\n{fm_yaml}\n---\n\n# {display_name}\n\n{description}\n\n## Usage\n\nDescribe how to use this skill here.\n"
+
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+        return {"ok": True, "name": name, "path": str(skill_dir)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 
 @app.get("/api/tools/toolsets")

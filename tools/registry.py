@@ -18,12 +18,90 @@ import ast
 import importlib
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+# Tool-name normalization (dispatch-side defense against LLM name drift).
+#
+# Background: Claude family (4.5/4.6/4.7) is empirically known to emit
+# incorrect tool names ~30% of the time under certain conditions — e.g.
+# CamelCase ("TodoTool"), trailing "_tool" suffix ("todo_tool"),
+# mixed case ("TODO"), or a combination ("TodoTool_tool").  See:
+#   - mastra-ai/mastra #12581  (44-model study: Claude 30% error, others 0%)
+#   - anthropics/claude-code #50235 (Opus 4.7 "bucket-bypass drift")
+#
+# This is a *best-effort* recovery layer: if the raw name misses the
+# registry, we normalize it and try once more.  All legal lowercase
+# snake_case names hit on the first lookup and bypass normalization
+# entirely (zero overhead, zero behavior change for well-formed input).
+# Two-pass camel-to-snake (standard recipe): handles "HTTPServer"
+# -> "http_server" and "TodoTool" -> "todo_tool" correctly.
+_CAMEL_RE_1 = re.compile(r"(.)([A-Z][a-z]+)")
+_CAMEL_RE_2 = re.compile(r"([a-z0-9])([A-Z])")
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Normalize a tool name to canonical lowercase snake_case.
+
+    Applies a single normalization pass repeatedly until a fixpoint is
+    reached (bounded by MAX_ITER=4 for safety). The iteration is needed
+    because LLMs can emit *layered* drift — e.g. ``TodoTool_tool``
+    combines CamelCase + a trailing ``_tool`` suffix. A single pass
+    produces ``todo_tool`` (correct camel->snake) but leaves the
+    second-layer ``_tool`` suffix intact; running the pass again strips
+    it and yields ``todo``. Fixpoint iteration makes every drift mode
+    collapse to the same canonical form.
+
+    Examples:
+        "TodoTool_tool"   -> "todo"            (double-layer)
+        "Todo_tool"       -> "todo"
+        "TodoTool"        -> "todo"            (camel + suffix after pass 1)
+        "BrowserNavigate" -> "browser_navigate"
+        "HTTPServer"      -> "http_server"
+        "TODO"            -> "todo"
+        "todo"            -> "todo"            (no-op for legal names — stable at first pass)
+    """
+    if not isinstance(name, str) or not name:
+        return name
+
+    def _pass(n: str) -> str:
+        n = n.strip()
+        # Unify hyphens / spaces to underscores up-front — Claude drift
+        # occasionally substitutes ``-`` for ``_`` ("todo-tool") and we
+        # want the rest of the pipeline to see a uniform separator.
+        if "-" in n or " " in n:
+            n = n.replace("-", "_").replace(" ", "_")
+        # Strip trailing "_tool" / "_Tool" suffix (agent-internal naming convention).
+        if len(n) > 5 and n.lower().endswith("_tool"):
+            n = n[:-5]
+        # If what remains is all-uppercase letters, just lowercase it
+        # (avoids "TODO" -> "t_o_d_o").
+        if n.isalpha() and n.isupper():
+            n = n.lower()
+        else:
+            # Standard two-pass CamelCase -> snake_case (handles HTTPServer).
+            n = _CAMEL_RE_1.sub(r"\1_\2", n)
+            n = _CAMEL_RE_2.sub(r"\1_\2", n).lower()
+        # Collapse accidental double underscores and trim edges.
+        while "__" in n:
+            n = n.replace("__", "_")
+        return n.strip("_")
+
+    # Fixpoint iteration. Bounded for safety; in practice 2 passes suffice
+    # for every known LLM drift mode (camel + _tool suffix is the deepest).
+    MAX_ITER = 4
+    prev = name
+    for _ in range(MAX_ITER):
+        cur = _pass(prev)
+        if cur == prev:
+            return cur
+        prev = cur
+    return prev
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -393,8 +471,24 @@ class ToolRegistry:
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * Tool names are normalized on miss (CamelCase / trailing "_tool"
+          recovery) — see ``_normalize_tool_name`` for the rationale.
         """
         entry = self.get_entry(name)
+        if not entry:
+            # Fallback: some LLMs (notably Claude 4.5+) emit CamelCase or
+            # "_tool"-suffixed names at a non-trivial rate. Try once more
+            # with a normalized lookup before giving up.
+            norm = _normalize_tool_name(name)
+            if norm and norm != name:
+                candidate = self.get_entry(norm)
+                if candidate:
+                    logger.warning(
+                        "Tool name normalized: %r -> %r (dispatch recovery)",
+                        name, norm,
+                    )
+                    entry = candidate
+                    name = norm
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:

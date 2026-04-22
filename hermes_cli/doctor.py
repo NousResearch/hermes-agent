@@ -943,18 +943,22 @@ def run_doctor(args):
             try:
                 import httpx
                 _base = os.getenv(_base_env, "") if _base_env else ""
-                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
+                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
+                # (OpenAI-compat surface, which exposes /models for health check).
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
-                # Anthropic-compat endpoints (/anthropic) don't support /models.
-                # Rewrite to the OpenAI-compat /v1 surface for health checks.
+                # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding
+                # with no /v1) don't support /models.  Rewrite to the OpenAI-compat
+                # /v1 surface for health checks.
                 if _base and _base.rstrip("/").endswith("/anthropic"):
                     from agent.auxiliary_client import _to_openai_base_url
                     _base = _to_openai_base_url(_base)
+                if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
+                    _base = _base.rstrip("/") + "/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if base_url_host_matches(_base, "api.kimi.com"):
-                    _headers["User-Agent"] = "KimiCLI/1.30.0"
+                    _headers["User-Agent"] = "claude-code/0.1.0"
                 _resp = httpx.get(
                     _url,
                     headers=_headers,

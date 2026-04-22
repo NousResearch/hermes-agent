@@ -2,13 +2,15 @@ import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
+import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProgressProps, AppLayoutProps } from '../app/interfaces.js'
-import { $isBlocked } from '../app/overlayStore.js'
+import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import type { Theme } from '../theme.js'
 import type { DetailsMode } from '../types.js'
 
+import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
@@ -256,6 +258,21 @@ const ComposerPane = memo(function ComposerPane({
   )
 })
 
+const AgentsOverlayPane = memo(function AgentsOverlayPane() {
+  const { gw } = useGateway()
+  const ui = useStore($uiState)
+  const overlay = useStore($overlayState)
+
+  return (
+    <AgentsOverlay
+      gw={gw}
+      initialHistoryIndex={overlay.agentsInitialHistoryIndex}
+      onClose={() => patchOverlayState({ agents: false, agentsInitialHistoryIndex: 0 })}
+      t={ui.theme}
+    />
+  )
+})
+
 export const AppLayout = memo(function AppLayout({
   actions,
   composer,
@@ -264,22 +281,30 @@ export const AppLayout = memo(function AppLayout({
   status,
   transcript
 }: AppLayoutProps) {
+  const overlay = useStore($overlayState)
+
   return (
     <AlternateScreen mouseTracking={mouseTracking}>
       <Box flexDirection="column" flexGrow={1}>
         <Box flexDirection="row" flexGrow={1}>
-          <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+          {overlay.agents ? (
+            <AgentsOverlayPane />
+          ) : (
+            <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+          )}
         </Box>
 
-        <PromptZone
-          cols={composer.cols}
-          onApprovalChoice={actions.answerApproval}
-          onClarifyAnswer={actions.answerClarify}
-          onSecretSubmit={actions.answerSecret}
-          onSudoSubmit={actions.answerSudo}
-        />
+        {!overlay.agents && (
+          <PromptZone
+            cols={composer.cols}
+            onApprovalChoice={actions.answerApproval}
+            onClarifyAnswer={actions.answerClarify}
+            onSecretSubmit={actions.answerSecret}
+            onSudoSubmit={actions.answerSudo}
+          />
+        )}
 
-        <ComposerPane actions={actions} composer={composer} status={status} />
+        {!overlay.agents && <ComposerPane actions={actions} composer={composer} status={status} />}
       </Box>
     </AlternateScreen>
   )

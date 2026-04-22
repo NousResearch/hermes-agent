@@ -10,8 +10,9 @@ import {
 } from '../lib/text.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress } from '../types.js'
 
-import { resetOverlayState } from './overlayStore.js'
-import { patchTurnState, resetTurnState } from './turnStore.js'
+import { resetFlowOverlays } from './overlayStore.js'
+import { pushSnapshot } from './spawnHistoryStore.js'
+import { getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const INTERRUPT_COOLDOWN_MS = 1500
@@ -41,6 +42,7 @@ class TurnController {
   lastStatusNote = ''
   pendingInlineDiffs: string[] = []
   persistedToolLabels = new Set<string>()
+  persistSpawnTree?: (subagents: SubagentProgress[], sessionId: null | string) => Promise<void>
   protocolWarned = false
   reasoningText = ''
   segmentMessages: Msg[] = []
@@ -90,7 +92,7 @@ class TurnController {
       turnTrail: []
     })
     patchUiState({ busy: false })
-    resetOverlayState()
+    resetFlowOverlays()
   }
 
   interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {
@@ -189,9 +191,7 @@ class TurnController {
     // leading "┊ review diff" header written by `_emit_inline_diff` for the
     // terminal printer). That header only makes sense as stdout dressing,
     // not inside a markdown ```diff block.
-    const text = diffText
-      .replace(/^\s*┊[^\n]*\n?/, '')
-      .trim()
+    const text = diffText.replace(/^\s*┊[^\n]*\n?/, '').trim()
 
     if (!text || this.pendingInlineDiffs.includes(text)) {
       return
@@ -249,12 +249,15 @@ class TurnController {
     // markdown fence of its own — otherwise we render two stacked diff
     // blocks for the same edit.
     const assistantAlreadyHasDiff = /```(?:diff|patch)\b/i.test(finalText)
+
     const remainingInlineDiffs = assistantAlreadyHasDiff
       ? []
       : this.pendingInlineDiffs.filter(diff => !finalText.includes(diff))
+
     const inlineDiffBlock = remainingInlineDiffs.length
       ? `\`\`\`diff\n${remainingInlineDiffs.join('\n\n')}\n\`\`\``
       : ''
+
     const mergedText = [finalText, inlineDiffBlock].filter(Boolean).join('\n\n')
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
@@ -275,6 +278,20 @@ class TurnController {
     }
 
     const wasInterrupted = this.interrupted
+
+    // Archive the turn's spawn tree to history BEFORE idle() drops subagents
+    // from turnState.  Lets /replay and the overlay's history nav pull up
+    // finished fan-outs without a round-trip to disk.
+    const finishedSubagents = getTurnState().subagents
+    const sessionId = getUiState().sid
+
+    if (finishedSubagents.length > 0) {
+      pushSnapshot(finishedSubagents, { sessionId, startedAt: null })
+      // Fire-and-forget disk persistence so /replay survives process restarts.
+      // The same snapshot lives in memory via spawnHistoryStore for immediate
+      // recall — disk is the long-term archive.
+      void this.persistSpawnTree?.(finishedSubagents, sessionId)
+    }
 
     this.idle()
     this.clearReasoning()
@@ -444,32 +461,69 @@ class TurnController {
   }
 
   upsertSubagent(p: SubagentEventPayload, patch: (current: SubagentProgress) => Partial<SubagentProgress>) {
-    const id = `sa:${p.task_index}:${p.goal || 'subagent'}`
+    // Stable id: prefer the server-issued subagent_id (survives nested
+    // grandchildren + cross-tree joins).  Fall back to the composite key
+    // for older gateways that omit the field — those produce a flat list.
+    const id = p.subagent_id || `sa:${p.task_index}:${p.goal || 'subagent'}`
 
     patchTurnState(state => {
       const existing = state.subagents.find(item => item.id === id)
 
       const base: SubagentProgress = existing ?? {
+        depth: p.depth ?? 0,
         goal: p.goal,
         id,
         index: p.task_index,
+        model: p.model,
         notes: [],
+        parentId: p.parent_id ?? null,
+        startedAt: Date.now(),
         status: 'running',
         taskCount: p.task_count ?? 1,
         thinking: [],
-        tools: []
+        toolCount: p.tool_count ?? 0,
+        tools: [],
+        toolsets: p.toolsets
       }
+
+      // Map snake_case payload keys onto camelCase state.  Only overwrite
+      // when the event actually carries the field; `??` preserves prior
+      // values across streaming events that emit partial payloads.
+      const outputTail = p.output_tail
+        ? p.output_tail.map(e => ({
+            isError: Boolean(e.is_error),
+            preview: String(e.preview ?? ''),
+            tool: String(e.tool ?? 'tool')
+          }))
+        : base.outputTail
 
       const next: SubagentProgress = {
         ...base,
+        apiCalls: p.api_calls ?? base.apiCalls,
+        costUsd: p.cost_usd ?? base.costUsd,
+        depth: p.depth ?? base.depth,
+        filesRead: p.files_read ?? base.filesRead,
+        filesWritten: p.files_written ?? base.filesWritten,
         goal: p.goal || base.goal,
+        inputTokens: p.input_tokens ?? base.inputTokens,
+        iteration: p.iteration ?? base.iteration,
+        model: p.model ?? base.model,
+        outputTail,
+        outputTokens: p.output_tokens ?? base.outputTokens,
+        parentId: p.parent_id ?? base.parentId,
+        reasoningTokens: p.reasoning_tokens ?? base.reasoningTokens,
         taskCount: p.task_count ?? base.taskCount,
+        toolCount: p.tool_count ?? base.toolCount,
+        toolsets: p.toolsets ?? base.toolsets,
         ...patch(base)
       }
 
+      // Stable order: by spawn (depth, parent, index) rather than insert time.
+      // Without it, grandchildren can shuffle relative to siblings when
+      // events arrive out of order under high concurrency.
       const subagents = existing
         ? state.subagents.map(item => (item.id === id ? next : item))
-        : [...state.subagents, next].sort((a, b) => a.index - b.index)
+        : [...state.subagents, next].sort((a, b) => a.depth - b.depth || a.index - b.index)
 
       return { ...state, subagents }
     })

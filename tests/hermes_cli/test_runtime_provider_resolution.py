@@ -1324,6 +1324,26 @@ def test_get_named_custom_provider_includes_model(monkeypatch):
     assert result["model"] == "qwen3.6-plus"
 
 
+def test_get_named_custom_provider_new_style_includes_api_mode(monkeypatch):
+    """providers: entries should preserve explicit api_mode overrides."""
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "providers": {
+            "my-codex-proxy": {
+                "name": "My Codex Proxy",
+                "base_url": "https://example.com/v1",
+                "api_key": "test-key",
+                "default_model": "gpt-test",
+                "api_mode": "codex_responses",
+            }
+        }
+    })
+
+    result = rp._get_named_custom_provider("my-codex-proxy")
+    assert result is not None
+    assert result["api_mode"] == "codex_responses"
+    assert result["model"] == "gpt-test"
+
+
 def test_get_named_custom_provider_excludes_empty_model(monkeypatch):
     """Empty or whitespace-only model field should not appear in result."""
     for model_val in ["", "   ", None]:
@@ -1364,6 +1384,27 @@ def test_named_custom_runtime_propagates_model_direct_path(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="my-server")
     assert resolved["model"] == "qwen3.6-plus"
     assert resolved["provider"] == "custom"
+
+
+def test_named_custom_runtime_preserves_new_style_api_mode(monkeypatch):
+    """providers: entries should keep explicit api_mode during runtime resolution."""
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "providers": {
+            "my-codex-proxy": {
+                "name": "My Codex Proxy",
+                "base_url": "https://example.com/v1",
+                "api_key": "test-key",
+                "default_model": "gpt-test",
+                "api_mode": "codex_responses",
+            }
+        }
+    })
+
+    resolved = rp.resolve_runtime_provider(requested="my-codex-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["model"] == "gpt-test"
 
 
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):

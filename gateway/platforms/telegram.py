@@ -71,8 +71,10 @@ from gateway.platforms.base import (
     SendResult,
     cache_image_from_bytes,
     cache_audio_from_bytes,
+    cache_video_from_bytes,
     cache_document_from_bytes,
     resolve_proxy_url,
+    SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     utf16_len,
     _prefix_within_utf16_limit,
@@ -494,6 +496,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] DM topic '%s' already exists in chat %s (will be mapped from incoming messages)",
                     self.name, name, chat_id,
                 )
+            elif "not a forum" in error_text or "forums_disabled" in error_text:
+                logger.warning(
+                    "[%s] Cannot create DM topic '%s' in chat %s: Topics mode is not enabled. "
+                    "The user must open the DM with this bot in Telegram, tap the bot name "
+                    "at the top, and enable 'Topics' in chat settings before topics can be created.",
+                    self.name, name, chat_id,
+                )
             else:
                 logger.warning(
                     "[%s] Failed to create DM topic '%s' in chat %s: %s",
@@ -785,8 +794,28 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Telegram pushes updates to our HTTP endpoint.  This
                 # enables cloud platforms (Fly.io, Railway) to auto-wake
                 # suspended machines on inbound HTTP traffic.
+                #
+                # SECURITY: TELEGRAM_WEBHOOK_SECRET is REQUIRED. Without it,
+                # python-telegram-bot passes secret_token=None and the
+                # webhook endpoint accepts any HTTP POST — attackers can
+                # inject forged updates as if from Telegram. Refuse to
+                # start rather than silently run in fail-open mode.
+                # See GHSA-3vpc-7q5r-276h.
                 webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
-                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None
+                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+                if not webhook_secret:
+                    raise RuntimeError(
+                        "TELEGRAM_WEBHOOK_SECRET is required when "
+                        "TELEGRAM_WEBHOOK_URL is set. Without it, the "
+                        "webhook endpoint accepts forged updates from "
+                        "anyone who can reach it — see "
+                        "https://github.com/NousResearch/hermes-agent/"
+                        "security/advisories/GHSA-3vpc-7q5r-276h.\n\n"
+                        "Generate a secret and set it in your .env:\n"
+                        "  export TELEGRAM_WEBHOOK_SECRET=\"$(openssl rand -hex 32)\"\n\n"
+                        "Then register it with Telegram when setting the "
+                        "webhook via setWebhook's secret_token parameter."
+                    )
                 from urllib.parse import urlparse
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 
@@ -1704,7 +1733,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         
         try:
-            import os
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             
@@ -1753,7 +1781,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            import os
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
 
@@ -2066,7 +2093,7 @@ class TelegramAdapter(BasePlatformAdapter):
             url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
             return _ph(f'[{display}]({url})')
 
-        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_link, text)
+        text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
 
         # 4) Convert markdown headers (## Title) → bold *Title*
         def _convert_header(m):
@@ -2326,10 +2353,16 @@ class TelegramAdapter(BasePlatformAdapter):
         DMs remain unrestricted. Group/supergroup messages are accepted when:
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
-        - the message is a command
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
+
+        When ``require_mention`` is enabled, slash commands are not given
+        special treatment — they must pass the same mention/reply checks
+        as any other group message.  Users can still trigger commands via
+        the Telegram bot menu (``/command@botname``) or by explicitly
+        mentioning the bot (``@botname /command``), both of which are
+        recognised as mentions by :meth:`_message_mentions_bot`.
         """
         if not self._is_group_chat(message):
             return True
@@ -2343,8 +2376,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
-            return True
-        if is_command:
             return True
         if self._is_reply_to_bot(message):
             return True
@@ -2628,6 +2659,23 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 
+        elif msg.video:
+            try:
+                file_obj = await msg.video.get_file()
+                video_bytes = await file_obj.download_as_bytearray()
+                ext = ".mp4"
+                if getattr(file_obj, "file_path", None):
+                    for candidate in SUPPORTED_VIDEO_TYPES:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
+                event.media_urls = [cached_path]
+                event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
+                logger.info("[Telegram] Cached user video at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
+
         # Download document files to cache for agent processing
         elif msg.document:
             doc = msg.document
@@ -2643,6 +2691,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not ext and doc.mime_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(doc.mime_type, "")
+
+                if not ext and doc.mime_type:
+                    video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
+                    ext = video_mime_to_ext.get(doc.mime_type, "")
+
+                if ext in SUPPORTED_VIDEO_TYPES:
+                    file_obj = await doc.get_file()
+                    video_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
+                    event.message_type = MessageType.VIDEO
+                    logger.info("[Telegram] Cached user video document at %s", cached_path)
+                    await self.handle_message(event)
+                    return
 
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
@@ -2782,13 +2845,11 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
 
             from tools.vision_tools import vision_analyze_tool
-            import json as _json
-
             result_json = await vision_analyze_tool(
                 image_url=cached_path,
                 user_prompt=STICKER_VISION_PROMPT,
             )
-            result = _json.loads(result_json)
+            result = json.loads(result_json)
 
             if result.get("success"):
                 description = result.get("analysis", "a sticker")

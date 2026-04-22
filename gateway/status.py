@@ -225,8 +225,28 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
 
 
 def write_pid_file() -> None:
-    """Write the current process PID and metadata to the gateway PID file."""
-    _write_json_file(_get_pid_path(), _build_pid_record())
+    """Write the current process PID and metadata to the gateway PID file.
+
+    Uses atomic O_CREAT | O_EXCL creation so that concurrent --replace
+    invocations race: exactly one process wins and the rest get
+    FileExistsError.
+    """
+    path = _get_pid_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = json.dumps(_build_pid_record())
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise  # Let caller decide: another gateway is racing us
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(record)
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def write_runtime_status(

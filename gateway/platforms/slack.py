@@ -150,9 +150,11 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Slack] Failed to read %s: %s", tokens_file, e)
 
+        lock_acquired = False
         try:
             if not self._acquire_platform_lock('slack-app-token', app_token, 'Slack app token'):
                 return False
+            lock_acquired = True
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
@@ -228,6 +230,9 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Connection failed: %s", e, exc_info=True)
             return False
+        finally:
+            if lock_acquired and not self._running:
+                self._release_platform_lock()
 
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
@@ -1595,11 +1600,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack file using the bot token for auth, with retry."""
-        import asyncio
         import httpx
 
         bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
-        last_exc = None
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):
@@ -1629,7 +1632,6 @@ class SlackAdapter(BasePlatformAdapter):
                         from gateway.platforms.base import cache_image_from_bytes
                         return cache_image_from_bytes(response.content, ext)
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                    last_exc = exc
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                         raise
                     if attempt < 2:
@@ -1638,15 +1640,12 @@ class SlackAdapter(BasePlatformAdapter):
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     raise
-        raise last_exc
 
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""
-        import asyncio
         import httpx
 
         bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
-        last_exc = None
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):
@@ -1658,7 +1657,6 @@ class SlackAdapter(BasePlatformAdapter):
                     response.raise_for_status()
                     return response.content
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                    last_exc = exc
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                         raise
                     if attempt < 2:
@@ -1667,7 +1665,6 @@ class SlackAdapter(BasePlatformAdapter):
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     raise
-        raise last_exc
 
     # ── Channel mention gating ─────────────────────────────────────────────
 

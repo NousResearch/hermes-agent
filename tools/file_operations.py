@@ -35,6 +35,13 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from tools.binary_extensions import BINARY_EXTENSIONS
 
+from agent.file_safety import (
+    build_write_denied_paths,
+    build_write_denied_prefixes,
+    get_safe_write_root as _shared_get_safe_write_root,
+    is_write_denied as _shared_is_write_denied,
+)
+
 
 # ---------------------------------------------------------------------------
 # Write-path deny list — blocks writes to sensitive system/credential files
@@ -42,41 +49,9 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
-    os.path.realpath(p) for p in [
-        os.path.join(_HOME, ".ssh", "authorized_keys"),
-        os.path.join(_HOME, ".ssh", "id_rsa"),
-        os.path.join(_HOME, ".ssh", "id_ed25519"),
-        os.path.join(_HOME, ".ssh", "config"),
-        str(get_hermes_home() / ".env"),
-        os.path.join(_HOME, ".bashrc"),
-        os.path.join(_HOME, ".zshrc"),
-        os.path.join(_HOME, ".profile"),
-        os.path.join(_HOME, ".bash_profile"),
-        os.path.join(_HOME, ".zprofile"),
-        os.path.join(_HOME, ".netrc"),
-        os.path.join(_HOME, ".pgpass"),
-        os.path.join(_HOME, ".npmrc"),
-        os.path.join(_HOME, ".pypirc"),
-        "/etc/sudoers",
-        "/etc/passwd",
-        "/etc/shadow",
-    ]
-}
+WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
 
-WRITE_DENIED_PREFIXES = [
-    os.path.realpath(p) + os.sep for p in [
-        os.path.join(_HOME, ".ssh"),
-        os.path.join(_HOME, ".aws"),
-        os.path.join(_HOME, ".gnupg"),
-        os.path.join(_HOME, ".kube"),
-        "/etc/sudoers.d",
-        "/etc/systemd",
-        os.path.join(_HOME, ".docker"),
-        os.path.join(_HOME, ".azure"),
-        os.path.join(_HOME, ".config", "gh"),
-    ]
-]
+WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 
 def _get_safe_write_root() -> Optional[str]:
@@ -87,33 +62,12 @@ def _get_safe_write_root() -> Optional[str]:
     not on the static deny list.  Opt-in hardening for gateway/messaging
     deployments that should only touch a workspace checkout.
     """
-    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not root:
-        return None
-    try:
-        return os.path.realpath(os.path.expanduser(root))
-    except Exception:
-        return None
+    return _shared_get_safe_write_root()
 
 
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
-
-    # 1) Static deny list
-    if resolved in WRITE_DENIED_PATHS:
-        return True
-    for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
-            return True
-
-    # 2) Optional safe-root sandbox
-    safe_root = _get_safe_write_root()
-    if safe_root:
-        if not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
-            return True
-
-    return False
+    return _shared_is_write_denied(path)
 
 
 # =============================================================================
@@ -784,12 +738,14 @@ class ShellFileOperations(FileOperations):
             content, old_string, new_string, replace_all
         )
         
-        if error:
-            return PatchResult(error=error)
-        
-        if match_count == 0:
-            return PatchResult(error=f"Could not find match for old_string in {path}")
-        
+        if error or match_count == 0:
+            err_msg = error or f"Could not find match for old_string in {path}"
+            try:
+                from tools.fuzzy_match import format_no_match_hint
+                err_msg += format_no_match_hint(err_msg, match_count, old_string, content)
+            except Exception:
+                pass
+            return PatchResult(error=err_msg)
         # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:

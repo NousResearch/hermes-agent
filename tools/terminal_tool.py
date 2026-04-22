@@ -114,22 +114,44 @@ _cached_sudo_password: str = ""
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
 # so prompts route through prompt_toolkit's event loop.
-#   _sudo_password_callback() -> str  (return password or "" to skip)
-#   _approval_callback(command, description) -> str  ("once"/"session"/"always"/"deny")
-_sudo_password_callback = None
-_approval_callback = None
+# Callback slots used by the approval prompt and sudo password prompt
+# routines. Stored in thread-local state so overlapping ACP sessions —
+# each running in its own ThreadPoolExecutor thread — don't stomp on
+# each other's callbacks. See GHSA-qg5c-hvr5-hjgr.
+#
+# CLI mode is single-threaded, so each thread (the only one) holds its
+# own callback exactly like before. Gateway mode resolves approvals via
+# the per-session queue in tools.approval, not through these callbacks,
+# so it's unaffected.
+import threading
+_callback_tls = threading.local()
+
+
+def _get_sudo_password_callback():
+    return getattr(_callback_tls, "sudo_password", None)
+
+
+def _get_approval_callback():
+    return getattr(_callback_tls, "approval", None)
 
 
 def set_sudo_password_callback(cb):
-    """Register a callback for sudo password prompts (used by CLI)."""
-    global _sudo_password_callback
-    _sudo_password_callback = cb
+    """Register a callback for sudo password prompts (used by CLI).
+
+    Per-thread scope — ACP sessions that run concurrently in a
+    ThreadPoolExecutor each have their own callback slot.
+    """
+    _callback_tls.sudo_password = cb
 
 
 def set_approval_callback(cb):
-    """Register a callback for dangerous command approval prompts (used by CLI)."""
-    global _approval_callback
-    _approval_callback = cb
+    """Register a callback for dangerous command approval prompts.
+
+    Per-thread scope — ACP sessions that run concurrently in a
+    ThreadPoolExecutor each have their own callback slot. See
+    GHSA-qg5c-hvr5-hjgr.
+    """
+    _callback_tls.approval = cb
 
 # =============================================================================
 # Dangerous Command Approval System
@@ -144,7 +166,7 @@ from tools.approval import (
 def _check_all_guards(command: str, env_type: str) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_approval_callback)
+                                  approval_callback=_get_approval_callback())
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -217,12 +239,12 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     directly from /dev/tty with echo disabled.
     """
     import sys
-    import time as time_module
     
     # Use the registered callback when available (prompt_toolkit-compatible)
-    if _sudo_password_callback is not None:
+    _sudo_cb = _get_sudo_password_callback()
+    if _sudo_cb is not None:
         try:
-            return _sudo_password_callback() or ""
+            return _sudo_cb() or ""
         except Exception:
             return ""
 
@@ -278,7 +300,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     
     try:
         os.environ["HERMES_SPINNER_PAUSE"] = "1"
-        time_module.sleep(0.2)
+        time.sleep(0.2)
         
         print()
         print("┌" + "─" * 58 + "┐")
@@ -1721,6 +1743,27 @@ def terminal_tool(
             
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
+
+            # Foreground terminal output canonicalization seam: plugins receive
+            # the full output string before default truncation and may only
+            # replace it by returning a string from transform_terminal_output.
+            # The hook is fail-open, and the first valid string return wins.
+            try:
+                from hermes_cli.plugins import invoke_hook
+                hook_results = invoke_hook(
+                    "transform_terminal_output",
+                    command=command,
+                    output=output,
+                    returncode=returncode,
+                    task_id=effective_task_id or "",
+                    env_type=env_type,
+                )
+                for hook_result in hook_results:
+                    if isinstance(hook_result, str):
+                        output = hook_result
+                        break
+            except Exception:
+                pass
             
             # Truncate output if too long, keeping both head and tail
             MAX_OUTPUT_CHARS = 50000

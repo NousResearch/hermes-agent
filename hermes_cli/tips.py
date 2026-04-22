@@ -127,7 +127,7 @@ TIPS = [
 
     # --- Tools & Capabilities ---
     "execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.",
-    "delegate_task spawns up to 3 concurrent sub-agents with isolated contexts for parallel work.",
+    "delegate_task spawns up to 3 concurrent sub-agents by default (configurable via delegation.max_concurrent_children) with isolated contexts for parallel work.",
     "web_extract works on PDF URLs — pass any PDF link and it converts to markdown.",
     "search_files is ripgrep-backed and faster than grep — use it instead of terminal grep.",
     "patch uses 9 fuzzy matching strategies so minor whitespace differences won't break edits.",
@@ -245,7 +245,7 @@ TIPS = [
     "Three plugin types: general (tools/hooks), memory providers, and context engines.",
     "hermes plugins install owner/repo installs plugins directly from GitHub.",
     "8 external memory providers available: Honcho, OpenViking, Mem0, Hindsight, and more.",
-    "Plugin hooks include pre_tool_call, post_tool_call, pre_llm_call, and post_llm_call.",
+    "Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization.",
 
     # --- Miscellaneous ---
     "Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes.",
@@ -343,6 +343,5 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
-
 
 

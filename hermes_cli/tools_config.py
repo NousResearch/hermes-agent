@@ -24,7 +24,8 @@ from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
 )
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
+from utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,14 @@ TOOL_CATEGORIES = {
                     {"key": "GEMINI_API_KEY", "prompt": "Gemini API key", "url": "https://aistudio.google.com/app/apikey"},
                 ],
                 "tts_provider": "gemini",
+            },
+            {
+                "name": "KittenTTS",
+                "badge": "local · free",
+                "tag": "Lightweight local ONNX TTS (~25MB), no API key",
+                "env_vars": [],
+                "tts_provider": "kittentts",
+                "post_setup": "kittentts",
             },
         ],
     },
@@ -422,6 +431,36 @@ def _run_post_setup(post_setup_key: str):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
+    elif post_setup_key == "kittentts":
+        try:
+            __import__("kittentts")
+            _print_success("    kittentts is already installed")
+            return
+        except ImportError:
+            pass
+        import subprocess
+        _print_info("    Installing kittentts (~25-80MB model, CPU-only)...")
+        wheel_url = (
+            "https://github.com/KittenML/KittenTTS/releases/download/"
+            "0.8.1/kittentts-0.8.1-py3-none-any.whl"
+        )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode == 0:
+                _print_success("    kittentts installed")
+                _print_info("    Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
+                _print_info("    Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")
+            else:
+                _print_warning("    kittentts install failed:")
+                _print_info(f"      {result.stderr.strip()[:300]}")
+                _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+        except subprocess.TimeoutExpired:
+            _print_warning("    kittentts install timed out (>5min)")
+            _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+
     elif post_setup_key == "rl_training":
         try:
             __import__("tinker_atropos")
@@ -546,6 +585,10 @@ def _get_platform_tools(
             ts_tools = set(resolve_toolset(ts_key))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
+        default_off = set(_DEFAULT_OFF_TOOLSETS)
+        if platform in default_off:
+            default_off.remove(platform)
+        enabled_toolsets -= default_off
 
     # Plugin toolsets: enabled by default unless explicitly disabled.
     # A plugin toolset is "known" for a platform once `hermes tools`
@@ -833,7 +876,7 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
     if ts_key == "image_gen":
-        return not get_env_value("FAL_KEY")
+        return not fal_key_is_configured()
 
     return not _toolset_has_keys(ts_key, config)
 
@@ -1175,17 +1218,17 @@ def _configure_simple_requirements(ts_key: str):
                 _print_warning("    Skipped")
         elif idx == 1:
             base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
-            key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
+            is_native_openai = base_url_hostname(base_url) == "api.openai.com"
+            key_label = "    OPENAI_API_KEY" if is_native_openai else "    API key"
             api_key = _prompt(key_label, password=True)
             if api_key and api_key.strip():
                 save_env_value("OPENAI_API_KEY", api_key.strip())
                 # Save vision base URL to config (not .env — only secrets go there)
-                from hermes_cli.config import load_config, save_config
                 _cfg = load_config()
                 _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
                 _aux["base_url"] = base_url
                 save_config(_cfg)
-                if "api.openai.com" in base_url.lower():
+                if is_native_openai:
                     save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
                 _print_success("    Saved")
             else:

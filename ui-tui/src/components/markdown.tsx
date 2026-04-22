@@ -1,130 +1,113 @@
 import { Box, Link, Text } from '@hermes/ink'
 import { memo, type ReactNode, useMemo } from 'react'
 
+import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
 
 const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
+const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/
 const HR_RE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/
 const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+\s*)?$/
+const SETEXT_RE = /^\s{0,3}(=+|-+)\s*$/
 const FOOTNOTE_RE = /^\[\^([^\]]+)\]:\s*(.*)$/
 const DEF_RE = /^\s*:\s+(.+)$/
+const BULLET_RE = /^(\s*)[-+*]\s+(.*)$/
+const TASK_RE = /^\[( |x|X)\]\s+(.*)$/
+const NUMBERED_RE = /^(\s*)(\d+)[.)]\s+(.*)$/
+const QUOTE_RE = /^\s*(?:>\s*)+/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
 
-const INLINE_RE = new RegExp(
-  `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|__(.+?)__|\\*(.+?)\\*|_(.+?)_|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
+export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
+export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
+
+// Inline markdown tokens, in priority order. The outer regex picks the
+// leftmost match at each position, preferring earlier alternatives on tie —
+// so `**` must come before `*`, `__` before `_`, etc. Each pattern owns its
+// own capture groups; MdInline dispatches on which group matched.
+//
+// Subscript (`~x~`) is restricted to short alphanumeric runs so prose like
+// `thing ~! more ~?` from Kimi / Qwen / GLM (kaomoji-style decorators)
+// doesn't pair up the first `~` with the next one on the line and swallow
+// the text between them as a dim `_`-prefixed span.
+export const INLINE_RE = new RegExp(
+  [
+    `!\\[(.*?)\\]\\(${MD_URL_RE}\\)`, // 1,2  image
+    `\\[(.+?)\\]\\(${MD_URL_RE}\\)`, // 3,4  link
+    `<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>`, // 5   autolink
+    `~~(.+?)~~`, // 6    strike
+    `\`([^\\\`]+)\``, // 7    code
+    `\\*\\*(.+?)\\*\\*`, // 8    bold *
+    `(?<!\\w)__(.+?)__(?!\\w)`, // 9    bold _
+    `\\*(.+?)\\*`, // 10   italic *
+    `(?<!\\w)_(.+?)_(?!\\w)`, // 11   italic _
+    `==(.+?)==`, // 12   highlight
+    `\\[\\^([^\\]]+)\\]`, // 13   footnote ref
+    `\\^([^^\\s][^^]*?)\\^`, // 14   superscript
+    `~([A-Za-z0-9]{1,8})~`, // 15   subscript
+    `https?:\\/\\/[^\\s<]+` //  16   bare URL
+  ].join('|'),
   'g'
 )
 
-type Fence = {
-  char: '`' | '~'
-  lang: string
-  len: number
-}
+const indentDepth = (s: string) => Math.floor(s.replace(/\t/g, '  ').length / 2)
 
-const renderLink = (key: number, t: Theme, label: string, url: string) => (
-  <Link key={key} url={url}>
-    <Text color={t.color.amber} underline>
-      {label}
-    </Text>
-  </Link>
-)
-
-const trimBareUrl = (value: string) => {
-  const trimmed = value.replace(/[),.;:!?]+$/g, '')
-
-  return {
-    tail: value.slice(trimmed.length),
-    url: trimmed
-  }
-}
-
-const renderAutolink = (key: number, t: Theme, raw: string) => {
-  const url = raw.startsWith('mailto:') ? raw : raw.includes('@') && !raw.startsWith('http') ? `mailto:${raw}` : raw
-
-  return (
-    <Link key={key} url={url}>
-      <Text color={t.color.amber} underline>
-        {raw.replace(/^mailto:/, '')}
-      </Text>
-    </Link>
-  )
-}
-
-const indentDepth = (indent: string) => Math.floor(indent.replace(/\t/g, '  ').length / 2)
-
-const parseFence = (line: string): Fence | null => {
-  const m = line.match(FENCE_RE)
-
-  if (!m) {
-    return null
-  }
-
-  return {
-    char: m[1]![0] as '`' | '~',
-    lang: m[2]!.trim().toLowerCase(),
-    len: m[1]!.length
-  }
-}
-
-const isFenceClose = (line: string, fence: Fence) => {
-  const end = line.match(/^\s*(`{3,}|~{3,})\s*$/)
-
-  return Boolean(end && end[1]![0] === fence.char && end[1]!.length >= fence.len)
-}
-
-const isMarkdownFence = (lang: string) => ['md', 'markdown'].includes(lang)
-
-const splitTableRow = (row: string) =>
+const splitRow = (row: string) =>
   row
     .trim()
     .replace(/^\|/, '')
     .replace(/\|$/, '')
     .split('|')
-    .map(cell => cell.trim())
+    .map(c => c.trim())
 
 const isTableDivider = (row: string) => {
-  const cells = splitTableRow(row)
+  const cells = splitRow(row)
 
-  return cells.length > 1 && cells.every(cell => TABLE_DIVIDER_CELL_RE.test(cell))
+  return cells.length > 1 && cells.every(c => TABLE_DIVIDER_CELL_RE.test(c))
 }
 
-const stripInlineMarkup = (value: string) =>
-  value
+const autolinkUrl = (raw: string) =>
+  raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
+
+const renderAutolink = (k: number, t: Theme, raw: string) => (
+  <Link key={k} url={autolinkUrl(raw)}>
+    <Text color={t.color.amber} underline>
+      {raw.replace(/^mailto:/, '')}
+    </Text>
+  </Link>
+)
+
+export const stripInlineMarkup = (v: string) =>
+  v
     .replace(/!\[(.*?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '[image: $1] $2')
     .replace(/\[(.+?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '$1')
     .replace(/<((?:https?:\/\/|mailto:)[^>\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g, '$1')
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
+    .replace(/(?<!\w)__(.+?)__(?!\w)/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/_(.+?)_/g, '$1')
+    .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
-    .replace(/~([^~\s][^~]*?)~/g, '_$1')
+    .replace(/~([A-Za-z0-9]{1,8})~/g, '_$1')
 
-const renderTable = (key: number, rows: string[][], t: Theme) => {
+const renderTable = (k: number, rows: string[][], t: Theme) => {
   const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
 
   return (
-    <Box flexDirection="column" key={key} paddingLeft={2}>
+    <Box flexDirection="column" key={k} paddingLeft={2}>
       {rows.map((row, ri) => (
         <Box key={ri}>
-          {widths.map((width, ci) => {
-            const cell = row[ci] ?? ''
-            const pad = ' '.repeat(Math.max(0, width - stripInlineMarkup(cell).length))
-
-            return (
-              <Text color={ri === 0 ? t.color.amber : undefined} key={ci}>
-                <MdInline t={t} text={cell} />
-                {pad}
-                {ci < widths.length - 1 ? '  ' : ''}
-              </Text>
-            )
-          })}
+          {widths.map((w, ci) => (
+            <Text color={ri === 0 ? t.color.amber : undefined} key={ci}>
+              <MdInline t={t} text={row[ci] ?? ''} />
+              {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
+              {ci < widths.length - 1 ? '  ' : ''}
+            </Text>
+          ))}
         </Box>
       ))}
     </Box>
@@ -138,76 +121,85 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
 
   for (const m of text.matchAll(INLINE_RE)) {
     const i = m.index ?? 0
+    const k = parts.length
 
     if (i > last) {
-      parts.push(<Text key={parts.length}>{text.slice(last, i)}</Text>)
+      parts.push(<Text key={k}>{text.slice(last, i)}</Text>)
     }
 
-    if (m[2] && m[3]) {
+    if (m[1] && m[2]) {
       parts.push(
         <Text color={t.color.dim} key={parts.length}>
-          [image: {m[2]}] {m[3]}
+          [image: {m[1]}] {m[2]}
         </Text>
       )
-    } else if (m[4] && m[5]) {
-      parts.push(renderLink(parts.length, t, m[4], m[5]))
+    } else if (m[3] && m[4]) {
+      parts.push(
+        <Link key={parts.length} url={m[4]}>
+          <Text color={t.color.amber} underline>
+            {m[3]}
+          </Text>
+        </Link>
+      )
+    } else if (m[5]) {
+      parts.push(renderAutolink(parts.length, t, m[5]))
     } else if (m[6]) {
-      parts.push(renderAutolink(parts.length, t, m[6]))
-    } else if (m[7]) {
       parts.push(
         <Text key={parts.length} strikethrough>
+          {m[6]}
+        </Text>
+      )
+    } else if (m[7]) {
+      parts.push(
+        <Text color={t.color.amber} dimColor key={parts.length}>
           {m[7]}
         </Text>
       )
-    } else if (m[8]) {
-      parts.push(
-        <Text color={t.color.amber} dimColor key={parts.length}>
-          {m[8]}
-        </Text>
-      )
-    } else if (m[9] || m[10]) {
+    } else if (m[8] ?? m[9]) {
       parts.push(
         <Text bold key={parts.length}>
-          {m[9] ?? m[10]}
+          {m[8] ?? m[9]}
         </Text>
       )
-    } else if (m[11] || m[12]) {
+    } else if (m[10] ?? m[11]) {
       parts.push(
         <Text italic key={parts.length}>
-          {m[11] ?? m[12]}
+          {m[10] ?? m[11]}
+        </Text>
+      )
+    } else if (m[12]) {
+      parts.push(
+        <Text backgroundColor={t.color.diffAdded} color={t.color.diffAddedWord} key={parts.length}>
+          {m[12]}
         </Text>
       )
     } else if (m[13]) {
       parts.push(
-        <Text backgroundColor={t.color.diffAdded} color={t.color.diffAddedWord} key={parts.length}>
-          {m[13]}
+        <Text color={t.color.dim} key={parts.length}>
+          [{m[13]}]
         </Text>
       )
     } else if (m[14]) {
       parts.push(
         <Text color={t.color.dim} key={parts.length}>
-          [{m[14]}]
+          ^{m[14]}
         </Text>
       )
     } else if (m[15]) {
       parts.push(
         <Text color={t.color.dim} key={parts.length}>
-          ^{m[15]}
+          _{m[15]}
         </Text>
       )
     } else if (m[16]) {
-      parts.push(
-        <Text color={t.color.dim} key={parts.length}>
-          _{m[16]}
-        </Text>
-      )
-    } else if (m[17]) {
-      const { tail, url } = trimBareUrl(m[17])
+      // Bare URL — trim trailing prose punctuation into a sibling text node
+      // so `see https://x.com/, which…` keeps the comma outside the link.
+      const url = m[16].replace(/[),.;:!?]+$/g, '')
 
       parts.push(renderAutolink(parts.length, t, url))
 
-      if (tail) {
-        parts.push(<Text key={parts.length}>{tail}</Text>)
+      if (url.length < m[16].length) {
+        parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
       }
     }
 
@@ -221,19 +213,13 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   return <Text>{parts.length ? parts : <Text>{text}</Text>}</Text>
 }
 
-interface MdProps {
-  compact?: boolean
-  t: Theme
-  text: string
-}
-
 function MdImpl({ compact, t, text }: MdProps) {
   const nodes = useMemo(() => {
-    const lines = text.split('\n')
+    const lines = ensureEmojiPresentation(text).split('\n')
     const nodes: ReactNode[] = []
-    let i = 0
 
-    let prevKind: 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'rule' | 'table' | null = null
+    let prevKind: Kind = null
+    let i = 0
 
     const gap = () => {
       if (nodes.length && prevKind !== 'blank') {
@@ -242,7 +228,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       }
     }
 
-    const start = (kind: Exclude<typeof prevKind, null | 'blank'>) => {
+    const start = (kind: Exclude<Kind, null | 'blank'>) => {
       if (prevKind && prevKind !== 'blank' && prevKind !== kind) {
         gap()
       }
@@ -254,26 +240,57 @@ function MdImpl({ compact, t, text }: MdProps) {
       const line = lines[i]!
       const key = nodes.length
 
-      if (compact && !line.trim()) {
-        i++
-
-        continue
-      }
-
       if (!line.trim()) {
-        gap()
+        if (!compact) {
+          gap()
+        }
+
         i++
 
         continue
       }
 
-      const fence = parseFence(line)
+      if (AUDIO_DIRECTIVE_RE.test(line)) {
+        i++
+
+        continue
+      }
+
+      const media = line.match(MEDIA_LINE_RE)?.[1]
+
+      if (media) {
+        start('paragraph')
+        nodes.push(
+          <Text color={t.color.dim} key={key}>
+            {'▸ '}
+
+            <Link url={/^(?:\/|[a-z]:[\\/])/i.test(media) ? `file://${media}` : media}>
+              <Text color={t.color.amber} underline>
+                {media}
+              </Text>
+            </Link>
+          </Text>
+        )
+        i++
+
+        continue
+      }
+
+      const fence = line.match(FENCE_RE)
 
       if (fence) {
+        const char = fence[1]![0] as '`' | '~'
+        const len = fence[1]!.length
+        const lang = fence[2]!.trim().toLowerCase()
         const block: string[] = []
-        const lang = fence.lang
 
-        for (i++; i < lines.length && !isFenceClose(lines[i]!, fence); i++) {
+        for (i++; i < lines.length; i++) {
+          const close = lines[i]!.match(FENCE_CLOSE_RE)?.[1]
+
+          if (close && close[0] === char && close.length >= len) {
+            break
+          }
+
           block.push(lines[i]!)
         }
 
@@ -281,7 +298,7 @@ function MdImpl({ compact, t, text }: MdProps) {
           i++
         }
 
-        if (isMarkdownFence(lang)) {
+        if (['md', 'markdown'].includes(lang)) {
           start('paragraph')
           nodes.push(<Md compact={compact} key={key} t={t} text={block.join('\n')} />)
 
@@ -296,17 +313,18 @@ function MdImpl({ compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
+
             {block.map((l, j) => {
               if (highlighted) {
                 return (
                   <Text key={j}>
-                    {highlightLine(l, lang, t).map(([color, text], k) =>
+                    {highlightLine(l, lang, t).map(([color, text], kk) =>
                       color ? (
-                        <Text color={color} key={k}>
+                        <Text color={color} key={kk}>
                           {text}
                         </Text>
                       ) : (
-                        <Text key={k}>{text}</Text>
+                        <Text key={kk}>{text}</Text>
                       )
                     )}
                   </Text>
@@ -352,6 +370,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             <Text color={t.color.dim}>─ math</Text>
+
             {block.map((l, j) => (
               <Text color={t.color.amber} key={j}>
                 {l}
@@ -363,13 +382,13 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
-      const heading = line.match(HEADING_RE)
+      const heading = line.match(HEADING_RE)?.[2]
 
       if (heading) {
         start('heading')
         nodes.push(
           <Text bold color={t.color.amber} key={key}>
-            {heading[2]}
+            {heading}
           </Text>
         )
         i++
@@ -377,20 +396,16 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
-      if (i + 1 < lines.length && line.trim()) {
-        const setext = lines[i + 1]!.match(/^\s{0,3}(=+|-+)\s*$/)
+      if (i + 1 < lines.length && SETEXT_RE.test(lines[i + 1]!)) {
+        start('heading')
+        nodes.push(
+          <Text bold color={t.color.amber} key={key}>
+            {line.trim()}
+          </Text>
+        )
+        i += 2
 
-        if (setext) {
-          start('heading')
-          nodes.push(
-            <Text bold color={t.color.amber} key={key}>
-              {line.trim()}
-            </Text>
-          )
-          i += 2
-
-          continue
-        }
+        continue
       }
 
       if (HR_RE.test(line)) {
@@ -440,7 +455,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         i++
 
         while (i < lines.length) {
-          const def = lines[i]!.match(DEF_RE)
+          const def = lines[i]!.match(DEF_RE)?.[1]
 
           if (!def) {
             break
@@ -449,7 +464,7 @@ function MdImpl({ compact, t, text }: MdProps) {
           nodes.push(
             <Text key={`${key}-def-${i}`}>
               <Text color={t.color.dim}> · </Text>
-              <MdInline t={t} text={def[1]!} />
+              <MdInline t={t} text={def} />
             </Text>
           )
           i++
@@ -458,22 +473,22 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
-      const bullet = line.match(/^(\s*)[-+*]\s+(.*)$/)
+      const bullet = line.match(BULLET_RE)
 
       if (bullet) {
         start('list')
-        const depth = indentDepth(bullet[1]!)
-        const task = bullet[2]!.match(/^\[( |x|X)\]\s+(.*)$/)
+
+        const task = bullet[2]!.match(TASK_RE)
         const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
-        const body = task ? task[2]! : bullet[2]!
 
         nodes.push(
           <Text key={key}>
             <Text color={t.color.dim}>
-              {' '.repeat(depth * 2)}
+              {' '.repeat(indentDepth(bullet[1]!) * 2)}
               {marker}{' '}
             </Text>
-            <MdInline t={t} text={body} />
+
+            <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
           </Text>
         )
         i++
@@ -481,18 +496,17 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
-      const numbered = line.match(/^(\s*)(\d+)[.)]\s+(.*)$/)
+      const numbered = line.match(NUMBERED_RE)
 
       if (numbered) {
         start('list')
-        const depth = indentDepth(numbered[1]!)
-
         nodes.push(
           <Text key={key}>
             <Text color={t.color.dim}>
-              {' '.repeat(depth * 2)}
+              {' '.repeat(indentDepth(numbered[1]!) * 2)}
               {numbered[2]}.{' '}
             </Text>
+
             <MdInline t={t} text={numbered[3]!} />
           </Text>
         )
@@ -501,18 +515,15 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
-      if (/^\s*(?:>\s*)+/.test(line)) {
+      if (QUOTE_RE.test(line)) {
         start('quote')
+
         const quoteLines: Array<{ depth: number; text: string }> = []
 
-        while (i < lines.length && /^\s*(?:>\s*)+/.test(lines[i]!)) {
-          const raw = lines[i]!
-          const prefix = raw.match(/^\s*(?:>\s*)+/)?.[0] ?? ''
+        while (i < lines.length && QUOTE_RE.test(lines[i]!)) {
+          const prefix = lines[i]!.match(QUOTE_RE)?.[0] ?? ''
 
-          quoteLines.push({
-            depth: (prefix.match(/>/g) ?? []).length,
-            text: raw.slice(prefix.length)
-          })
+          quoteLines.push({ depth: (prefix.match(/>/g) ?? []).length, text: lines[i]!.slice(prefix.length) })
           i++
         }
 
@@ -533,34 +544,31 @@ function MdImpl({ compact, t, text }: MdProps) {
 
       if (line.includes('|') && i + 1 < lines.length && isTableDivider(lines[i + 1]!)) {
         start('table')
-        const tableRows: string[][] = []
 
-        tableRows.push(splitTableRow(line))
-        i += 2
+        const rows: string[][] = [splitRow(line)]
 
-        while (i < lines.length && lines[i]!.includes('|') && lines[i]!.trim()) {
-          tableRows.push(splitTableRow(lines[i]!))
-          i++
+        for (i += 2; i < lines.length && lines[i]!.includes('|') && lines[i]!.trim(); i++) {
+          rows.push(splitRow(lines[i]!))
         }
 
-        nodes.push(renderTable(key, tableRows, t))
+        nodes.push(renderTable(key, rows, t))
 
         continue
       }
 
-      if (/^<details\b/i.test(line) || /^<\/details>/i.test(line)) {
+      if (/^<\/?details\b/i.test(line)) {
         i++
 
         continue
       }
 
-      const summary = line.match(/^<summary>(.*?)<\/summary>$/i)
+      const summary = line.match(/^<summary>(.*?)<\/summary>$/i)?.[1]
 
       if (summary) {
         start('paragraph')
         nodes.push(
           <Text color={t.color.dim} key={key}>
-            ▶ {summary[1]}
+            ▶ {summary}
           </Text>
         )
         i++
@@ -582,20 +590,21 @@ function MdImpl({ compact, t, text }: MdProps) {
 
       if (line.includes('|') && line.trim().startsWith('|')) {
         start('table')
-        const tableRows: string[][] = []
+
+        const rows: string[][] = []
 
         while (i < lines.length && lines[i]!.trim().startsWith('|')) {
           const row = lines[i]!.trim()
 
           if (!/^[|\s:-]+$/.test(row)) {
-            tableRows.push(splitTableRow(row))
+            rows.push(splitRow(row))
           }
 
           i++
         }
 
-        if (tableRows.length) {
-          nodes.push(renderTable(key, tableRows, t))
+        if (rows.length) {
+          nodes.push(renderTable(key, rows, t))
         }
 
         continue
@@ -603,7 +612,6 @@ function MdImpl({ compact, t, text }: MdProps) {
 
       start('paragraph')
       nodes.push(<MdInline key={key} t={t} text={line} />)
-
       i++
     }
 
@@ -614,3 +622,11 @@ function MdImpl({ compact, t, text }: MdProps) {
 }
 
 export const Md = memo(MdImpl)
+
+type Kind = 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'rule' | 'table' | null
+
+interface MdProps {
+  compact?: boolean
+  t: Theme
+  text: string
+}

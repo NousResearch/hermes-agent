@@ -770,6 +770,46 @@ class TestParseTargetRefMatrix:
         assert is_explicit is False
 
 
+class TestParseTargetRefE164:
+    """_parse_target_ref accepts E.164 phone numbers for phone-based platforms."""
+
+    def test_signal_e164_preserves_plus_prefix(self):
+        """signal:+E164 is explicit and preserves the leading '+' for signal-cli."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", "+41791234567")
+        assert chat_id == "+41791234567"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_sms_e164_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("sms", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_whatsapp_e164_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_signal_bare_digits_still_work(self):
+        """Bare digit strings continue to match the generic numeric branch."""
+        chat_id, _, is_explicit = _parse_target_ref("signal", "15551234567")
+        assert chat_id == "15551234567"
+        assert is_explicit is True
+
+    def test_signal_invalid_e164_rejected(self):
+        """Too-short, too-long, and non-numeric E.164 strings are not explicit."""
+        assert _parse_target_ref("signal", "+123")[2] is False
+        assert _parse_target_ref("signal", "+1234567890123456")[2] is False
+        assert _parse_target_ref("signal", "+12abc4567890")[2] is False
+        assert _parse_target_ref("signal", "+")[2] is False
+
+    def test_e164_prefix_only_matches_phone_platforms(self):
+        """'+' prefix must NOT be treated as explicit for non-phone platforms."""
+        assert _parse_target_ref("telegram", "+15551234567")[2] is False
+        assert _parse_target_ref("discord", "+15551234567")[2] is False
+        assert _parse_target_ref("matrix", "+15551234567")[2] is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

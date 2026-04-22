@@ -550,6 +550,30 @@ def handle_function_call(
         except Exception:
             pass
 
+        # Generic tool-result canonicalization seam: plugins receive the
+        # final result string (JSON, usually) and may replace it by
+        # returning a string from transform_tool_result. Runs after
+        # post_tool_call (which stays observational) and before the result
+        # is appended back into conversation context. Fail-open; the first
+        # valid string return wins; non-string returns are ignored.
+        try:
+            from hermes_cli.plugins import invoke_hook
+            hook_results = invoke_hook(
+                "transform_tool_result",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    result = hook_result
+                    break
+        except Exception:
+            pass
+
         return result
 
     except Exception as e:

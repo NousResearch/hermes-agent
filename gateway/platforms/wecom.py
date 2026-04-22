@@ -624,13 +624,16 @@ class WeComAdapter(BasePlatformAdapter):
         msgtype = str(body.get("msgtype") or "").lower()
 
         if msgtype == "mixed":
-            mixed = body.get("mixed") if isinstance(body.get("mixed"), dict) else {}
-            items = mixed.get("msg_item") if isinstance(mixed.get("msg_item"), list) else []
+            _raw_mixed = body.get("mixed")
+            mixed = _raw_mixed if isinstance(_raw_mixed, dict) else {}
+            _raw_items = mixed.get("msg_item")
+            items = _raw_items if isinstance(_raw_items, list) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("msgtype") or "").lower() == "text":
-                    text_block = item.get("text") if isinstance(item.get("text"), dict) else {}
+                    _raw_text = item.get("text")
+                    text_block = _raw_text if isinstance(_raw_text, dict) else {}
                     content = str(text_block.get("content") or "").strip()
                     if content:
                         text_parts.append(content)
@@ -672,8 +675,10 @@ class WeComAdapter(BasePlatformAdapter):
         msgtype = str(body.get("msgtype") or "").lower()
 
         if msgtype == "mixed":
-            mixed = body.get("mixed") if isinstance(body.get("mixed"), dict) else {}
-            items = mixed.get("msg_item") if isinstance(mixed.get("msg_item"), list) else []
+            _raw_mixed = body.get("mixed")
+            mixed = _raw_mixed if isinstance(_raw_mixed, dict) else {}
+            _raw_items = mixed.get("msg_item")
+            items = _raw_items if isinstance(_raw_items, list) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue

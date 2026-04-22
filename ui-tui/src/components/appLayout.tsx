@@ -173,31 +173,18 @@ const ComposerPane = memo(function ComposerPane({
         </Text>
       )}
 
-      {status.showStickyPrompt ? (
+      {status.showStickyPrompt && (
         <Text color={ui.theme.color.dim} wrap="truncate-end">
           <Text color={ui.theme.color.label}>↳ </Text>
 
           {status.stickyPrompt}
         </Text>
-      ) : (
-        <Text> </Text>
       )}
 
-      <Box flexDirection="column" position="relative">
-        <StatusRulePane at="top" composer={composer} status={status} />
-
-        <FloatingOverlays
-          cols={composer.cols}
-          compIdx={composer.compIdx}
-          completions={composer.completions}
-          onModelSelect={actions.onModelSelect}
-          onPickerSelect={actions.resumeById}
-          pagerPageSize={composer.pagerPageSize}
-        />
-      </Box>
+      <StatusRulePane at="top" composer={composer} status={status} />
 
       {!isBlocked && (
-        <Box flexDirection="column" marginBottom={ui.statusBar === 'bottom' ? 0 : 1}>
+        <>
           {composer.inputBuf.map((line, i) => (
             <Box key={i}>
               <Box width={3}>
@@ -209,6 +196,15 @@ const ComposerPane = memo(function ComposerPane({
           ))}
 
           <Box position="relative">
+            <FloatingOverlays
+              cols={composer.cols}
+              compIdx={composer.compIdx}
+              completions={composer.completions}
+              onModelSelect={actions.onModelSelect}
+              onPickerSelect={actions.resumeById}
+              pagerPageSize={composer.pagerPageSize}
+            />
+
             <Box width={pw}>
               {sh ? (
                 <Text color={ui.theme.color.shellDollar}>$ </Text>
@@ -234,7 +230,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             </Box>
           </Box>
-        </Box>
+        </>
       )}
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim}>⚕ {ui.status}</Text>}

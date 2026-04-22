@@ -187,7 +187,7 @@ export function StatusRule({
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
 
   return (
-    <Box>
+    <Box flexShrink={0} height={1}>
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}

@@ -2,6 +2,8 @@
 
 Provides ``resolve_display_setting()`` — the single entry-point for reading
 display settings with platform-specific overrides and sensible defaults.
+Also exports helper APIs for callers/tests that need the resolved display
+bundle or the built-in defaults for a platform.
 
 Resolution order (first non-None wins):
     1. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
@@ -168,6 +170,26 @@ def resolve_display_setting(
         return val
 
     return fallback
+
+
+def get_platform_defaults(platform_key: str) -> dict[str, Any]:
+    """Return the built-in display defaults for one platform.
+
+    Unknown platforms fall back to the global defaults only. A fresh dict is
+    returned so callers cannot mutate module-level defaults.
+    """
+    defaults = dict(_GLOBAL_DEFAULTS)
+    plat_defaults = _PLATFORM_DEFAULTS.get(platform_key) or {}
+    defaults.update(plat_defaults)
+    return defaults
+
+
+def get_effective_display(user_config: dict, platform_key: str) -> dict[str, Any]:
+    """Return the fully resolved display settings for one platform."""
+    return {
+        setting: resolve_display_setting(user_config, platform_key, setting)
+        for setting in OVERRIDEABLE_KEYS
+    }
 
 
 # ---------------------------------------------------------------------------

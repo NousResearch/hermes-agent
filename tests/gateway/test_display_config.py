@@ -327,3 +327,61 @@ class TestStreamingPerPlatform:
             }
         }
         assert resolve_display_setting(config, "email", "streaming") is True
+
+
+# ---------------------------------------------------------------------------
+# Helper API
+# ---------------------------------------------------------------------------
+
+class TestHelperAPI:
+    """Public helper wrappers stay aligned with the resolver contract."""
+
+    def test_get_platform_defaults_known_platform(self):
+        """Known platforms merge platform-tier defaults over global defaults."""
+        from gateway.display_config import get_platform_defaults
+
+        defaults = get_platform_defaults("telegram")
+
+        assert defaults == {
+            "tool_progress": "all",
+            "show_reasoning": False,
+            "tool_preview_length": 40,
+            "streaming": None,
+        }
+
+    def test_get_platform_defaults_unknown_platform(self):
+        """Unknown platforms fall back to the built-in global defaults."""
+        from gateway.display_config import get_platform_defaults
+
+        defaults = get_platform_defaults("unknown_platform")
+
+        assert defaults == {
+            "tool_progress": "all",
+            "show_reasoning": False,
+            "tool_preview_length": 0,
+            "streaming": None,
+        }
+
+    def test_get_effective_display_resolves_all_keys(self):
+        """Helper returns the same per-key values as resolve_display_setting()."""
+        from gateway.display_config import get_effective_display
+
+        config = {
+            "display": {
+                "tool_progress": "new",
+                "show_reasoning": True,
+                "platforms": {
+                    "telegram": {
+                        "tool_preview_length": "80",
+                        "streaming": False,
+                    }
+                },
+            }
+        }
+
+        assert get_effective_display(config, "telegram") == {
+            "tool_progress": "new",
+            "show_reasoning": True,
+            "tool_preview_length": 80,
+            "streaming": False,
+        }

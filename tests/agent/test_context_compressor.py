@@ -253,6 +253,35 @@ class TestSummaryPrefixNormalization:
 
 
 class TestCompressWithClient:
+    def test_system_content_list_gets_compression_note_without_crashing(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "system prompt"}]},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        assert isinstance(result[0]["content"], list)
+        assert any(
+            isinstance(block, dict)
+            and "compacted into a handoff summary" in block.get("text", "")
+            for block in result[0]["content"]
+        )
+
     def test_summarization_path(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -459,6 +488,41 @@ class TestCompressWithClient:
         first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
+
+    def test_double_collision_merges_summary_into_list_tail_content(self):
+        """Structured tail content should accept a merged summary without TypeError."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "user", "content": [{"type": "text", "text": "msg 6"}]},
+            {"role": "assistant", "content": "msg 7"},
+            {"role": "user", "content": "msg 8"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        merged_tail = next(
+            m for m in result
+            if m.get("role") == "user" and isinstance(m.get("content"), list)
+        )
+        assert isinstance(merged_tail["content"], list)
+        assert "summary text" in merged_tail["content"][0]["text"]
+        assert any(
+            isinstance(block, dict) and block.get("text") == "msg 6"
+            for block in merged_tail["content"]
+        )
 
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.

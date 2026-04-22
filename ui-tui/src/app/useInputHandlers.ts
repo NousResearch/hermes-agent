@@ -74,6 +74,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (overlay.picker) {
       return patchOverlayState({ picker: false })
     }
+
+    if (overlay.agents) {
+      return patchOverlayState({ agents: false })
+    }
   }
 
   const cycleQueue = (dir: 1 | -1) => {
@@ -180,6 +184,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         if (isCtrl(key, ch, 'c')) {
           cancelOverlayFromCtrlC()
         }
+
         return
       }
 
@@ -290,6 +295,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (key.upArrow && !cState.inputBuf.length) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+
       const noLineAbove =
         !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
 

@@ -110,10 +110,11 @@ def is_network_accessible(host: str) -> bool:
 
 
 def _detect_macos_system_proxy() -> str | None:
-    """Read the macOS system HTTP(S) proxy via ``scutil --proxy``.
+    """Read the macOS system proxy via ``scutil --proxy``.
 
-    Returns an ``http://host:port`` URL string if an HTTP or HTTPS proxy is
-    enabled, otherwise *None*.  Falls back silently on non-macOS or on any
+    Prefer SOCKS when available because it preserves remote DNS resolution and
+    is typically more robust for Telegram-class traffic on filtered networks.
+    Falls back to HTTPS, then HTTP. Returns *None* on non-macOS or on any
     subprocess error.
     """
     if sys.platform != "darwin":
@@ -132,16 +133,17 @@ def _detect_macos_system_proxy() -> str | None:
             key, _, val = line.partition(" : ")
             props[key.strip()] = val.strip()
 
-    # Prefer HTTPS, fall back to HTTP
-    for enable_key, host_key, port_key in (
-        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
-        ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+    # Prefer SOCKS, then HTTPS, then HTTP.
+    for enable_key, host_key, port_key, scheme in (
+        ("SOCKSEnable", "SOCKSProxy", "SOCKSPort", "socks5"),
+        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort", "http"),
+        ("HTTPEnable", "HTTPProxy", "HTTPPort", "http"),
     ):
         if props.get(enable_key) == "1":
             host = props.get(host_key)
             port = props.get(port_key)
             if host and port:
-                return f"http://{host}:{port}"
+                return f"{scheme}://{host}:{port}"
     return None
 
 

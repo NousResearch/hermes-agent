@@ -252,6 +252,22 @@ def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypat
     assert agent.provider == "openrouter"
 
 
+def test_custom_gpt_5_provider_stays_on_chat_completions(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        base_url="https://text-aigc.vod-qcloud.com/v1",
+        provider="custom",
+        api_key="custom-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
+    assert agent.api_mode == "chat_completions"
+
+
 def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
@@ -282,6 +298,23 @@ def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):
         skip_memory=True,
     )
     assert agent.provider == "copilot"
+    assert agent.api_mode == "chat_completions"
+
+
+def test_explicit_chat_completions_is_preserved_for_custom_gpt_5_models(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        base_url="https://text-aigc.vod-qcloud.com/v1",
+        provider="custom",
+        api_mode="chat_completions",
+        api_key="custom-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
     assert agent.api_mode == "chat_completions"
 
 

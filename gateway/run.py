@@ -8746,6 +8746,43 @@ class GatewayRunner:
         }
 
     # ------------------------------------------------------------------
+    def _store_cached_agent(self, session_key: str, agent: Any, signature: str) -> None:
+        """Store a cached agent and close the previous one when replaced."""
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache is None:
+            return
+
+        _previous = None
+        _lock = getattr(self, "_agent_cache_lock", None)
+        if _lock:
+            with _lock:
+                _previous = _cache.get(session_key)
+                _cache[session_key] = (agent, signature)
+        else:
+            _previous = _cache.get(session_key)
+            _cache[session_key] = (agent, signature)
+
+        _old_agent = (
+            _previous[0]
+            if isinstance(_previous, tuple)
+            else _previous
+            if _previous
+            else None
+        )
+        if _old_agent is None or _old_agent is agent or _old_agent is _AGENT_PENDING_SENTINEL:
+            return
+
+        try:
+            if hasattr(_old_agent, "shutdown_memory_provider"):
+                _old_agent.shutdown_memory_provider()
+        except Exception:
+            logger.debug("Failed to shut down stale cached agent for %s", session_key)
+
+        try:
+            if hasattr(_old_agent, "close"):
+                _old_agent.close()
+        except Exception:
+            logger.debug("Failed to close stale cached agent for %s", session_key)
 
     async def _run_agent(
         self,
@@ -9296,10 +9333,11 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
-                if _cache_lock and _cache is not None:
-                    with _cache_lock:
-                        _cache[session_key] = (agent, _sig)
-                        self._enforce_agent_cache_cap()
+                if session_key:
+                    self._store_cached_agent(session_key, agent, _sig)
+                    if _cache_lock and _cache is not None:
+                        with _cache_lock:
+                            self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
             # Per-message state — callbacks and reasoning config change every

@@ -14,6 +14,51 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+_DEFAULT_GATEWAY_NOFILE_LIMIT = 8192
+
+
+def _ensure_open_file_limit(target_soft: int | None = None) -> tuple[int, int] | None:
+    """Best-effort raise RLIMIT_NOFILE soft limit for the gateway process."""
+    try:
+        import resource
+    except ImportError:
+        return None
+
+    raw_target = os.environ.get("HERMES_NOFILE_SOFT_LIMIT")
+    if target_soft is None:
+        if raw_target:
+            try:
+                target_soft = int(raw_target)
+            except ValueError:
+                target_soft = _DEFAULT_GATEWAY_NOFILE_LIMIT
+        else:
+            target_soft = _DEFAULT_GATEWAY_NOFILE_LIMIT
+
+    if not target_soft or target_soft <= 0:
+        return None
+
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return None
+
+    if soft >= target_soft:
+        return None
+
+    unlimited = getattr(resource, "RLIM_INFINITY", None)
+    if hard in (-1, unlimited):
+        new_soft = target_soft
+    else:
+        new_soft = min(target_soft, hard)
+
+    if new_soft <= soft:
+        return None
+
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+    except (OSError, ValueError):
+        return None
+    return soft, new_soft
 
 from gateway.status import terminate_pid
 from gateway.restart import (
@@ -1732,6 +1777,12 @@ def generate_launchd_plist() -> str:
     
     <key>RunAtLoad</key>
     <true/>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{_DEFAULT_GATEWAY_NOFILE_LIMIT}</integer>
+    </dict>
     
     <key>KeepAlive</key>
     <dict>
@@ -1987,9 +2038,10 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  hasn't fully exited yet.
     """
     sys.path.insert(0, str(PROJECT_ROOT))
-    
+    limit_change = _ensure_open_file_limit()
+
     from gateway.run import start_gateway
-    
+
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
@@ -1997,7 +2049,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print("│  Press Ctrl+C to stop                                   │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
-    
+    if limit_change:
+        old_soft, new_soft = limit_change
+        print_info(f"  Raised max open files soft limit: {old_soft} -> {new_soft}")
+        print()
+
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
     verbosity = None if quiet else verbose

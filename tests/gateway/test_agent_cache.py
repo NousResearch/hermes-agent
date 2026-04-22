@@ -190,6 +190,24 @@ class TestAgentCacheLifecycle:
             assert "session-A" not in runner._agent_cache
             assert "session-B" in runner._agent_cache
 
+    def test_store_cached_agent_closes_replaced_instance(self):
+        """Replacing a cached agent should release the stale agent's resources."""
+        runner = _make_runner()
+        old_agent = MagicMock()
+        new_agent = MagicMock()
+
+        with runner._agent_cache_lock:
+            runner._agent_cache["session-A"] = (old_agent, "sig-A")
+
+        runner._store_cached_agent("session-A", new_agent, "sig-B")
+
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["session-A"] == (new_agent, "sig-B")
+
+        old_agent.shutdown_memory_provider.assert_called_once()
+        old_agent.close.assert_called_once()
+        new_agent.close.assert_not_called()
+
     def test_reasoning_config_updates_in_place(self):
         """Reasoning config can be set on a cached agent without eviction."""
         from run_agent import AIAgent

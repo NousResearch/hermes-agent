@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.tencent.qidian.tmc.RealEndpointContractTest
+-------------------------------------------------------------------------------
+Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.095 s -- in com.tencent.qidian.tmc.RealEndpointContractTest

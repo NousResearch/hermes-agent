@@ -736,7 +736,13 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
+        explicit_api_mode = api_mode in {
+            "chat_completions",
+            "codex_responses",
+            "anthropic_messages",
+            "bedrock_converse",
+        }
+        if explicit_api_mode:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -783,7 +789,7 @@ class AIAgent:
         # When api_mode was explicitly provided, respect it — the user
         # knows what their endpoint supports (#10473).
         if (
-            api_mode is None
+            not explicit_api_mode
             and self.api_mode == "chat_completions"
             and self.provider != "copilot-acp"
             and not str(self.base_url or "").lower().startswith("acp://copilot")
@@ -6362,10 +6368,13 @@ class AIAgent:
             except Exception:
                 pass
 
-            # Determine api_mode from provider / base URL / model
+            # Determine api_mode from fallback config / provider / base URL / model.
+            configured_fb_api_mode = str(fb.get("api_mode") or "").strip().lower()
             fb_api_mode = "chat_completions"
             fb_base_url = str(fb_client.base_url)
-            if fb_provider == "openai-codex":
+            if configured_fb_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+                fb_api_mode = configured_fb_api_mode
+            elif fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
             elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
                 fb_api_mode = "anthropic_messages"

@@ -106,6 +106,30 @@ class TestTryActivateFallback:
             assert agent.api_mode == "chat_completions"
             assert agent.client is mock_client
 
+    def test_explicit_api_mode_preserved_for_custom_gpt5_fallback(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "gpt-5.4",
+                "base_url": "https://text-aigc.vod-qcloud.com/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        mock_client = _mock_resolve(
+            api_key="custom-key",
+            base_url="https://text-aigc.vod-qcloud.com/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "gpt-5.4"),
+        ):
+            result = agent._try_activate_fallback()
+            assert result is True
+            assert agent.provider == "custom"
+            assert agent.model == "gpt-5.4"
+            assert agent.api_mode == "chat_completions"
+            assert agent.client is mock_client
+
     def test_activates_zai_fallback(self):
         agent = _make_agent(
             fallback_model={"provider": "zai", "model": "glm-5"},

@@ -71,7 +71,11 @@ class TestProviderRegistry:
 
     def test_kimi_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kimi-coding"]
-        assert pconfig.api_key_env_vars == ("KIMI_API_KEY",)
+        # KIMI_API_KEY is the primary env var; KIMI_CODING_API_KEY is a
+        # secondary fallback for Kimi Code sk-kimi- keys so users don't
+        # have to overload the same variable.
+        assert "KIMI_API_KEY" in pconfig.api_key_env_vars
+        assert "KIMI_CODING_API_KEY" in pconfig.api_key_env_vars
         assert pconfig.base_url_env_var == "KIMI_BASE_URL"
 
     def test_minimax_env_vars(self):

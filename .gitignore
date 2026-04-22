@@ -68,3 +68,8 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

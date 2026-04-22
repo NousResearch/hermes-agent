@@ -5841,6 +5841,32 @@ class GatewayRunner:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
+        reroute_note = None
+
+        # In Discord text-channel threads, the stable home destination should be the
+        # parent channel rather than the specific thread. Forum posts keep their own
+        # thread ID because deliveries without metadata.thread_id target chat_id
+        # directly, and a forum parent is not a normal send destination.
+        if platform_name == "discord" and getattr(source, "chat_type", None) == "thread":
+            raw = getattr(event, "raw_message", None)
+            channel = getattr(raw, "channel", None)
+            parent = getattr(channel, "parent", None)
+            parent_id = getattr(parent, "id", None) or getattr(channel, "parent_id", None)
+            parent_type = getattr(parent, "type", None)
+            parent_type_value = getattr(parent_type, "value", parent_type)
+            is_forum_parent = parent_type_value == 15 or getattr(parent.__class__, "__name__", "") == "ForumChannel"
+            if parent is not None and parent_id is not None and not is_forum_parent:
+                chat_id = str(parent_id)
+                parent_name = getattr(parent, "name", None)
+                guild = getattr(parent, "guild", None) or getattr(channel, "guild", None)
+                guild_name = getattr(guild, "name", None)
+                if parent_name and guild_name:
+                    chat_name = f"{guild_name} / #{parent_name}"
+                elif parent_name:
+                    chat_name = parent_name
+                else:
+                    chat_name = chat_id
+                reroute_note = "Using the parent channel for stable Discord home delivery; explicit thread deliveries still use thread metadata."
         
         env_key = f"{platform_name.upper()}_HOME_CHANNEL"
         
@@ -5859,10 +5885,13 @@ class GatewayRunner:
         except Exception as e:
             return f"Failed to save home channel: {e}"
         
-        return (
+        response = (
             f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
             f"Cron jobs and cross-platform messages will be delivered here."
         )
+        if reroute_note:
+            response += f"\n{reroute_note}"
+        return response
     
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:

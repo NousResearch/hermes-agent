@@ -6747,6 +6747,25 @@ class GatewayRunner:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self._show_reasoning else "off"
+
+            # Telegram: inline keyboard picker instead of a text wall.
+            from gateway.config import Platform
+            if event.source.platform == Platform.TELEGRAM:
+                adapter = self.adapters.get(event.source.platform)
+                if adapter and hasattr(adapter, "send_reasoning_picker"):
+                    meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    try:
+                        send_res = await adapter.send_reasoning_picker(
+                            chat_id=event.source.chat_id or event.source.user_id,
+                            effort_label=str(level),
+                            display_on=bool(self._show_reasoning),
+                            metadata=meta,
+                        )
+                        if send_res.success:
+                            return ""
+                    except Exception as e:
+                        logger.warning("send_reasoning_picker failed, falling back to text: %s", e)
+
             return (
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"

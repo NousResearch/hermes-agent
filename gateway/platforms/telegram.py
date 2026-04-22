@@ -1609,6 +1609,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         data = query.data
 
+        # --- Reasoning picker callbacks (rf:effort, rd:show|hide) ---
+        if data.startswith(("rf:", "rd:")):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_reasoning_picker_callback(query, data, chat_id)
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -1703,6 +1710,119 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def send_reasoning_picker(
+        self,
+        chat_id: str,
+        effort_label: str,
+        display_on: bool,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an inline keyboard to set reasoning effort or display (Telegram)."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        display_state = "on ✓" if display_on else "off"
+        text = (
+            "🧠 *Reasoning Settings*\n\n"
+            f"*Effort:* `{effort_label}`\n"
+            f"*Display:* {display_state}\n\n"
+            "_Tap a level or display option. Changes apply like typing the slash command._"
+        )
+
+        efforts = ("none", "minimal", "low", "medium", "high", "xhigh")
+        rows: List[List[InlineKeyboardButton]] = []
+        buttons = [
+            InlineKeyboardButton(e, callback_data=f"rf:{e}")
+            for e in efforts
+        ]
+        for i in range(0, len(buttons), 2):
+            rows.append(buttons[i : i + 2])
+        rows.append(
+            [
+                InlineKeyboardButton("Show", callback_data="rd:show"),
+                InlineKeyboardButton("Hide", callback_data="rd:hide"),
+            ]
+        )
+        keyboard = InlineKeyboardMarkup(rows)
+
+        try:
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=self._message_thread_id_for_send(
+                    self._metadata_thread_id(metadata)
+                ),
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as exc:
+            logger.error("Failed to send reasoning picker: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def _handle_reasoning_picker_callback(
+        self, query: "CallbackQuery", data: str, chat_id: str
+    ) -> None:
+        """Handle inline keyboard callbacks from the reasoning picker."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(caller_id):
+            await query.answer(text="⛔ You are not authorized to change reasoning settings.")
+            return
+
+        cmd_text: Optional[str] = None
+        if data.startswith("rf:"):
+            effort = data[3:].strip().lower()
+            if effort not in ("none", "minimal", "low", "medium", "high", "xhigh"):
+                await query.answer(text="Invalid effort level.", show_alert=True)
+                return
+            cmd_text = f"/reasoning {effort}"
+        elif data.startswith("rd:"):
+            sub = data[3:].strip().lower()
+            if sub == "show":
+                cmd_text = "/reasoning show"
+            elif sub == "hide":
+                cmd_text = "/reasoning hide"
+            else:
+                await query.answer(text="Invalid display option.", show_alert=True)
+                return
+        else:
+            await query.answer()
+            return
+
+        try:
+            msg_id = getattr(query.message, "message_id", None)
+            if msg_id:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=msg_id,
+                    text=f"_Applying_ `{cmd_text}`\u2026",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+        except Exception:
+            pass
+        await query.answer()
+        try:
+            user = getattr(query, "from_user", None)
+            msg = query.message
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=getattr(getattr(msg, "chat", None), "title", None),
+                chat_type="dm",
+                user_id=str(user.id) if user else chat_id,
+                user_name=user.full_name if user else None,
+                thread_id=str(msg.message_thread_id) if msg and msg.message_thread_id else None,
+            )
+            synthetic = MessageEvent(
+                text=cmd_text,
+                message_type=MessageType.COMMAND,
+                source=source,
+            )
+            await self.handle_message(synthetic)
+        except Exception as exc:
+            logger.error("Failed to dispatch reasoning from picker: %s", exc)
 
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.

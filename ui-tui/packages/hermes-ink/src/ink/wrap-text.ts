@@ -50,6 +50,10 @@ export default function wrapText(text: string, maxWidth: number, wrapType: Style
     })
   }
 
+  if (wrapType === 'wrap-char') {
+    return wrapAnsi(text, maxWidth, { trim: false, hard: true, wordWrap: false })
+  }
+
   if (wrapType === 'wrap-trim') {
     return wrapAnsi(text, maxWidth, {
       trim: true,

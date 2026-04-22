@@ -167,9 +167,11 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
 }
 
-function cursorLayout(value: string, cursor: number, cols: number) {
+// mirrors wrap-ansi(..., { wordWrap: false, hard: true }) so the declared
+// cursor lines up with what <Text wrap="wrap-char"> actually renders
+export function cursorLayout(value: string, cursor: number, cols: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
-  const w = Math.max(1, cols - 1)
+  const w = Math.max(1, cols)
 
   let col = 0,
     line = 0
@@ -200,17 +202,23 @@ function cursorLayout(value: string, cursor: number, cols: number) {
     col += sw
   }
 
+  // trailing cursor-cell overflows to the next row at the wrap column
+  if (col >= w) {
+    line++
+    col = 0
+  }
+
   return { column: col, line }
 }
 
-function offsetFromPosition(value: string, row: number, col: number, cols: number) {
+export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
   if (!value.length) {
     return 0
   }
 
   const targetRow = Math.max(0, Math.floor(row))
   const targetCol = Math.max(0, Math.floor(col))
-  const w = Math.max(1, cols - 1)
+  const w = Math.max(1, cols)
 
   let line = 0
   let column = 0
@@ -802,7 +810,7 @@ export function TextInput({
       }}
       ref={boxRef}
     >
-      <Text wrap="wrap">{rendered}</Text>
+      <Text wrap="wrap-char">{rendered}</Text>
     </Box>
   )
 }

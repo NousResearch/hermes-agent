@@ -395,10 +395,7 @@ describe('topLevelSubagents', () => {
   })
 
   it('excludes children whose parent is present', () => {
-    const items = [
-      makeItem({ id: 'p', index: 0 }),
-      makeItem({ depth: 1, id: 'c', index: 0, parentId: 'p' })
-    ]
+    const items = [makeItem({ id: 'p', index: 0 }), makeItem({ depth: 1, id: 'c', index: 0, parentId: 'p' })]
 
     expect(topLevelSubagents(items).map(s => s.id)).toEqual(['p'])
   })

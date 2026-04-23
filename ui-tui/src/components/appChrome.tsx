@@ -215,7 +215,20 @@ export function StatusRule({
             </Text>
           ) : null}
           <SpawnHud t={t} />
-          {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
+          {voiceLabel ? (
+            <Text
+              color={
+                voiceLabel.startsWith('●')
+                  ? t.color.error
+                  : voiceLabel.startsWith('◉')
+                    ? t.color.warn
+                    : t.color.dim
+              }
+            >
+              {' │ '}
+              {voiceLabel}
+            </Text>
+          ) : null}
           {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (
             <Text color={t.color.dim}> │ ${usage.cost_usd.toFixed(4)}</Text>

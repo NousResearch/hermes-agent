@@ -1121,19 +1121,26 @@ def _extract_status_code(error: Exception) -> Optional[int]:
 
 
 def _extract_error_body(error: Exception) -> dict:
-    """Extract the structured error body from an SDK exception."""
-    body = getattr(error, "body", None)
-    if isinstance(body, dict):
-        return body
-    # Some errors have .response.json()
-    response = getattr(error, "response", None)
-    if response is not None:
-        try:
-            json_body = response.json()
-            if isinstance(json_body, dict):
-                return json_body
-        except Exception:
-            pass
+    """Extract the structured error body from an SDK exception, walking the cause chain."""
+    current = error
+    for _ in range(5):
+        body = getattr(current, "body", None)
+        if isinstance(body, dict):
+            return body
+        # Some errors have .response.json()
+        response = getattr(current, "response", None)
+        if response is not None:
+            try:
+                json_body = response.json()
+                if isinstance(json_body, dict):
+                    return json_body
+            except Exception:
+                pass
+        # Walk cause chain
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
     return {}
 
 

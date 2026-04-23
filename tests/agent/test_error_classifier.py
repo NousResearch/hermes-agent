@@ -128,6 +128,108 @@ class TestExtractErrorBody:
     def test_empty_when_no_body(self):
         assert _extract_error_body(Exception("generic")) == {}
 
+    def test_from_cause_chain(self):
+        """Body on a nested __cause__ exception must be found."""
+        inner = MockAPIError("inner", status_code=402, body={"error": {"message": "billing"}})
+        outer = Exception("outer")
+        outer.__cause__ = inner
+        assert _extract_error_body(outer) == {"error": {"message": "billing"}}
+
+    def test_from_context_chain(self):
+        """Body on a nested __context__ exception must be found."""
+        inner = MockAPIError("inner", body={"error": {"message": "ctx"}})
+        outer = Exception("outer")
+        outer.__context__ = inner
+        assert _extract_error_body(outer) == {"error": {"message": "ctx"}}
+
+    def test_stops_at_first_body(self):
+        """Must return the first body found, not keep walking."""
+        deep = MockAPIError("deep", body={"error": {"message": "deep"}})
+        middle = MockAPIError("middle", body={"error": {"message": "middle"}})
+        middle.__cause__ = deep
+        outer = Exception("outer")
+        outer.__cause__ = middle
+        assert _extract_error_body(outer) == {"error": {"message": "middle"}}
+
+    def test_circular_cause_does_not_loop(self):
+        """Circular __cause__ must not infinite-loop."""
+        e = MockAPIError("circular", body=None)
+        e.__cause__ = e
+        assert _extract_error_body(e) == {}
+
+    def test_three_level_chain(self):
+        """Walk through two levels of plain exceptions to find body."""
+        inner = MockAPIError("inner", body={"error": {"message": "found"}})
+        middle = Exception("middle")
+        middle.__cause__ = inner
+        outer = RuntimeError("outer")
+        outer.__cause__ = middle
+        assert _extract_error_body(outer) == {"error": {"message": "found"}}
+
+    def test_response_json_on_nested_cause(self):
+        """response.json() on a nested exception must be found."""
+        class MockResponse:
+            def json(self):
+                return {"error": {"message": "from response"}}
+
+        class InnerError(Exception):
+            def __init__(self):
+                super().__init__("inner")
+                self.response = MockResponse()
+
+        inner = InnerError()
+        outer = Exception("outer")
+        outer.__cause__ = inner
+        assert _extract_error_body(outer) == {"error": {"message": "from response"}}
+
+
+# ── Test: Cause-chain body + status_code integration ──────────────────
+
+class TestCauseChainIntegration:
+    """End-to-end: wrapping an API error must still classify correctly."""
+
+    def test_wrapped_402_billing_finds_body_and_status(self):
+        """Wrapped 402 with body must classify as billing, not unknown."""
+        inner = MockAPIError(
+            "Payment Required",
+            status_code=402,
+            body={"error": {"message": "Your credit balance is too low"}},
+        )
+        outer = Exception("provider call failed")
+        outer.__cause__ = inner
+        # Both helpers must find nested data
+        assert _extract_status_code(outer) == 402
+        assert _extract_error_body(outer) == {"error": {"message": "Your credit balance is too low"}}
+        # Full pipeline must classify correctly
+        result = classify_api_error(outer)
+        assert result.reason == FailoverReason.billing
+        assert result.status_code == 402
+
+    def test_wrapped_402_transient_rate_limit(self):
+        """Wrapped 402 with 'try again' body must classify as rate_limit."""
+        inner = MockAPIError(
+            "Usage limit",
+            status_code=402,
+            body={"error": {"message": "Usage limit reached, try again in 5 minutes"}},
+        )
+        outer = RuntimeError("SDK wrapper")
+        outer.__cause__ = inner
+        result = classify_api_error(outer)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.status_code == 402
+
+    def test_wrapped_429_rate_limit(self):
+        """Regression: status_code already walked the chain; body must too."""
+        inner = MockAPIError(
+            "rate limited",
+            status_code=429,
+            body={"error": {"message": "Too many requests"}},
+        )
+        outer = Exception("wrapper")
+        outer.__cause__ = inner
+        result = classify_api_error(outer)
+        assert result.reason == FailoverReason.rate_limit
+
 
 # ── Test: Error code extraction ────────────────────────────────────────
 

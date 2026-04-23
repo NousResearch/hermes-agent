@@ -5,33 +5,37 @@ session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.
 
 Resolution order for text tasks (auto mode):
-  1. OpenRouter  (OPENROUTER_API_KEY)
-  2. Nous Portal (~/.hermes/auth.json active provider)
-  3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
+  _resolve_auto() uses the following priority:
+  1. User's configured main provider + main model (config.yaml model.provider
+     + model.default).  Auxiliary tasks run on the same model as chat so
+     behaviour stays predictable regardless of provider type.
+  2. OpenRouter  (OPENROUTER_API_KEY or credential pool)
+  3. Nous Portal (~/.hermes/auth.json or credential pool)
+  4. Custom endpoint (config.yaml model.base_url or OPENAI_BASE_URL)
+  5. Codex OAuth (Responses API via chatgpt.com with gpt-5.2-codex,
      wrapped to look like a chat.completions client)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  6. Direct API-key providers (Gemini, z.ai/GLM, Kimi/Moonshot, StepFun,
+     MiniMax, MiniMax-CN, Anthropic, and others in PROVIDER_REGISTRY order)
   7. None
 
 Resolution order for vision/multimodal tasks (auto mode):
-  1. Selected main provider, if it is one of the supported vision backends below
+  1. User's configured main provider + main model (with per-provider vision
+     model overrides from _PROVIDER_VISION_MODELS, e.g. zai -> glm-5v-turbo).
+     Nous uses its dedicated vision backend with tier-aware model selection.
   2. OpenRouter
   3. Nous Portal
-  4. Codex OAuth (gpt-5.3-codex supports vision via Responses API)
-  5. Native Anthropic
-  6. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  7. None
+  4. None
 
 Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
 (e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
+Explicit provider/model/base_url args always win over config.yaml.
 Default "auto" follows the chains above.
 
-Payment / credit exhaustion fallback:
-  When a resolved provider returns HTTP 402 or a credit-related error,
-  call_llm() automatically retries with the next available provider in the
-  auto-detection chain.  This handles the common case where a user depletes
-  their OpenRouter balance but has Codex OAuth or another provider available.
+Payment / credit exhaustion and connection error fallback:
+  When a resolved provider returns HTTP 402, a credit-related error, or a
+  connection error (DNS failure, refused, timeout), call_llm() and
+  async_call_llm() automatically retry with the next available provider in
+  the auto-detection chain.
 """
 
 import json

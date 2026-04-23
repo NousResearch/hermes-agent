@@ -43,6 +43,45 @@ class TestGetSubprocessHome:
         from hermes_constants import get_subprocess_home
         assert get_subprocess_home() == str(profile_home)
 
+    def test_returns_none_when_sandbox_home_false(self, tmp_path, monkeypatch):
+        """sandbox_home: false overrides directory presence."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_home = hermes_home / "home"
+        profile_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        fake_config = {"terminal": {"sandbox_home": False}}
+        with patch("hermes_cli.config.load_config", return_value=fake_config):
+            from hermes_constants import get_subprocess_home
+            assert get_subprocess_home() is None
+
+    def test_returns_path_when_sandbox_home_true(self, tmp_path, monkeypatch):
+        """sandbox_home: true (default) preserves existing behavior."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_home = hermes_home / "home"
+        profile_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        fake_config = {"terminal": {"sandbox_home": True}}
+        with patch("hermes_cli.config.load_config", return_value=fake_config):
+            from hermes_constants import get_subprocess_home
+            assert get_subprocess_home() == str(profile_home)
+
+    def test_returns_path_when_sandbox_home_unset(self, tmp_path, monkeypatch):
+        """Missing sandbox_home key defaults to true (existing behavior)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_home = hermes_home / "home"
+        profile_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        fake_config = {"terminal": {}}
+        with patch("hermes_cli.config.load_config", return_value=fake_config):
+            from hermes_constants import get_subprocess_home
+            assert get_subprocess_home() == str(profile_home)
+
     def test_returns_profile_specific_path(self, tmp_path, monkeypatch):
         """Named profiles get their own isolated HOME."""
         profile_dir = tmp_path / ".hermes" / "profiles" / "coder"

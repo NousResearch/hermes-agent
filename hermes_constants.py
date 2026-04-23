@@ -128,7 +128,21 @@ def get_subprocess_home() -> str | None:
     **never** modified — only subprocess environments should inject this value.
     Activation is directory-based: if the ``home/`` subdirectory doesn't
     exist, returns ``None`` and behavior is unchanged.
+
+    When ``terminal.sandbox_home`` is ``False`` in the profile config,
+    returns ``None`` regardless of whether the ``home/`` directory exists.
+    This lets local profiles opt out of HOME redirection while keeping
+    Docker/container use cases working with the default ``True``.
     """
+    # Check config opt-out first
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        if not cfg.get("terminal", {}).get("sandbox_home", True):
+            return None
+    except Exception:
+        pass  # Config unavailable — fall through to directory check
+
     hermes_home = os.getenv("HERMES_HOME")
     if not hermes_home:
         return None

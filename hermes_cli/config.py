@@ -407,6 +407,12 @@ DEFAULT_CONFIG = {
         # Turn this off if you have a bashrc that misbehaves when sourced
         # non-interactively (e.g. one that hard-exits on TTY checks).
         "auto_source_bashrc": True,
+        # When true (default), subprocess terminals use a per-profile HOME
+        # directory ({HERMES_HOME}/home/) for tool config isolation (git,
+        # ssh, gh, npm). Set to false on local profiles to let subprocesses
+        # use the real HOME — useful when you want git, SSH, and other
+        # system tools to see your actual dotfiles without duplication.
+        "sandbox_home": True,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
         # Explicit environment variables to set inside Docker containers.

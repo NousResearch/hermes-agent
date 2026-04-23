@@ -1,12 +1,14 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   BarChart3,
+  Brain,
   Cpu,
   Hash,
   TrendingUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry } from "@/lib/api";
+import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry, AnalyticsSkillEntry } from "@/lib/api";
+import { timeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
@@ -74,11 +76,11 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
         </div>
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
-            <div className="h-2.5 w-2.5 rounded-sm bg-[#ffe6cb]" />
+            <div className="h-2.5 w-2.5 bg-[#ffe6cb]" />
             {t.analytics.input}
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="h-2.5 w-2.5 rounded-sm bg-emerald-500" />
+            <div className="h-2.5 w-2.5 bg-emerald-500" />
             {t.analytics.output}
           </div>
         </div>
@@ -97,7 +99,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
               >
                 {/* Tooltip */}
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
-                  <div className="rounded-md bg-card border border-border px-2.5 py-1.5 text-[10px] text-foreground shadow-lg whitespace-nowrap">
+                  <div className="bg-card border border-border px-2.5 py-1.5 text-[10px] text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>{t.analytics.input}: {formatTokens(d.input_tokens)}</div>
                     <div>{t.analytics.output}: {formatTokens(d.output_tokens)}</div>
@@ -227,6 +229,52 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   );
 }
 
+function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
+  const { t } = useI18n();
+  if (skills.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Brain className="h-5 w-5 text-muted-foreground" />
+          <CardTitle className="text-base">{t.analytics.topSkills}</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground text-xs">
+                <th className="text-left py-2 pr-4 font-medium">{t.analytics.skill}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.loads}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.edits}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.total}</th>
+                <th className="text-right py-2 pl-4 font-medium">{t.analytics.lastUsed}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {skills.map((skill) => (
+                <tr key={skill.skill} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+                  <td className="py-2 pr-4">
+                    <span className="font-mono-ui text-xs">{skill.skill}</span>
+                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">{skill.view_count}</td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">{skill.manage_count}</td>
+                  <td className="text-right py-2 px-4">{skill.total_count}</td>
+                  <td className="text-right py-2 pl-4 text-muted-foreground">
+                    {skill.last_used_at ? timeAgo(skill.last_used_at) : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
@@ -299,7 +347,7 @@ export default function AnalyticsPage() {
             <SummaryCard
               icon={TrendingUp}
               label={t.analytics.apiCalls}
-              value={String(data.daily.reduce((sum, d) => sum + d.sessions, 0))}
+              value={String(data.totals.total_api_calls ?? data.daily.reduce((sum, d) => sum + d.sessions, 0))}
               sub={t.analytics.acrossModels.replace("{count}", String(data.by_model.length))}
             />
           </div>
@@ -310,10 +358,11 @@ export default function AnalyticsPage() {
           {/* Tables */}
           <DailyTable daily={data.daily} />
           <ModelTable models={data.by_model} />
+          <SkillTable skills={data.skills.top_skills} />
         </>
       )}
 
-      {data && data.daily.length === 0 && data.by_model.length === 0 && (
+      {data && data.daily.length === 0 && data.by_model.length === 0 && data.skills.top_skills.length === 0 && (
         <Card>
           <CardContent className="py-12">
             <div className="flex flex-col items-center text-muted-foreground">

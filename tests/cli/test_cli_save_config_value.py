@@ -64,6 +64,24 @@ class TestSaveConfigValueAtomic:
         result = yaml.safe_load(config_env.read_text())
         assert result["display"]["skin"] == "ares"
 
+    def test_preserves_env_ref_templates_in_unrelated_fields(self, config_env):
+        """The /model --global persistence path must not inline env-backed secrets."""
+        config_env.write_text(yaml.dump({
+            "custom_providers": [{
+                "name": "tuzi",
+                "api_key": "${TU_ZI_API_KEY}",
+                "model": "claude-opus-4-6",
+            }],
+            "model": {"default": "test-model", "provider": "openrouter"},
+        }))
+
+        from cli import save_config_value
+        save_config_value("model.default", "doubao-pro")
+
+        result = yaml.safe_load(config_env.read_text())
+        assert result["model"]["default"] == "doubao-pro"
+        assert result["custom_providers"][0]["api_key"] == "${TU_ZI_API_KEY}"
+
     def test_file_not_truncated_on_error(self, config_env, monkeypatch):
         """If atomic_yaml_write raises, the original file is untouched."""
         original_content = config_env.read_text()

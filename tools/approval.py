@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+import time
 import unicodedata
 from typing import Optional
 
@@ -87,7 +88,7 @@ DANGEROUS_PATTERNS = [
     (r'\bDELETE\s+FROM\b(?!.*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (r'>\s*/etc/', "overwrite system config"),
-    (r'\bsystemctl\s+(stop|disable|mask)\b', "stop/disable system service"),
+    (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
@@ -101,6 +102,11 @@ DANGEROUS_PATTERNS = [
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
+    # Gateway lifecycle protection: prevent the agent from killing its own
+    # gateway process.  These commands trigger a gateway restart/stop that
+    # terminates all running agents mid-work.
+    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
@@ -313,6 +319,17 @@ def disable_session_yolo(session_key: str) -> None:
         _session_yolo.discard(session_key)
 
 
+def clear_session(session_key: str) -> None:
+    """Remove all approval and yolo state for a given session."""
+    if not session_key:
+        return
+    with _lock:
+        _session_approved.pop(session_key, None)
+        _session_yolo.discard(session_key)
+        _pending.pop(session_key, None)
+        _gateway_queues.pop(session_key, None)
+
+
 def is_session_yolo_enabled(session_key: str) -> bool:
     """Return True when YOLO bypass is enabled for a specific session."""
     if not session_key:
@@ -515,6 +532,19 @@ def _get_approval_timeout() -> int:
         return 60
 
 
+def _get_cron_approval_mode() -> str:
+    """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        mode = str(config.get("approvals", {}).get("cron_mode", "deny")).lower().strip()
+        if mode in ("approve", "off", "allow", "yes"):
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -525,12 +555,7 @@ def _smart_approve(command: str, description: str) -> str:
     (openai/codex#13860).
     """
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
-
-        client, model = get_text_auxiliary_client(task="approval")
-        if not client or not model:
-            logger.debug("Smart approvals: no aux client available, escalating")
-            return "escalate"
+        from agent.auxiliary_client import call_llm
 
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
@@ -546,11 +571,11 @@ Rules:
 
 Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
-        response = client.chat.completions.create(
-            model=model,
+        response = call_llm(
+            task="approval",
             messages=[{"role": "user", "content": prompt}],
-            **auxiliary_max_tokens_param(16),
             temperature=0,
+            max_tokens=16,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -602,6 +627,19 @@ def check_dangerous_command(command: str, env_type: str,
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
 
     if not is_cli and not is_gateway:
+        # Cron sessions: respect cron_mode config
+        if os.getenv("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    ),
+                }
         return {"approved": True, "message": None}
 
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
@@ -700,6 +738,22 @@ def check_all_command_guards(command: str, env_type: str,
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
+        # Cron sessions: respect cron_mode config
+        if os.getenv("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                # Run detection to get a description for the block message
+                is_dangerous, _pk, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            "but cron jobs run without a user present to approve it. "
+                            "Find an alternative approach that avoids this command. "
+                            "To allow dangerous commands in cron jobs, set "
+                            "approvals.cron_mode: approve in config.yaml."
+                        ),
+                    }
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -818,13 +872,43 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min)
+            # Block until the user responds or timeout (default 5 min).
+            # Poll in short slices so we can fire activity heartbeats every
+            # ~10s to the agent's inactivity tracker.  Without this, the
+            # blocking event.wait() never touches activity, and the
+            # gateway's inactivity watchdog (agent.gateway_timeout, default
+            # 1800s) kills the agent while the user is still responding to
+            # the approval prompt.  Mirrors the _wait_for_process() cadence
+            # in tools/environments/base.py.
             timeout = _get_approval_config().get("gateway_timeout", 300)
             try:
                 timeout = int(timeout)
             except (ValueError, TypeError):
                 timeout = 300
-            resolved = entry.event.wait(timeout=timeout)
+
+            try:
+                from tools.environments.base import touch_activity_if_due
+            except Exception:  # pragma: no cover
+                touch_activity_if_due = None
+
+            _now = time.monotonic()
+            _deadline = _now + max(timeout, 0)
+            _activity_state = {"last_touch": _now, "start": _now}
+            resolved = False
+            while True:
+                _remaining = _deadline - time.monotonic()
+                if _remaining <= 0:
+                    break
+                # 1s poll slice — the event is set immediately when the
+                # user responds, so slice length only controls heartbeat
+                # cadence, not user-visible responsiveness.
+                if entry.event.wait(timeout=min(1.0, _remaining)):
+                    resolved = True
+                    break
+                if touch_activity_if_due is not None:
+                    touch_activity_if_due(
+                        _activity_state, "waiting for user approval"
+                    )
 
             # Clean up this entry from the queue
             with _lock:

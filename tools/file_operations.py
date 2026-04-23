@@ -35,6 +35,13 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from tools.binary_extensions import BINARY_EXTENSIONS
 
+from agent.file_safety import (
+    build_write_denied_paths,
+    build_write_denied_prefixes,
+    get_safe_write_root as _shared_get_safe_write_root,
+    is_write_denied as _shared_is_write_denied,
+)
+
 
 # ---------------------------------------------------------------------------
 # Write-path deny list — blocks writes to sensitive system/credential files
@@ -42,41 +49,9 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
-    os.path.realpath(p) for p in [
-        os.path.join(_HOME, ".ssh", "authorized_keys"),
-        os.path.join(_HOME, ".ssh", "id_rsa"),
-        os.path.join(_HOME, ".ssh", "id_ed25519"),
-        os.path.join(_HOME, ".ssh", "config"),
-        str(get_hermes_home() / ".env"),
-        os.path.join(_HOME, ".bashrc"),
-        os.path.join(_HOME, ".zshrc"),
-        os.path.join(_HOME, ".profile"),
-        os.path.join(_HOME, ".bash_profile"),
-        os.path.join(_HOME, ".zprofile"),
-        os.path.join(_HOME, ".netrc"),
-        os.path.join(_HOME, ".pgpass"),
-        os.path.join(_HOME, ".npmrc"),
-        os.path.join(_HOME, ".pypirc"),
-        "/etc/sudoers",
-        "/etc/passwd",
-        "/etc/shadow",
-    ]
-}
+WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
 
-WRITE_DENIED_PREFIXES = [
-    os.path.realpath(p) + os.sep for p in [
-        os.path.join(_HOME, ".ssh"),
-        os.path.join(_HOME, ".aws"),
-        os.path.join(_HOME, ".gnupg"),
-        os.path.join(_HOME, ".kube"),
-        "/etc/sudoers.d",
-        "/etc/systemd",
-        os.path.join(_HOME, ".docker"),
-        os.path.join(_HOME, ".azure"),
-        os.path.join(_HOME, ".config", "gh"),
-    ]
-]
+WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 
 def _get_safe_write_root() -> Optional[str]:
@@ -87,33 +62,12 @@ def _get_safe_write_root() -> Optional[str]:
     not on the static deny list.  Opt-in hardening for gateway/messaging
     deployments that should only touch a workspace checkout.
     """
-    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not root:
-        return None
-    try:
-        return os.path.realpath(os.path.expanduser(root))
-    except Exception:
-        return None
+    return _shared_get_safe_write_root()
 
 
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
-
-    # 1) Static deny list
-    if resolved in WRITE_DENIED_PATHS:
-        return True
-    for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
-            return True
-
-    # 2) Optional safe-root sandbox
-    safe_root = _get_safe_write_root()
-    if safe_root:
-        if not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
-            return True
-
-    return False
+    return _shared_is_write_denied(path)
 
 
 # =============================================================================
@@ -317,6 +271,40 @@ LINTERS = {
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
+DEFAULT_READ_OFFSET = 1
+DEFAULT_READ_LIMIT = 500
+DEFAULT_SEARCH_OFFSET = 0
+DEFAULT_SEARCH_LIMIT = 50
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Best-effort integer coercion for tool pagination inputs."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
+                              limit: Any = DEFAULT_READ_LIMIT) -> tuple[int, int]:
+    """Return safe read_file pagination bounds.
+
+    Tool schemas declare minimum/maximum values, but not every caller or
+    provider enforces schemas before dispatch. Clamp here so invalid values
+    cannot leak into sed ranges like ``0,-1p``.
+    """
+    normalized_offset = max(1, _coerce_int(offset, DEFAULT_READ_OFFSET))
+    normalized_limit = _coerce_int(limit, DEFAULT_READ_LIMIT)
+    normalized_limit = max(1, min(normalized_limit, MAX_LINES))
+    return normalized_offset, normalized_limit
+
+
+def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
+                                limit: Any = DEFAULT_SEARCH_LIMIT) -> tuple[int, int]:
+    """Return safe search pagination bounds for shell head/tail pipelines."""
+    normalized_offset = max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET))
+    normalized_limit = max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
+    return normalized_offset, normalized_limit
 
 
 class ShellFileOperations(FileOperations):
@@ -330,11 +318,26 @@ class ShellFileOperations(FileOperations):
     def __init__(self, terminal_env, cwd: str = None):
         """
         Initialize file operations with a terminal environment.
-        
+
         Args:
             terminal_env: Any object with execute(command, cwd) method.
                          Returns {"output": str, "returncode": int}
-            cwd: Working directory (defaults to env's cwd or current directory)
+            cwd: Optional explicit fallback cwd when the terminal env has
+                 no cwd attribute (rare — most backends track cwd live).
+
+        Note:
+            Every _exec() call prefers the LIVE ``terminal_env.cwd`` over
+            ``self.cwd`` so ``cd`` commands run via the terminal tool are
+            picked up immediately.  ``self.cwd`` is only used as a fallback
+            when the env has no cwd at all — it is NOT the authoritative
+            cwd, despite being settable at init time.
+
+            Historical bug (fixed): prior versions of this class used the
+            init-time cwd for every _exec() call, which caused relative
+            paths passed to patch/read/write to target the wrong directory
+            after the user ran ``cd`` in the terminal.  Patches would
+            claim success and return a plausible diff but land in the
+            original directory, producing apparent silent failures.
         """
         self.env = terminal_env
         # Determine cwd from various possible sources.
@@ -343,25 +346,37 @@ class ShellFileOperations(FileOperations):
         # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
-        
+
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
         """Execute command via terminal backend.
-        
+
         Args:
             stdin_data: If provided, piped to the process's stdin instead of
                         embedding in the command string. Bypasses ARG_MAX.
+
+        Cwd resolution order (critical — see class docstring):
+          1. Explicit ``cwd`` arg (if provided)
+          2. Live ``self.env.cwd`` (tracks ``cd`` commands run via terminal)
+          3. Init-time ``self.cwd`` (fallback when env has no cwd attribute)
+
+        This ordering ensures relative paths in file operations follow the
+        terminal's current directory — not the directory this file_ops was
+        originally created in.  See test_file_ops_cwd_tracking.py.
         """
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
-        
-        result = self.env.execute(command, cwd=cwd or self.cwd, **kwargs)
+
+        # Resolve cwd from the live env so `cd` commands are picked up.
+        # Fall through to init-time self.cwd only if the env doesn't track cwd.
+        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
@@ -480,8 +495,7 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
         
-        # Clamp limit
-        limit = min(limit, MAX_LINES)
+        offset, limit = normalize_read_pagination(offset, limit)
         
         # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
@@ -757,17 +771,36 @@ class ShellFileOperations(FileOperations):
             content, old_string, new_string, replace_all
         )
         
-        if error:
-            return PatchResult(error=error)
-        
-        if match_count == 0:
-            return PatchResult(error=f"Could not find match for old_string in {path}")
-        
+        if error or match_count == 0:
+            err_msg = error or f"Could not find match for old_string in {path}"
+            try:
+                from tools.fuzzy_match import format_no_match_hint
+                err_msg += format_no_match_hint(err_msg, match_count, old_string, content)
+            except Exception:
+                pass
+            return PatchResult(error=err_msg)
         # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
-        
+
+        # Post-write verification — re-read the file and confirm the bytes we
+        # intended to write actually landed. Catches silent persistence
+        # failures (backend FS oddities, race with another task, truncated
+        # pipe, etc.) that would otherwise return success-with-diff while the
+        # file is unchanged on disk.
+        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_result = self._exec(verify_cmd)
+        if verify_result.exit_code != 0:
+            return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
+        if verify_result.stdout != new_content:
+            return PatchResult(error=(
+                f"Post-write verification failed for {path}: on-disk content "
+                f"differs from intended write "
+                f"(wrote {len(new_content)} chars, read back {len(verify_result.stdout)}). "
+                "The patch did not persist. Re-read the file and try again."
+            ))
+
         # Generate diff
         diff = self._unified_diff(content, new_content, path)
         
@@ -866,6 +899,8 @@ class ShellFileOperations(FileOperations):
         Returns:
             SearchResult with matches or file list
         """
+        offset, limit = normalize_search_pagination(offset, limit)
+
         # Expand ~ and other shell paths
         path = self._expand_path(path)
         

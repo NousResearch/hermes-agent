@@ -126,7 +126,22 @@ def _shadow_repo_path(working_dir: str) -> Path:
 
 
 def _git_env(shadow_repo: Path, working_dir: str) -> dict:
-    """Build env dict that redirects git to the shadow repo."""
+    """Build env dict that redirects git to the shadow repo.
+
+    The shadow repo is internal Hermes infrastructure — it must NOT inherit
+    the user's global or system git config.  User-level settings like
+    ``commit.gpgsign = true``, signing hooks, or credential helpers would
+    either break background snapshots or, worse, spawn interactive prompts
+    (pinentry GUI windows) mid-session every time a file is written.
+
+    Isolation strategy:
+    * ``GIT_CONFIG_GLOBAL=<os.devnull>`` — ignore ``~/.gitconfig`` (git 2.32+).
+    * ``GIT_CONFIG_SYSTEM=<os.devnull>`` — ignore ``/etc/gitconfig`` (git 2.32+).
+    * ``GIT_CONFIG_NOSYSTEM=1`` — legacy belt-and-suspenders for older git.
+
+    The shadow repo still has its own per-repo config (user.email, user.name,
+    commit.gpgsign=false) set in ``_init_shadow_repo``.
+    """
     normalized_working_dir = _normalize_path(working_dir)
     env = os.environ.copy()
     env["GIT_DIR"] = str(shadow_repo)
@@ -134,6 +149,13 @@ def _git_env(shadow_repo: Path, working_dir: str) -> dict:
     env.pop("GIT_INDEX_FILE", None)
     env.pop("GIT_NAMESPACE", None)
     env.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None)
+    # Isolate the shadow repo from the user's global/system git config.
+    # Prevents commit.gpgsign, hooks, aliases, credential helpers, etc. from
+    # leaking into background snapshots.  Uses os.devnull for cross-platform
+    # support (``/dev/null`` on POSIX, ``nul`` on Windows).
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
 
 
@@ -211,6 +233,13 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
 
     _run_git(["config", "user.email", "hermes@local"], shadow_repo, working_dir)
     _run_git(["config", "user.name", "Hermes Checkpoint"], shadow_repo, working_dir)
+    # Explicitly disable commit/tag signing in the shadow repo.  _git_env
+    # already isolates from the user's global config, but writing these into
+    # the shadow's own config is belt-and-suspenders — it guarantees the
+    # shadow repo is correct even if someone inspects or runs git against it
+    # directly (without the GIT_CONFIG_* env vars).
+    _run_git(["config", "commit.gpgsign", "false"], shadow_repo, working_dir)
+    _run_git(["config", "tag.gpgSign", "false"], shadow_repo, working_dir)
 
     info_dir = shadow_repo / "info"
     info_dir.mkdir(exist_ok=True)
@@ -360,7 +389,6 @@ class CheckpointManager:
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
         """Parse git --shortstat output into entry dict."""
-        import re
         m = re.search(r'(\d+) file', stat_line)
         if m:
             entry["files_changed"] = int(m.group(1))
@@ -552,9 +580,11 @@ class CheckpointManager:
             logger.debug("Checkpoint skipped: no changes in %s", working_dir)
             return False
 
-        # Commit
+        # Commit.  ``--no-gpg-sign`` inline covers shadow repos created before
+        # the commit.gpgsign=false config was added to _init_shadow_repo — so
+        # users with existing checkpoints never hit a GPG pinentry popup.
         ok, _, err = _run_git(
-            ["commit", "-m", reason, "--allow-empty-message"],
+            ["commit", "-m", reason, "--allow-empty-message", "--no-gpg-sign"],
             shadow, working_dir, timeout=_GIT_TIMEOUT * 2,
         )
         if not ok:

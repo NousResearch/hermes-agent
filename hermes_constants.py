@@ -14,7 +14,8 @@ def get_hermes_home() -> Path:
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    val = os.environ.get("HERMES_HOME", "").strip()
+    return Path(val) if val else Path.home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:

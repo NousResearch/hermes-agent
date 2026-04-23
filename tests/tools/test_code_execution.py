@@ -279,6 +279,10 @@ raise RuntimeError("deliberate crash")
                 ))
         self.assertEqual(result["status"], "timeout")
         self.assertIn("timed out", result.get("error", ""))
+        # The timeout message must also appear in output so the LLM always
+        # surfaces it to the user (#10807).
+        self.assertIn("timed out", result.get("output", ""))
+        self.assertIn("\u23f0", result.get("output", ""))
 
     def test_web_search_tool(self):
         """Script calls web_search and processes results."""
@@ -380,7 +384,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the

@@ -19,6 +19,7 @@ def _make_agent(fallback_model=None):
     ):
         agent = AIAgent(
             api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -154,3 +155,29 @@ class TestFallbackChainAdvancement:
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
+
+    def test_resolves_key_env_for_fallback_provider(self):
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "fallback-model",
+                "base_url": "https://fallback.example/v1",
+                "key_env": "MY_FALLBACK_KEY",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(
+                        base_url="https://fallback.example/v1",
+                        api_key="env-secret",
+                    ),
+                    "fallback-model",
+                ),
+            ) as mock_rpc,
+        ):
+            assert agent._try_activate_fallback() is True
+            assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"

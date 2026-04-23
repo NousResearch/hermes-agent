@@ -43,41 +43,20 @@ def _redact(value: str) -> str:
 
 def _gateway_status() -> str:
     """Return a short gateway status string."""
-    if sys.platform.startswith("linux"):
-        from hermes_constants import is_container
-        if is_container():
-            try:
-                from hermes_cli.gateway import find_gateway_pids
-                pids = find_gateway_pids()
-                if pids:
-                    return f"running (docker, pid {pids[0]})"
-                return "stopped (docker)"
-            except Exception:
-                return "stopped (docker)"
-        try:
-            from hermes_cli.gateway import get_service_name
-            svc = get_service_name()
-        except Exception:
-            svc = "hermes-gateway"
-        try:
-            r = subprocess.run(
-                ["systemctl", "--user", "is-active", svc],
-                capture_output=True, text=True, timeout=5,
-            )
-            return "running (systemd)" if r.stdout.strip() == "active" else "stopped"
-        except Exception:
-            return "unknown"
-    elif sys.platform == "darwin":
-        try:
-            from hermes_cli.gateway import get_launchd_label
-            r = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True, text=True, timeout=5,
-            )
-            return "loaded (launchd)" if r.returncode == 0 else "not loaded"
-        except Exception:
-            return "unknown"
-    return "N/A"
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot
+
+        snapshot = get_gateway_runtime_snapshot()
+        if snapshot.running:
+            mode = snapshot.manager
+            if snapshot.has_process_service_mismatch:
+                mode = "manual"
+            return f"running ({mode}, pid {snapshot.gateway_pids[0]})"
+        if snapshot.service_installed and not snapshot.service_running:
+            return f"stopped ({snapshot.manager})"
+        return f"stopped ({snapshot.manager})"
+    except Exception:
+        return "unknown" if sys.platform.startswith(("linux", "darwin")) else "N/A"
 
 
 def _count_skills(hermes_home: Path) -> int:
@@ -181,7 +160,6 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("display", "streaming"),
         ("display", "skin"),
         ("display", "show_reasoning"),
-        ("smart_model_routing", "enabled"),
         ("privacy", "redact_pii"),
         ("tts", "provider"),
     ]
@@ -296,6 +274,7 @@ def run_dump(args):
         ("DEEPSEEK_API_KEY", "deepseek"),
         ("DASHSCOPE_API_KEY", "dashscope"),
         ("HF_TOKEN", "huggingface"),
+        ("NVIDIA_API_KEY", "nvidia"),
         ("AI_GATEWAY_API_KEY", "ai_gateway"),
         ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
         ("OPENCODE_GO_API_KEY", "opencode_go"),

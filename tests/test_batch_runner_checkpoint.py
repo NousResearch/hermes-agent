@@ -12,7 +12,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from batch_runner import BatchRunner
+from batch_runner import BatchRunner, _process_batch_worker
 
 
 @pytest.fixture
@@ -157,3 +157,32 @@ class TestResumePreservesProgress:
 
         assert checkpoint_data["completed_prompts"] == []
         assert checkpoint_data["run_name"] == "test_run"
+
+
+class TestBatchWorkerResumeBehavior:
+    def test_discarded_no_reasoning_prompts_are_marked_completed(self, tmp_path, monkeypatch):
+        batch_file = tmp_path / "batch_1.jsonl"
+        prompt_result = {
+            "success": True,
+            "trajectory": [{"role": "assistant", "content": "x"}],
+            "reasoning_stats": {"has_any_reasoning": False},
+            "tool_stats": {},
+            "metadata": {},
+            "completed": True,
+            "api_calls": 1,
+            "toolsets_used": [],
+        }
+
+        monkeypatch.setattr("batch_runner._process_single_prompt", lambda *args, **kwargs: prompt_result)
+
+        result = _process_batch_worker((
+            1,
+            [(0, {"prompt": "hi"})],
+            tmp_path,
+            set(),
+            {"verbose": False},
+        ))
+
+        assert result["discarded_no_reasoning"] == 1
+        assert result["completed_prompts"] == [0]
+        assert not batch_file.exists() or batch_file.read_text() == ""

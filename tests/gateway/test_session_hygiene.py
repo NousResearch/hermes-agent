@@ -305,10 +305,15 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     class FakeCompressAgent:
+        last_instance = None
+
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
             self.session_id = kwargs.get("session_id", "fake-session")
             self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
             # Simulate real _compress_context: create a new session_id
@@ -374,6 +379,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
             chat_id="-1001",
             chat_type="group",
             thread_id="17585",
+            user_id="12345",
         ),
         message_id="1",
     )
@@ -384,3 +390,6 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     # Compression warnings are no longer sent to users — compression
     # happens silently with server-side logging only.
     assert len(adapter.sent) == 0
+    assert FakeCompressAgent.last_instance is not None
+    FakeCompressAgent.last_instance.shutdown_memory_provider.assert_called_once()
+    FakeCompressAgent.last_instance.close.assert_called_once()

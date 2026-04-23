@@ -2,11 +2,13 @@
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
+    _smart_approve,
     approve_session,
     detect_dangerous_command,
     is_approved,
@@ -24,6 +26,21 @@ class TestApprovalModeParsing:
     def test_string_off_still_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "off"}}):
             assert _get_approval_mode() == "off"
+
+
+class TestSmartApproval:
+    def test_smart_approval_uses_call_llm(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+        )
+        with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
+
+        assert result == "approve"
+        mock_call.assert_called_once()
+        assert mock_call.call_args.kwargs["task"] == "approval"
+        assert mock_call.call_args.kwargs["temperature"] == 0
+        assert mock_call.call_args.kwargs["max_tokens"] == 16
 
 
 class TestDetectDangerousRm:
@@ -550,11 +567,12 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
-    def test_systemctl_restart_not_flagged(self):
-        """Using systemctl to manage the gateway is the correct approach."""
+    def test_systemctl_restart_flagged(self):
+        """systemctl restart kills running agents and should require approval."""
         cmd = "systemctl --user restart hermes-gateway"
         dangerous, key, desc = detect_dangerous_command(cmd)
-        assert dangerous is False
+        assert dangerous is True
+        assert "stop/restart" in desc
 
     def test_pkill_hermes_detected(self):
         """pkill targeting hermes/gateway processes must be caught."""
@@ -818,5 +836,4 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
-
 

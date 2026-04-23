@@ -345,6 +345,7 @@ AUTHOR_MAP = {
     "105142614+VTRiot@users.noreply.github.com": "VTRiot",
     "vivien000812@gmail.com": "iamagenius00",
     "89228157+Feranmi10@users.noreply.github.com": "Feranmi10",
+    "simon@gtcl.us": "simon-gtcl",
 }
 
 

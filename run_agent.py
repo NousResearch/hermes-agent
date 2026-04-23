@@ -6800,6 +6800,7 @@ class AIAgent:
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
             "zai", "bedrock",
+            "custom",
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
@@ -6812,6 +6813,9 @@ class AIAgent:
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
             or "bedrock-runtime." in base
+            # Third-party Anthropic-compatible endpoints (e.g. antchat)
+            # that preserve dots in model names (e.g. GLM-5.1).
+            or "anthropic" in base
         )
 
     def _is_qwen_portal(self) -> bool:

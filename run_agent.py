@@ -2157,6 +2157,16 @@ class AIAgent:
             "api_mode": getattr(self, "api_mode", "") or "",
         }
 
+    def _chat_stream_options_supported(self) -> bool:
+        """Return whether chat-completions streaming should request usage chunks."""
+        provider = (getattr(self, "provider", "") or "").strip().lower()
+        base_url = (getattr(self, "base_url", "") or "").strip().lower()
+        if provider in {"gemini", "google", "google-gemini", "google-ai-studio"}:
+            return False
+        if "generativelanguage.googleapis.com" in base_url:
+            return False
+        return True
+
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
         window is smaller than the main model's compression threshold.
@@ -5600,7 +5610,6 @@ class AIAgent:
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
-                "stream_options": {"include_usage": True},
                 "timeout": _httpx.Timeout(
                     connect=30.0,
                     read=_stream_read_timeout,
@@ -5608,6 +5617,8 @@ class AIAgent:
                     pool=30.0,
                 ),
             }
+            if self._chat_stream_options_supported():
+                stream_kwargs["stream_options"] = {"include_usage": True}
             request_client_holder["client"] = self._create_request_openai_client(
                 reason="chat_completion_stream_request"
             )

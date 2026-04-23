@@ -986,6 +986,26 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _is_bedrock_model_id(model: str) -> bool:
+    """Detect AWS Bedrock model IDs that use dots as namespace separators.
+
+    Bedrock model IDs come in two forms:
+    - Bare:    ``anthropic.claude-opus-4-7``
+    - Regional (inference profiles): ``us.anthropic.claude-sonnet-4-5-v1:0``
+
+    In both cases the dots separate namespace components, not version
+    numbers, and must be preserved verbatim for the Bedrock API.
+    """
+    lower = model.lower()
+    # Regional inference-profile prefixes
+    if any(lower.startswith(p) for p in ("global.", "us.", "eu.", "ap.", "jp.")):
+        return True
+    # Bare Bedrock model IDs: provider.model-family
+    if lower.startswith("anthropic."):
+        return True
+    return False
+
+
 def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
@@ -993,11 +1013,19 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
       Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
       preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
+    - Preserves Bedrock model IDs (``anthropic.claude-opus-4-7``) and
+      regional inference profiles (``us.anthropic.claude-*``) whose dots
+      are namespace separators, not version separators.
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
     if not preserve_dots:
+        # Bedrock model IDs use dots as namespace separators
+        # (e.g. "anthropic.claude-opus-4-7", "us.anthropic.claude-*").
+        # These must not be converted to hyphens.  See issue #12295.
+        if _is_bedrock_model_id(model):
+            return model
         # OpenRouter uses dots for version separators (claude-opus-4.6),
         # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
         model = model.replace(".", "-")

@@ -1,0 +1,19 @@
+name: gitlab-review
+version: 1.0.0
+description: "GitLab Merge Request code review tools — view MRs, post comments, submit reviews, check pipelines. Supports self-hosted GitLab via GITLAB_URL env var."
+author: Hermes Agent
+requires_env:
+  - GITLAB_TOKEN
+provides_tools:
+  - gitlab_mr_view
+  - gitlab_mr_diff
+  - gitlab_mr_list_files
+  - gitlab_mr_comments
+  - gitlab_mr_inline_comment
+  - gitlab_mr_review
+  - gitlab_mr_list
+  - gitlab_mr_pipelines
+  - gitlab_pipeline_jobs
+  - gitlab_pipeline_retry
+  - gitlab_mr_context
+  - gitlab_mr_discussions

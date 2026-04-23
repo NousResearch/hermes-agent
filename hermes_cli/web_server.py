@@ -2082,6 +2082,36 @@ class SkillToggle(BaseModel):
     enabled: bool
 
 
+@app.get("/api/spawns")
+async def get_spawns():
+    """Snapshot of currently running subagents (tool-call sub-agents spawned
+    via delegate_task or plugin-registered delegate_to_* tools).
+
+    Useful for dashboard / observability surfaces that want to show live
+    parent → specialist activity: which child is running, which model it's
+    using, how deep the tree is, and its current status.
+
+    Response shape (list of records):
+        [
+          {
+            "subagent_id": "sa-0-a1b2c3d4",
+            "parent_id": null,           // parent subagent_id if nested, else null
+            "depth": 0,                   // 0 = first-level child
+            "goal": "search work email for Foxon",
+            "model": "anthropic/claude-haiku-4.5",
+            "started_at": 1776975968.12,  // unix float seconds
+            "status": "running",          // spawning | running | complete | failed
+            "tool_count": 3               // tool calls fired so far
+          }
+        ]
+
+    Returns an empty list when no subagents are active.  Stateless — each
+    call reads a fresh snapshot from the thread-safe registry.
+    """
+    from tools.delegate_tool import list_active_subagents
+    return list_active_subagents()
+
+
 @app.get("/api/skills")
 async def get_skills():
     from tools.skills_tool import _find_all_skills

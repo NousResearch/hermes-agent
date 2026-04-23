@@ -1666,8 +1666,8 @@ class AIAgent:
             # Try general plugin system as fallback
             if _selected_engine is None:
                 try:
-                    from hermes_cli.plugins import get_plugin_context_engine
-                    _candidate = get_plugin_context_engine()
+                    from hermes_cli.plugins import create_plugin_context_engine
+                    _candidate = create_plugin_context_engine(_engine_name)
                     if _candidate and _candidate.name == _engine_name:
                         _selected_engine = _candidate
                 except Exception:

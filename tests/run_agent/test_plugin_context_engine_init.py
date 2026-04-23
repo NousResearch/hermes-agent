@@ -89,3 +89,46 @@ def test_plugin_engine_update_model_args():
     assert "provider" in kw
     # Should NOT pass api_mode — the ABC doesn't accept it
     assert "api_mode" not in kw
+
+
+def test_general_plugin_context_engine_is_isolated_per_agent_instance():
+    """General plugin engines must not be shared mutable singletons across agents."""
+    shared_singleton = _StubEngine()
+    fresh_one = _StubEngine()
+    fresh_two = _StubEngine()
+    cfg = {"context": {"engine": "stub"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=None),
+        patch("hermes_cli.plugins.get_plugin_context_engine", return_value=shared_singleton),
+        patch(
+            "hermes_cli.plugins.create_plugin_context_engine",
+            side_effect=[fresh_one, fresh_two],
+            create=True,
+        ),
+        patch("agent.model_metadata.get_model_context_length", return_value=131_072),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent_one = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent_two = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent_one.context_compressor is fresh_one
+    assert agent_two.context_compressor is fresh_two
+    assert agent_one.context_compressor is not agent_two.context_compressor

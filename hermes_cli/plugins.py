@@ -390,6 +390,7 @@ class PluginContext:
             )
             return
         self._manager._context_engine = engine
+        self._manager._context_engine_manifest = self.manifest
         logger.info(
             "Plugin '%s' registered context engine: %s",
             self.manifest.name, engine.name,
@@ -502,6 +503,7 @@ class PluginManager:
         self._plugin_tool_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        self._context_engine_manifest: Optional[PluginManifest] = None
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
@@ -1090,8 +1092,35 @@ def _ensure_plugins_discovered() -> PluginManager:
 
 
 def get_plugin_context_engine():
-    """Return the plugin-registered context engine, or None."""
+    """Return the singleton plugin-registered context engine, or None."""
     return _ensure_plugins_discovered()._context_engine
+
+
+def create_plugin_context_engine(expected_name: Optional[str] = None):
+    """Instantiate a fresh plugin context engine for one agent/session.
+
+    The global plugin manager keeps a singleton engine for status surfaces and
+    discovery metadata, but agent runtime must not share that mutable instance
+    across sessions. This helper reloads the owning plugin into a temporary
+    PluginManager and returns the newly-registered engine instance.
+    """
+    manager = _ensure_plugins_discovered()
+    singleton = manager._context_engine
+    manifest = manager._context_engine_manifest
+    if singleton is None or manifest is None:
+        return None
+    if expected_name and getattr(singleton, "name", None) != expected_name:
+        return None
+
+    temp_manager = PluginManager()
+    temp_manager._discovered = True
+    temp_manager._load_plugin(manifest)
+    engine = temp_manager._context_engine
+    if engine is None:
+        return None
+    if expected_name and getattr(engine, "name", None) != expected_name:
+        return None
+    return engine
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:

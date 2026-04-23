@@ -2560,6 +2560,40 @@ class GatewayRunner:
             return
 
         async def _stop_impl() -> None:
+            def _kill_tool_subprocesses(phase: str) -> None:
+                """Kill tool subprocesses + tear down terminal envs + browsers.
+
+                Called twice in the shutdown path: once eagerly after a
+                drain timeout forces agent interrupt (so we reclaim bash/
+                sleep children before systemd TimeoutStopSec escalates to
+                SIGKILL on the cgroup — #8202), and once as a final
+                catch-all at the end of _stop_impl() for the graceful
+                path or anything respawned mid-teardown.
+
+                All steps are best-effort; exceptions are swallowed so
+                one subsystem's failure doesn't block the rest.
+                """
+                try:
+                    from tools.process_registry import process_registry
+                    _killed = process_registry.kill_all()
+                    if _killed:
+                        logger.info(
+                            "Shutdown (%s): killed %d tool subprocess(es)",
+                            phase, _killed,
+                        )
+                except Exception as _e:
+                    logger.debug("process_registry.kill_all (%s) error: %s", phase, _e)
+                try:
+                    from tools.terminal_tool import cleanup_all_environments
+                    cleanup_all_environments()
+                except Exception as _e:
+                    logger.debug("cleanup_all_environments (%s) error: %s", phase, _e)
+                try:
+                    from tools.browser_tool import cleanup_all_browsers
+                    cleanup_all_browsers()
+                except Exception as _e:
+                    logger.debug("cleanup_all_browsers (%s) error: %s", phase, _e)
+
             logger.info(
                 "Stopping gateway%s...",
                 " for restart" if self._restart_requested else "",
@@ -2621,6 +2655,16 @@ class GatewayRunner:
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
 
+                # Kill lingering tool subprocesses NOW, before we spend more
+                # budget on adapter disconnect / session DB close.  Under
+                # systemd (TimeoutStopSec bounded by drain_timeout+headroom),
+                # deferring this to the end of stop() risks systemd escalating
+                # to SIGKILL on the cgroup first — at which point bash/sleep
+                # children left behind by an interrupted terminal tool get
+                # killed by systemd instead of us (issue #8202).  The final
+                # catch-all cleanup below still runs for the graceful path.
+                _kill_tool_subprocesses("post-interrupt")
+
             if self._restart_requested and self._restart_detached:
                 try:
                     await self._launch_detached_restart_command()
@@ -2656,22 +2700,13 @@ class GatewayRunner:
             self._shutdown_event.set()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
-            # to a specific agent (catch-all for zombie prevention).
-            try:
-                from tools.process_registry import process_registry
-                process_registry.kill_all()
-            except Exception:
-                pass
-            try:
-                from tools.terminal_tool import cleanup_all_environments
-                cleanup_all_environments()
-            except Exception:
-                pass
-            try:
-                from tools.browser_tool import cleanup_all_browsers
-                cleanup_all_browsers()
-            except Exception:
-                pass
+            # to a specific agent (catch-all for zombie prevention). On the
+            # drain-timeout path we already did this earlier after agent
+            # interrupt — this second call catches (a) the graceful path
+            # where drain succeeded without interrupt, and (b) anything
+            # that got respawned between the earlier call and adapter
+            # disconnect (defense in depth; safe to call repeatedly).
+            _kill_tool_subprocesses("final-cleanup")
 
             # Close SQLite session DBs so the WAL write lock is released.
             # Without this, --replace and similar restart flows leave the

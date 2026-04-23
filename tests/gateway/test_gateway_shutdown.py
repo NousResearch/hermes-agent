@@ -145,3 +145,86 @@ async def test_drain_active_agents_throttles_status_updates():
     # Start, one count-change update, and final update. Allow one extra update
     # if the loop observes the zero-agent state before exiting.
     assert 3 <= runner._update_runtime_status.call_count <= 4
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on_timeout(monkeypatch):
+    """On drain timeout, tool subprocesses must be killed BEFORE adapter
+    disconnect so systemd's TimeoutStopSec doesn't SIGKILL the cgroup with
+    bash/sleep children still attached (#8202)."""
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01  # force timeout path
+
+    call_order: list[str] = []
+
+    def _fake_kill_all(task_id=None):
+        call_order.append("kill_all")
+        return 2
+
+    def _fake_cleanup_envs():
+        call_order.append("cleanup_environments")
+
+    def _fake_cleanup_browsers():
+        call_order.append("cleanup_browsers")
+
+    async def _disconnect():
+        call_order.append("disconnect")
+
+    # Patch the module-level names the stop() helper imports lazily.
+    import tools.process_registry as _pr
+    import tools.terminal_tool as _tt
+    import tools.browser_tool as _bt
+    monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
+    monkeypatch.setattr(_tt, "cleanup_all_environments", _fake_cleanup_envs)
+    monkeypatch.setattr(_bt, "cleanup_all_browsers", _fake_cleanup_browsers)
+
+    adapter.disconnect = _disconnect
+
+    runner._running_agents = {"session": MagicMock()}
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    # First kill_all must precede the first disconnect.  (Both the eager
+    # post-interrupt cleanup and the final catch-all call _kill_tool_
+    # subprocesses, so we expect kill_all to appear twice total.)
+    assert "kill_all" in call_order
+    assert "disconnect" in call_order
+    first_kill = call_order.index("kill_all")
+    first_disconnect = call_order.index("disconnect")
+    assert first_kill < first_disconnect, (
+        f"Tool subprocesses must be killed before adapter disconnect on "
+        f"drain timeout, got order: {call_order}"
+    )
+    # Defense-in-depth final cleanup still runs.
+    assert call_order.count("kill_all") >= 2
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_kills_tool_subprocesses_on_graceful_path(monkeypatch):
+    """Graceful shutdown (no drain timeout) must still kill tool subprocesses
+    exactly once via the final catch-all — regression guard against
+    accidentally removing that call when refactoring."""
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+
+    kill_count = 0
+
+    def _fake_kill_all(task_id=None):
+        nonlocal kill_count
+        kill_count += 1
+        return 0
+
+    import tools.process_registry as _pr
+    import tools.terminal_tool as _tt
+    import tools.browser_tool as _bt
+    monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
+    monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
+    monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+
+    # No running agents → drain returns immediately, no timeout, no eager cleanup.
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    # Only the final catch-all fires on the graceful path.
+    assert kill_count == 1

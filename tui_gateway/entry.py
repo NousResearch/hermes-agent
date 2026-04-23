@@ -44,7 +44,16 @@ def _log_signal(signum: int, frame) -> None:
     sys.exit(0)
 
 
-signal.signal(signal.SIGPIPE, _log_signal)
+# SIGPIPE: ignore, don't exit. The old SIG_DFL killed the process
+# silently whenever a *background* thread (TTS playback chain, voice
+# debug stderr emitter, beep thread) wrote to a pipe the TUI had gone
+# quiet on — even though the main thread was perfectly fine waiting on
+# stdin.  Ignoring the signal lets Python raise BrokenPipeError on the
+# offending write (write_json already handles that with a clean
+# sys.exit(0) + _log_exit), which keeps the gateway alive as long as
+# the main command pipe is still readable.  Terminal signals still
+# route through _log_signal so kills and hangups are diagnosable.
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 signal.signal(signal.SIGTERM, _log_signal)
 signal.signal(signal.SIGHUP, _log_signal)
 signal.signal(signal.SIGINT, signal.SIG_IGN)

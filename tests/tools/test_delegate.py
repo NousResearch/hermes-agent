@@ -69,7 +69,10 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
-        self.assertIn("max_iterations", props)
+        # max_iterations is intentionally NOT exposed to the model — it's
+        # config-authoritative via delegation.max_iterations so users get
+        # predictable budgets.
+        self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 

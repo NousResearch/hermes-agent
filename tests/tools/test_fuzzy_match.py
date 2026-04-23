@@ -148,3 +148,44 @@ class TestStrategyNameSurfaced:
         assert count == 0
         assert strategy is None
         assert err is not None
+
+
+class TestIndentationFlexibleOrdering:
+    """Tests for the strategy reordering: indentation_flexible (lstrip) now
+    runs before line_trimmed (strip), giving each strategy a unique catch zone."""
+
+    def test_indentation_flexible_used_for_leading_whitespace_only(self):
+        """When only leading whitespace differs, indentation_flexible should match
+        (it is now tried before line_trimmed)."""
+        content = "    def foo():\n        pass"
+        # Pattern has no leading whitespace — only indentation differs
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "def foo():\n    pass", "def bar():\n    return 1"
+        )
+        assert count == 1
+        assert strategy == "indentation_flexible"
+        assert "bar" in new
+
+    def test_line_trimmed_still_catches_trailing_whitespace(self):
+        """line_trimmed (strip) still matches when trailing whitespace differs,
+        which indentation_flexible (lstrip) would miss."""
+        # Content has trailing spaces that pattern doesn't
+        content = "hello world  \nfoo bar  "
+        pattern = "hello world\nfoo bar"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, pattern, "replaced"
+        )
+        assert count == 1
+        assert strategy == "line_trimmed"
+
+    def test_indentation_flexible_not_dead_code(self):
+        """Verify indentation_flexible actually contributes matches that
+        exact and whitespace_normalized miss."""
+        # Content uses tabs, pattern uses spaces — only lstrip can normalize this
+        content = "\tx = 1\n\ty = 2"
+        pattern = "x = 1\ny = 2"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, pattern, "replaced"
+        )
+        assert count == 1
+        assert strategy == "indentation_flexible"

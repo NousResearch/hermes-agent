@@ -6,15 +6,16 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 8-strategy chain (inspired by OpenCode), tried in order:
+The 9-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
-2. Line-trimmed - Strip leading/trailing whitespace per line
+2. Indentation flexible - Ignore leading whitespace only (lstrip)
 3. Whitespace normalized - Collapse multiple spaces/tabs to single space
-4. Indentation flexible - Ignore indentation differences entirely
+4. Line-trimmed - Strip leading and trailing whitespace per line
 5. Escape normalized - Convert \\n literals to actual newlines
 6. Trimmed boundary - Trim first/last line whitespace only
-7. Block anchor - Match first+last lines, use similarity for middle
-8. Context-aware - 50% line similarity threshold
+7. Unicode normalized - Normalize smart quotes, dashes, etc.
+8. Block anchor - Match first+last lines, use similarity for middle
+9. Context-aware - 50% line similarity threshold
 
 Multi-occurrence matching is handled via the replace_all flag.
 
@@ -72,9 +73,9 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),
-        ("line_trimmed", _strategy_line_trimmed),
-        ("whitespace_normalized", _strategy_whitespace_normalized),
         ("indentation_flexible", _strategy_indentation_flexible),
+        ("whitespace_normalized", _strategy_whitespace_normalized),
+        ("line_trimmed", _strategy_line_trimmed),
         ("escape_normalized", _strategy_escape_normalized),
         ("trimmed_boundary", _strategy_trimmed_boundary),
         ("unicode_normalized", _strategy_unicode_normalized),
@@ -143,7 +144,7 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_line_trimmed(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 2: Match with line-by-line whitespace trimming.
+    Strategy 4: Match with line-by-line whitespace trimming.
     
     Strips leading/trailing whitespace from each line before matching.
     """
@@ -163,7 +164,7 @@ def _strategy_line_trimmed(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_whitespace_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 3: Collapse multiple whitespace to single space.
+    Strategy 3: Collapse runs of whitespace to single space.
     """
     def normalize(s):
         # Collapse multiple spaces/tabs to single space, preserve newlines
@@ -184,7 +185,7 @@ def _strategy_whitespace_normalized(content: str, pattern: str) -> List[Tuple[in
 
 def _strategy_indentation_flexible(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 4: Ignore indentation differences entirely.
+    Strategy 2: Ignore leading indentation differences (lstrip-only).
     
     Strips all leading whitespace from lines before matching.
     """
@@ -200,7 +201,7 @@ def _strategy_indentation_flexible(content: str, pattern: str) -> List[Tuple[int
 
 def _strategy_escape_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 5: Convert escape sequences to actual characters.
+    Strategy 5: Convert literal escape sequences to actual characters.
     
     Handles \\n -> newline, \\t -> tab, etc.
     """
@@ -219,7 +220,7 @@ def _strategy_escape_normalized(content: str, pattern: str) -> List[Tuple[int, i
 
 def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 6: Trim whitespace from first and last lines only.
+    Strategy 6: Trim first/last line boundary whitespace only.
     
     Useful when the pattern boundaries have whitespace differences.
     """
@@ -310,7 +311,7 @@ def _map_positions_norm_to_orig(
 
 
 def _strategy_unicode_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
-    """Strategy 7: Unicode normalisation.
+    """Strategy 7: Unicode normalisation (smart quotes, dashes, etc.).
 
     Normalises smart quotes, em/en-dashes, ellipsis, and non-breaking spaces
     to their ASCII equivalents in both *content* and *pattern*, then runs
@@ -398,7 +399,7 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 9: Line-by-line similarity with 50% threshold.
+    Strategy 9: Line-by-line similarity with 80% per-line / 50% block threshold.
     
     Finds blocks where at least 50% of lines have high similarity.
     """

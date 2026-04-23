@@ -55,10 +55,10 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 | Requirement | Notes |
 |-------------|-------|
-| **Git** | With `--recurse-submodules` support |
+| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 18+** | Optional — needed for browser tools and WhatsApp bridge |
+| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
 ### Clone and install
 

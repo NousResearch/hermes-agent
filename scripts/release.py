@@ -378,6 +378,16 @@ AUTHOR_MAP = {
     "363708+christopherwoodall@users.noreply.github.com": "christopherwoodall",
     "zhang9w0v5@qq.com": "zhang9w0v5",
     "fuleinist@outlook.com": "fuleinist",
+    "43494187+Llugaes@users.noreply.github.com": "Llugaes",
+    "fengtianyu88@users.noreply.github.com": "fengtianyu88",
+    "l.moncany@gmail.com": "lmoncany",
+    "fatinghenji@users.noreply.github.com": "fatinghenji",
+    "xin.peng.dr@gmail.com": "xinpengdr",
+    "mike@mikewaters.net": "mikewaters",
+    "65117428+WadydX@users.noreply.github.com": "WadydX",
+    "216480837+isaachuangGMICLOUD@users.noreply.github.com": "isaachuangGMICLOUD",
+    "nukuom976228@gmail.com": "hsy5571616",
+    "11462216+Nan93@users.noreply.github.com": "Nan93",
 }
 
 

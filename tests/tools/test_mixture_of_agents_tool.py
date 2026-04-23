@@ -122,3 +122,34 @@ def test_get_moa_configuration_reads_configured_route_overrides(monkeypatch):
 
     assert config["reference_models"] == ["deepseek/deepseek-chat"]
     assert config["aggregator_model"] == "xiaomi/mimo-v2-flash"
+
+
+@pytest.mark.asyncio
+async def test_moa_returns_reference_previews_and_failed_models(monkeypatch):
+    monkeypatch.setattr(
+        moa,
+        "_run_reference_model_safe",
+        AsyncMock(side_effect=[
+            ("minimax/MiniMax-M2.7-highspeed", "MiniMax says choose crypto because momentum is higher right now.", True),
+            ("deepseek/deepseek-reasoner", "deepseek failed", False),
+        ]),
+    )
+    monkeypatch.setattr(
+        moa,
+        "_run_aggregator_model",
+        AsyncMock(return_value="Final synthesized answer"),
+    )
+    monkeypatch.setattr(
+        moa,
+        "_debug",
+        SimpleNamespace(log_call=MagicMock(), save=MagicMock(), active=False),
+    )
+    monkeypatch.setattr(moa, "_route_is_available", lambda route: True)
+
+    result = json.loads(await moa.mixture_of_agents_tool("compare assets"))
+
+    assert result["success"] is True
+    assert result["failed_models"] == ["deepseek/deepseek-reasoner"]
+    assert result["reference_previews"] == {
+        "minimax/MiniMax-M2.7-highspeed": "MiniMax says choose crypto because momentum is higher right now."
+    }

@@ -625,7 +625,7 @@ class TestPrompt:
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
-                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed", "deepseek/deepseek-reasoner"], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed", "deepseek/deepseek-reasoner"], "aggregator_model": "xiaomi/mimo-v2-pro"}, "failed_models": [], "reference_previews": {"minimax/MiniMax-M2.7-highspeed": "moa answer"}}'
             ),
         ):
             await agent.prompt(
@@ -643,6 +643,10 @@ class TestPrompt:
             "minimax/MiniMax-M2.7-highspeed",
             "deepseek/deepseek-reasoner",
         ]
+        assert result_event["tool"]["failed_models"] == []
+        assert result_event["tool"]["reference_previews"] == {
+            "minimax/MiniMax-M2.7-highspeed": "moa answer"
+        }
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):

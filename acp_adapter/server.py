@@ -210,6 +210,16 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
         "success": bool(payload.get("success")),
         "models_used": payload.get("models_used"),
     }
+    failed_models = payload.get("failed_models")
+    if isinstance(failed_models, list):
+        summary["failed_models"] = [str(model).strip() for model in failed_models if str(model).strip()]
+    reference_previews = payload.get("reference_previews")
+    if isinstance(reference_previews, dict):
+        summary["reference_previews"] = {
+            str(model).strip(): str(preview).strip()[:220]
+            for model, preview in reference_previews.items()
+            if str(model).strip() and str(preview).strip()
+        }
     error = str(payload.get("error") or "").strip()
     if error:
         summary["error"] = error[:500]

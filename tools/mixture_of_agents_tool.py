@@ -260,6 +260,13 @@ def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> st
     return f"{system_prompt}\n\n{response_text}"
 
 
+def _preview_reference_response(content: str, limit: int = 180) -> str:
+    normalized = " ".join(str(content or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
 async def _run_reference_model_safe(
     model: Any,
     user_prompt: str,
@@ -444,7 +451,8 @@ async def mixture_of_agents_tool(
                      "reference_models": List[str],
                      "aggregator_model": str
                  },
-                 "processing_time": float
+                 "failed_models": List[str],
+                 "reference_previews": Dict[str, str]
              }
     
     Raises:
@@ -473,6 +481,8 @@ async def mixture_of_agents_tool(
         "processing_time_seconds": 0,
         "models_used": {}
     }
+    failed_models: List[str] = []
+    reference_previews: Dict[str, str] = {}
     
     try:
         logger.info("Starting Mixture-of-Agents processing...")
@@ -513,11 +523,11 @@ async def mixture_of_agents_tool(
         
         # Separate successful and failed responses
         successful_responses = []
-        failed_models = []
         
         for model_name, content, success in model_results:
             if success:
                 successful_responses.append(content)
+                reference_previews[model_name] = _preview_reference_response(content)
             else:
                 failed_models.append(model_name)
         
@@ -569,7 +579,9 @@ async def mixture_of_agents_tool(
             "models_used": {
                 "reference_models": [_route_label(route) for route in available_ref_routes],
                 "aggregator_model": _route_label(agg_route)
-            }
+            },
+            "failed_models": failed_models,
+            "reference_previews": reference_previews,
         }
         
         debug_call_data["success"] = True
@@ -599,6 +611,8 @@ async def mixture_of_agents_tool(
                 "reference_models": [_route_label(route) for route in ref_routes],
                 "aggregator_model": _route_label(agg_route)
             },
+            "failed_models": failed_models,
+            "reference_previews": reference_previews,
             "error": error_msg
         }
         

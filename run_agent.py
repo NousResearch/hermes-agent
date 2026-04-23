@@ -913,6 +913,10 @@ class AIAgent:
             )
         ):
             self.api_mode = "codex_responses"
+            # Invalidate the eager-warmed transport cache — api_mode changed
+            # from chat_completions to codex_responses after the warm at __init__.
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
 
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking

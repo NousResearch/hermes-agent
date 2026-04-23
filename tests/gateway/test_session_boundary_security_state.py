@@ -161,3 +161,41 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
     assert other_key in runner._pending_approvals
+
+
+def test_clear_session_boundary_security_state_is_scoped():
+    """The helper must wipe only the target session's approval/yolo state.
+
+    Also exercises the /new reset path indirectly: /new calls this helper,
+    so if the helper is scoped correctly, /new's clearing is correct too.
+    """
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_approvals = {}
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    other_key = "agent:main:telegram:dm:other-chat"
+
+    approve_session(session_key, "recursive delete")
+    approve_session(other_key, "recursive delete")
+    enable_session_yolo(session_key)
+    enable_session_yolo(other_key)
+    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
+    runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
+
+    runner._clear_session_boundary_security_state(session_key)
+
+    # Target session cleared
+    assert is_approved(session_key, "recursive delete") is False
+    assert is_session_yolo_enabled(session_key) is False
+    assert session_key not in runner._pending_approvals
+    # Other session untouched
+    assert is_approved(other_key, "recursive delete") is True
+    assert is_session_yolo_enabled(other_key) is True
+    assert other_key in runner._pending_approvals
+
+    # Empty session_key is a no-op
+    runner._clear_session_boundary_security_state("")
+    assert is_approved(other_key, "recursive delete") is True

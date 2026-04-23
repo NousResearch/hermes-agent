@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 from tools import file_state
-from utils import base_url_hostname
+from utils import base_url_hostname, is_truthy_value
 
 
 # Tools that children must never have access to
@@ -374,6 +374,38 @@ def _get_orchestrator_enabled() -> bool:
     if isinstance(val, str):
         return val.strip().lower() in ("true", "1", "yes", "on")
     return True
+
+
+def _get_inherit_mcp_toolsets() -> bool:
+    """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
+    cfg = _load_config()
+    return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=False)
+
+
+def _is_mcp_toolset_name(name: str) -> bool:
+    """Return True for canonical MCP toolsets and their registered aliases."""
+    if not name:
+        return False
+    if str(name).startswith("mcp-"):
+        return True
+    try:
+        from tools.registry import registry
+
+        target = registry.get_toolset_alias_target(str(name))
+    except Exception:
+        target = None
+    return bool(target and str(target).startswith("mcp-"))
+
+
+def _preserve_parent_mcp_toolsets(
+    child_toolsets: List[str], parent_toolsets: set[str]
+) -> List[str]:
+    """Append any parent MCP toolsets that are missing from a narrowed child."""
+    preserved = list(child_toolsets)
+    for toolset_name in sorted(parent_toolsets):
+        if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
+            preserved.append(toolset_name)
+    return preserved
 
 
 DEFAULT_MAX_ITERATIONS = 50
@@ -782,6 +814,8 @@ def _build_child_agent(
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
+    delegation_cfg = _load_config()
+
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
     # Note: enabled_toolsets=None means "all tools enabled" (the default),
@@ -803,9 +837,12 @@ def _build_child_agent(
 
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = _strip_blocked_tools(
-            [t for t in toolsets if t in parent_toolsets]
-        )
+        child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        if _get_inherit_mcp_toolsets():
+            child_toolsets = _preserve_parent_mcp_toolsets(
+                child_toolsets, parent_toolsets
+            )
+        child_toolsets = _strip_blocked_tools(child_toolsets)
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)
     elif parent_toolsets:
@@ -889,7 +926,6 @@ def _build_child_agent(
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_cfg = _load_config()
         delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
         if delegation_effort:
             from hermes_constants import parse_reasoning_effort

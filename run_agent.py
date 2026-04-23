@@ -11372,25 +11372,30 @@ class AIAgent:
                     # already accounts for 413, 429, 529 (transient), context
                     # overflow, and generic-400 heuristics.  Local validation
                     # errors (ValueError, TypeError) are programming bugs.
-                    # Exclude UnicodeEncodeError — it's a ValueError subclass
-                    # but is handled separately by the surrogate sanitization
-                    # path above.  Exclude json.JSONDecodeError — also a
-                    # ValueError subclass, but it indicates a transient
-                    # provider/network failure (malformed response body,
-                    # truncated stream, routing layer corruption), not a
-                    # local programming bug, and should be retried (#14782).
+#
+                    # Exclusions — ValueError subclasses that originate from
+                    # the *provider*, not our code:
+                    #   - json.JSONDecodeError: provider returned empty/malformed
+                    #     JSON body; the OpenAI SDK raises this during response
+                    #     parsing.  Transient — retry or failover.
+                    #   - UnicodeError (parent of Encode/Decode/Translate):
+                    #     garbled bytes from the provider.  The original code
+                    #     only excluded UnicodeEncodeError but a garbled
+                    #     response body can also cause UnicodeDecodeError.
+                    #
+                    # ssl.SSLError (and its subclass SSLCertVerificationError)
+                    # inherits from OSError *and* ValueError via Python MRO,
+                    # so the isinstance(ValueError) check above would
+                    # misclassify a TLS transport failure as a local
+                    # programming bug and abort without retrying.  Exclude
+                    # ssl.SSLError explicitly so the error classifier's
+                    # retryable=True mapping takes effect instead.
+                    #
+                    # COUPLING: tests/test_json_decode_error_misclassification.py
+                    # mirrors this predicate — update both if changing.
                     is_local_validation_error = (
                         isinstance(api_error, (ValueError, TypeError))
-                        and not isinstance(
-                            api_error, (UnicodeEncodeError, json.JSONDecodeError)
-                        )
-                        # ssl.SSLError (and its subclass SSLCertVerificationError)
-                        # inherits from OSError *and* ValueError via Python MRO,
-                        # so the isinstance(ValueError) check above would
-                        # misclassify a TLS transport failure as a local
-                        # programming bug and abort without retrying.  Exclude
-                        # ssl.SSLError explicitly so the error classifier's
-                        # retryable=True mapping takes effect instead.
+                        and not isinstance(api_error, (UnicodeError, json.JSONDecodeError))
                         and not isinstance(api_error, ssl.SSLError)
                     )
                     is_client_error = (

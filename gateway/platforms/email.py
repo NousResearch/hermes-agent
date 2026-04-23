@@ -86,6 +86,23 @@ def check_email_requirements() -> bool:
     return True
 
 
+def _extract_thread_id(message_id: str, in_reply_to: str, references: str) -> str:
+    """Determine the canonical thread ID for an email.
+
+    The thread root is the *first* Message-ID in the References chain.
+    Falls back to In-Reply-To, then to the email's own Message-ID, so that
+    every email — new or reply — always belongs to exactly one thread.
+    Generates a local UUID for malformed emails with no usable identifier.
+    """
+    ids = references.split()
+    return (
+        ids[0] if ids
+        else in_reply_to.strip()
+        or message_id.strip()
+        or f"<local-{uuid.uuid4().hex}@hermes>"
+    )
+
+
 def _decode_header_value(raw: str) -> str:
     """Decode an RFC 2047 encoded email header into a plain string."""
     parts = decode_header(raw)
@@ -244,7 +261,8 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
-        # Map chat_id (sender email) -> last subject + message-id for threading
+        # Map thread_id (root Message-ID) -> {subject, message_id, references}
+        # Each email reply-chain gets its own entry, enabling per-thread sessions.
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
         logger.info("[Email] Adapter initialized for %s", self._address)
@@ -372,8 +390,10 @@ class EmailAdapter(BasePlatformAdapter):
                         sender_name = sender_name.split("<")[0].strip().strip('"')
 
                     subject = _decode_header_value(msg.get("Subject", "(no subject)"))
-                    message_id = msg.get("Message-ID", "")
-                    in_reply_to = msg.get("In-Reply-To", "")
+                    message_id = msg.get("Message-ID", "").strip()
+                    in_reply_to = msg.get("In-Reply-To", "").strip()
+                    references = msg.get("References", "").strip()
+                    thread_id = _extract_thread_id(message_id, in_reply_to, references)
                     # Skip automated/noreply senders before any processing
                     msg_headers = dict(msg.items())
                     if _is_automated_sender(sender_addr, msg_headers):
@@ -389,6 +409,8 @@ class EmailAdapter(BasePlatformAdapter):
                         "subject": subject,
                         "message_id": message_id,
                         "in_reply_to": in_reply_to,
+                        "references": references,
+                        "thread_id": thread_id,
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
@@ -418,6 +440,7 @@ class EmailAdapter(BasePlatformAdapter):
         subject = msg_data["subject"]
         body = msg_data["body"].strip()
         attachments = msg_data["attachments"]
+        thread_id = msg_data["thread_id"]
 
         # Build message text: include subject as context
         text = body
@@ -436,9 +459,13 @@ class EmailAdapter(BasePlatformAdapter):
                 msg_type = MessageType.PHOTO
 
         # Store thread context for reply threading
-        self._thread_context[sender_addr] = {
+        refs = msg_data["references"]
+        msg_id = msg_data["message_id"]
+        updated_refs = " ".join(filter(None, [refs, msg_id]))
+        self._thread_context[thread_id] = {
             "subject": subject,
-            "message_id": msg_data["message_id"],
+            "message_id": msg_id,
+            "references": updated_refs,
         }
 
         source = self.build_source(
@@ -447,6 +474,7 @@ class EmailAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender_addr,
             user_name=msg_data["sender_name"] or sender_addr,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(
@@ -471,9 +499,10 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an email reply to the given address."""
         try:
+            thread_id = (metadata or {}).get("thread_id")
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, thread_id
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -485,6 +514,7 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
@@ -492,7 +522,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["To"] = to_addr
 
         # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(thread_id, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -502,7 +532,7 @@ class EmailAdapter(BasePlatformAdapter):
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            msg["References"] = ctx.get("references", original_msg_id)
 
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
@@ -532,11 +562,12 @@ class EmailAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image URL as part of an email body."""
         text = caption or ""
         text += f"\n\nImage: {image_url}"
-        return await self.send(chat_id, text.strip(), reply_to)
+        return await self.send(chat_id, text.strip(), reply_to, metadata)
 
     async def send_document(
         self,
@@ -545,9 +576,11 @@ class EmailAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a file as an email attachment."""
         try:
+            thread_id = (metadata or {}).get("thread_id")
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
                 None,
@@ -556,6 +589,7 @@ class EmailAdapter(BasePlatformAdapter):
                 caption or "",
                 file_path,
                 file_name,
+                thread_id,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -568,13 +602,14 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(thread_id, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -583,7 +618,7 @@ class EmailAdapter(BasePlatformAdapter):
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            msg["References"] = ctx.get("references", original_msg_id)
 
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
@@ -616,10 +651,9 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""
-        ctx = self._thread_context.get(chat_id, {})
         return {
             "name": chat_id,
             "type": "dm",
             "chat_id": chat_id,
-            "subject": ctx.get("subject", ""),
+            "subject": "",
         }

@@ -148,6 +148,40 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertIn("a & b", result)
 
 
+class TestExtractThreadId(unittest.TestCase):
+    """Tests for the _extract_thread_id helper."""
+
+    def setUp(self):
+        from gateway.platforms.email import _extract_thread_id
+        self._fn = _extract_thread_id
+
+    def test_uses_first_references_entry(self):
+        """First Message-ID in References is the thread root."""
+        result = self._fn("<msg3@x>", "<msg2@x>", "<msg1@x> <msg2@x> <msg3@x>")
+        self.assertEqual(result, "<msg1@x>")
+
+    def test_falls_back_to_in_reply_to(self):
+        """With no References, In-Reply-To is the thread root."""
+        result = self._fn("<msg2@x>", "<msg1@x>", "")
+        self.assertEqual(result, "<msg1@x>")
+
+    def test_falls_back_to_message_id(self):
+        """New email with no References or In-Reply-To uses its own Message-ID."""
+        result = self._fn("<msg1@x>", "", "")
+        self.assertEqual(result, "<msg1@x>")
+
+    def test_generates_uuid_when_all_empty(self):
+        """Malformed email with no headers gets a local UUID fallback."""
+        result = self._fn("", "", "")
+        self.assertTrue(result.startswith("<local-"))
+        self.assertIn("@hermes>", result)
+
+    def test_references_single_entry(self):
+        """References with a single entry returns that entry."""
+        result = self._fn("<msg2@x>", "<msg1@x>", "<msg1@x>")
+        self.assertEqual(result, "<msg1@x>")
+
+
 class TestExtractTextBody(unittest.TestCase):
     """Test email body extraction from different message formats."""
 
@@ -267,6 +301,8 @@ class TestDispatchMessage(unittest.TestCase):
             "subject": "Test",
             "message_id": "<msg1@test.com>",
             "in_reply_to": "",
+            "references": "",
+            "thread_id": "<msg1@test.com>",
             "body": "Self message",
             "attachments": [],
             "date": "",
@@ -301,6 +337,8 @@ class TestDispatchMessage(unittest.TestCase):
             "subject": "Help with Python",
             "message_id": "<msg2@test.com>",
             "in_reply_to": "",
+            "references": "",
+            "thread_id": "<msg2@test.com>",
             "body": "How do I use lists?",
             "attachments": [],
             "date": "",
@@ -329,6 +367,8 @@ class TestDispatchMessage(unittest.TestCase):
             "subject": "Re: Help with Python",
             "message_id": "<msg3@test.com>",
             "in_reply_to": "<msg2@test.com>",
+            "references": "<msg2@test.com>",
+            "thread_id": "<msg2@test.com>",
             "body": "Thanks for the help!",
             "attachments": [],
             "date": "",
@@ -357,6 +397,8 @@ class TestDispatchMessage(unittest.TestCase):
             "subject": "Re: test",
             "message_id": "<msg4@test.com>",
             "in_reply_to": "",
+            "references": "",
+            "thread_id": "<msg4@test.com>",
             "body": "",
             "attachments": [],
             "date": "",
@@ -385,6 +427,8 @@ class TestDispatchMessage(unittest.TestCase):
             "subject": "Re: photo",
             "message_id": "<msg5@test.com>",
             "in_reply_to": "",
+            "references": "",
+            "thread_id": "<msg5@test.com>",
             "body": "Check this photo",
             "attachments": [{"path": "/tmp/img.jpg", "filename": "img.jpg", "type": "image", "media_type": "image/jpeg"}],
             "date": "",
@@ -413,6 +457,8 @@ class TestDispatchMessage(unittest.TestCase):
             "subject": "Re: hi",
             "message_id": "<msg6@test.com>",
             "in_reply_to": "",
+            "references": "",
+            "thread_id": "<msg6@test.com>",
             "body": "Hello",
             "attachments": [],
             "date": "",
@@ -424,6 +470,7 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(event.source.user_id, "john@example.com")
         self.assertEqual(event.source.user_name, "John Doe")
         self.assertEqual(event.source.chat_type, "dm")
+        self.assertEqual(event.source.thread_id, "<msg6@test.com>")
 
 
 class TestThreadContext(unittest.TestCase):
@@ -442,7 +489,7 @@ class TestThreadContext(unittest.TestCase):
         return adapter
 
     def test_thread_context_stored_after_dispatch(self):
-        """After dispatching a message, thread context should be stored."""
+        """After dispatching a message, thread context should be keyed by thread_id."""
         import asyncio
         adapter = self._make_adapter()
 
@@ -458,30 +505,33 @@ class TestThreadContext(unittest.TestCase):
             "subject": "Project question",
             "message_id": "<original@test.com>",
             "in_reply_to": "",
+            "references": "",
+            "thread_id": "<original@test.com>",
             "body": "Hello",
             "attachments": [],
             "date": "",
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
-        ctx = adapter._thread_context.get("user@test.com")
+        ctx = adapter._thread_context.get("<original@test.com>")
         self.assertIsNotNone(ctx)
         self.assertEqual(ctx["subject"], "Project question")
         self.assertEqual(ctx["message_id"], "<original@test.com>")
 
     def test_reply_uses_re_prefix(self):
-        """Reply subject should have Re: prefix."""
+        """Reply subject should have Re: prefix, threading headers set correctly."""
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {
+        adapter._thread_context["<original@test.com>"] = {
             "subject": "Project question",
             "message_id": "<original@test.com>",
+            "references": "<original@test.com>",
         }
 
         with patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
-            adapter._send_email("user@test.com", "Here is the answer.", None)
+            adapter._send_email("user@test.com", "Here is the answer.", None, "<original@test.com>")
 
             # Check the sent message
             send_call = mock_server.send_message.call_args[0][0]
@@ -492,16 +542,17 @@ class TestThreadContext(unittest.TestCase):
     def test_reply_does_not_double_re(self):
         """If subject already has Re:, don't add another."""
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {
+        adapter._thread_context["<reply@test.com>"] = {
             "subject": "Re: Project question",
             "message_id": "<reply@test.com>",
+            "references": "<original@test.com> <reply@test.com>",
         }
 
         with patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
-            adapter._send_email("user@test.com", "Follow up.", None)
+            adapter._send_email("user@test.com", "Follow up.", None, "<reply@test.com>")
 
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Project question")
@@ -519,6 +570,105 @@ class TestThreadContext(unittest.TestCase):
 
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
+
+
+class TestThreadIdPropagation(unittest.TestCase):
+    """Test that thread_id flows correctly through dispatch → context → send."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def _dispatch(self, adapter, msg_data):
+        import asyncio
+        adapter.handle_message = AsyncMock()
+        asyncio.run(adapter._dispatch_message(msg_data))
+
+    def test_new_email_keyed_by_own_message_id(self):
+        """Email with no References or In-Reply-To is its own thread root."""
+        adapter = self._make_adapter()
+        self._dispatch(adapter, {
+            "uid": b"1", "sender_addr": "a@b.com", "sender_name": "A",
+            "subject": "Hello", "message_id": "<root@x>",
+            "in_reply_to": "", "references": "", "thread_id": "<root@x>",
+            "body": "Hi", "attachments": [], "date": "",
+        })
+        self.assertIn("<root@x>", adapter._thread_context)
+        self.assertNotIn("a@b.com", adapter._thread_context)
+
+    def test_reply_keyed_by_references_root(self):
+        """Reply email's thread_id is the first entry in References."""
+        adapter = self._make_adapter()
+        self._dispatch(adapter, {
+            "uid": b"2", "sender_addr": "a@b.com", "sender_name": "A",
+            "subject": "Re: Hello", "message_id": "<reply@x>",
+            "in_reply_to": "<root@x>", "references": "<root@x>",
+            "thread_id": "<root@x>",
+            "body": "Reply", "attachments": [], "date": "",
+        })
+        self.assertIn("<root@x>", adapter._thread_context)
+        self.assertNotIn("<reply@x>", adapter._thread_context)
+
+    def test_references_accumulated_in_context(self):
+        """thread_context references should include incoming refs + current message_id."""
+        adapter = self._make_adapter()
+        self._dispatch(adapter, {
+            "uid": b"3", "sender_addr": "a@b.com", "sender_name": "A",
+            "subject": "Re: Hello", "message_id": "<r2@x>",
+            "in_reply_to": "<r1@x>", "references": "<root@x> <r1@x>",
+            "thread_id": "<root@x>",
+            "body": "Reply 2", "attachments": [], "date": "",
+        })
+        refs = adapter._thread_context["<root@x>"]["references"]
+        self.assertIn("<root@x>", refs)
+        self.assertIn("<r1@x>", refs)
+        self.assertIn("<r2@x>", refs)
+
+    def test_send_uses_thread_id_from_metadata(self):
+        """send() with metadata thread_id looks up the right thread context."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._thread_context["<root@x>"] = {
+            "subject": "Hello",
+            "message_id": "<root@x>",
+            "references": "<root@x>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            asyncio.run(adapter.send(
+                "a@b.com", "Reply body",
+                metadata={"thread_id": "<root@x>"}
+            ))
+
+            sent = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent["Subject"], "Re: Hello")
+            self.assertEqual(sent["In-Reply-To"], "<root@x>")
+
+    def test_send_without_thread_id_uses_default_subject(self):
+        """send() with no thread_id in metadata falls back to default subject."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            asyncio.run(adapter.send("a@b.com", "Hello"))
+
+            sent = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent["Subject"], "Re: Hermes Agent")
+            self.assertIsNone(sent["In-Reply-To"])
 
 
 class TestSendMethods(unittest.TestCase):
@@ -627,18 +777,16 @@ class TestSendMethods(unittest.TestCase):
         asyncio.run(adapter.send_typing("user@test.com"))
 
     def test_get_chat_info(self):
-        """get_chat_info should return email address as chat info."""
+        """get_chat_info should return basic dm info for the email address."""
         import asyncio
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {"subject": "Test", "message_id": "<m@t>"}
 
-        info = asyncio.run(
-            adapter.get_chat_info("user@test.com")
-        )
+        info = asyncio.run(adapter.get_chat_info("user@test.com"))
 
         self.assertEqual(info["name"], "user@test.com")
         self.assertEqual(info["type"], "dm")
-        self.assertEqual(info["subject"], "Test")
+        self.assertEqual(info["chat_id"], "user@test.com")
+        self.assertEqual(info["subject"], "")
 
 
 class TestConnectDisconnect(unittest.TestCase):

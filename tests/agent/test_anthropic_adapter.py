@@ -18,12 +18,12 @@ from agent.anthropic_adapter import (
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
     is_claude_code_token_valid,
-    normalize_anthropic_response,
     normalize_model_name,
     read_claude_code_credentials,
     resolve_anthropic_token,
     run_oauth_setup_token,
 )
+from agent.transports import get_transport
 
 
 # ---------------------------------------------------------------------------
@@ -1242,7 +1242,7 @@ class TestNormalizeResponse:
 
     def test_text_response(self):
         block = SimpleNamespace(type="text", text="Hello world")
-        nr = normalize_anthropic_response(self._make_response([block]))
+        nr = get_transport("anthropic_messages").normalize_response(self._make_response([block]))
         assert nr.content == "Hello world"
         assert nr.finish_reason == "stop"
         assert nr.tool_calls is None
@@ -1257,7 +1257,7 @@ class TestNormalizeResponse:
                 input={"query": "test"},
             ),
         ]
-        nr = normalize_anthropic_response(
+        nr = get_transport("anthropic_messages").normalize_response(
             self._make_response(blocks, "tool_use")
         )
         assert nr.content == "Searching..."
@@ -1271,7 +1271,7 @@ class TestNormalizeResponse:
             SimpleNamespace(type="thinking", thinking="Let me reason about this..."),
             SimpleNamespace(type="text", text="The answer is 42."),
         ]
-        nr = normalize_anthropic_response(self._make_response(blocks))
+        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
         assert nr.content == "The answer is 42."
         assert nr.reasoning == "Let me reason about this..."
         assert nr.provider_data["reasoning_details"] == [{"type": "thinking", "thinking": "Let me reason about this..."}]
@@ -1285,19 +1285,19 @@ class TestNormalizeResponse:
                 redacted=False,
             ),
         ]
-        nr = normalize_anthropic_response(self._make_response(blocks))
+        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
         assert nr.provider_data["reasoning_details"][0]["signature"] == "opaque_signature"
         assert nr.provider_data["reasoning_details"][0]["thinking"] == "Let me reason about this..."
 
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
-        nr1 = normalize_anthropic_response(
+        nr1 = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "end_turn")
         )
-        nr2 = normalize_anthropic_response(
+        nr2 = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "tool_use")
         )
-        nr3 = normalize_anthropic_response(
+        nr3 = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "max_tokens")
         )
         assert nr1.finish_reason == "stop"
@@ -1310,10 +1310,10 @@ class TestNormalizeResponse:
         # handlers already understand, instead of silently collapsing to
         # "stop" (old behavior).
         block = SimpleNamespace(type="text", text="")
-        nr_refusal = normalize_anthropic_response(
+        nr_refusal = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "refusal")
         )
-        nr_overflow = normalize_anthropic_response(
+        nr_overflow = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "model_context_window_exceeded")
         )
         assert nr_refusal.finish_reason == "content_filter"
@@ -1323,7 +1323,7 @@ class TestNormalizeResponse:
         block = SimpleNamespace(
             type="tool_use", id="tc_1", name="search", input={"q": "hi"}
         )
-        nr = normalize_anthropic_response(
+        nr = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "tool_use")
         )
         assert nr.content is None

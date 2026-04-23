@@ -149,3 +149,95 @@ class TestMapFinishReason:
 
     def test_none_reason(self):
         assert map_finish_reason(None, self.ANTHROPIC_MAP) == "stop"
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat property tests
+# ---------------------------------------------------------------------------
+
+class TestToolCallBackwardCompat:
+    """Test duck-typing properties that let ToolCall pass through code expecting
+    the old SimpleNamespace(id, type, function=SimpleNamespace(name, arguments)) shape."""
+
+    def test_type_is_function(self):
+        tc = ToolCall(id="1", name="search", arguments='{"q":"test"}')
+        assert tc.type == "function"
+
+    def test_function_returns_self(self):
+        tc = ToolCall(id="1", name="search", arguments='{"q":"test"}')
+        assert tc.function is tc
+
+    def test_function_name_matches(self):
+        tc = ToolCall(id="1", name="search", arguments='{"q":"test"}')
+        assert tc.function.name == "search"
+        assert tc.function.name == tc.name
+
+    def test_function_arguments_matches(self):
+        tc = ToolCall(id="1", name="search", arguments='{"q":"test"}')
+        assert tc.function.arguments == '{"q":"test"}'
+        assert tc.function.arguments == tc.arguments
+
+    def test_call_id_from_provider_data(self):
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data={"call_id": "c1"})
+        assert tc.call_id == "c1"
+
+    def test_call_id_none_when_no_provider_data(self):
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data=None)
+        assert tc.call_id is None
+
+    def test_response_item_id_from_provider_data(self):
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data={"response_item_id": "r1"})
+        assert tc.response_item_id == "r1"
+
+    def test_response_item_id_none_when_missing(self):
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data={"call_id": "c1"})
+        assert tc.response_item_id is None
+
+    def test_getattr_pattern_matches_agent_loop(self):
+        """run_agent.py uses getattr(tool_call, 'call_id', None) — verify it works."""
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data={"call_id": "c1"})
+        assert getattr(tc, "call_id", None) == "c1"
+        tc_no_pd = ToolCall(id="1", name="fn", arguments="{}")
+        assert getattr(tc_no_pd, "call_id", None) is None
+
+
+class TestNormalizedResponseBackwardCompat:
+    """Test properties that replaced _nr_to_assistant_message() shim."""
+
+    def test_reasoning_content_from_provider_data(self):
+        nr = NormalizedResponse(
+            content="hi", tool_calls=None, finish_reason="stop",
+            provider_data={"reasoning_content": "thought process"},
+        )
+        assert nr.reasoning_content == "thought process"
+
+    def test_reasoning_content_none_when_absent(self):
+        nr = NormalizedResponse(content="hi", tool_calls=None, finish_reason="stop")
+        assert nr.reasoning_content is None
+
+    def test_reasoning_details_from_provider_data(self):
+        details = [{"type": "thinking", "thinking": "hmm"}]
+        nr = NormalizedResponse(
+            content="hi", tool_calls=None, finish_reason="stop",
+            provider_data={"reasoning_details": details},
+        )
+        assert nr.reasoning_details == details
+
+    def test_reasoning_details_none_when_no_provider_data(self):
+        nr = NormalizedResponse(
+            content="hi", tool_calls=None, finish_reason="stop",
+            provider_data=None,
+        )
+        assert nr.reasoning_details is None
+
+    def test_codex_reasoning_items_from_provider_data(self):
+        items = ["item1", "item2"]
+        nr = NormalizedResponse(
+            content="hi", tool_calls=None, finish_reason="stop",
+            provider_data={"codex_reasoning_items": items},
+        )
+        assert nr.codex_reasoning_items == items
+
+    def test_codex_reasoning_items_none_when_absent(self):
+        nr = NormalizedResponse(content="hi", tool_calls=None, finish_reason="stop")
+        assert nr.codex_reasoning_items is None

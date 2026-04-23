@@ -616,20 +616,11 @@ class _AnthropicCompletionsAdapter:
             response, strip_tool_prefix=self._is_oauth
         )
 
-        # Map NormalizedResponse → OpenAI-compatible SimpleNamespace
-        tool_calls = None
-        if _nr.tool_calls:
-            tool_calls = [
-                SimpleNamespace(
-                    id=tc.id,
-                    type="function",
-                    function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                )
-                for tc in _nr.tool_calls
-            ]
+        # ToolCall already duck-types as OpenAI shape (.type, .function.name,
+        # .function.arguments) via properties, so no wrapping needed.
         assistant_message = SimpleNamespace(
             content=_nr.content,
-            tool_calls=tool_calls,
+            tool_calls=_nr.tool_calls,
             reasoning=_nr.reasoning,
         )
         finish_reason = _nr.finish_reason

@@ -323,6 +323,32 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _supports_anthropic_signature_validation(base_url: str | None) -> bool:
+    """Return True when endpoint validates Anthropic thinking signatures.
+
+    Most third-party Anthropic-compatible endpoints cannot validate Anthropic's
+    proprietary thinking signatures, so Hermes strips thinking blocks before
+    replay. Some providers (e.g. API gateways backed by native Bedrock/Claude
+    validation) *do* require valid signatures and will reject unsigned/stripped
+    payloads with 400 errors like "signature: Field required".
+
+    For those endpoints we should preserve the same signature-safe behavior used
+    for direct Anthropic: keep only last signed thinking/redacted_thinking block.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return True  # Direct Anthropic API
+    normalized = normalized.rstrip("/").lower()
+    if "anthropic.com" in normalized:
+        return True
+
+    # Known third-party gateway that enforces Anthropic signature validation.
+    if "apimart.ai" in normalized:
+        return True
+
+    return False
+
+
 def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     """Return True for Kimi's /coding endpoint that requires claude-code UA."""
     normalized = _normalize_base_url_text(base_url)
@@ -1319,8 +1345,8 @@ def convert_messages_to_anthropic(
     # 3. Strip cache_control from thinking/redacted_thinking blocks —
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
-    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
     _is_kimi = _is_kimi_coding_endpoint(base_url)
+    _preserve_signed_thinking = _supports_anthropic_signature_validation(base_url)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1344,25 +1370,26 @@ def convert_messages_to_anthropic(
                     new_content.append(b)
                     continue
                 if b.get("signature") or b.get("data"):
-                    # Anthropic-signed block — Kimi can't validate, strip
+                    # Anthropic-signed block — Kimi can't validate, strip.
                     continue
                 # Unsigned thinking (synthesised from reasoning_content) —
                 # keep it: Kimi needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
-            # Third-party endpoint: strip ALL thinking blocks from every
-            # assistant message — signatures are Anthropic-proprietary.
-            # Direct Anthropic: strip from non-latest assistant messages only.
+        elif (not _preserve_signed_thinking) or idx != last_assistant_idx:
+            # Endpoints without Anthropic signature validation: strip ALL
+            # thinking blocks to avoid third-party 400 errors.
+            # Signature-validating endpoints (Anthropic, apimart passthrough):
+            # strip from non-latest assistant messages only.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
         else:
-            # Latest assistant on direct Anthropic: keep signed thinking
-            # blocks for reasoning continuity; downgrade unsigned ones to
-            # plain text.
+            # Latest assistant on signature-validating endpoints: keep signed
+            # thinking blocks for reasoning continuity; downgrade unsigned ones
+            # to plain text.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

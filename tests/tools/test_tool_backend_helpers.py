@@ -90,8 +90,20 @@ class TestNormalizeBrowserCloudProvider:
     def test_whitespace_only_returns_default(self):
         assert normalize_browser_cloud_provider("   ") == "local"
 
-    def test_known_provider_normalized(self):
-        assert normalize_browser_cloud_provider("BrowserBase") == "browserbase"
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("BrowserBase", "browserbase"),
+            ("browser base", "browserbase"),
+            ("browser_base", "browserbase"),
+            ("Browser Use", "browser-use"),
+            ("browser_use", "browser-use"),
+            ("browseruse", "browser-use"),
+            ("browser-use", "browser-use"),
+        ],
+    )
+    def test_known_provider_aliases_normalized(self, raw, expected):
+        assert normalize_browser_cloud_provider(raw) == expected
 
     def test_strips_whitespace(self):
         assert normalize_browser_cloud_provider("  Local  ") == "local"

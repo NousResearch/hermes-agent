@@ -21,6 +21,64 @@ _DEFAULT_MANAGED_TIMEOUT_MINUTES = 5
 _DEFAULT_MANAGED_PROXY_COUNTRY_CODE = "us"
 
 
+def _read_browser_use_settings() -> Dict[str, Any]:
+    """Return the optional browser.browser_use config block."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        config = read_raw_config() or {}
+    except Exception as exc:
+        logger.debug("Could not read browser.browser_use config: %s", exc)
+        return {}
+
+    if not isinstance(config, dict):
+        logger.debug("Ignoring malformed root config for browser.browser_use: %r", type(config).__name__)
+        return {}
+
+    browser_cfg = config.get("browser")
+    if not isinstance(browser_cfg, dict):
+        return {}
+
+    browser_use_cfg = browser_cfg.get("browser_use")
+    if not isinstance(browser_use_cfg, dict):
+        return {}
+
+    return browser_use_cfg
+
+
+def _coerce_timeout_minutes(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        logger.debug("Ignoring invalid browser.browser_use.timeout_minutes=%r", value)
+        return None
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        logger.debug("Ignoring invalid browser.browser_use.timeout_minutes=%r", value)
+        return None
+
+
+def _coerce_proxy_country_code(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        logger.debug("Ignoring invalid browser.browser_use.proxy_country_code=%r", value)
+        return None
+    proxy_country_code = value.strip().lower()
+    return proxy_country_code or None
+
+
+def _coerce_profile_id(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        logger.debug("Ignoring invalid browser.browser_use.profile_id=%r", value)
+        return None
+    profile_id = value.strip()
+    return profile_id or None
+
+
 def _get_or_create_pending_create_key(task_id: str) -> str:
     with _pending_create_keys_lock:
         existing = _pending_create_keys.get(task_id)
@@ -74,12 +132,21 @@ class BrowserUseProvider(CloudBrowserProvider):
     # ------------------------------------------------------------------
 
     def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
+        browser_use_cfg = _read_browser_use_settings()
+        timeout_minutes = _coerce_timeout_minutes(browser_use_cfg.get("timeout_minutes"))
+        proxy_country_code = _coerce_proxy_country_code(browser_use_cfg.get("proxy_country_code"))
+        profile_id = _coerce_profile_id(browser_use_cfg.get("profile_id"))
+
         api_key = os.environ.get("BROWSER_USE_API_KEY")
         if api_key and not prefers_gateway("browser"):
             return {
                 "api_key": api_key,
                 "base_url": _BASE_URL,
                 "managed_mode": False,
+                "config_source": "direct_api_key",
+                "timeout_minutes": timeout_minutes,
+                "proxy_country_code": proxy_country_code,
+                "profile_id": profile_id,
             }
 
         managed = resolve_managed_tool_gateway("browser-use")
@@ -90,7 +157,32 @@ class BrowserUseProvider(CloudBrowserProvider):
             "api_key": managed.nous_user_token,
             "base_url": managed.gateway_origin.rstrip("/"),
             "managed_mode": True,
+            "config_source": "managed_gateway",
+            "timeout_minutes": timeout_minutes,
+            "proxy_country_code": proxy_country_code,
+            "profile_id": profile_id,
         }
+
+    def _build_create_payload(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        managed_mode = bool(config.get("managed_mode"))
+        timeout_minutes = config.get("timeout_minutes")
+        proxy_country_code = config.get("proxy_country_code")
+        profile_id = config.get("profile_id")
+
+        payload: Dict[str, Any] = {}
+        if managed_mode:
+            payload["timeout"] = timeout_minutes or _DEFAULT_MANAGED_TIMEOUT_MINUTES
+            payload["proxyCountryCode"] = proxy_country_code or _DEFAULT_MANAGED_PROXY_COUNTRY_CODE
+        else:
+            if timeout_minutes is not None:
+                payload["timeout"] = timeout_minutes
+            if proxy_country_code:
+                payload["proxyCountryCode"] = proxy_country_code
+
+        if profile_id:
+            payload["profileId"] = profile_id
+
+        return payload
 
     def _get_config(self) -> Dict[str, Any]:
         config = self._get_config_or_none()
@@ -125,16 +217,11 @@ class BrowserUseProvider(CloudBrowserProvider):
         if managed_mode:
             headers["X-Idempotency-Key"] = _get_or_create_pending_create_key(task_id)
 
-        # Keep gateway-backed sessions short so billing authorization does not
-        # default to a long Browser-Use timeout when Hermes only needs a task-
-        # scoped ephemeral browser.
-        payload = (
-            {
-                "timeout": _DEFAULT_MANAGED_TIMEOUT_MINUTES,
-                "proxyCountryCode": _DEFAULT_MANAGED_PROXY_COUNTRY_CODE,
-            }
-            if managed_mode
-            else {}
+        payload = self._build_create_payload(config)
+        logger.debug(
+            "Creating Browser Use session via %s with payload keys=%s",
+            config.get("config_source", "unknown"),
+            sorted(payload.keys()),
         )
 
         response = requests.post(
@@ -158,16 +245,35 @@ class BrowserUseProvider(CloudBrowserProvider):
         session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
         external_call_id = response.headers.get("x-external-call-id") if managed_mode else None
 
-        logger.info("Created Browser Use session %s", session_name)
+        logger.info(
+            "Created Browser Use session %s via %s",
+            session_name,
+            config.get("config_source", "unknown"),
+        )
 
         cdp_url = session_data.get("cdpUrl") or session_data.get("connectUrl") or ""
+        live_url = session_data.get("liveUrl") or session_data.get("liveURL")
+        proxy_country_code = payload.get("proxyCountryCode")
+        profile_id = payload.get("profileId")
 
         return {
             "session_name": session_name,
             "bb_session_id": session_data["id"],
             "cdp_url": cdp_url,
-            "features": {"browser_use": True},
+            "features": {
+                "browser_use": True,
+                "managed": managed_mode,
+                "proxies": bool(proxy_country_code),
+                "profile": bool(profile_id),
+            },
+            "provider": "browser-use",
+            "config_source": config.get("config_source"),
+            "managed_mode": managed_mode,
+            "timeout_minutes": payload.get("timeout"),
+            "proxy_country_code": proxy_country_code,
+            "profile_id": profile_id,
             "external_call_id": external_call_id,
+            "live_url": live_url,
         }
 
     def close_session(self, session_id: str) -> bool:

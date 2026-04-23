@@ -54,7 +54,10 @@ class TestResolveCdpOverride:
             "session_name": "cloud-session",
             "bb_session_id": "bu_123",
             "cdp_url": "https://cdp.browser-use.example/session",
-            "features": {"browser_use": True},
+            "features": {"browser_use": True, "proxies": True},
+            "provider": "browser-use",
+            "live_url": "https://live.browser-use.example/session",
+            "external_call_id": "call-browser-use-cdp",
         }
 
         response = Mock()
@@ -72,6 +75,10 @@ class TestResolveCdpOverride:
             session_info = browser_tool._get_session_info("task-browser-use")
 
         assert session_info["cdp_url"] == WS_URL
+        assert session_info["provider"] == "browser-use"
+        assert session_info["live_url"] == "https://live.browser-use.example/session"
+        assert session_info["external_call_id"] == "call-browser-use-cdp"
+        assert session_info["features"] == {"browser_use": True, "proxies": True}
         provider.create_session.assert_called_once_with("task-browser-use")
         mock_get.assert_called_once_with(
             "https://cdp.browser-use.example/session/json/version",

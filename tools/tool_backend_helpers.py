@@ -10,6 +10,16 @@ from typing import Any, Dict
 _DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
+_BROWSER_PROVIDER_ALIASES = {
+    "browser use": "browser-use",
+    "browser-use": "browser-use",
+    "browser_use": "browser-use",
+    "browseruse": "browser-use",
+    "browser base": "browserbase",
+    "browser-base": "browserbase",
+    "browser_base": "browserbase",
+    "browserbase": "browserbase",
+}
 
 
 def managed_nous_tools_enabled() -> bool:
@@ -38,7 +48,9 @@ def managed_nous_tools_enabled() -> bool:
 def normalize_browser_cloud_provider(value: object | None) -> str:
     """Return a normalized browser provider key."""
     provider = str(value or _DEFAULT_BROWSER_PROVIDER).strip().lower()
-    return provider or _DEFAULT_BROWSER_PROVIDER
+    if not provider:
+        return _DEFAULT_BROWSER_PROVIDER
+    return _BROWSER_PROVIDER_ALIASES.get(provider, provider)
 
 
 def coerce_modal_mode(value: object | None) -> str:

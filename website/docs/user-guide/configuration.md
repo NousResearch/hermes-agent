@@ -1208,12 +1208,22 @@ Configure browser automation behavior:
 
 ```yaml
 browser:
+  cloud_provider: local          # local | browser-use | browserbase | firecrawl
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
-  command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
+  command_timeout: 30            # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
+  browser_use:
+    timeout_minutes: 5           # Optional Browser Use session timeout override
+    proxy_country_code: us       # Optional Browser Use proxy country override
+    profile_id: ""               # Optional Browser Use cloud profile ID for persisted auth/cookies
   camofox:
     managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
 ```
+
+- `cloud_provider` — explicitly choose which browser backend Hermes should prefer. `local` disables cloud fallback entirely. Browser Use aliases like `Browser Use`, `browser_use`, and `browseruse` are normalized to `browser-use`.
+- `browser.browser_use.timeout_minutes` — optional Browser Use session timeout override. If omitted, managed Browser Use sessions keep Hermes’s current safe default.
+- `browser.browser_use.proxy_country_code` — optional Browser Use proxy country override. If omitted, managed Browser Use sessions keep Hermes’s current safe default.
+- `browser.browser_use.profile_id` — optional Browser Use cloud profile ID used when you want a hosted browser session to start with a persisted Browser Use profile.
 
 The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chrome CDP setup.
 

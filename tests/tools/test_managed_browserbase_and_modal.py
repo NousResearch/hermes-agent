@@ -146,6 +146,152 @@ def test_browser_use_explicit_local_mode_stays_local_even_when_managed_gateway_i
     assert provider is None
 
 
+def test_browser_use_alias_selects_provider(tmp_path):
+    _install_fake_tools_package()
+    (tmp_path / "config.yaml").write_text("browser:\n  cloud_provider: Browser Use\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.update({
+        "HERMES_HOME": str(tmp_path),
+        "BROWSER_USE_API_KEY": "direct-browser-use-key",
+    })
+    env.pop("TOOL_GATEWAY_USER_TOKEN", None)
+    env.pop("BROWSER_USE_GATEWAY_URL", None)
+
+    with patch.dict(os.environ, env, clear=True):
+        browser_tool = _load_tool_module("tools.browser_tool", "browser_tool.py")
+        provider = browser_tool._get_cloud_provider()
+
+    assert provider is not None
+    assert type(provider).__name__ == "BrowserUseProvider"
+
+
+def test_browser_use_direct_config_controls_payload_and_metadata(tmp_path):
+    _install_fake_tools_package()
+    (tmp_path / "config.yaml").write_text(
+        "browser:\n"
+        "  browser_use:\n"
+        "    timeout_minutes: 17\n"
+        "    proxy_country_code: ca\n"
+        "    profile_id: profile-123\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update({
+        "HERMES_HOME": str(tmp_path),
+        "BROWSER_USE_API_KEY": "direct-browser-use-key",
+    })
+    env.pop("TOOL_GATEWAY_USER_TOKEN", None)
+    env.pop("BROWSER_USE_GATEWAY_URL", None)
+
+    class _Response:
+        status_code = 200
+        ok = True
+        text = ""
+        headers = {}
+
+        def json(self):
+            return {
+                "id": "bu_direct_session_1",
+                "connectUrl": "wss://connect.browser-use.example/direct",
+                "liveUrl": "https://live.browser-use.example/direct",
+            }
+
+    with patch.dict(os.environ, env, clear=True):
+        browser_use_module = _load_tool_module(
+            "tools.browser_providers.browser_use",
+            "browser_providers/browser_use.py",
+        )
+
+        with patch.object(browser_use_module.requests, "post", return_value=_Response()) as post:
+            provider = browser_use_module.BrowserUseProvider()
+            session = provider.create_session("task-browser-use-direct")
+
+    sent_payload = post.call_args.kwargs["json"]
+    assert sent_payload == {
+        "timeout": 17,
+        "proxyCountryCode": "ca",
+        "profileId": "profile-123",
+    }
+    assert session["provider"] == "browser-use"
+    assert session["config_source"] == "direct_api_key"
+    assert session["managed_mode"] is False
+    assert session["timeout_minutes"] == 17
+    assert session["proxy_country_code"] == "ca"
+    assert session["profile_id"] == "profile-123"
+    assert session["live_url"] == "https://live.browser-use.example/direct"
+    assert session["features"]["browser_use"] is True
+    assert session["features"]["managed"] is False
+    assert session["features"]["proxies"] is True
+    assert session["features"]["profile"] is True
+
+
+def test_browser_use_malformed_root_config_does_not_break_provider_discovery(tmp_path):
+    _install_fake_tools_package()
+    (tmp_path / "config.yaml").write_text("[]\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.update({
+        "HERMES_HOME": str(tmp_path),
+        "BROWSER_USE_API_KEY": "direct-browser-use-key",
+    })
+    env.pop("TOOL_GATEWAY_USER_TOKEN", None)
+    env.pop("BROWSER_USE_GATEWAY_URL", None)
+
+    with patch.dict(os.environ, env, clear=True):
+        browser_tool = _load_tool_module("tools.browser_tool", "browser_tool.py")
+        provider = browser_tool._get_cloud_provider()
+
+    assert provider is not None
+    assert type(provider).__name__ == "BrowserUseProvider"
+
+
+def test_browser_use_invalid_nested_config_values_are_ignored(tmp_path):
+    _install_fake_tools_package()
+    (tmp_path / "config.yaml").write_text(
+        "browser:\n"
+        "  browser_use:\n"
+        "    timeout_minutes: false\n"
+        "    proxy_country_code: []\n"
+        "    profile_id: {}\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update({
+        "HERMES_HOME": str(tmp_path),
+        "BROWSER_USE_API_KEY": "direct-browser-use-key",
+    })
+    env.pop("TOOL_GATEWAY_USER_TOKEN", None)
+    env.pop("BROWSER_USE_GATEWAY_URL", None)
+
+    class _Response:
+        status_code = 200
+        ok = True
+        text = ""
+        headers = {}
+
+        def json(self):
+            return {
+                "id": "bu_direct_session_invalid",
+                "connectUrl": "wss://connect.browser-use.example/invalid",
+            }
+
+    with patch.dict(os.environ, env, clear=True):
+        browser_use_module = _load_tool_module(
+            "tools.browser_providers.browser_use",
+            "browser_providers/browser_use.py",
+        )
+
+        with patch.object(browser_use_module.requests, "post", return_value=_Response()) as post:
+            provider = browser_use_module.BrowserUseProvider()
+            session = provider.create_session("task-browser-use-invalid")
+
+    assert post.call_args.kwargs["json"] == {}
+    assert session["timeout_minutes"] is None
+    assert session["proxy_country_code"] is None
+    assert session["profile_id"] is None
+    assert session["features"]["proxies"] is False
+    assert session["features"]["profile"] is False
+
+
 def test_browserbase_does_not_use_gateway_only_configuration():
     _install_fake_tools_package()
     env = os.environ.copy()
@@ -203,7 +349,16 @@ def test_browser_use_managed_gateway_adds_idempotency_key_and_persists_external_
     sent_payload = post.call_args.kwargs["json"]
     assert sent_payload["timeout"] == 5
     assert sent_payload["proxyCountryCode"] == "us"
+    assert session["provider"] == "browser-use"
+    assert session["config_source"] == "managed_gateway"
+    assert session["managed_mode"] is True
+    assert session["timeout_minutes"] == 5
+    assert session["proxy_country_code"] == "us"
     assert session["external_call_id"] == "call-browser-use-1"
+    assert session["features"]["browser_use"] is True
+    assert session["features"]["managed"] is True
+    assert session["features"]["proxies"] is True
+    assert session["features"]["profile"] is False
 
 
 def test_browser_use_managed_gateway_reuses_pending_idempotency_key_after_timeout():

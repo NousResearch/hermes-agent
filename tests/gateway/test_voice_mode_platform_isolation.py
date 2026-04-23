@@ -65,16 +65,17 @@ class TestVoiceModePlatformIsolation:
 class TestLegacyKeyMigration:
     """Test migration of legacy unprefixed keys in _load_voice_modes."""
 
-    def test_load_voice_modes_skips_legacy_keys(self):
-        """_load_voice_modes skips keys without ':' prefix and logs a warning."""
+    def test_load_voice_modes_preserves_legacy_off_only(self):
+        """Legacy off keys remain as conservative auto-TTS suppression."""
         runner = _make_runner()
 
         # Simulate legacy persisted data with unprefixed keys
         legacy_data = {
             "123": "all",
             "456": "voice_only",
+            "789": "off",
             # Also includes a properly prefixed key (from after the fix)
-            "telegram:789": "off",
+            "telegram:999": "off",
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -88,12 +89,15 @@ class TestLegacyKeyMigration:
             # Legacy keys without ':' should be skipped
             assert "123" not in result
             assert "456" not in result
+            # Legacy off is preserved without assuming a platform.
+            assert result.get("legacy:789") == "off"
             # Prefixed key should be preserved
-            assert result.get("telegram:789") == "off"
+            assert result.get("telegram:999") == "off"
             # Warning should be logged for each legacy key
             assert mock_logger.warning.called
             warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
             assert any("Skipping legacy unprefixed voice mode key" in str(c) for c in warning_calls)
+            assert any("Preserving legacy unprefixed /voice off key" in str(c) for c in warning_calls)
 
     def test_load_voice_modes_preserves_prefixed_keys(self):
         """_load_voice_modes correctly loads platform-prefixed keys."""
@@ -162,6 +166,35 @@ class TestSyncVoiceModeStateToAdapter:
 
         # Only telegram:123 should be in disabled_chats (mode="off" for telegram)
         assert mock_adapter._auto_tts_disabled_chats == {"123"}
+
+    def test_sync_restores_legacy_off_for_any_platform(self):
+        """Legacy off suppresses auto-TTS until a platform-specific state exists."""
+        runner = _make_runner()
+        runner._voice_mode = {"legacy:123": "off"}
+
+        mock_adapter = MagicMock()
+        mock_adapter.platform = Platform.TELEGRAM
+        mock_adapter._auto_tts_disabled_chats = set()
+
+        runner._sync_voice_mode_state_to_adapter(mock_adapter)
+
+        assert mock_adapter._auto_tts_disabled_chats == {"123"}
+
+    def test_sync_platform_state_overrides_legacy_off(self):
+        """An explicit post-migration platform state supersedes legacy off."""
+        runner = _make_runner()
+        runner._voice_mode = {
+            "legacy:123": "off",
+            "telegram:123": "voice_only",
+        }
+
+        mock_adapter = MagicMock()
+        mock_adapter.platform = Platform.TELEGRAM
+        mock_adapter._auto_tts_disabled_chats = set()
+
+        runner._sync_voice_mode_state_to_adapter(mock_adapter)
+
+        assert mock_adapter._auto_tts_disabled_chats == set()
 
     def test_sync_clears_existing_state(self):
         """_sync_voice_mode_state_to_adapter clears existing disabled_chats first."""

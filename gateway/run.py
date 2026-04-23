@@ -821,14 +821,26 @@ class GatewayRunner:
         if not isinstance(data, dict):
             return {}
 
+        legacy_prefix = "legacy:"
         valid_modes = {"off", "voice_only", "all"}
         result = {}
         for chat_id, mode in data.items():
             if mode not in valid_modes:
                 continue
             key = str(chat_id)
-            # Skip legacy unprefixed keys (warn and skip)
+            # Legacy keys have no platform namespace. Preserve only "off"
+            # because it is a conservative auto-TTS suppression state; enabling
+            # voice replies for an unknown platform would recreate #12542.
             if ":" not in key:
+                if mode == "off":
+                    result[f"{legacy_prefix}{key}"] = "off"
+                    logger.warning(
+                        "Preserving legacy unprefixed /voice off key %r as "
+                        "auto-TTS suppression until a platform-specific /voice "
+                        "setting is saved.",
+                        key,
+                    )
+                    continue
                 logger.warning(
                     "Skipping legacy unprefixed voice mode key %r during migration. "
                     "Re-enable voice mode on that chat to rebuild the prefixed key.",
@@ -867,9 +879,23 @@ class GatewayRunner:
             return
         disabled_chats.clear()
         prefix = f"{platform.value}:"
+        platform_modes = {
+            key[len(prefix):]: mode
+            for key, mode in self._voice_mode.items()
+            if key.startswith(prefix)
+        }
         disabled_chats.update(
-            key[len(prefix):] for key, mode in self._voice_mode.items()
-            if mode == "off" and key.startswith(prefix)
+            chat_id for chat_id, mode in platform_modes.items()
+            if mode == "off"
+        )
+        legacy_prefix = "legacy:"
+        disabled_chats.update(
+            key[len(legacy_prefix):] for key, mode in self._voice_mode.items()
+            if (
+                mode == "off"
+                and key.startswith(legacy_prefix)
+                and key[len(legacy_prefix):] not in platform_modes
+            )
         )
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:

@@ -218,6 +218,13 @@ def sync_skills(quiet: bool = False) -> dict:
                     skipped += 1
                     if _dir_hash(dest) == bundled_hash:
                         manifest[skill_name] = bundled_hash
+                    elif not quiet:
+                        print(
+                            f"  ⚠ {skill_name}: bundled version shipped but you "
+                            f"already have a local skill by this name — yours "
+                            f"was kept. Run `hermes skills reset {skill_name}` "
+                            f"to replace it with the bundled version."
+                        )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copytree(skill_src, dest)

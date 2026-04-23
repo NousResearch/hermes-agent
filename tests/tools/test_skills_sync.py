@@ -460,6 +460,28 @@ class TestSyncSkills:
             "as 'user-modified' — the manifest was poisoned on the first sync."
         )
 
+    def test_collision_prints_reset_hint(self, tmp_path, capsys):
+        """Non-quiet sync must print a reset hint when a collision is skipped.
+
+        Silent skip hides the fact that a bundled skill shipped but was
+        shadowed by the user's local copy. The hint tells the user the
+        exact command to take the bundled version instead.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        user_skill = skills_dir / "category" / "new-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# From hub — unrelated to bundled")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+
+        captured = capsys.readouterr().out
+        assert "new-skill" in captured
+        assert "hermes skills reset new-skill" in captured
+
     def test_nonexistent_bundled_dir(self, tmp_path):
         with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)

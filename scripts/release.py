@@ -364,6 +364,7 @@ AUTHOR_MAP = {
     "chenb19870707@gmail.com": "ms-alan",
     "276886827+WuTianyi123@users.noreply.github.com": "WuTianyi123",
     "22549957+li0near@users.noreply.github.com": "li0near",
+    "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
 }
 
 

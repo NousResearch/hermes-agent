@@ -13,7 +13,7 @@ describe('stickyPromptFromViewport', () => {
 
     const offsets = [0, 2, 10, 12, 20]
 
-    expect(stickyPromptFromViewport(messages, offsets, 16, 8, false)).toBe('')
+    expect(stickyPromptFromViewport(messages, offsets, 8, 16, false)).toBe('')
   })
 
   it('shows the latest user message above the viewport when no user message is visible', () => {
@@ -26,6 +26,6 @@ describe('stickyPromptFromViewport', () => {
 
     const offsets = [0, 2, 10, 12, 20]
 
-    expect(stickyPromptFromViewport(messages, offsets, 20, 16, false)).toBe('current prompt')
+    expect(stickyPromptFromViewport(messages, offsets, 16, 20, false)).toBe('current prompt')
   })
 })

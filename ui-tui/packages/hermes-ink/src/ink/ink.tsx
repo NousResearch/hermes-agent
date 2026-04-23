@@ -463,11 +463,8 @@ export default class Ink {
       this.resetFramesForAltScreen()
       this.needsEraseBeforePaint = true
 
-      // Post-resize drift healer: 160ms after the last resize, force one full
-      // reconcile so Yoga/React catch up to the final viewport and any stale
-      // terminal cells from host-side reflow get repainted away. Ink upstream
-      // and ConPTY/xterm reports point to this as a general resize/reflow
-      // desync class, not an xterm.js-only quirk.
+      // One last repaint after the resize burst settles closes any host-side
+      // reflow drift the normal diff path can't see.
       this.resizeSettleTimer = setTimeout(() => {
         this.resizeSettleTimer = null
 

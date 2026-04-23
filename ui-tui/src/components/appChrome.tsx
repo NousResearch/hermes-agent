@@ -249,28 +249,15 @@ export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: 
   useSyncExternalStore(
     useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
     () => {
-      const s = scrollRef.current
-
-      if (!s) {
-        return NaN
-      }
-
-      const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
-      const vp = Math.max(0, s.getViewportHeight())
-      const total = Math.max(vp, s.getScrollHeight())
-      const atBottom = s.isSticky() || top + vp >= total - 2
+      const { atBottom, top } = getStickyViewport(scrollRef.current)
 
       return atBottom ? -1 - top : top
     },
     () => NaN
   )
 
-  const s = scrollRef.current
-  const top = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
-  const vp = Math.max(0, s?.getViewportHeight() ?? 0)
-  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
-  const atBottom = (s?.isSticky() ?? true) || top + vp >= total - 2
-  const text = stickyPromptFromViewport(messages, offsets, top + vp, top, atBottom)
+  const { atBottom, bottom, top } = getStickyViewport(scrollRef.current)
+  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom)
 
   useEffect(() => onChange(text), [onChange, text])
 
@@ -394,4 +381,16 @@ interface StickyPromptTrackerProps {
 interface TranscriptScrollbarProps {
   scrollRef: RefObject<ScrollBoxHandle | null>
   t: Theme
+}
+
+function getStickyViewport(s?: ScrollBoxHandle | null) {
+  const top = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
+  const vp = Math.max(0, s?.getViewportHeight() ?? 0)
+  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
+
+  return {
+    atBottom: (s?.isSticky() ?? true) || top + vp >= total - 2,
+    bottom: top + vp,
+    top
+  }
 }

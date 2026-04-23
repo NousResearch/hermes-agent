@@ -255,6 +255,40 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    def test_discovers_symlinked_skill_directory(self, tmp_path):
+        """Regression: Path.rglob() does not recurse into symlinked dirs by
+        default (recurse_symlinks=False, and the kwarg is Py 3.13+ only), so
+        a skill installed as ``~/.hermes/skills/my-skill -> /path/to/repo``
+        was silently invisible to skills_list/skill_view.
+        """
+        external = tmp_path / "external"
+        external.mkdir()
+        _make_skill(external, "linked-skill")
+
+        skills_home = tmp_path / "skills"
+        skills_home.mkdir()
+        _make_skill(skills_home, "real-skill")
+        os.symlink(external / "linked-skill", skills_home / "linked-skill")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_home):
+            skills = _find_all_skills()
+
+        names = {s["name"] for s in skills}
+        assert "real-skill" in names
+        assert "linked-skill" in names
+
+    def test_symlink_cycle_terminates(self, tmp_path):
+        """A symlink loop under the skills dir must not hang discovery."""
+        skills_home = tmp_path / "skills"
+        skills_home.mkdir()
+        _make_skill(skills_home, "real-skill")
+        os.symlink(skills_home, skills_home / "loop")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_home):
+            skills = _find_all_skills()
+
+        assert "real-skill" in {s["name"] for s in skills}
+
 
 # ---------------------------------------------------------------------------
 # skills_list

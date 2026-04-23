@@ -521,6 +521,29 @@ def _get_session_platform() -> str:
         return ""
 
 
+def _iter_skill_md(scan_dir: Path, filename: str = "SKILL.md"):
+    """Yield ``filename`` paths under ``scan_dir``, following symlinked dirs.
+
+    ``Path.rglob`` defaults to ``recurse_symlinks=False`` (and the kwarg is
+    Py 3.13+ only), so a skill installed as ``~/.hermes/skills/my-skill ->
+    /path/to/repo/skill`` would otherwise be silently invisible to
+    ``skills_list``/``skill_view``. A ``realpath``-based visited set guards
+    against symlink cycles on all supported Python versions (3.11+).
+    """
+    visited: Set[str] = set()
+    for root, dirs, files in os.walk(scan_dir, followlinks=True):
+        try:
+            real = os.path.realpath(root)
+        except OSError:
+            real = root
+        if real in visited:
+            dirs[:] = []
+            continue
+        visited.add(real)
+        if filename in files:
+            yield Path(root) / filename
+
+
 def _is_skill_disabled(name: str, platform: str = None) -> bool:
     """Check if a skill is disabled in config.
 
@@ -569,7 +592,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
-        for skill_md in scan_dir.rglob("SKILL.md"):
+        for skill_md in _iter_skill_md(scan_dir):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
@@ -926,7 +949,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         # Search by directory name across all dirs
         if not skill_md:
             for search_dir in all_dirs:
-                for found_skill_md in search_dir.rglob("SKILL.md"):
+                for found_skill_md in _iter_skill_md(search_dir):
                     if found_skill_md.parent.name == name:
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md
@@ -937,7 +960,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         # Legacy: flat .md files
         if not skill_md:
             for search_dir in all_dirs:
-                for found_md in search_dir.rglob(f"{name}.md"):
+                for found_md in _iter_skill_md(search_dir, f"{name}.md"):
                     if found_md.name != "SKILL.md":
                         skill_md = found_md
                         break

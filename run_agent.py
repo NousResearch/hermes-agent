@@ -36,6 +36,7 @@ import tempfile
 import time
 import threading
 from types import SimpleNamespace
+import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
@@ -179,6 +180,25 @@ def _get_proxy_from_env() -> Optional[str]:
         if value:
             return normalize_proxy_url(value)
     return None
+
+
+def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
+    """Return an env-configured proxy unless NO_PROXY excludes this base URL."""
+    proxy = _get_proxy_from_env()
+    if not proxy or not base_url:
+        return proxy
+
+    host = base_url_hostname(base_url)
+    if not host:
+        return proxy
+
+    try:
+        if urllib.request.proxy_bypass_environment(host):
+            return None
+    except Exception:
+        pass
+
+    return proxy
 
 
 def _install_safe_stdio() -> None:
@@ -4477,7 +4497,7 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client() -> Any:
+    def _build_keepalive_http_client(base_url: str = "") -> Any:
         try:
             import httpx as _httpx
             import socket as _socket
@@ -4491,8 +4511,9 @@ class AIAgent:
                 _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
             # When a custom transport is provided, httpx won't auto-read proxy
             # from env vars (allow_env_proxies = trust_env and transport is None).
-            # Explicitly read proxy settings to ensure HTTP_PROXY/HTTPS_PROXY work.
-            _proxy = _get_proxy_from_env()
+            # Explicitly read proxy settings while still honoring NO_PROXY for
+            # loopback / local endpoints such as a locally hosted sub2api.
+            _proxy = _get_proxy_for_base_url(base_url)
             return _httpx.Client(
                 transport=_httpx.HTTPTransport(socket_options=_sock_opts),
                 proxy=_proxy,
@@ -4550,7 +4571,7 @@ class AIAgent:
                     if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
                 }
                 if "http_client" not in safe_kwargs:
-                    keepalive_http = self._build_keepalive_http_client()
+                    keepalive_http = self._build_keepalive_http_client(base_url)
                     if keepalive_http is not None:
                         safe_kwargs["http_client"] = keepalive_http
                 client = GeminiNativeClient(**safe_kwargs)
@@ -4579,7 +4600,7 @@ class AIAgent:
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
         if "http_client" not in client_kwargs:
-            keepalive_http = self._build_keepalive_http_client()
+            keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
         client = OpenAI(**client_kwargs)

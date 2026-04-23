@@ -2334,6 +2334,7 @@ def setup_gateway(config: dict):
             launchd_install,
             launchd_start,
             launchd_restart,
+            UserSystemdUnavailableError,
         )
 
         service_installed = _is_service_installed()
@@ -2357,6 +2358,10 @@ def setup_gateway(config: dict):
                         systemd_restart()
                     elif _is_macos:
                         launchd_restart()
+                except UserSystemdUnavailableError as e:
+                    print_error("  Restart failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
                 except Exception as e:
                     print_error(f"  Restart failed: {e}")
         elif service_installed:
@@ -2366,6 +2371,10 @@ def setup_gateway(config: dict):
                         systemd_start()
                     elif _is_macos:
                         launchd_start()
+                except UserSystemdUnavailableError as e:
+                    print_error("  Start failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
                 except Exception as e:
                     print_error(f"  Start failed: {e}")
         elif supports_service_manager:
@@ -2389,6 +2398,10 @@ def setup_gateway(config: dict):
                                 systemd_start(system=installed_scope == "system")
                             elif _is_macos:
                                 launchd_start()
+                        except UserSystemdUnavailableError as e:
+                            print_error("  Start failed — user systemd not reachable:")
+                            for line in str(e).splitlines():
+                                print(f"  {line}")
                         except Exception as e:
                             print_error(f"  Start failed: {e}")
                 except Exception as e:

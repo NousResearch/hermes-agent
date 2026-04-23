@@ -52,7 +52,7 @@ import logging
 import asyncio
 import datetime
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Sequence, Tuple
 
 from agent.auxiliary_client import (
     async_call_llm,
@@ -97,6 +97,7 @@ AGGREGATOR_TEMPERATURE = 0.4  # Focused synthesis for consistency
 
 # Failure handling configuration
 MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to proceed
+SELF_DRAFT_SUFFIX = " (self-draft)"
 
 # System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
@@ -270,18 +271,31 @@ def _route_is_available(route: ModelRoute) -> bool:
         return False
 
 
-def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> str:
+def _build_self_draft_route(aggregator_route: ModelRoute) -> ModelRoute:
+    """Return an independent first-pass route for the aggregator model."""
+    route = dict(aggregator_route)
+    route["label"] = f"{_route_label(aggregator_route)}{SELF_DRAFT_SUFFIX}"
+    return route
+
+
+def _construct_aggregator_prompt(
+    system_prompt: str,
+    responses: Sequence[Tuple[str, str]],
+) -> str:
     """
     Construct the final system prompt for the aggregator including all model responses.
     
     Args:
         system_prompt (str): Base system prompt for aggregation
-        responses (List[str]): List of responses from reference models
+        responses (Sequence[Tuple[str, str]]): Ordered (model_label, response) pairs
         
     Returns:
         str: Complete system prompt with enumerated responses
     """
-    response_text = "\n".join([f"{i+1}. {response}" for i, response in enumerate(responses)])
+    response_text = "\n\n".join(
+        f"{idx + 1}. [{model_label}]\n{response}"
+        for idx, (model_label, response) in enumerate(responses)
+    )
     return f"{system_prompt}\n\n{response_text}"
 
 
@@ -802,20 +816,26 @@ async def mixture_of_agents_tool(
                 "Configure the provider credentials for the MoA aggregator route."
             )
 
+        self_draft_route = _build_self_draft_route(agg_route)
+        draft_jobs: List[Tuple[ModelRoute, float]] = [
+            (self_draft_route, AGGREGATOR_TEMPERATURE),
+            *[(route, REFERENCE_TEMPERATURE) for route in available_ref_routes],
+        ]
+
         logger.info(
-            "Using %s reference models in 2-layer MoA architecture",
-            len(available_ref_routes),
+            "Using %s draft models in MoA-v2 (self-draft + references)",
+            len(draft_jobs),
         )
-        
-        # Layer 1: Generate diverse responses from reference models (with failure handling)
-        logger.info("Layer 1: Generating reference responses...")
+
+        # Layer 1: Generate MiMo self-draft plus reference responses.
+        logger.info("Layer 1: Generating self-draft and reference responses...")
         model_results = await asyncio.gather(*[
-            _run_reference_model_detailed(route, user_prompt, REFERENCE_TEMPERATURE)
-            for route in available_ref_routes
+            _run_reference_model_detailed(route, user_prompt, temperature)
+            for route, temperature in draft_jobs
         ])
         
         # Separate successful and failed responses
-        successful_responses = []
+        successful_responses: List[Tuple[str, str]] = []
         
         for result_row in model_results:
             model_name = result_row["model"]
@@ -829,7 +849,7 @@ async def mixture_of_agents_tool(
             }
             if result_row.get("success"):
                 content = result_row["content"]
-                successful_responses.append(content)
+                successful_responses.append((model_name, content))
                 reference_outputs[model_name] = content
                 reference_previews[model_name] = _preview_reference_response(content)
             else:
@@ -898,7 +918,7 @@ async def mixture_of_agents_tool(
             "success": True,
             "response": final_response,
             "models_used": {
-                "reference_models": [_route_label(route) for route in available_ref_routes],
+                "reference_models": [model_name for model_name, _ in successful_responses],
                 "aggregator_model": _route_label(agg_route)
             },
             "failed_models": failed_models,

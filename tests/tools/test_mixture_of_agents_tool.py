@@ -16,6 +16,21 @@ def test_moa_defaults_track_current_direct_provider_stack():
     assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2-pro"
 
 
+def test_construct_aggregator_prompt_keeps_model_labels():
+    prompt = moa._construct_aggregator_prompt(
+        "Base",
+        [
+            ("xiaomi/mimo-v2-pro (self-draft)", "MiMo first pass"),
+            ("minimax/MiniMax-M2.7-highspeed", "MiniMax pass"),
+        ],
+    )
+
+    assert "[xiaomi/mimo-v2-pro (self-draft)]" in prompt
+    assert "[minimax/MiniMax-M2.7-highspeed]" in prompt
+    assert "MiMo first pass" in prompt
+    assert "MiniMax pass" in prompt
+
+
 @pytest.mark.asyncio
 async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_failure(monkeypatch):
     warn = MagicMock()
@@ -172,6 +187,16 @@ async def test_moa_returns_full_reference_forensics(monkeypatch):
         "_run_reference_model_detailed",
         AsyncMock(side_effect=[
             {
+                "model": "xiaomi/mimo-v2-pro (self-draft)",
+                "provider": "xiaomi",
+                "success": True,
+                "content": "MiMo self-draft says crypto has the clearest asymmetric upside.",
+                "error": "",
+                "attempts": 1,
+                "latency_seconds": 0.9,
+                "output_chars": 63,
+            },
+            {
                 "model": "minimax/MiniMax-M2.7-highspeed",
                 "provider": "minimax",
                 "success": True,
@@ -241,14 +266,21 @@ async def test_moa_returns_full_reference_forensics(monkeypatch):
     result = json.loads(await moa.mixture_of_agents_tool("compare assets"))
 
     assert result["success"] is True
+    assert result["models_used"]["reference_models"] == [
+        "xiaomi/mimo-v2-pro (self-draft)",
+        "minimax/MiniMax-M2.7-highspeed",
+    ]
     assert result["failed_models"] == ["deepseek/deepseek-reasoner"]
     assert result["failed_model_errors"] == {"deepseek/deepseek-reasoner": "deepseek failed"}
     assert result["reference_previews"] == {
+        "xiaomi/mimo-v2-pro (self-draft)": "MiMo self-draft says crypto has the clearest asymmetric upside.",
         "minimax/MiniMax-M2.7-highspeed": "MiniMax says choose crypto because momentum is higher right now."
     }
     assert result["reference_outputs"] == {
+        "xiaomi/mimo-v2-pro (self-draft)": "MiMo self-draft says crypto has the clearest asymmetric upside.",
         "minimax/MiniMax-M2.7-highspeed": "MiniMax says choose crypto because momentum is higher right now."
     }
+    assert result["per_model_metrics"]["reference_models"]["xiaomi/mimo-v2-pro (self-draft)"]["provider"] == "xiaomi"
     assert result["per_model_metrics"]["reference_models"]["minimax/MiniMax-M2.7-highspeed"]["attempts"] == 1
     assert result["per_model_metrics"]["reference_models"]["deepseek/deepseek-reasoner"]["error"] == "deepseek failed"
     assert result["per_model_metrics"]["aggregator"]["model"] == "xiaomi/mimo-v2-pro"

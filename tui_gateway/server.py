@@ -23,6 +23,75 @@ load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
 
+
+# ── Panic logger ─────────────────────────────────────────────────────
+# Gateway crashes in a TUI session leave no forensics: stdout is the
+# JSON-RPC pipe (TUI side parses it, doesn't log raw), the root logger
+# only catches handled warnings, and the subprocess exits before stderr
+# flushes through the stderr->gateway.stderr event pump. This hook
+# appends every unhandled exception to ~/.hermes/logs/tui_gateway_crash.log
+# AND re-emits a one-line summary to stderr so the TUI can surface it in
+# Activity — exactly what was missing when the voice-mode turns started
+# exiting the gateway mid-TTS.
+_CRASH_LOG = os.path.join(_hermes_home, "logs", "tui_gateway_crash.log")
+
+
+def _panic_hook(exc_type, exc_value, exc_tb):
+    import traceback
+
+    trace = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n=== unhandled exception · {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+            )
+            f.write(trace)
+    except Exception:
+        pass
+    # Stderr goes through to the TUI as a gateway.stderr Activity line —
+    # the first line here is what the user will see without opening any
+    # log files.  Rest of the stack is still in the log for full context.
+    first = str(exc_value).strip().splitlines()[0] if str(exc_value).strip() else exc_type.__name__
+    print(f"[gateway-crash] {exc_type.__name__}: {first}", file=sys.stderr, flush=True)
+    # Chain to the default hook so the process still terminates normally.
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _panic_hook
+
+
+def _thread_panic_hook(args):
+    # threading.excepthook signature: SimpleNamespace(exc_type, exc_value, exc_traceback, thread)
+    import traceback
+
+    trace = "".join(
+        traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    )
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n=== thread exception · {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"· thread={args.thread.name} ===\n"
+            )
+            f.write(trace)
+    except Exception:
+        pass
+    first_line = (
+        str(args.exc_value).strip().splitlines()[0]
+        if str(args.exc_value).strip()
+        else args.exc_type.__name__
+    )
+    print(
+        f"[gateway-crash] thread {args.thread.name} raised {args.exc_type.__name__}: {first_line}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+threading.excepthook = _thread_panic_hook
+
 try:
     from hermes_cli.banner import prefetch_update_check
 
@@ -2149,6 +2218,20 @@ def _(rid, params: dict) -> dict:
                 except Exception as e:
                     logger.warning("voice TTS dispatch failed: %s", e)
         except Exception as e:
+            import traceback
+
+            trace = traceback.format_exc()
+            try:
+                os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+                with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+                    f.write(
+                        f"\n=== turn-dispatcher exception · "
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n"
+                    )
+                    f.write(trace)
+            except Exception:
+                pass
+            print(f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True)
             _emit("error", sid, {"message": str(e)})
         finally:
             try:

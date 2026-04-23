@@ -725,10 +725,21 @@ clone_repo() {
             local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
                 local stash_name
-                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
+                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)-$$"
                 log_info "Local changes detected, stashing before update..."
                 git stash push --include-untracked -m "$stash_name"
-                autostash_ref="$(git rev-parse --verify refs/stash)"
+                # Resolve stash@{n} by message — raw commit OIDs are not always accepted by
+                # `git stash drop` and become stale if a prior install was interrupted (#14735).
+                while IFS= read -r line; do
+                    if [[ "$line" == *"$stash_name"* ]]; then
+                        autostash_ref="${line%%:*}"
+                        break
+                    fi
+                done < <(git stash list)
+                if [ -z "$autostash_ref" ]; then
+                    log_error "Could not locate autostash entry after git stash push (message: $stash_name)."
+                    exit 1
+                fi
             fi
 
             git fetch origin
@@ -752,7 +763,10 @@ clone_repo() {
                 if [ "$restore_now" = "yes" ]; then
                     log_info "Restoring local changes..."
                     if git stash apply "$autostash_ref"; then
-                        git stash drop "$autostash_ref" >/dev/null
+                        if ! git stash drop "$autostash_ref" >/dev/null 2>&1; then
+                            log_warn "Could not drop installer autostash $autostash_ref (ref missing or already removed)."
+                            log_warn "Inspect git stash list and drop manually if a duplicate entry remains."
+                        fi
                         log_warn "Local changes were restored on top of the updated codebase."
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else

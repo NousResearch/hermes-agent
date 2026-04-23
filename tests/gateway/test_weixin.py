@@ -308,6 +308,61 @@ class TestWeixinSendMessageIntegration:
             media_files=[("/tmp/demo.png", False)],
         )
 
+    @patch("gateway.platforms.weixin.ContextTokenStore.restore")
+    @patch("gateway.platforms.weixin.WeixinAdapter.send", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin.aiohttp.ClientSession")
+    def test_send_weixin_direct_ignores_live_adapter_bound_to_different_loop(
+        self,
+        client_session_mock,
+        adapter_send_mock,
+        restore_mock,
+    ):
+        class _SessionContext:
+            def __init__(self):
+                self.closed = False
+                self._loop = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _ForeignSession:
+            def __init__(self):
+                self.closed = False
+                self._loop = object()
+
+        class _LiveAdapter:
+            def __init__(self):
+                self._send_session = _ForeignSession()
+                self.send = AsyncMock(side_effect=AssertionError("should not reuse live adapter across loops"))
+                self.send_image_file = AsyncMock()
+                self.send_document = AsyncMock()
+
+            def format_message(self, content):
+                return content
+
+        session_ctx = _SessionContext()
+        client_session_mock.return_value = session_ctx
+        adapter_send_mock.return_value = SendResult(success=True, message_id="fallback-msg")
+
+        live_adapter = _LiveAdapter()
+        with patch.dict(weixin._LIVE_ADAPTERS, {"test-token": live_adapter}, clear=True):
+            result = asyncio.run(
+                weixin.send_weixin_direct(
+                    extra={"account_id": "acct"},
+                    token="test-token",
+                    chat_id="wxid_test123",
+                    message="hello",
+                )
+            )
+
+        assert result["success"] is True
+        adapter_send_mock.assert_awaited_once()
+        live_adapter.send.assert_not_called()
+        restore_mock.assert_called_once_with("acct")
+
 
 class TestWeixinChunkDelivery:
     def _connected_adapter(self) -> WeixinAdapter:

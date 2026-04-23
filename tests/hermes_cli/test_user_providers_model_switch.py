@@ -197,6 +197,58 @@ def test_list_authenticated_providers_dict_models_dedupe_with_default(monkeypatc
     assert user_prov["models"].count("model-a") == 1
 
 
+def test_openai_native_curated_catalog_is_non_empty():
+    """Regression: built-in openai must have a static catalog for picker totals."""
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    assert _PROVIDER_MODELS.get("openai")
+    assert len(_PROVIDER_MODELS["openai"]) >= 4
+
+
+def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch):
+    """Built-in openai row must not report total_models=0 when creds exist."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"openai": {"env": ["OPENAI_API_KEY"]}},
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+    row = next((p for p in providers if p.get("slug") == "openai"), None)
+    assert row is not None
+    assert row["total_models"] > 0
+
+
+def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypatch):
+    """User providers: api.openai.com with no models list uses native curated fallback."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "openai-direct": {
+            "name": "OpenAI Direct",
+            "api": "https://api.openai.com/v1",
+        }
+    }
+    providers = list_authenticated_providers(
+        current_provider="",
+        current_base_url="",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+    row = next((p for p in providers if p.get("slug") == "openai-direct"), None)
+    assert row is not None
+    assert row["total_models"] > 0
+
+
 def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     """When no models array is provided, should fall back to default_model."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})

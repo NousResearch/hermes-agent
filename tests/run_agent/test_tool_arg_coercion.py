@@ -134,6 +134,31 @@ class TestCoerceValue:
         """A non-numeric string in [number, string] should stay a string."""
         assert _coerce_value("hello", ["number", "string"]) == "hello"
 
+    def test_array_type_parsed_from_json_string(self):
+        """Stringified JSON arrays are parsed into native lists."""
+        assert _coerce_value('["a", "b"]', "array") == ["a", "b"]
+        assert _coerce_value("[1, 2, 3]", "array") == [1, 2, 3]
+
+    def test_object_type_parsed_from_json_string(self):
+        """Stringified JSON objects are parsed into native dicts."""
+        assert _coerce_value('{"k": "v"}', "object") == {"k": "v"}
+        assert _coerce_value('{"n": 1}', "object") == {"n": 1}
+
+    def test_array_invalid_json_preserved(self):
+        """Unparseable strings are returned unchanged."""
+        assert _coerce_value("not-json", "array") == "not-json"
+
+    def test_object_invalid_json_preserved(self):
+        assert _coerce_value("not-json", "object") == "not-json"
+
+    def test_array_type_wrong_shape_preserved(self):
+        """A JSON object passed for an 'array' slot is preserved as a string."""
+        assert _coerce_value('{"k": "v"}', "array") == '{"k": "v"}'
+
+    def test_object_type_wrong_shape_preserved(self):
+        """A JSON array passed for an 'object' slot is preserved as a string."""
+        assert _coerce_value('["a"]', "object") == '["a"]'
+
 
 # ── Full coerce_tool_args with registry ───────────────────────────────────
 
@@ -211,6 +236,32 @@ class TestCoerceToolArgs:
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == [1, 2, 3]
             assert result["config"] == {"key": "val"}
+
+    def test_coerces_stringified_array_arg(self):
+        """Regression for #3947 — MCP servers using z.array() expect lists, not strings."""
+        schema = self._mock_schema({
+            "messageIds": {"type": "array", "items": {"type": "string"}},
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"messageIds": '["abc", "def"]'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["messageIds"] == ["abc", "def"]
+
+    def test_coerces_stringified_object_arg(self):
+        """Stringified JSON objects get parsed into dicts."""
+        schema = self._mock_schema({"config": {"type": "object"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"config": '{"max": 50}'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["config"] == {"max": 50}
+
+    def test_invalid_json_array_preserved_as_string(self):
+        """If the string isn't valid JSON, pass it through — let the tool decide."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": "not-json"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == "not-json"
 
     def test_extra_args_without_schema_left_alone(self):
         """Args not in the schema properties are not touched."""

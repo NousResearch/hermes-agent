@@ -29,6 +29,8 @@ This starter kit now packages the proof line, not just the kickoff gap, so the s
 - `scripts/prove-broken-state-roundtrip.sh` — isolated blocked→ready doctor roundtrip proof that leaves the real `~/.hermes/config.yaml` untouched
 - `artifacts/latest-current-gap-report.md` — most recent proof packet emitted by the gap verifier
 - `artifacts/latest-broken-state-roundtrip.md` — canonical blocked-state proof packet with before/after doctor output
+- `scripts/refresh-upstream-blocker-packet.sh` — one-command PR blocker refresh that distinguishes stale-base drift from pure workflow approval
+- `artifacts/latest-upstream-blocker-refresh.md` — canonical live PR blocker packet with state signature + change-vs-previous marker
 
 ## Fast start
 From the Hermes repo root:
@@ -62,3 +64,16 @@ What is now frozen on disk:
 - multi-provider credential orchestration cleanup
 - dashboard/control-plane expansion
 - claiming delegation is fixed before one real delegated run passes
+
+## PR handoff monitoring
+When the MVP is already open as a PR, use the blocker packet instead of freehand status checks:
+
+```bash
+bash starter-kits/delegation-readiness-doctor/scripts/refresh-upstream-blocker-packet.sh
+```
+
+Expected behavior:
+- prints `UPSTREAM_BLOCKER_PACKET_REFRESHED` only when the live blocker signature actually changed
+- prints `UPSTREAM_BLOCKER_PACKET_UNCHANGED` on timestamp-only reruns
+- marks stale-base drift explicitly when the PR falls behind `origin/main`
+- keeps workflow approval as the blocker only when the branch is current and check suites are still `action_required` with `0` real check runs

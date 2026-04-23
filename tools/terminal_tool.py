@@ -833,7 +833,9 @@ def _get_env_config() -> Dict[str, Any]:
     # else starts in the user's home (~ resolves to whatever account
     # is running inside the container/remote).
     if env_type == "local":
-        default_cwd = os.getcwd()
+        # Use TERMINAL_CWD if set (respects terminal.cwd from config.yaml).
+        # Only fall back to os.getcwd() when TERMINAL_CWD is not set.
+        default_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
     elif env_type == "ssh":
         default_cwd = "~"
     else:

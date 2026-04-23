@@ -10682,7 +10682,7 @@ class AIAgent:
                     # errors (ValueError, TypeError) are programming bugs.
                     is_local_validation_error = (
                         isinstance(api_error, (ValueError, TypeError))
-                        and not isinstance(api_error, UnicodeEncodeError)
+                        and not isinstance(api_error, (UnicodeEncodeError, json.JSONDecodeError))
                     )
                     is_client_error = (
                         is_local_validation_error

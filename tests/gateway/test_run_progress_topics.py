@@ -783,25 +783,7 @@ class ThreeToolAgent:
 
 def _make_runner_with(adapter):
     """Build a minimal GatewayRunner wired to *adapter*."""
-    gateway_run = importlib.import_module("gateway.run")
-    GatewayRunner = gateway_run.GatewayRunner
-    runner = object.__new__(GatewayRunner)
-    runner.adapters = {adapter.platform: adapter}
-    runner._voice_mode = {}
-    runner._prefill_messages = []
-    runner._ephemeral_system_prompt = ""
-    runner._reasoning_config = None
-    runner._provider_routing = {}
-    runner._fallback_model = None
-    runner._session_db = None
-    runner._running_agents = {}
-    runner.hooks = SimpleNamespace(loaded_hooks=False)
-    runner.config = SimpleNamespace(
-        thread_sessions_per_user=False,
-        group_sessions_per_user=False,
-        stt_enabled=False,
-    )
-    return runner
+    return _make_runner(adapter)
 
 
 @pytest.mark.asyncio

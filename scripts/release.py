@@ -396,6 +396,7 @@ AUTHOR_MAP = {
     "nilesh@cloudgeni.us": "lvnilesh",
     "63502660+azhengbot@users.noreply.github.com": "azhengbot",
     "sharvil.saxena@gmail.com": "sharziki",
+    "yuanhe@minimaxi.com": "RyanLee-Dev",
 }
 
 

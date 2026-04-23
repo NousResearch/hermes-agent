@@ -110,7 +110,7 @@ def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
 
 
-def _exhausted_label(entry) -> str:
+def _classify_exhausted_status(entry) -> tuple[str, bool]:
     code = getattr(entry, "last_error_code", None)
     reason = str(getattr(entry, "last_error_reason", "") or "").strip().lower()
     message = str(getattr(entry, "last_error_message", "") or "").strip().lower()
@@ -118,24 +118,26 @@ def _exhausted_label(entry) -> str:
     if code == 429 or any(token in reason for token in ("rate_limit", "usage_limit", "quota", "exhausted")) or any(
         token in message for token in ("rate limit", "usage limit", "quota", "too many requests")
     ):
-        return "rate-limited"
+        return "rate-limited", True
 
     if code in {401, 403} or any(token in reason for token in ("invalid_token", "invalid_grant", "unauthorized", "forbidden", "auth")) or any(
         token in message for token in ("unauthorized", "forbidden", "expired", "revoked", "invalid token", "authentication")
     ):
-        return "auth failed"
+        return "auth failed", False
 
-    return "exhausted"
+    return "exhausted", True
 
 
 
 def _format_exhausted_status(entry) -> str:
     if entry.last_status != STATUS_EXHAUSTED:
         return ""
-    label = _exhausted_label(entry)
+    label, show_retry_window = _classify_exhausted_status(entry)
     reason = getattr(entry, "last_error_reason", None)
     reason_text = f" {reason}" if isinstance(reason, str) and reason.strip() else ""
     code = f" ({entry.last_error_code})" if entry.last_error_code else ""
+    if not show_retry_window:
+        return f" {label}{reason_text}{code} (re-auth may be required)"
     exhausted_until = _exhausted_until(entry)
     if exhausted_until is None:
         return f" {label}{reason_text}{code}"

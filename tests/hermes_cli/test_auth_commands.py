@@ -604,7 +604,8 @@ def test_auth_list_shows_auth_failure_when_exhausted_entry_is_unauthorized(monke
 
     out = capsys.readouterr().out
     assert "auth failed invalid_token (401)" in out
-    assert "59m 30s left" in out
+    assert "re-auth may be required" in out
+    assert "left" not in out
 
 
 def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):

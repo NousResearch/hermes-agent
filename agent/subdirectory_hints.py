@@ -158,13 +158,27 @@ class SubdirectoryHintTracker:
             self._add_path_candidate(token, candidates)
 
     def _is_valid_subdir(self, path: Path) -> bool:
-        """Check if path is a valid directory to scan for hints."""
+        """Check if path is a valid directory to scan for hints.
+
+        Only allows directories inside the configured working_dir to prevent
+        unrelated instruction files from being injected into the agent context
+        (e.g., an AGENTS.md from a completely different project).
+        """
         try:
             if not path.is_dir():
                 return False
         except OSError:
             return False
         if path in self._loaded_dirs:
+            return False
+        # Scope to workspace — only scan directories inside working_dir
+        try:
+            path.relative_to(self.working_dir)
+        except ValueError:
+            logger.debug(
+                "Skipping subdirectory hint for %s: outside working_dir %s",
+                path, self.working_dir,
+            )
             return False
         return True
 

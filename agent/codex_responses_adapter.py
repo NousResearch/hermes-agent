@@ -201,7 +201,41 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
 # Message format conversion
 # ---------------------------------------------------------------------------
 
-def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _normalize_runtime_identity_field(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().rstrip("/").lower()
+
+
+def _reasoning_item_matches_origin(
+    item: Dict[str, Any],
+    *,
+    allow_legacy_reasoning_replay: bool,
+    current_origin: Optional[Dict[str, str]],
+) -> bool:
+    origin_keys = ("_origin_provider", "_origin_base_url", "_origin_api_mode")
+    item_origin = {
+        key: _normalize_runtime_identity_field(item.get(key))
+        for key in origin_keys
+    }
+    has_origin_metadata = any(item_origin.values())
+    if not has_origin_metadata:
+        return allow_legacy_reasoning_replay
+    if not current_origin:
+        return True
+    normalized_current = {
+        key: _normalize_runtime_identity_field(current_origin.get(key))
+        for key in origin_keys
+    }
+    return item_origin == normalized_current
+
+
+def _chat_messages_to_responses_input(
+    messages: List[Dict[str, Any]],
+    *,
+    allow_legacy_reasoning_replay: bool = True,
+    current_origin: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items."""
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -231,19 +265,26 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                 has_codex_reasoning = False
                 if isinstance(codex_reasoning, list):
                     for ri in codex_reasoning:
-                        if isinstance(ri, dict) and ri.get("encrypted_content"):
-                            item_id = ri.get("id")
-                            if item_id and item_id in seen_item_ids:
-                                continue
-                            # Strip the "id" field — with store=False the
-                            # Responses API cannot look up items by ID and
-                            # returns 404.  The encrypted_content blob is
-                            # self-contained for reasoning chain continuity.
-                            replay_item = {k: v for k, v in ri.items() if k != "id"}
-                            items.append(replay_item)
-                            if item_id:
-                                seen_item_ids.add(item_id)
-                            has_codex_reasoning = True
+                        if not isinstance(ri, dict) or not ri.get("encrypted_content"):
+                            continue
+                        if not _reasoning_item_matches_origin(
+                            ri,
+                            allow_legacy_reasoning_replay=allow_legacy_reasoning_replay,
+                            current_origin=current_origin,
+                        ):
+                            continue
+                        item_id = ri.get("id")
+                        if item_id and item_id in seen_item_ids:
+                            continue
+                        # Strip the "id" field — with store=False the
+                        # Responses API cannot look up items by ID and
+                        # returns 404.  The encrypted_content blob is
+                        # self-contained for reasoning chain continuity.
+                        replay_item = {k: v for k, v in ri.items() if k != "id"}
+                        items.append(replay_item)
+                        if item_id:
+                            seen_item_ids.add(item_id)
+                        has_codex_reasoning = True
 
                 if content_parts:
                     items.append({"role": "assistant", "content": content_parts})

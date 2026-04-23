@@ -24,7 +24,11 @@ class ResponsesApiTransport(ProviderTransport):
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
-        return _chat_messages_to_responses_input(messages)
+        return _chat_messages_to_responses_input(
+            messages,
+            allow_legacy_reasoning_replay=kwargs.get("allow_legacy_codex_reasoning_replay", True),
+            current_origin=kwargs.get("codex_reasoning_origin"),
+        )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
@@ -92,7 +96,11 @@ class ResponsesApiTransport(ProviderTransport):
         kwargs = {
             "model": model,
             "instructions": instructions,
-            "input": _chat_messages_to_responses_input(payload_messages),
+            "input": _chat_messages_to_responses_input(
+                payload_messages,
+                allow_legacy_reasoning_replay=params.get("allow_legacy_codex_reasoning_replay", True),
+                current_origin=params.get("codex_reasoning_origin"),
+            ),
             "tools": _responses_tools(tools),
             "tool_choice": "auto",
             "parallel_tool_calls": True,

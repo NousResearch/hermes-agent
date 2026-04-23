@@ -4448,7 +4448,7 @@ class AIAgent:
         response_item_id: Optional[str] = None,
     ) -> str:
         """Build a valid Responses `function_call.id` (must start with `fc_`)."""
-            self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        return _codex_derive_responses_function_call_id(call_id, response_item_id)
 
     def _thread_identity(self) -> str:
         thread = threading.current_thread()
@@ -7026,6 +7026,8 @@ class AIAgent:
                 is_codex_backend=is_codex_backend,
                 is_xai_responses=is_xai_responses,
                 github_reasoning_extra=self._github_models_reasoning_extra_body() if is_github_responses else None,
+                allow_legacy_codex_reasoning_replay=getattr(self, "_allow_legacy_codex_reasoning_replay", True),
+                codex_reasoning_origin=self._current_codex_reasoning_origin(),
             )
 
         # ── chat_completions (default) ─────────────────────────────────────

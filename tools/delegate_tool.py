@@ -379,7 +379,7 @@ def _get_orchestrator_enabled() -> bool:
 def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     cfg = _load_config()
-    return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=False)
+    return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
 def _is_mcp_toolset_name(name: str) -> bool:

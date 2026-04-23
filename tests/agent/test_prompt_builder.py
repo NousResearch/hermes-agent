@@ -162,12 +162,19 @@ class TestParseSkillFile:
         is_compat, frontmatter, desc = _parse_skill_file(skill_file)
         assert desc == ""
 
-    def test_long_description_truncated(self, tmp_path):
+    def test_long_description_not_truncated_below_shared_limit(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         long_desc = "A" * 100
         skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
         _, _, desc = _parse_skill_file(skill_file)
-        assert len(desc) <= 60
+        assert desc == long_desc
+
+    def test_description_truncated_at_shared_limit(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        long_desc = "A" * 1100
+        skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
+        _, _, desc = _parse_skill_file(skill_file)
+        assert len(desc) == 1024
         assert desc.endswith("...")
 
     def test_nonexistent_file_returns_defaults(self, tmp_path):
@@ -266,6 +273,25 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_keeps_skill_descriptions_beyond_60_chars(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "long-routing-skill"
+        skills_dir.mkdir(parents=True)
+        description = (
+            "Delegate coding tasks to Claude Code and use it for repo-wide "
+            "architecture analysis, code review, acceptance review, and "
+            "execution planning before implementation."
+        )
+        (skills_dir / "SKILL.md").write_text(
+            f"---\nname: long-routing-skill\ndescription: {description}\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert description in result
+        assert "Delegate coding tasks to Claude Code and use it for repo" in result
+        assert "execution planning before implementation." in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
@@ -343,13 +369,10 @@ class TestBuildSkillsSystemPrompt:
             "---\nname: old-tool\ndescription: Deprecated tool\n---\n"
         )
 
-        from unittest.mock import patch
-
-        with patch(
-            "agent.prompt_builder.get_disabled_skill_names",
-            return_value={"old-tool"},
-        ):
-            result = build_skills_system_prompt()
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  disabled: [old-tool]\n"
+        )
+        result = build_skills_system_prompt()
 
         assert "web-search" in result
         assert "old-tool" not in result
@@ -1068,6 +1091,3 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
-

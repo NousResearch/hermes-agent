@@ -1561,6 +1561,11 @@ class AIAgent:
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+
+        # Layer 4: Checkpoint store (session resumption across compression)
+        from agent.checkpoint_store import CheckpointStore
+        self._checkpoint_store = CheckpointStore()
+        self._checkpoint_store.garbage_collect()  # prune stale checkpoints on startup
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -8387,6 +8392,19 @@ class AIAgent:
             )
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
+        elif function_name == "checkpoint":
+            from tools.checkpoint_tool import checkpoint_tool as _checkpoint_tool
+            return _checkpoint_tool(
+                action=function_args.get("action"),
+                task=function_args.get("task"),
+                progress=function_args.get("progress"),
+                state=function_args.get("state"),
+                decisions=function_args.get("decisions"),
+                blocked=function_args.get("blocked"),
+                unresolved=function_args.get("unresolved"),
+                store=self._checkpoint_store,
+                agent=self,
+            )
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -8928,6 +8946,22 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+            elif function_name == "checkpoint":
+                from tools.checkpoint_tool import checkpoint_tool as _checkpoint_tool
+                function_result = _checkpoint_tool(
+                    action=function_args.get("action"),
+                    task=function_args.get("task"),
+                    progress=function_args.get("progress"),
+                    state=function_args.get("state"),
+                    decisions=function_args.get("decisions"),
+                    blocked=function_args.get("blocked"),
+                    unresolved=function_args.get("unresolved"),
+                    store=self._checkpoint_store,
+                    agent=self,
+                )
+                tool_duration = time.time() - tool_start_time
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(f"  {_get_cute_tool_message_impl('checkpoint', function_args, tool_duration, result=function_result)}")
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None

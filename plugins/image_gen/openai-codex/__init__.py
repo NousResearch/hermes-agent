@@ -1,7 +1,7 @@
 """OpenAI image generation backend — ChatGPT/Codex OAuth variant.
 
 Identical model catalog and tier semantics to the ``openai`` image-gen plugin
-(``gpt-image-2`` at low/medium/high quality), but routes the request through
+(``gpt-image-2`` at auto/low/medium/high quality), but routes the request through
 the Codex Responses API ``image_generation`` tool instead of the
 ``images.generate`` REST endpoint. This lets users who are already
 authenticated with Codex/ChatGPT generate images without configuring a
@@ -9,17 +9,21 @@ separate ``OPENAI_API_KEY``.
 
 Selection precedence for the tier (first hit wins):
 
-1. ``OPENAI_IMAGE_MODEL`` env var (escape hatch for scripts / tests)
-2. ``image_gen.openai-codex.model`` in ``config.yaml``
-3. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
-4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
+1. Per-call ``quality`` override (``auto``, ``low``, ``medium``, ``high``)
+2. ``OPENAI_IMAGE_MODEL`` env var (escape hatch for scripts / tests)
+3. ``image_gen.openai-codex.model`` in ``config.yaml``
+4. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
+5. :data:`DEFAULT_MODEL` — ``gpt-image-2-auto``
 
-Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
+Output is saved under ``$HERMES_HOME/cache/images/`` using the requested format
+(``png`` by default, or ``jpeg``/``webp`` when selected per call).
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -41,6 +45,12 @@ logger = logging.getLogger(__name__)
 API_MODEL = "gpt-image-2"
 
 _MODELS: Dict[str, Dict[str, Any]] = {
+    "gpt-image-2-auto": {
+        "display": "GPT Image 2 (Auto)",
+        "speed": "varies",
+        "strengths": "Provider-selected balance of quality, latency, and cost",
+        "quality": "auto",
+    },
     "gpt-image-2-low": {
         "display": "GPT Image 2 (Low)",
         "speed": "~15s",
@@ -61,13 +71,22 @@ _MODELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-DEFAULT_MODEL = "gpt-image-2-medium"
+DEFAULT_MODEL = "gpt-image-2-auto"
+
+_QUALITY_TO_TIER = {
+    "low": "gpt-image-2-low",
+    "medium": "gpt-image-2-medium",
+    "high": "gpt-image-2-high",
+}
+_VALID_QUALITIES = {"auto", "low", "medium", "high"}
+_VALID_OUTPUT_FORMATS = {"png", "jpeg", "webp"}
 
 _SIZES = {
     "landscape": "1536x1024",
     "square": "1024x1024",
     "portrait": "1024x1536",
 }
+_SIZE_RE = re.compile(r"^(\d+)x(\d+)$")
 
 # Codex Responses surface used for the request. The chat model itself is only
 # the host that calls the ``image_generation`` tool; the actual image work is
@@ -124,6 +143,103 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
 
 
+def _validate_gpt_image_2_size(size: str) -> Optional[str]:
+    """Return an error message when *size* violates gpt-image-2 limits."""
+    if size == "auto":
+        return None
+    match = _SIZE_RE.match(size)
+    if not match:
+        return "size must be 'auto' or '<width>x<height>'"
+    width = int(match.group(1))
+    height = int(match.group(2))
+    if width <= 0 or height <= 0:
+        return "width and height must be positive integers"
+    pixels = width * height
+    if width % 16 != 0 or height % 16 != 0:
+        return "both width and height must be multiples of 16"
+    if max(width, height) >= 3840:
+        return "maximum edge length must be less than 3840px"
+    if max(width / height, height / width) > 3:
+        return "aspect ratio must not exceed 3:1"
+    if pixels < 655_360:
+        return "total pixels must be at least 655,360"
+    if pixels > 8_294_400:
+        return "total pixels must not exceed 8,294,400"
+    return None
+
+
+def _resolve_generation_options(
+    *,
+    aspect: str,
+    quality: Optional[str] = None,
+    size: Optional[str] = None,
+    output_format: Optional[str] = None,
+    output_compression: Optional[Any] = None,
+) -> Tuple[
+    Optional[str], Optional[Dict[str, Any]], Optional[str], Optional[str],
+    Optional[str], Optional[int], Optional[str],
+]:
+    """Resolve tier/model, API quality, size, format, and compression.
+
+    Returns ``(tier_id, meta, api_quality, api_size, output_format,
+    output_compression, error)``. ``quality='auto'`` is passed through to the
+    API without pinning a low/medium/high tier.
+    """
+    tier_id, meta = _resolve_model()
+    api_quality = meta["quality"]
+
+    if quality is not None:
+        quality = str(quality).strip().lower()
+        if quality:
+            if quality not in _VALID_QUALITIES:
+                return None, None, None, None, None, None, (
+                    "quality must be one of: auto, low, medium, high"
+                )
+            api_quality = quality
+            if quality == "auto":
+                tier_id = "gpt-image-2-auto"
+                meta = _MODELS[tier_id]
+            else:
+                tier_id = _QUALITY_TO_TIER[quality]
+                meta = _MODELS[tier_id]
+
+    api_size = _SIZES.get(aspect, _SIZES["square"])
+    if size is not None:
+        size = str(size).strip().lower()
+        if size:
+            error = _validate_gpt_image_2_size(size)
+            if error:
+                return None, None, None, None, None, None, f"Invalid size '{size}': {error}"
+            api_size = size
+
+    api_format = "png"
+    if output_format is not None:
+        api_format = str(output_format).strip().lower()
+        if api_format not in _VALID_OUTPUT_FORMATS:
+            return None, None, None, None, None, None, (
+                "output_format must be one of: png, jpeg, webp"
+            )
+
+    api_compression: Optional[int] = None
+    if output_compression is not None:
+        if api_format not in {"jpeg", "webp"}:
+            return None, None, None, None, None, None, (
+                "output_compression is only supported with jpeg/webp output_format"
+            )
+        try:
+            api_compression = int(output_compression)
+        except (TypeError, ValueError):
+            return None, None, None, None, None, None, (
+                "output_compression must be an integer from 0 to 100"
+            )
+        if not 0 <= api_compression <= 100:
+            return None, None, None, None, None, None, (
+                "output_compression must be an integer from 0 to 100"
+            )
+
+    return tier_id, meta, api_quality, api_size, api_format, api_compression, None
+
+
 def _read_codex_access_token() -> Optional[str]:
     """Return a usable Codex OAuth token, or None.
 
@@ -161,47 +277,69 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    output_format: str = "png",
+    output_compression: Optional[int] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
+    tool: Dict[str, Any] = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": output_format,
+        "background": "opaque",
+        "partial_images": 0,
+    }
+    if output_compression is not None:
+        tool["output_compression"] = output_compression
 
-    with client.responses.stream(
-        model=_CODEX_CHAT_MODEL,
-        store=False,
-        instructions=_CODEX_INSTRUCTIONS,
-        input=[{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
-        }],
-        tools=[{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
-        tool_choice={
-            "type": "allowed_tools",
-            "mode": "required",
-            "tools": [{"type": "image_generation"}],
-        },
-    ) as stream:
-        for event in stream:
-            event_type = getattr(event, "type", "")
-            if event_type == "response.output_item.done":
-                item = getattr(event, "item", None)
-                if getattr(item, "type", None) == "image_generation_call":
-                    result = getattr(item, "result", None)
-                    if isinstance(result, str) and result:
-                        image_b64 = result
-            elif event_type == "response.image_generation_call.partial_image":
-                partial = getattr(event, "partial_image_b64", None)
-                if isinstance(partial, str) and partial:
-                    image_b64 = partial
-        final = stream.get_final_response()
+    # OpenAI SDK 2.31.0 can emit noisy Pydantic serializer warnings when the
+    # API returns gpt-image-2 fields its generated response schema has not yet
+    # learned, especially custom sizes such as 1152x2496. The API accepts these
+    # values and generation succeeds; keep this quirk scoped to the Codex image
+    # stream so CLI users do not see alarming warnings for valid requests.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Pydantic serializer warnings:.*",
+            category=UserWarning,
+        )
+        with client.responses.stream(
+            model=_CODEX_CHAT_MODEL,
+            store=False,
+            instructions=_CODEX_INSTRUCTIONS,
+            input=[{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            }],
+            tools=[tool],
+            tool_choice={
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "image_generation"}],
+            },
+        ) as stream:
+            for event in stream:
+                event_type = getattr(event, "type", "")
+                if event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if getattr(item, "type", None) == "image_generation_call":
+                        result = getattr(item, "result", None)
+                        if isinstance(result, str) and result:
+                            image_b64 = result
+                elif event_type == "response.image_generation_call.partial_image":
+                    partial = getattr(event, "partial_image_b64", None)
+                    if isinstance(partial, str) and partial:
+                        image_b64 = partial
+            final = stream.get_final_response()
 
     # Final-response sweep covers the case where the stream finished before
     # we observed the ``output_item.done`` event for the image call.
@@ -304,8 +442,21 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        tier_id, meta, api_quality, size, output_format, output_compression, option_error = _resolve_generation_options(
+            aspect=aspect,
+            quality=kwargs.get("quality"),
+            size=kwargs.get("size"),
+            output_format=kwargs.get("output_format"),
+            output_compression=kwargs.get("output_compression"),
+        )
+        if option_error:
+            return error_response(
+                error=option_error,
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         client = _build_codex_client()
         if client is None:
@@ -323,7 +474,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 client,
                 prompt=prompt,
                 size=size,
-                quality=meta["quality"],
+                quality=api_quality,
+                output_format=output_format,
+                output_compression=output_compression,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -347,7 +500,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")
+            saved_path = save_b64_image(
+                b64,
+                prefix=f"openai_codex_{tier_id}",
+                extension=output_format,
+            )
         except Exception as exc:
             return error_response(
                 error=f"Could not save image to cache: {exc}",
@@ -364,7 +521,12 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra={
+                "size": size,
+                "quality": api_quality,
+                "output_format": output_format,
+                "output_compression": output_compression,
+            },
         )
 
 

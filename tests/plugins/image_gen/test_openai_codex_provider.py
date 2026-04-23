@@ -9,6 +9,7 @@ endpoint.
 from __future__ import annotations
 
 import importlib
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +52,24 @@ class _FakeStream:
         return self._final
 
 
+class _WarningFakeStream(_FakeStream):
+    def __iter__(self):
+        warnings.warn(
+            "Pydantic serializer warnings: simulated stale ImageGeneration schema",
+            UserWarning,
+            stacklevel=2,
+        )
+        return super().__iter__()
+
+    def get_final_response(self):
+        warnings.warn(
+            "Pydantic serializer warnings: simulated stale ImageGeneration schema",
+            UserWarning,
+            stacklevel=2,
+        )
+        return super().get_final_response()
+
+
 @pytest.fixture(autouse=True)
 def _tmp_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -75,11 +94,16 @@ class TestMetadata:
         assert provider.display_name == "OpenAI (Codex auth)"
 
     def test_default_model(self, provider):
-        assert provider.default_model() == "gpt-image-2-medium"
+        assert provider.default_model() == "gpt-image-2-auto"
 
-    def test_list_models_three_tiers(self, provider):
+    def test_list_models_includes_auto_and_three_explicit_tiers(self, provider):
         ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
+        assert ids == [
+            "gpt-image-2-auto",
+            "gpt-image-2-low",
+            "gpt-image-2-medium",
+            "gpt-image-2-high",
+        ]
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
         schema = provider.get_setup_schema()
@@ -147,9 +171,9 @@ class TestGenerate:
         result = provider.generate("a cat", aspect_ratio="landscape")
 
         assert result["success"] is True
-        assert result["model"] == "gpt-image-2-medium"
+        assert result["model"] == "gpt-image-2-auto"
         assert result["provider"] == "openai-codex"
-        assert result["quality"] == "medium"
+        assert result["quality"] == "auto"
 
         saved = Path(result["image"])
         assert saved.exists()
@@ -193,11 +217,150 @@ class TestGenerate:
         tool = captured["tools"][0]
         assert tool["type"] == "image_generation"
         assert tool["model"] == "gpt-image-2"
-        assert tool["quality"] == "medium"
+        assert tool["quality"] == "auto"
         assert tool["size"] == "1024x1536"
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
-        assert tool["partial_images"] == 1
+        assert tool["partial_images"] == 0
+
+    def test_per_call_quality_and_custom_size_override_request_shape(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate(
+            "a detailed cyberpunk iPhone wallpaper with readable micro-signage",
+            aspect_ratio="portrait",
+            quality="high",
+            size="1152x2496",
+        )
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-high"
+        assert result["quality"] == "high"
+        assert result["size"] == "1152x2496"
+        tool = captured["tools"][0]
+        assert tool["quality"] == "high"
+        assert tool["size"] == "1152x2496"
+
+    def test_per_call_format_and_compression_override_request_shape(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate(
+            "a moody editorial photo of a glass city at dawn",
+            output_format="webp",
+            output_compression=85,
+        )
+
+        assert result["success"] is True
+        assert result["output_format"] == "webp"
+        assert result["output_compression"] == 85
+        assert Path(result["image"]).suffix == ".webp"
+        tool = captured["tools"][0]
+        assert tool["output_format"] == "webp"
+        assert tool["output_compression"] == 85
+
+    @pytest.mark.parametrize("bad_format", ["gif", "bmp", ""])
+    def test_invalid_output_format_returns_invalid_argument(self, provider, monkeypatch, bad_format):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        result = provider.generate("a cat", output_format=bad_format)
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    @pytest.mark.parametrize("bad_compression", [-1, 101, "crunchy"])
+    def test_invalid_output_compression_returns_invalid_argument(self, provider, monkeypatch, bad_compression):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        result = provider.generate("a cat", output_format="webp", output_compression=bad_compression)
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_png_rejects_output_compression(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        result = provider.generate("a cat", output_format="png", output_compression=80)
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "jpeg/webp" in result["error"]
+
+    def test_per_call_quality_auto_is_forwarded_without_pinning_tier(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate("a polished app hero screen", quality="auto", size="auto")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-auto"
+        assert result["quality"] == "auto"
+        assert result["size"] == "auto"
+        tool = captured["tools"][0]
+        assert tool["quality"] == "auto"
+        assert tool["size"] == "auto"
+
+    @pytest.mark.parametrize("bad_size", [
+        "1150x2496", "4000x2000", "512x512", "3000x1000",
+        "0x1024", "1024x0", "-1024x1024", "1024x-1024",
+    ])
+    def test_invalid_custom_size_returns_invalid_argument(self, provider, monkeypatch, bad_size):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        result = provider.generate("a cat", size=bad_size)
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert bad_size in result["error"]
 
     def test_partial_image_event_used_when_done_missing(self, provider, monkeypatch):
         """If the stream never emits output_item.done, fall back to the
@@ -244,6 +407,43 @@ class TestGenerate:
         result = provider.generate("a cat")
         assert result["success"] is True
         assert Path(result["image"]).exists()
+
+    def test_stale_openai_sdk_pydantic_warning_is_suppressed(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        output_item = SimpleNamespace(
+            type="image_generation_call",
+            status="completed",
+            id="ig_warning",
+            result=_b64_png(),
+        )
+        done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+        final_response = SimpleNamespace(output=[], status="completed", output_text="")
+        fake_client = SimpleNamespace(
+            responses=SimpleNamespace(
+                stream=lambda **kwargs: _WarningFakeStream([done_event], final_response)
+            )
+        )
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = provider.generate(
+                "a detailed Hermes Agent iPhone launch screen with terminal glyphs",
+                aspect_ratio="portrait",
+                quality="auto",
+                size="1152x2496",
+                output_format="webp",
+                output_compression=85,
+            )
+
+        assert result["success"] is True
+        assert result["size"] == "1152x2496"
+        assert result["output_format"] == "webp"
+        assert not any(
+            str(warning.message).startswith("Pydantic serializer warnings:")
+            for warning in caught
+        )
 
     def test_empty_response_returns_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")

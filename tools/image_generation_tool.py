@@ -873,6 +873,26 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "quality": {
+                "type": "string",
+                "enum": ["auto", "low", "medium", "high"],
+                "description": "Optional generation quality override for providers that support it. Low is cheaper/faster, medium is balanced, high gives strongest fidelity; auto lets the provider choose.",
+            },
+            "size": {
+                "type": "string",
+                "description": "Optional provider-specific output size override such as '1024x1024' or '1152x2496'. For gpt-image-2 custom sizes must use multiples of 16 and meet OpenAI's pixel/aspect limits; 'auto' lets the provider choose.",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["png", "jpeg", "webp"],
+                "description": "Optional output format override for providers that support it. PNG is best for UI/text/editing; JPEG/WebP can be smaller for photos or previews.",
+            },
+            "output_compression": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Optional compression level for JPEG/WebP outputs only. Higher values preserve more detail; ignored/invalid for PNG.",
+            },
         },
         "required": ["prompt"],
     },
@@ -900,7 +920,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, **provider_kwargs):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -950,7 +970,16 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        result = provider.generate(prompt=prompt, aspect_ratio=aspect_ratio)
+        clean_kwargs = {
+            key: value
+            for key, value in provider_kwargs.items()
+            if value is not None and value != ""
+        }
+        result = provider.generate(
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            **clean_kwargs,
+        )
     except Exception as exc:
         logger.warning(
             "Image gen provider '%s' raised: %s",
@@ -980,7 +1009,14 @@ def _handle_image_generate(args, **kw):
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(
+        prompt,
+        aspect_ratio,
+        quality=args.get("quality"),
+        size=args.get("size"),
+        output_format=args.get("output_format"),
+        output_compression=args.get("output_compression"),
+    )
     if dispatched is not None:
         return dispatched
 

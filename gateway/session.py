@@ -759,6 +759,10 @@ class SessionStore:
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
+                # Enforce GitHub Copilot routing to prevent provider drift
+            if source.provider == "copilot":
+                entry.base_url = "https://api.github.com"
+                entry.api_mode = "copilot"
 
                 # Auto-reset sessions marked as suspended (e.g. after /stop
                 # broke a stuck loop — #7536).  ``suspended`` is the hard

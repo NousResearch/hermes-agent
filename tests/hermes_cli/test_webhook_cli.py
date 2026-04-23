@@ -12,6 +12,7 @@ from hermes_cli.webhook import (
     _save_subscriptions,
     _subscriptions_path,
     _is_webhook_enabled,
+    SubscriptionStoreError,
 )
 
 
@@ -139,11 +140,23 @@ class TestPersistence:
         data = json.loads(path.read_text())
         assert "persist" in data
 
-    def test_corrupted_file(self):
+    def test_corrupted_file_raises_store_error(self):
         path = _subscriptions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("broken{{{")
-        assert _load_subscriptions() == {}
+        with pytest.raises(SubscriptionStoreError, match="Corrupt webhook subscriptions file"):
+            _load_subscriptions()
+
+    def test_subscribe_does_not_overwrite_corrupted_file(self, capsys):
+        path = _subscriptions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("broken{{{", encoding="utf-8")
+
+        webhook_command(_make_args(webhook_action="subscribe", name="persist"))
+
+        out = capsys.readouterr().out
+        assert "Corrupt webhook subscriptions file" in out
+        assert path.read_text(encoding="utf-8") == "broken{{{"
 
 
 class TestWebhookEnabledGate:

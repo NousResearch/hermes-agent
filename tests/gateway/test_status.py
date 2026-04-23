@@ -184,6 +184,46 @@ class TestGatewayPidState:
         assert not pid_path.exists()
         assert not lock_path.exists()
 
+    def test_get_running_pid_treats_recycled_pid_with_unreadable_start_time_as_stale(self, tmp_path, monkeypatch):
+        """Regression: #14176 — stale PID file from a recycled PID owned by a
+        different user blocks future starts.
+
+        On Linux, when the PID file's pid has been recycled by the OS to a
+        process the current user can't introspect (typical when /proc/<pid>/stat
+        is owned by another UID), ``_get_process_start_time`` returns ``None``.
+        The recorded start_time mismatch check therefore can't fire, and the
+        ``_looks_like_gateway_process`` heuristic can give a false positive on
+        a long-lived python or hermes-related process — leaving a stale PID
+        file that blocks ``hermes gateway start``. Be conservative and treat
+        the file as stale when we can't confirm the start_time match.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+
+        # Use the test process's own PID so os.kill(pid, 0) succeeds (live).
+        live_pid = os.getpid()
+        pid_path.write_text(json.dumps({
+            "pid": live_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 12345,  # arbitrary recorded time
+        }))
+        lock_path.write_text(json.dumps({
+            "pid": live_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 12345,
+        }))
+
+        # Simulate /proc unreadable / start_time inaccessible on the recycled PID.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: None)
+        # Even a permissive _looks_like_gateway_process must not leak through.
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda _pid: True)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+
     def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

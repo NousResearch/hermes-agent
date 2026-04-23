@@ -748,6 +748,16 @@ def get_running_pid(
         current_start = _get_process_start_time(pid)
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
             continue
+        # If the PID record carries a recorded start_time but we can't read
+        # the current process's start_time, the PID may have been recycled by
+        # the OS to a process the current user can't introspect (typical on
+        # Linux when /proc/<pid>/stat is owned by another UID). The downstream
+        # _looks_like_gateway_process heuristic can give a false positive in
+        # that situation — e.g. another long-lived python process — leaving
+        # a stale PID file that blocks future starts. Be conservative and
+        # skip this candidate. See #14176.
+        if recorded_start is not None and current_start is None:
+            continue
 
         if _looks_like_gateway_process(pid) or _record_looks_like_gateway(record):
             return pid

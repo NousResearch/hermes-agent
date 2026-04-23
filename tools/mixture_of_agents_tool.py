@@ -51,6 +51,7 @@ import json
 import logging
 import asyncio
 import datetime
+import time
 from typing import Dict, Any, List, Optional
 
 from agent.auxiliary_client import (
@@ -101,6 +102,29 @@ MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to p
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
 
 Responses from models:"""
+
+MOA_FORENSIC_SYSTEM_PROMPT = """You are analyzing a mixture-of-agents run. Return JSON only with this exact top-level structure:
+{
+  "decision_trace": {
+    "model_proposals": {"model_label": ["proposal", "..."]},
+    "overlap": ["shared idea", "..."],
+    "conflicts": ["meaningful disagreement", "..."],
+    "final_candidates": ["final pick", "..."],
+    "synthesis_summary": "short summary"
+  },
+  "aggregator_influence_log": {
+    "kept_from_models": {"model_label": ["kept point", "..."]},
+    "discarded_or_deprioritized": ["discarded point", "..."],
+    "resolution_notes": ["how conflicts were resolved", "..."],
+    "influence_summary": "short summary"
+  }
+}
+
+Rules:
+- JSON only, no markdown fences.
+- Use concise strings.
+- Use empty arrays/objects instead of inventing unsupported facts.
+- Base the analysis only on the supplied reference outputs and final answer."""
 
 _debug = DebugSession("moa_tools", env_var="MOA_TOOLS_DEBUG")
 
@@ -267,28 +291,88 @@ def _preview_reference_response(content: str, limit: int = 180) -> str:
     return normalized[: limit - 3].rstrip() + "..."
 
 
-async def _run_reference_model_safe(
+def _extract_json_object(raw_text: str) -> Dict[str, Any]:
+    text = str(raw_text or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found in forensic analysis response")
+    payload = json.loads(text[start:end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("Forensic analysis payload must be a JSON object")
+    return payload
+
+
+def _string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _mapping_of_lists(value: Any) -> Dict[str, List[str]]:
+    if not isinstance(value, dict):
+        return {}
+    result: Dict[str, List[str]] = {}
+    for key, items in value.items():
+        normalized_key = str(key).strip()
+        normalized_items = _string_list(items)
+        if normalized_key:
+            result[normalized_key] = normalized_items
+    return result
+
+
+def _empty_forensic_analysis() -> Dict[str, Any]:
+    return {
+        "decision_trace": {
+            "model_proposals": {},
+            "overlap": [],
+            "conflicts": [],
+            "final_candidates": [],
+            "synthesis_summary": "",
+        },
+        "aggregator_influence_log": {
+            "kept_from_models": {},
+            "discarded_or_deprioritized": [],
+            "resolution_notes": [],
+            "influence_summary": "",
+        },
+    }
+
+
+def _normalize_forensic_analysis(payload: Dict[str, Any]) -> Dict[str, Any]:
+    decision = payload.get("decision_trace") if isinstance(payload.get("decision_trace"), dict) else {}
+    influence = payload.get("aggregator_influence_log") if isinstance(payload.get("aggregator_influence_log"), dict) else {}
+    return {
+        "decision_trace": {
+            "model_proposals": _mapping_of_lists(decision.get("model_proposals")),
+            "overlap": _string_list(decision.get("overlap")),
+            "conflicts": _string_list(decision.get("conflicts")),
+            "final_candidates": _string_list(decision.get("final_candidates")),
+            "synthesis_summary": str(decision.get("synthesis_summary") or "").strip(),
+        },
+        "aggregator_influence_log": {
+            "kept_from_models": _mapping_of_lists(influence.get("kept_from_models")),
+            "discarded_or_deprioritized": _string_list(influence.get("discarded_or_deprioritized")),
+            "resolution_notes": _string_list(influence.get("resolution_notes")),
+            "influence_summary": str(influence.get("influence_summary") or "").strip(),
+        },
+    }
+
+
+async def _run_reference_model_detailed(
     model: Any,
     user_prompt: str,
     temperature: float = REFERENCE_TEMPERATURE,
     max_tokens: int = 32000,
-    max_retries: int = 6
-) -> tuple[str, str, bool]:
-    """
-    Run a single reference model with retry logic and graceful failure handling.
-    
-    Args:
-        model (str): Model identifier to use
-        user_prompt (str): The user's query
-        temperature (float): Sampling temperature for response generation
-        max_tokens (int): Maximum tokens in response
-        max_retries (int): Maximum number of retry attempts
-        
-    Returns:
-        tuple[str, str, bool]: (model_name, response_content_or_error, success_flag)
-    """
+    max_retries: int = 6,
+) -> Dict[str, Any]:
     route = _normalize_model_route(model, "reference_model")
     route_label = _route_label(route)
+    started = time.monotonic()
 
     for attempt in range(max_retries):
         try:
@@ -310,10 +394,9 @@ async def _run_reference_model_safe(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            
+
             content = extract_content_or_reasoning(response)
             if not content:
-                # Reasoning-only response — let the retry loop handle it
                 logger.warning(
                     "%s returned empty content (attempt %s/%s), retrying",
                     route_label,
@@ -328,14 +411,31 @@ async def _run_reference_model_safe(
                     f"after {max_retries} attempts"
                 )
                 logger.error("%s", error_msg)
-                return route_label, error_msg, False
+                return {
+                    "model": route_label,
+                    "provider": route.get("provider"),
+                    "success": False,
+                    "content": "",
+                    "error": error_msg,
+                    "attempts": attempt + 1,
+                    "latency_seconds": round(time.monotonic() - started, 3),
+                    "output_chars": 0,
+                }
+
             logger.info("%s responded (%s characters)", route_label, len(content))
-            return route_label, content, True
-            
+            return {
+                "model": route_label,
+                "provider": route.get("provider"),
+                "success": True,
+                "content": content,
+                "error": "",
+                "attempts": attempt + 1,
+                "latency_seconds": round(time.monotonic() - started, 3),
+                "output_chars": len(content),
+            }
+
         except Exception as e:
             error_str = str(e)
-            # Keep retry-path logging concise; full tracebacks are reserved for
-            # terminal failure paths so long-running MoA retries don't flood logs.
             if "invalid" in error_str.lower():
                 logger.warning("%s invalid request error (attempt %s): %s", route_label, attempt + 1, error_str)
             elif "rate" in error_str.lower() or "limit" in error_str.lower():
@@ -344,14 +444,52 @@ async def _run_reference_model_safe(
                 logger.warning("%s unknown error (attempt %s): %s", route_label, attempt + 1, error_str)
 
             if attempt < max_retries - 1:
-                # Exponential backoff for rate limiting: 2s, 4s, 8s, 16s, 32s, 60s
                 sleep_time = min(2 ** (attempt + 1), 60)
                 logger.info("Retrying in %ss...", sleep_time)
                 await asyncio.sleep(sleep_time)
             else:
                 error_msg = f"{route_label} failed after {max_retries} attempts: {error_str}"
                 logger.error("%s", error_msg, exc_info=True)
-                return route_label, error_msg, False
+                return {
+                    "model": route_label,
+                    "provider": route.get("provider"),
+                    "success": False,
+                    "content": "",
+                    "error": error_msg,
+                    "attempts": attempt + 1,
+                    "latency_seconds": round(time.monotonic() - started, 3),
+                    "output_chars": 0,
+                }
+
+
+async def _run_reference_model_safe(
+    model: Any,
+    user_prompt: str,
+    temperature: float = REFERENCE_TEMPERATURE,
+    max_tokens: int = 32000,
+    max_retries: int = 6
+) -> tuple[str, str, bool]:
+    """
+    Run a single reference model with retry logic and graceful failure handling.
+
+    Args:
+        model (str): Model identifier to use
+        user_prompt (str): The user's query
+        temperature (float): Sampling temperature for response generation
+        max_tokens (int): Maximum tokens in response
+        max_retries (int): Maximum number of retry attempts
+
+    Returns:
+        tuple[str, str, bool]: (model_name, response_content_or_error, success_flag)
+    """
+    details = await _run_reference_model_detailed(
+        model,
+        user_prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        max_retries=max_retries,
+    )
+    return details["model"], details["content"] or details["error"], bool(details["success"])
 
 
 async def _run_aggregator_model(
@@ -414,6 +552,58 @@ async def _run_aggregator_model(
 
     logger.info("Aggregation complete (%s characters)", len(content))
     return content
+
+
+async def _run_moa_forensic_analysis(
+    aggregator_model: Any,
+    user_prompt: str,
+    reference_outputs: Dict[str, str],
+    final_response: str,
+    max_tokens: int = 1400,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    route = _normalize_model_route(aggregator_model, "aggregator_model")
+    route_label = _route_label(route)
+    started = time.monotonic()
+    metrics: Dict[str, Any] = {
+        "model": route_label,
+        "provider": route.get("provider"),
+        "success": False,
+        "latency_seconds": 0.0,
+        "output_chars": 0,
+        "error": "",
+    }
+
+    analysis_prompt = (
+        f"User prompt:\n{user_prompt}\n\n"
+        f"Reference outputs by model:\n{json.dumps(reference_outputs, ensure_ascii=False, indent=2)}\n\n"
+        f"Final aggregated response:\n{final_response}"
+    )
+
+    try:
+        response = await async_call_llm(
+            task="moa",
+            provider=route.get("provider"),
+            model=route.get("model"),
+            base_url=route.get("base_url"),
+            api_key=route.get("api_key"),
+            messages=[
+                {"role": "system", "content": MOA_FORENSIC_SYSTEM_PROMPT},
+                {"role": "user", "content": analysis_prompt},
+            ],
+            temperature=0.1,
+            max_tokens=max_tokens,
+        )
+        content = extract_content_or_reasoning(response)
+        metrics["latency_seconds"] = round(time.monotonic() - started, 3)
+        metrics["output_chars"] = len(content or "")
+        parsed = _normalize_forensic_analysis(_extract_json_object(content or ""))
+        metrics["success"] = True
+        return parsed, metrics
+    except Exception as exc:
+        metrics["latency_seconds"] = round(time.monotonic() - started, 3)
+        metrics["error"] = str(exc)
+        logger.warning("MoA forensic analysis failed: %s", exc)
+        return _empty_forensic_analysis(), metrics
 
 
 async def mixture_of_agents_tool(
@@ -482,7 +672,11 @@ async def mixture_of_agents_tool(
         "models_used": {}
     }
     failed_models: List[str] = []
+    failed_model_errors: Dict[str, str] = {}
     reference_previews: Dict[str, str] = {}
+    reference_outputs: Dict[str, str] = {}
+    per_model_metrics: Dict[str, Any] = {"reference_models": {}, "aggregator": {}, "forensic_analysis": {}}
+    forensic_analysis = _empty_forensic_analysis()
     
     try:
         logger.info("Starting Mixture-of-Agents processing...")
@@ -517,19 +711,31 @@ async def mixture_of_agents_tool(
         # Layer 1: Generate diverse responses from reference models (with failure handling)
         logger.info("Layer 1: Generating reference responses...")
         model_results = await asyncio.gather(*[
-            _run_reference_model_safe(route, user_prompt, REFERENCE_TEMPERATURE)
+            _run_reference_model_detailed(route, user_prompt, REFERENCE_TEMPERATURE)
             for route in available_ref_routes
         ])
         
         # Separate successful and failed responses
         successful_responses = []
         
-        for model_name, content, success in model_results:
-            if success:
+        for result_row in model_results:
+            model_name = result_row["model"]
+            per_model_metrics["reference_models"][model_name] = {
+                "provider": result_row.get("provider"),
+                "success": bool(result_row.get("success")),
+                "attempts": int(result_row.get("attempts") or 0),
+                "latency_seconds": result_row.get("latency_seconds"),
+                "output_chars": int(result_row.get("output_chars") or 0),
+                "error": result_row.get("error") or "",
+            }
+            if result_row.get("success"):
+                content = result_row["content"]
                 successful_responses.append(content)
+                reference_outputs[model_name] = content
                 reference_previews[model_name] = _preview_reference_response(content)
             else:
                 failed_models.append(model_name)
+                failed_model_errors[model_name] = str(result_row.get("error") or "")
         
         successful_count = len(successful_responses)
         failed_count = len(failed_models)
@@ -559,12 +765,28 @@ async def mixture_of_agents_tool(
             successful_responses
         )
         
+        aggregator_started = time.monotonic()
         final_response = await _run_aggregator_model(
             agg_route,
             aggregator_system_prompt,
             user_prompt,
             AGGREGATOR_TEMPERATURE
         )
+        per_model_metrics["aggregator"] = {
+            "model": _route_label(agg_route),
+            "provider": agg_route.get("provider"),
+            "success": True,
+            "latency_seconds": round(time.monotonic() - aggregator_started, 3),
+            "output_chars": len(final_response or ""),
+        }
+
+        forensic_analysis, forensic_metrics = await _run_moa_forensic_analysis(
+            agg_route,
+            user_prompt,
+            reference_outputs,
+            final_response,
+        )
+        per_model_metrics["forensic_analysis"] = forensic_metrics
         
         # Calculate processing time
         end_time = datetime.datetime.now()
@@ -581,7 +803,12 @@ async def mixture_of_agents_tool(
                 "aggregator_model": _route_label(agg_route)
             },
             "failed_models": failed_models,
+            "failed_model_errors": failed_model_errors,
             "reference_previews": reference_previews,
+            "reference_outputs": reference_outputs,
+            "per_model_metrics": per_model_metrics,
+            "decision_trace": forensic_analysis["decision_trace"],
+            "aggregator_influence_log": forensic_analysis["aggregator_influence_log"],
         }
         
         debug_call_data["success"] = True
@@ -612,7 +839,12 @@ async def mixture_of_agents_tool(
                 "aggregator_model": _route_label(agg_route)
             },
             "failed_models": failed_models,
+            "failed_model_errors": failed_model_errors,
             "reference_previews": reference_previews,
+            "reference_outputs": reference_outputs,
+            "per_model_metrics": per_model_metrics,
+            "decision_trace": forensic_analysis["decision_trace"],
+            "aggregator_influence_log": forensic_analysis["aggregator_influence_log"],
             "error": error_msg
         }
         

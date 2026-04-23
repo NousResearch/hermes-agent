@@ -220,6 +220,30 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
             for model, preview in reference_previews.items()
             if str(model).strip() and str(preview).strip()
         }
+    if prompt_route == "force-moa":
+        failed_model_errors = payload.get("failed_model_errors")
+        if isinstance(failed_model_errors, dict):
+            summary["failed_model_errors"] = {
+                str(model).strip(): str(error).strip()
+                for model, error in failed_model_errors.items()
+                if str(model).strip() and str(error).strip()
+            }
+        reference_outputs = payload.get("reference_outputs")
+        if isinstance(reference_outputs, dict):
+            summary["reference_outputs"] = {
+                str(model).strip(): str(output)
+                for model, output in reference_outputs.items()
+                if str(model).strip() and str(output).strip()
+            }
+        per_model_metrics = payload.get("per_model_metrics")
+        if isinstance(per_model_metrics, dict):
+            summary["per_model_metrics"] = per_model_metrics
+        decision_trace = payload.get("decision_trace")
+        if isinstance(decision_trace, dict):
+            summary["decision_trace"] = decision_trace
+        aggregator_influence_log = payload.get("aggregator_influence_log")
+        if isinstance(aggregator_influence_log, dict):
+            summary["aggregator_influence_log"] = aggregator_influence_log
     error = str(payload.get("error") or "").strip()
     if error:
         summary["error"] = error[:500]

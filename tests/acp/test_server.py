@@ -625,7 +625,7 @@ class TestPrompt:
         with patch(
             "tools.mixture_of_agents_tool.mixture_of_agents_tool",
             AsyncMock(
-                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed", "deepseek/deepseek-reasoner"], "aggregator_model": "xiaomi/mimo-v2-pro"}, "failed_models": [], "reference_previews": {"minimax/MiniMax-M2.7-highspeed": "moa answer"}}'
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": ["minimax/MiniMax-M2.7-highspeed", "deepseek/deepseek-reasoner"], "aggregator_model": "xiaomi/mimo-v2-pro"}, "failed_models": [], "failed_model_errors": {}, "reference_previews": {"minimax/MiniMax-M2.7-highspeed": "moa answer"}, "reference_outputs": {"minimax/MiniMax-M2.7-highspeed": "full minimax output"}, "per_model_metrics": {"reference_models": {"minimax/MiniMax-M2.7-highspeed": {"attempts": 1, "latency_seconds": 1.2, "success": true}}, "aggregator": {"model": "xiaomi/mimo-v2-pro", "latency_seconds": 2.4, "success": true}, "forensic_analysis": {"model": "xiaomi/mimo-v2-pro", "latency_seconds": 0.7, "success": true}}, "decision_trace": {"model_proposals": {"minimax/MiniMax-M2.7-highspeed": ["akg", "lithium"]}, "overlap": ["akg"], "conflicts": ["deepseek preferred another stack"], "final_candidates": ["akg", "lithium"], "synthesis_summary": "mimo narrowed to the strongest overlap"}, "aggregator_influence_log": {"kept_from_models": {"minimax/MiniMax-M2.7-highspeed": ["akg"]}, "discarded_or_deprioritized": ["metformin"], "resolution_notes": ["mimo preferred overlap plus safety"], "influence_summary": "mimo used both references but weighted overlap most"}}'
             ),
         ):
             await agent.prompt(
@@ -644,9 +644,16 @@ class TestPrompt:
             "deepseek/deepseek-reasoner",
         ]
         assert result_event["tool"]["failed_models"] == []
+        assert result_event["tool"]["failed_model_errors"] == {}
         assert result_event["tool"]["reference_previews"] == {
             "minimax/MiniMax-M2.7-highspeed": "moa answer"
         }
+        assert result_event["tool"]["reference_outputs"] == {
+            "minimax/MiniMax-M2.7-highspeed": "full minimax output"
+        }
+        assert result_event["tool"]["per_model_metrics"]["aggregator"]["model"] == "xiaomi/mimo-v2-pro"
+        assert result_event["tool"]["decision_trace"]["final_candidates"] == ["akg", "lithium"]
+        assert result_event["tool"]["aggregator_influence_log"]["influence_summary"] == "mimo used both references but weighted overlap most"
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):

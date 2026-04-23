@@ -482,6 +482,33 @@ class TestSendToPlatformChunking:
         finally:
             doc_path.unlink(missing_ok=True)
 
+    def test_feishu_media_uses_native_adapter_helper_without_omission_warning(self, tmp_path):
+        image_path = tmp_path / "feishu-image.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+        helper = AsyncMock(return_value={"success": True, "platform": "feishu", "chat_id": "oc_test", "message_id": "msg_123"})
+
+        with patch("tools.send_message_tool._send_feishu", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "oc_test",
+                    "here you go",
+                    media_files=[(str(image_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result.get("warnings") is None
+        helper.assert_awaited_once_with(
+            SimpleNamespace(enabled=True, token="***", extra={}),
+            "oc_test",
+            "here you go",
+            media_files=[(str(image_path), False)],
+            thread_id=None,
+        )
+
     def test_matrix_text_only_uses_lightweight_path(self):
         """Text-only Matrix sends should NOT go through the heavy adapter path."""
         helper = AsyncMock()

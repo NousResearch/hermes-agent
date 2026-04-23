@@ -45,6 +45,7 @@ from hermes_cli.config import (
     remove_env_value,
     check_config_version,
     redact_key,
+    sanitize_url_for_display,
 )
 from gateway.status import get_running_pid, read_runtime_status
 
@@ -954,9 +955,12 @@ async def get_env_vars():
     result = {}
     for var_name, info in OPTIONAL_ENV_VARS.items():
         value = env_on_disk.get(var_name)
+        redacted_value = redact_key(value) if value else None
+        if var_name == "BRAVE_API_URL" and value:
+            redacted_value = sanitize_url_for_display(value)
         result[var_name] = {
             "is_set": bool(value),
-            "redacted_value": redact_key(value) if value else None,
+            "redacted_value": redacted_value,
             "description": info.get("description", ""),
             "url": info.get("url"),
             "category": info.get("category", ""),

@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -3582,6 +3583,26 @@ def redact_key(key: str) -> str:
     return key[:4] + "..." + key[-4:]
 
 
+def sanitize_url_for_display(url: str) -> str:
+    """Return a display-safe URL with credentials/query/fragment stripped."""
+    if not url:
+        return color("(not set)", Colors.DIM)
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return "(invalid URL)"
+        host = parsed.hostname or ""
+        if not host:
+            return "(invalid URL)"
+        netloc = host
+        if parsed.port:
+            netloc = f"{host}:{parsed.port}"
+        path = parsed.path or ""
+        return urllib.parse.urlunparse((parsed.scheme, netloc, path, "", "", ""))
+    except Exception:
+        return "(invalid URL)"
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -3622,7 +3643,7 @@ def show_config():
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
-    brave_api_url = get_env_value("BRAVE_API_URL") or color("(not set)", Colors.DIM)
+    brave_api_url = sanitize_url_for_display(get_env_value("BRAVE_API_URL") or "")
     print(f"  {'Brave API URL':<14} {brave_api_url}")
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()

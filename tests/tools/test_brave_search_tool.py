@@ -99,6 +99,38 @@ class TestBraveSearch:
         assert "BRAVE_API_URL" in result["error"]
         mock_get.assert_not_called()
 
+    def test_search_rejects_non_local_http_brave_api_url_override(self):
+        with patch.dict(
+            os.environ,
+            {"BRAVE_SEARCH_API_KEY": "brave-test", "BRAVE_API_URL": "http://proxy.example.com/custom/res/v1"},
+            clear=False,
+        ), patch("tools.brave_search_tool.httpx.get") as mock_get:
+            from tools.brave_search_tool import brave_search
+
+            result = json.loads(brave_search("python testing", count=1))
+
+        assert "https" in result["error"]
+        mock_get.assert_not_called()
+
+    def test_search_allows_local_http_brave_api_url_override(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "web": {"results": [{"title": "Result 1", "url": "https://example.com/1", "description": "Snippet 1"}]}
+        }
+
+        with patch.dict(
+            os.environ,
+            {"BRAVE_SEARCH_API_KEY": "brave-test", "BRAVE_API_URL": "http://localhost:3000/custom/res/v1"},
+            clear=False,
+        ), patch("tools.brave_search_tool.httpx.get", return_value=response) as mock_get:
+            from tools.brave_search_tool import brave_search
+
+            result = json.loads(brave_search("python testing", count=1))
+
+        assert result["success"] is True
+        assert mock_get.call_args.args[0] == "http://localhost:3000/custom/res/v1/web/search"
+
     def test_search_forwards_documented_brave_query_params(self):
         response = MagicMock()
         response.raise_for_status = MagicMock()
@@ -239,6 +271,8 @@ class TestBraveSearch:
             result = json.loads(brave_suggest("python te"))
 
         assert "BRAVE_AUTOSUGGEST_API_KEY" in result["error"]
+        assert "BRAVE_SEARCH_API_KEY" in result["error"]
+        assert "BRAVE_API_KEY" in result["error"]
 
     def test_search_surfaces_structured_brave_http_errors(self):
         error_response = _make_brave_http_error_response(
@@ -533,6 +567,8 @@ class TestBraveSearch:
             result = json.loads(brave_answers("Fallback?"))
 
         assert "BRAVE_ANSWERS_API_KEY" in result["error"]
+        assert "BRAVE_SEARCH_API_KEY" in result["error"]
+        assert "BRAVE_API_KEY" in result["error"]
 
     def test_answers_accepts_legacy_key_fallback(self):
         response = MagicMock()
@@ -551,6 +587,19 @@ class TestBraveSearch:
         assert result["success"] is True
         assert result["data"]["answer"] == "Fallback answer."
         assert mock_post.call_args.kwargs["headers"]["X-Subscription-Token"] == "brave-legacy-test"
+
+    def test_answers_rejects_invalid_brave_api_url_override(self):
+        with patch.dict(
+            os.environ,
+            {"BRAVE_ANSWERS_API_KEY": "answers-test", "BRAVE_API_URL": "http://proxy.example.com/custom/res/v1"},
+            clear=False,
+        ), patch("tools.brave_search_tool.httpx.post") as mock_post:
+            from tools.brave_search_tool import brave_answers
+
+            result = json.loads(brave_answers("Fallback?"))
+
+        assert "BRAVE_API_URL" in result["error"]
+        mock_post.assert_not_called()
 
     def test_suggest_accepts_search_key_fallback(self):
         response = MagicMock()
@@ -581,6 +630,19 @@ class TestBraveSearch:
         assert result["success"] is True
         assert result["data"]["suggestions"] == ["python test"]
         assert mock_get.call_args.kwargs["headers"]["X-Subscription-Token"] == "brave-legacy-test"
+
+    def test_suggest_rejects_invalid_brave_api_url_override(self):
+        with patch.dict(
+            os.environ,
+            {"BRAVE_AUTOSUGGEST_API_KEY": "autosuggest-test", "BRAVE_API_URL": "http://proxy.example.com/custom/res/v1"},
+            clear=False,
+        ), patch("tools.brave_search_tool.httpx.get") as mock_get:
+            from tools.brave_search_tool import brave_suggest
+
+            result = json.loads(brave_suggest("python te"))
+
+        assert "BRAVE_API_URL" in result["error"]
+        mock_get.assert_not_called()
 
     def test_answers_defaults_to_non_streaming_requests(self):
         response = MagicMock()

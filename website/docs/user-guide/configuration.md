@@ -106,6 +106,7 @@ BRAVE_API_URL=https://api.search.brave.com/res/v1
 
 - Supported now: Brave web search, news, images, videos, local POIs, local descriptions, answers, and autosuggest.
 - `web_search` can use Brave when the web backend is set to `brave`, but Brave is still a **search** backend in Hermes — `web_extract` / `web_crawl` still require a content backend such as Firecrawl, Exa, Parallel, or Tavily.
+- `BRAVE_API_URL` is an advanced override. Hermes enforces a real base URL, strips credentials/query/fragment in displays, requires `https` for non-local hosts, allows `http` only for localhost, and rejects direct private/internal IP literals.
 - Graceful degradation: if a key is present but the Brave plan does not cover an endpoint, Hermes returns a structured tool error instead of a raw traceback.
 - `web_search` is not a hard blocker: if Brave is configured but Brave Search itself is unavailable, Hermes falls back to the normal backend-selection path instead of failing the whole search tool.
 - Not supported yet: Brave spellcheck, summarizer search, dedicated rich-callback helper, and separate place-search tooling.

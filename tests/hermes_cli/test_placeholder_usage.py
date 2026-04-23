@@ -54,7 +54,7 @@ def test_show_config_displays_brave_legacy_and_api_url(tmp_path, capsys):
         {
             "HERMES_HOME": str(tmp_path),
             "BRAVE_API_KEY": "brlg-1...cdef",
-            "BRAVE_API_URL": "https://proxy.example.com/custom/res/v1",
+            "BRAVE_API_URL": "https://user:pass@proxy.example.com/custom/res/v1?token=abc#frag",
         },
     ):
         show_config()
@@ -64,3 +64,5 @@ def test_show_config_displays_brave_legacy_and_api_url(tmp_path, capsys):
     assert "Brave API URL" in out
     assert "brlg...cdef" in out
     assert "https://proxy.example.com/custom/res/v1" in out
+    assert "user:pass" not in out
+    assert "token=abc" not in out

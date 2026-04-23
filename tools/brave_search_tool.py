@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from ipaddress import ip_address
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -38,8 +39,24 @@ def _brave_base_url() -> str:
     """Return the Brave API base URL, honoring an optional proxy override."""
     candidate = (os.getenv("BRAVE_API_URL", _BRAVE_DEFAULT_BASE_URL).strip() or _BRAVE_DEFAULT_BASE_URL).rstrip("/")
     parsed = urlparse(candidate)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname:
         raise ValueError("BRAVE_API_URL must be a valid http(s) base URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("BRAVE_API_URL must not include credentials, query parameters, or fragments")
+
+    localhost_hosts = {"localhost", "127.0.0.1", "::1"}
+    try:
+        host_ip = ip_address(hostname)
+    except ValueError:
+        host_ip = None
+
+    if parsed.scheme == "http" and hostname not in localhost_hosts:
+        raise ValueError("BRAVE_API_URL must use https unless pointing at localhost")
+    if host_ip is not None and hostname not in localhost_hosts:
+        if host_ip.is_private or host_ip.is_loopback or host_ip.is_link_local or host_ip.is_reserved:
+            raise ValueError("BRAVE_API_URL must not target private or internal IP addresses")
+
     return candidate
 
 
@@ -107,6 +124,7 @@ def _brave_answers_headers() -> Dict[str, str]:
         _brave_answers_api_key(),
         missing_message=(
             "BRAVE_ANSWERS_API_KEY environment variable not set. "
+            "Brave answers also accepts BRAVE_SEARCH_API_KEY or BRAVE_API_KEY as fallback. "
             "Get your Brave Answers API key at https://api-dashboard.search.brave.com"
         ),
     )
@@ -117,6 +135,7 @@ def _brave_autosuggest_headers() -> Dict[str, str]:
         _brave_autosuggest_api_key(),
         missing_message=(
             "BRAVE_AUTOSUGGEST_API_KEY environment variable not set. "
+            "Brave suggest also accepts BRAVE_SEARCH_API_KEY or BRAVE_API_KEY as fallback. "
             "Get your Brave Autosuggest API key at https://api-dashboard.search.brave.com"
         ),
     )

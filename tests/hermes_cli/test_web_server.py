@@ -212,6 +212,10 @@ class TestWebServerEndpoints:
         assert "model" in defaults
 
     def test_get_env_vars(self):
+        from hermes_cli.config import save_env_value
+
+        save_env_value("BRAVE_API_URL", "https://user:pass@proxy.example.com/custom/res/v1?token=abc#frag")
+
         resp = self.client.get("/api/env")
         assert resp.status_code == 200
         data = resp.json()
@@ -228,6 +232,7 @@ class TestWebServerEndpoints:
         assert data["BRAVE_AUTOSUGGEST_API_KEY"]["category"] == "tool"
         assert data["BRAVE_API_URL"]["category"] == "tool"
         assert data["BRAVE_API_URL"]["is_password"] is False
+        assert data["BRAVE_API_URL"]["redacted_value"] == "https://proxy.example.com/custom/res/v1"
 
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""

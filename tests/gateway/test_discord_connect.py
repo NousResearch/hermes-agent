@@ -471,3 +471,187 @@ async def test_post_connect_initialization_skips_sync_when_policy_off(monkeypatc
     await adapter._run_post_connect_initialization()
 
     fake_tree.sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_reads_permission_attrs_from_existing_command():
+    """Regression: AppCommand.to_dict() in discord.py does NOT include
+    nsfw, dm_permission, or default_member_permissions — they live only
+    on the attributes. Without reading those attrs, any command with
+    non-default permissions false-diffs on every startup.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        """Mirrors discord.py's AppCommand — to_dict() omits nsfw/dm/perms."""
+
+        def __init__(self, command_id, name, description, *, nsfw, guild_only, default_permissions):
+            self.id = command_id
+            self.name = name
+            self.description = description
+            self.type = SimpleNamespace(value=1)
+            self.nsfw = nsfw
+            self.guild_only = guild_only
+            self.default_member_permissions = (
+                SimpleNamespace(value=default_permissions)
+                if default_permissions is not None
+                else None
+            )
+
+        def to_dict(self):
+            # Match real AppCommand.to_dict() — no nsfw/dm_permission/default_member_permissions
+            return {
+                "id": self.id,
+                "type": 1,
+                "application_id": 999,
+                "name": self.name,
+                "description": self.description,
+                "name_localizations": {},
+                "description_localizations": {},
+                "options": [],
+            }
+
+    desired = {
+        "name": "admin",
+        "description": "Admin-only command",
+        "type": 1,
+        "options": [],
+        "nsfw": True,
+        "dm_permission": False,
+        "default_member_permissions": "8",
+    }
+    # Existing command has matching attrs — should report unchanged, NOT falsely diff.
+    existing = _ExistingCommand(
+        42,
+        "admin",
+        "Admin-only command",
+        nsfw=True,
+        guild_only=True,
+        default_permissions=8,
+    )
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired)],
+        fetch_commands=AsyncMock(return_value=[existing]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    # Without the fix, this would be unchanged=0, recreated=1 (false diff).
+    assert summary == {
+        "total": 1,
+        "unchanged": 1,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+    fake_http.edit_global_command.assert_not_awaited()
+    fake_http.delete_global_command.assert_not_awaited()
+    fake_http.upsert_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_detects_contexts_drift():
+    """Regression: contexts and integration_types must be canonicalized
+    so drift in those fields triggers reconciliation. Without this, the
+    diff silently reports 'unchanged' and never reconciles.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.description = payload["description"]
+            self.type = SimpleNamespace(value=1)
+            self.nsfw = payload.get("nsfw", False)
+            self.guild_only = not payload.get("dm_permission", True)
+            self.default_member_permissions = None
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "type": 1,
+                "application_id": 999,
+                "name": self.name,
+                "description": self.description,
+                "name_localizations": {},
+                "description_localizations": {},
+                "options": [],
+                "contexts": self._payload.get("contexts"),
+                "integration_types": self._payload.get("integration_types"),
+            }
+
+    desired = {
+        "name": "help",
+        "description": "Show available commands",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+        "contexts": [0, 1, 2],
+        "integration_types": [0, 1],
+    }
+    existing = _ExistingCommand(
+        77,
+        {
+            **desired,
+            "contexts": [0],  # server-side only
+            "integration_types": [0],
+        },
+    )
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired)],
+        fetch_commands=AsyncMock(return_value=[existing]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    # contexts and integration_types are not patchable by
+    # edit_global_command, so the command must be recreated.
+    assert summary["unchanged"] == 0
+    assert summary["recreated"] == 1
+    assert summary["updated"] == 0
+    fake_http.edit_global_command.assert_not_awaited()
+    fake_http.delete_global_command.assert_awaited_once_with(999, 77)
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired)

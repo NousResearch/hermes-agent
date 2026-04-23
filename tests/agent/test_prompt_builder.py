@@ -266,6 +266,78 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_compact_skill_prompt_uses_graph_when_flags_are_on(self, monkeypatch, tmp_path):
+        from agent.skill_graph import build_skill_graph, write_skill_graph
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_ENABLED", "1")
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_PROMPT", "1")
+        skills_root = tmp_path / "skills"
+        for i in range(35):
+            skill_dir = skills_root / "devops" / f"skill-{i:02d}"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: skill-{i:02d}\ndescription: Devops helper {i:02d}\n"
+                "metadata:\n  hermes:\n    layer: atom\n---\n",
+                encoding="utf-8",
+            )
+        graph = build_skill_graph(skills_root, generated_at="2026-04-23T12:00:00Z")
+        write_skill_graph(
+            graph,
+            skills_root / ".graph" / "skill_graph.json",
+            skills_root / ".graph" / "skill_graph.md",
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "skills_list(query=" in result
+        assert "HERMES_SKILL_GRAPH_PROMPT=0" in result
+        assert "<available_skills>" not in result
+        assert "skill-34" not in result
+        assert len(result) < 2500
+
+    def test_compact_skill_prompt_rolls_back_to_legacy_when_flag_is_off(self, monkeypatch, tmp_path):
+        from agent.skill_graph import build_skill_graph, write_skill_graph
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_ENABLED", "1")
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_PROMPT", "0")
+        skills_root = tmp_path / "skills"
+        skill_dir = skills_root / "devops" / "legacy-visible"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: legacy-visible\ndescription: Must stay visible\n---\n",
+            encoding="utf-8",
+        )
+        graph = build_skill_graph(skills_root, generated_at="2026-04-23T12:00:00Z")
+        write_skill_graph(
+            graph,
+            skills_root / ".graph" / "skill_graph.json",
+            skills_root / ".graph" / "skill_graph.md",
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "legacy-visible" in result
+        assert "<available_skills>" in result
+        assert "skills_list(query=" not in result
+
+    def test_missing_graph_falls_back_to_legacy_prompt(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_ENABLED", "1")
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_PROMPT", "1")
+        skill_dir = tmp_path / "skills" / "devops" / "fallback-visible"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: fallback-visible\ndescription: Fallback still works\n---\n",
+            encoding="utf-8",
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "fallback-visible" in result
+        assert "<available_skills>" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

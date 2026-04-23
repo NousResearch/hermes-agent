@@ -298,7 +298,7 @@ def _get_child_timeout() -> float:
     """Read delegation.child_timeout_seconds from config.
 
     Returns the number of seconds a single child agent is allowed to run
-    before being considered stuck.  Default: 300 s (5 minutes).
+    before being considered stuck.  Default: 600 s (10 minutes).
     """
     cfg = _load_config()
     val = cfg.get("child_timeout_seconds")
@@ -409,7 +409,7 @@ def _preserve_parent_mcp_toolsets(
 
 
 DEFAULT_MAX_ITERATIONS = 50
-DEFAULT_CHILD_TIMEOUT = 300  # seconds before a child agent is considered stuck
+DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 _HEARTBEAT_STALE_CYCLES = (
     5  # mark child stale after this many heartbeats with no iteration progress

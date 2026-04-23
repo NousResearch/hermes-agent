@@ -294,6 +294,7 @@ class GitHubSource(SkillSource):
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
         self.auth = auth
         self.taps = list(self.DEFAULT_TAPS)
+        self.has_extra_taps = bool(extra_taps)
         if extra_taps:
             self.taps.extend(extra_taps)
         # Per-instance cache: repo -> (default_branch, tree_entries)
@@ -2988,9 +2989,12 @@ def parallel_search_sources(
         sid = src.source_id()
         if source_filter != "all" and sid != source_filter and sid != "official":
             continue
-        # Skip external API sources when the index covers them
+        # Skip external API sources when the index covers them. GitHub taps are
+        # not mirrored into the centralized index, so keep GitHub search enabled
+        # when the user has configured extra taps.
         if _index_available and sid in _api_source_ids:
-            continue
+            if sid != "github" or not getattr(src, "has_extra_taps", False):
+                continue
         active.append(src)
 
     all_results: List[SkillMeta] = []

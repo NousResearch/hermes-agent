@@ -1039,6 +1039,26 @@ class TestUnifiedSearchDedup:
         results = unified_search("query", [failing, ok])
         assert len(results) == 1
 
+    def test_custom_tap_github_search_not_skipped_when_index_available(self):
+        index = self._make_source("hermes-index", [])
+        index.is_available = True
+
+        github = self._make_source("github", [
+            SkillMeta(
+                name="my-fancy-skill",
+                description="custom tap skill",
+                source="github",
+                identifier="owner/repo/skills/my-fancy-skill",
+                trust_level="community",
+            )
+        ])
+        github.has_extra_taps = True
+
+        results = unified_search("my-fancy-skill", [index, github])
+
+        assert [r.name for r in results] == ["my-fancy-skill"]
+        github.search.assert_called_once_with("my-fancy-skill", limit=50)
+
 
 # ---------------------------------------------------------------------------
 # append_audit_log

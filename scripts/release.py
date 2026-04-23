@@ -379,6 +379,7 @@ AUTHOR_MAP = {
     "zhang9w0v5@qq.com": "zhang9w0v5",
     "fuleinist@outlook.com": "fuleinist",
     "43494187+Llugaes@users.noreply.github.com": "Llugaes",
+    "fengtianyu88@users.noreply.github.com": "fengtianyu88",
 }
 
 

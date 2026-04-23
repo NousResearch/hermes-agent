@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: docker-${{ github.ref }}
@@ -22,8 +23,6 @@ concurrency:
 
 jobs:
   build-and-push:
-    # Only run on the upstream repository, not on forks
-    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -48,7 +47,7 @@ jobs:
           file: Dockerfile
           load: true
           platforms: linux/amd64
-          tags: nousresearch/hermes-agent:test
+          tags: ghcr.io/${{ github.repository }}:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -65,14 +64,15 @@ jobs:
           docker run --rm \
             -v /tmp/hermes-test:/opt/data \
             --entrypoint /opt/hermes/docker/entrypoint.sh \
-            nousresearch/hermes-agent:test --help
+            ghcr.io/${{ github.repository }}:test --help
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push multi-arch image (main branch)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -82,7 +82,7 @@ jobs:
           file: Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: nousresearch/hermes-agent:latest
+          tags: ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -94,6 +94,6 @@ jobs:
           file: Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: nousresearch/hermes-agent:${{ github.event.release.tag_name }}
+          tags: ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

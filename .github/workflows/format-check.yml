@@ -1,0 +1,67 @@
+name: Format Check
+
+on:
+  pull_request:
+    paths:
+      - '*.py'
+      - '**/*.py'
+      - '*.sh'
+      - '**/*.sh'
+      - '*.yaml'
+      - '*.yml'
+      - '**/*.yaml'
+      - '**/*.yml'
+      - '*.md'
+      - '**/*.md'
+      - 'pyproject.toml'
+      - '.prettierrc'
+      - '.editorconfig'
+      - '.pre-commit-config.yaml'
+      - '.github/workflows/format-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ruff-format:
+    name: Ruff Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: chartboost/ruff-action@v4
+        with:
+          args: format --check
+
+  ruff-lint:
+    name: Ruff Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: chartboost/ruff-action@v4
+
+  prettier:
+    name: Prettier (YAML/Markdown)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check YAML and Markdown formatting
+        run: npx prettier --check '**/*.{yaml,yml,md}' '!website/**' '!ui-tui/node_modules/**' '!.venv/**'
+
+  shfmt:
+    name: Shell Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shfmt
+        run: go install mvdan.cc/sh/v3/cmd/shfmt@latest
+
+      - name: Check shell formatting
+        run: shfmt -d -i 2 -ci .

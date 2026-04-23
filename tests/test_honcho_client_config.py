@@ -103,3 +103,19 @@ class TestHonchoClientConfigAutoEnable:
 
         assert cfg.api_key == "fallback-key"
         assert cfg.enabled is True  # from_env() sets enabled=True
+
+
+class TestHonchoClientConfigSessionNameResolution:
+    def test_sessions_override_matches_equivalent_cwd_spellings(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project.mkdir()
+
+        cfg = HonchoClientConfig(sessions={str(project): "manual-name"})
+
+        assert cfg.resolve_session_name(cwd=str(project)) == "manual-name"
+        assert cfg.resolve_session_name(cwd=str(project) + "/") == "manual-name"
+        assert cfg.resolve_session_name(cwd=str(project) + "/./") == "manual-name"
+
+        monkeypatch.chdir(tmp_path)
+        assert cfg.resolve_session_name(cwd="project") == "manual-name"
+        assert cfg.resolve_session_name(cwd="project/") == "manual-name"

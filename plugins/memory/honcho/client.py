@@ -549,6 +549,23 @@ class HonchoClientConfig:
         manual = self.sessions.get(cwd)
         if manual:
             return manual
+        # Fall back to a normalized cwd lookup so that equivalent spellings of the
+        # same directory (e.g. trailing slashes, relative paths) still match.
+        try:
+            normalized_cwd = os.path.normpath(os.path.abspath(os.path.expanduser(cwd)))
+        except (TypeError, OSError, ValueError):
+            normalized_cwd = None
+
+        if normalized_cwd:
+            for key, value in self.sessions.items():
+                try:
+                    normalized_key = os.path.normpath(
+                        os.path.abspath(os.path.expanduser(key))
+                    )
+                except (TypeError, OSError, ValueError):
+                    continue
+                if normalized_key == normalized_cwd and value:
+                    return value
 
         # /title mid-session remap
         if session_title:

@@ -362,6 +362,7 @@ AUTHOR_MAP = {
     "chayton@sina.com": "ycbai",
     "longsizhuo@gmail.com": "longsizhuo",
     "chenb19870707@gmail.com": "ms-alan",
+    "276886827+WuTianyi123@users.noreply.github.com": "WuTianyi123",
 }
 
 

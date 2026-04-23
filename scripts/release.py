@@ -385,6 +385,7 @@ AUTHOR_MAP = {
     "xin.peng.dr@gmail.com": "xinpengdr",
     "mike@mikewaters.net": "mikewaters",
     "65117428+WadydX@users.noreply.github.com": "WadydX",
+    "216480837+isaachuangGMICLOUD@users.noreply.github.com": "isaachuangGMICLOUD",
 }
 
 

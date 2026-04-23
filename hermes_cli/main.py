@@ -4191,6 +4191,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
             model.pop("api_mode", None)
+        # Clear stale api_key from a previous provider.  Built-in providers
+        # get their keys from env vars / credential pool — a leftover key
+        # from a prior provider causes credential drift (401 errors).
+        # Mirrors auth.py set_provider_in_config (line ~2764).  (#14134)
+        model.pop("api_key", None)
         save_config(cfg)
         deactivate_provider()
 

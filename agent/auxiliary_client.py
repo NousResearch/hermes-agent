@@ -2961,6 +2961,49 @@ def call_llm(
                 return _validate_llm_response(
                     refreshed_client.chat.completions.create(**kwargs), task)
 
+        # ── Auth refresh retry ───────────────────────────────────────
+        if (_is_auth_error(first_err)
+                and resolved_provider not in ("auto", "", None)
+                and not client_is_nous):
+            if _refresh_provider_credentials(resolved_provider):
+                logger.info(
+                    "Auxiliary %s: refreshed %s credentials after auth error, retrying",
+                    task or "call", resolved_provider,
+                )
+                retry_client, retry_model = (
+                    resolve_vision_provider_client(
+                        provider=resolved_provider,
+                        model=final_model,
+                        async_mode=False,
+                    )[1:]
+                    if task == "vision"
+                    else _get_cached_client(
+                        resolved_provider,
+                        resolved_model,
+                        base_url=resolved_base_url,
+                        api_key=resolved_api_key,
+                        api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
+                    )
+                )
+                if retry_client is not None:
+                    retry_kwargs = _build_call_kwargs(
+                        resolved_provider,
+                        retry_model or final_model,
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=resolved_base_url,
+                    )
+                    _retry_base = str(getattr(retry_client, "base_url", "") or "")
+                    if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):
+                        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+                    return _validate_llm_response(
+                        retry_client.chat.completions.create(**retry_kwargs), task)
+
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
         # try alternative providers instead of giving up.  This handles the
@@ -3180,6 +3223,48 @@ async def async_call_llm(
                     kwargs["model"] = refreshed_model
                 return _validate_llm_response(
                     await refreshed_client.chat.completions.create(**kwargs), task)
+
+        # ── Auth refresh retry (mirrors sync call_llm) ───────────────
+        if (_is_auth_error(first_err)
+                and resolved_provider not in ("auto", "", None)
+                and not client_is_nous):
+            if _refresh_provider_credentials(resolved_provider):
+                logger.info(
+                    "Auxiliary %s (async): refreshed %s credentials after auth error, retrying",
+                    task or "call", resolved_provider,
+                )
+                if task == "vision":
+                    _, retry_client, retry_model = resolve_vision_provider_client(
+                        provider=resolved_provider,
+                        model=final_model,
+                        async_mode=True,
+                    )
+                else:
+                    retry_client, retry_model = _get_cached_client(
+                        resolved_provider,
+                        resolved_model,
+                        async_mode=True,
+                        base_url=resolved_base_url,
+                        api_key=resolved_api_key,
+                        api_mode=resolved_api_mode,
+                    )
+                if retry_client is not None:
+                    retry_kwargs = _build_call_kwargs(
+                        resolved_provider,
+                        retry_model or final_model,
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=resolved_base_url,
+                    )
+                    _retry_base = str(getattr(retry_client, "base_url", "") or "")
+                    if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):
+                        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+                    return _validate_llm_response(
+                        await retry_client.chat.completions.create(**retry_kwargs), task)
 
         # ── Payment / connection fallback (mirrors sync call_llm) ─────
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)

@@ -575,7 +575,9 @@ class HonchoClientConfig:
             else None
         )
         base_url = (
-            native_base_url
+            host_block.get("baseUrl")
+            or host_block.get("base_url")
+            or native_base_url
             or raw.get("baseUrl")
             or raw.get("base_url")
             or os.environ.get("HONCHO_BASE_URL", "").strip()

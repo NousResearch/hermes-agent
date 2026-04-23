@@ -202,6 +202,18 @@ class TestFromGlobalConfig:
         # Should fall back to from_env without crashing
         assert isinstance(config, HonchoClientConfig)
 
+    def test_base_url_host_block_overrides_root_and_env(self, tmp_path):
+        """Host-specific baseUrl should win for self-hosted Honcho deployments."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "baseUrl": "http://root:9000",
+            "hosts": {"hermes": {"baseUrl": "http://host-block:9001"}},
+        }))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://env:8000"}, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://host-block:9001"
+
 
 class TestResolveSessionName:
     def test_manual_override(self):

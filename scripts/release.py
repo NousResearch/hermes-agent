@@ -382,6 +382,7 @@ AUTHOR_MAP = {
     "fengtianyu88@users.noreply.github.com": "fengtianyu88",
     "l.moncany@gmail.com": "lmoncany",
     "fatinghenji@users.noreply.github.com": "fatinghenji",
+    "xin.peng.dr@gmail.com": "xinpengdr",
 }
 
 

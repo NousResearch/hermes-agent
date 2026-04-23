@@ -10,13 +10,20 @@ declare global {
   }
 }
 let _sessionToken: string | null = null;
+const SESSION_HEADER = "X-Hermes-Session-Token";
+
+function setSessionHeader(headers: Headers, token: string): void {
+  if (!headers.has(SESSION_HEADER)) {
+    headers.set(SESSION_HEADER, token);
+  }
+}
 
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
+  if (token) {
+    setSessionHeader(headers, token);
   }
   const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
@@ -92,7 +99,7 @@ export const api = {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+        [SESSION_HEADER]: token,
       },
       body: JSON.stringify({ key }),
     });
@@ -138,7 +145,7 @@ export const api = {
       `/api/providers/oauth/${encodeURIComponent(providerId)}`,
       {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { [SESSION_HEADER]: token },
       },
     );
   },
@@ -150,7 +157,7 @@ export const api = {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          [SESSION_HEADER]: token,
         },
         body: "{}",
       },
@@ -164,7 +171,7 @@ export const api = {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          [SESSION_HEADER]: token,
         },
         body: JSON.stringify({ session_id: sessionId, code }),
       },
@@ -180,7 +187,7 @@ export const api = {
       `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
       {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { [SESSION_HEADER]: token },
       },
     );
   },

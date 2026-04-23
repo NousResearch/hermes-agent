@@ -3455,43 +3455,154 @@ def _(rid, params: dict) -> dict:
 # ── Methods: voice ───────────────────────────────────────────────────
 
 
+_voice_sid_lock = threading.Lock()
+_voice_event_sid: str = ""
+
+
+def _voice_emit(event: str, payload: dict | None = None) -> None:
+    """Emit a voice event toward the session that most recently turned the
+    mode on. Voice is process-global (one microphone), so there's only ever
+    one sid to target; the TUI handler treats an empty sid as "active
+    session". Kept separate from _emit to make the lack of per-call sid
+    argument explicit."""
+    with _voice_sid_lock:
+        sid = _voice_event_sid
+    _emit(event, sid, payload)
+
+
+def _voice_mode_enabled() -> bool:
+    """Current voice-mode flag. HERMES_VOICE env var wins over config so
+    the gateway and CLI agree when one of them was launched with an
+    explicit override."""
+    env = os.environ.get("HERMES_VOICE", "").strip()
+    if env in {"0", "1"}:
+        return env == "1"
+    return bool(_load_cfg().get("display", {}).get("voice_enabled", False))
+
+
+def _voice_tts_enabled() -> bool:
+    """Whether agent replies should be spoken back via TTS."""
+    env = os.environ.get("HERMES_VOICE_TTS", "").strip()
+    if env in {"0", "1"}:
+        return env == "1"
+    return bool(_load_cfg().get("display", {}).get("voice_tts", False))
+
+
 @method("voice.toggle")
 def _(rid, params: dict) -> dict:
+    """CLI parity for the ``/voice`` slash command.
+
+    Subcommands:
+
+    * ``status`` — report mode + TTS flags (default when action is unknown).
+    * ``on`` / ``off`` — flip voice *mode* (the umbrella bit). Turning it
+      off also tears down any active continuous recording loop. Does NOT
+      start recording on its own; recording is driven by ``voice.record``
+      (Ctrl+B) after mode is on, matching cli.py's enable/Ctrl+B split.
+    * ``tts`` — toggle speech-output of agent replies. Requires mode on
+      (mirrors CLI's _toggle_voice_tts guard).
+    """
     action = params.get("action", "status")
+
     if action == "status":
-        env = os.environ.get("HERMES_VOICE", "").strip()
-        if env in {"0", "1"}:
-            return _ok(rid, {"enabled": env == "1"})
-        return _ok(
-            rid,
-            {
-                "enabled": bool(
-                    _load_cfg().get("display", {}).get("voice_enabled", False)
-                )
-            },
-        )
+        # Mirror CLI's _show_voice_status: include STT/TTS provider
+        # availability so the user can tell at a glance *why* voice mode
+        # isn't working ("STT provider: MISSING ..." is the common case).
+        payload: dict = {
+            "enabled": _voice_mode_enabled(),
+            "tts": _voice_tts_enabled(),
+        }
+        try:
+            from tools.voice_mode import check_voice_requirements
+
+            reqs = check_voice_requirements()
+            payload["available"] = bool(reqs.get("available"))
+            payload["audio_available"] = bool(reqs.get("audio_available"))
+            payload["stt_available"] = bool(reqs.get("stt_available"))
+            payload["details"] = reqs.get("details") or ""
+        except Exception as e:
+            # check_voice_requirements pulls optional transcription deps —
+            # swallow so /voice status always returns something useful.
+            logger.warning("voice.toggle status: requirements probe failed: %s", e)
+
+        return _ok(rid, payload)
+
     if action in ("on", "off"):
         enabled = action == "on"
         os.environ["HERMES_VOICE"] = "1" if enabled else "0"
         _write_config_key("display.voice_enabled", enabled)
-        return _ok(rid, {"enabled": action == "on"})
+
+        if not enabled:
+            # Disabling the mode must tear the continuous loop down; the
+            # loop holds the microphone and would otherwise keep running.
+            try:
+                from hermes_cli.voice import stop_continuous
+
+                stop_continuous()
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.warning("voice: stop_continuous failed during toggle off: %s", e)
+
+        return _ok(rid, {"enabled": enabled, "tts": _voice_tts_enabled()})
+
+    if action == "tts":
+        if not _voice_mode_enabled():
+            return _err(rid, 4014, "enable voice mode first: /voice on")
+        new_value = not _voice_tts_enabled()
+        os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
+        _write_config_key("display.voice_tts", new_value)
+        return _ok(rid, {"enabled": True, "tts": new_value})
+
     return _err(rid, 4013, f"unknown voice action: {action}")
 
 
 @method("voice.record")
 def _(rid, params: dict) -> dict:
+    """VAD-driven continuous record loop, CLI-parity.
+
+    ``start`` turns on a VAD loop that emits ``voice.transcript`` events
+    for each detected utterance and auto-restarts for the next turn.
+    ``stop`` halts the loop (manual stop; matches cli.py's Ctrl+B-while-
+    recording branch clearing ``_voice_continuous``). Three consecutive
+    silent cycles stop the loop automatically and emit a
+    ``voice.transcript`` with ``no_speech_limit=True``.
+    """
     action = params.get("action", "start")
+
+    if action not in {"start", "stop"}:
+        return _err(rid, 4019, f"unknown voice action: {action}")
+
     try:
         if action == "start":
-            from hermes_cli.voice import start_recording
+            if not _voice_mode_enabled():
+                return _err(rid, 4015, "voice mode is off — enable with /voice on")
 
-            start_recording()
+            with _voice_sid_lock:
+                global _voice_event_sid
+                _voice_event_sid = params.get("session_id") or _voice_event_sid
+
+            from hermes_cli.voice import start_continuous
+
+            voice_cfg = _load_cfg().get("voice", {})
+            start_continuous(
+                on_transcript=lambda t: _voice_emit(
+                    "voice.transcript", {"text": t}
+                ),
+                on_status=lambda s: _voice_emit("voice.status", {"state": s}),
+                on_silent_limit=lambda: _voice_emit(
+                    "voice.transcript", {"no_speech_limit": True}
+                ),
+                silence_threshold=voice_cfg.get("silence_threshold", 200),
+                silence_duration=voice_cfg.get("silence_duration", 3.0),
+            )
             return _ok(rid, {"status": "recording"})
-        if action == "stop":
-            from hermes_cli.voice import stop_and_transcribe
 
-            return _ok(rid, {"text": stop_and_transcribe() or ""})
-        return _err(rid, 4019, f"unknown voice action: {action}")
+        # action == "stop"
+        from hermes_cli.voice import stop_continuous
+
+        stop_continuous()
+        return _ok(rid, {"status": "stopped"})
     except ImportError:
         return _err(
             rid, 5025, "voice module not available — install audio dependencies"

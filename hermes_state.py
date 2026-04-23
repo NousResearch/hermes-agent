@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import importlib
 import json
 import logging
 import random
@@ -31,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -99,23 +100,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content,
-    content=messages,
-    content_rowid=id
+    content
 );
+"""
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-END;
+DROP_FTS_SQL = """
+DROP TRIGGER IF EXISTS messages_fts_insert;
+DROP TRIGGER IF EXISTS messages_fts_delete;
+DROP TRIGGER IF EXISTS messages_fts_update;
+DROP TABLE IF EXISTS messages_fts;
 """
 
 
@@ -141,13 +134,22 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    _FTS_TOKENIZER_METADATA_KEY = "messages_fts_tokenizer"
+    _jieba = None
+    _jieba_import_attempted = False
+    _jieba_warning_logged = False
 
-    def __init__(self, db_path: Path = None):
+    def __init__(self, db_path: Path = None, chinese_search: bool = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.Lock()
         self._write_count = 0
+        self._chinese_search_enabled = (
+            self._load_chinese_search_enabled()
+            if chinese_search is None else bool(chinese_search)
+        )
+        self._jieba_for_search = self._load_jieba() if self._chinese_search_enabled else None
         self._conn = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
@@ -165,6 +167,124 @@ class SessionDB:
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         self._init_schema()
+
+    @staticmethod
+    def _load_chinese_search_enabled() -> bool:
+        """Read the profile-scoped session search tokenizer setting."""
+        config_path = get_hermes_home() / "config.yaml"
+        if not config_path.exists():
+            return False
+        try:
+            import yaml
+
+            with config_path.open("r", encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+        except Exception:
+            return False
+
+        search_config = config.get("search", {})
+        if not isinstance(search_config, dict):
+            return False
+        return bool(
+            search_config.get("chinese_tokenization")
+            or search_config.get("enable_chinese_search")
+        )
+
+    @classmethod
+    def _load_jieba(cls):
+        """Load jieba lazily so the feature remains opt-in at runtime."""
+        if not cls._jieba_import_attempted:
+            cls._jieba_import_attempted = True
+            try:
+                cls._jieba = importlib.import_module("jieba")
+                try:
+                    cls._jieba.setLogLevel(logging.WARNING)
+                except Exception:
+                    pass
+            except Exception:
+                cls._jieba = None
+        if cls._jieba is None and not cls._jieba_warning_logged:
+            cls._jieba_warning_logged = True
+            logger.warning(
+                "search.chinese_tokenization is enabled, but jieba is not installed; "
+                "falling back to SQLite unicode61 search."
+            )
+        return cls._jieba
+
+    def _fts_tokenizer_name(self) -> str:
+        if self._chinese_search_enabled and self._jieba_for_search:
+            return "jieba"
+        return "unicode61"
+
+    def _tokenize_chinese_for_search(self, text: str) -> str:
+        """Return jieba search-mode tokens with punctuation removed."""
+        if not text or not self._jieba_for_search or not self._contains_cjk(text):
+            return text or ""
+        tokens = []
+        for token in self._jieba_for_search.cut_for_search(text):
+            token = token.strip()
+            if token and re.search(r"\w", token, re.UNICODE):
+                tokens.append(token)
+        return " ".join(tokens)
+
+    def _index_content_for_search(self, content: str) -> str:
+        """Build the text stored in the decoupled FTS table."""
+        content = content or ""
+        if self._fts_tokenizer_name() != "jieba" or not self._contains_cjk(content):
+            return content
+        segmented = self._tokenize_chinese_for_search(content)
+        if not segmented or segmented == content:
+            return content
+        # Keep the original text for mixed English/code recall and add jieba
+        # tokens so unicode61 can match Chinese words efficiently.
+        return f"{content}\n{segmented}"
+
+    def _query_for_search(self, query: str) -> str:
+        if self._fts_tokenizer_name() == "jieba" and self._contains_cjk(query):
+            segmented = self._tokenize_chinese_for_search(query)
+            if segmented:
+                return self._sanitize_fts5_query(segmented)
+        return self._sanitize_fts5_query(query)
+
+    def _insert_fts_row(
+        self, conn: sqlite3.Connection, msg_id: int, content: str
+    ) -> None:
+        indexed_content = self._index_content_for_search(content or "")
+        if indexed_content:
+            conn.execute(
+                "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+                (msg_id, indexed_content),
+            )
+
+    def _build_plain_snippet(self, content: str, query: str, radius: int = 40) -> str:
+        """Return a compact snippet from the original message content."""
+        content = content or ""
+        if not content:
+            return ""
+
+        candidates = [query.strip().strip('"')]
+        if self._fts_tokenizer_name() == "jieba" and self._contains_cjk(query):
+            candidates = self._tokenize_chinese_for_search(query).split() + candidates
+
+        lower_content = content.lower()
+        first = -1
+        found_len = 0
+        for term in candidates:
+            if not term:
+                continue
+            idx = lower_content.find(term.lower())
+            if idx >= 0 and (first < 0 or idx < first):
+                first = idx
+                found_len = len(term)
+
+        if first < 0:
+            return content[: radius * 3]
+
+        start = max(0, first - radius)
+        end = min(len(content), first + found_len + radius)
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(content) else ""
+        return f"{prefix}{content[start:end]}{suffix}"
 
     # ── Core write helper ──
 
@@ -356,6 +476,12 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                # v9: make messages_fts independent from messages so we can
+                # index pre-tokenized text while keeping canonical message
+                # content unchanged.
+                cursor.executescript(DROP_FTS_SQL)
+                cursor.execute("UPDATE schema_version SET version = 9")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -367,13 +493,57 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
-        # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
-        try:
-            cursor.execute("SELECT * FROM messages_fts LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+        self._ensure_fts_index(cursor)
 
         self._conn.commit()
+
+    def _ensure_fts_index(self, cursor: sqlite3.Cursor) -> None:
+        """Create or rebuild the decoupled FTS index when its mode changes."""
+        cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'"
+        )
+        row = cursor.fetchone()
+        fts_sql = (
+            row["sql"]
+            if row and isinstance(row, sqlite3.Row)
+            else (row[0] if row else "")
+        )
+        has_fts = bool(row)
+        external_content = "content=messages" in (fts_sql or "").lower()
+
+        cursor.execute(
+            "SELECT value FROM state_meta WHERE key = ?",
+            (self._FTS_TOKENIZER_METADATA_KEY,),
+        )
+        metadata_row = cursor.fetchone()
+        current_tokenizer = (
+            metadata_row["value"]
+            if metadata_row and isinstance(metadata_row, sqlite3.Row)
+            else (metadata_row[0] if metadata_row else None)
+        )
+        desired_tokenizer = self._fts_tokenizer_name()
+
+        if not has_fts or external_content or current_tokenizer != desired_tokenizer:
+            cursor.executescript(DROP_FTS_SQL)
+            cursor.executescript(FTS_SQL)
+            self._rebuild_fts_index(cursor)
+            cursor.execute(
+                """INSERT INTO state_meta(key, value) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (self._FTS_TOKENIZER_METADATA_KEY, desired_tokenizer),
+            )
+
+    def _rebuild_fts_index(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute("SELECT id, content FROM messages")
+        for row in cursor.fetchall():
+            msg_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+            content = row["content"] if isinstance(row, sqlite3.Row) else row[1]
+            indexed_content = self._index_content_for_search(content or "")
+            if indexed_content:
+                cursor.execute(
+                    "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+                    (msg_id, indexed_content),
+                )
 
     # =========================================================================
     # Session lifecycle
@@ -1002,6 +1172,7 @@ class SessionDB:
                 ),
             )
             msg_id = cursor.lastrowid
+            self._insert_fts_row(conn, msg_id, content)
 
             # Update counters
             if num_tool_calls > 0:
@@ -1185,13 +1356,14 @@ class SessionDB:
         if not query or not query.strip():
             return []
 
-        query = self._sanitize_fts5_query(query)
-        if not query:
+        raw_query = query.strip()
+        fts_query = self._query_for_search(raw_query)
+        if not fts_query:
             return []
 
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
-        params: list = [query]
+        params: list = [fts_query]
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -1237,18 +1409,28 @@ class SessionDB:
             except sqlite3.OperationalError:
                 # FTS5 query syntax error despite sanitization — return empty
                 # unless query contains CJK (fall back to LIKE below)
-                if not self._contains_cjk(query):
+                if not self._contains_cjk(raw_query):
                     return []
                 matches = []
             else:
                 matches = [dict(row) for row in cursor.fetchall()]
 
-        # LIKE fallback for CJK queries: FTS5 default tokenizer splits CJK
-        # characters individually, causing multi-character queries to fail.
-        if not matches and self._contains_cjk(query):
-            raw_query = query.strip('"').strip()
+        if (
+            matches
+            and self._fts_tokenizer_name() == "jieba"
+            and self._contains_cjk(raw_query)
+        ):
+            for match in matches:
+                match["snippet"] = self._build_plain_snippet(
+                    match.get("content") or "", raw_query
+                )
+
+        # LIKE fallback for CJK queries: preserves substring behavior for
+        # languages or query shapes the configured tokenizer still misses.
+        if not matches and self._contains_cjk(raw_query):
+            like_query = raw_query.strip('"').strip()
             like_where = ["m.content LIKE ?"]
-            like_params: list = [f"%{raw_query}%"]
+            like_params: list = [f"%{like_query}%"]
             if source_filter is not None:
                 like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                 like_params.extend(source_filter)
@@ -1273,10 +1455,14 @@ class SessionDB:
             """
             like_params.extend([limit, offset])
             # instr() parameter goes first in the bound list
-            like_params = [raw_query] + like_params
+            like_params = [like_query] + like_params
             with self._lock:
                 like_cursor = self._conn.execute(like_sql, like_params)
                 matches = [dict(row) for row in like_cursor.fetchall()]
+            for match in matches:
+                match["snippet"] = self._build_plain_snippet(
+                    match.get("content") or "", like_query
+                )
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
@@ -1404,6 +1590,11 @@ class SessionDB:
         """Delete all messages for a session and reset its counters."""
         def _do(conn):
             conn.execute(
+                "DELETE FROM messages_fts WHERE rowid IN "
+                "(SELECT id FROM messages WHERE session_id = ?)",
+                (session_id,),
+            )
+            conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
             )
             conn.execute(
@@ -1429,6 +1620,11 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
                 "WHERE parent_session_id = ?",
+                (session_id,),
+            )
+            conn.execute(
+                "DELETE FROM messages_fts WHERE rowid IN "
+                "(SELECT id FROM messages WHERE session_id = ?)",
                 (session_id,),
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -1471,6 +1667,11 @@ class SessionDB:
             )
 
             for sid in session_ids:
+                conn.execute(
+                    "DELETE FROM messages_fts WHERE rowid IN "
+                    "(SELECT id FROM messages WHERE session_id = ?)",
+                    (sid,),
+                )
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
             return len(session_ids)

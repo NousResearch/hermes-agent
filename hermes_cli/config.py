@@ -482,6 +482,13 @@ DEFAULT_CONFIG = {
 
     },
 
+    "search": {
+        # Opt-in Chinese word segmentation for session_search. When enabled,
+        # SessionDB stores jieba-tokenized text in the FTS5 index and tokenizes
+        # CJK queries before MATCH.
+        "chinese_tokenization": False,
+    },
+
     # AWS Bedrock provider configuration.
     # Only used when model.provider is "bedrock".
     "bedrock": {
@@ -2176,7 +2183,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "compression", "search", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",
 }

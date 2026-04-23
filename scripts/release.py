@@ -389,6 +389,7 @@ AUTHOR_MAP = {
     "nukuom976228@gmail.com": "hsy5571616",
     "11462216+Nan93@users.noreply.github.com": "Nan93",
     "l973401489@126.com": "zhouxiaoya12",
+    "373119611@qq.com": "roytian1217",
 }
 
 

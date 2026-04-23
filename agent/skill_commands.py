@@ -7,6 +7,7 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,10 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_skill_commands: Dict[str, Dict[str, Any]] = {}
+# Keyed by resolved platform (str) or None for the global/fallback view.
+# Using a per-platform cache prevents a long-lived multi-platform process from
+# serving one platform's disabled-skill set to another (fixes #14536).
+_skill_commands: Dict[Optional[str], Dict[str, Dict[str, Any]]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
@@ -197,18 +201,44 @@ def _build_skill_message(
     return "\n".join(parts)
 
 
-def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
+def _resolve_platform(platform: Optional[str] = None) -> Optional[str]:
+    """Resolve the active platform for skill-command cache keying.
+
+    Priority: explicit arg → HERMES_SESSION_PLATFORM context var →
+    HERMES_PLATFORM env var → None (global/fallback view).
+    """
+    if platform:
+        return platform
+    try:
+        from gateway.session_context import get_session_env
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        if session_platform:
+            return session_platform
+    except Exception:
+        pass
+    return os.getenv("HERMES_PLATFORM") or None
+
+
+def scan_skill_commands(platform: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
     """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
+
+    Args:
+        platform: Explicit platform name (e.g. ``"telegram"``).  When
+            *None*, resolved from ``HERMES_SESSION_PLATFORM`` context var
+            or the ``HERMES_PLATFORM`` environment variable.  The result
+            is cached per resolved platform so different platforms in the
+            same process each see their own disabled-skill view.
 
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
     global _skill_commands
-    _skill_commands = {}
+    resolved_platform = _resolve_platform(platform)
+    _skill_commands[resolved_platform] = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs
-        disabled = _get_disabled_skill_names()
+        disabled = _get_disabled_skill_names(resolved_platform)
         seen_names: set = set()
 
         # Scan local dir first, then external dirs
@@ -249,7 +279,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    _skill_commands[resolved_platform][f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -259,14 +289,20 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     continue
     except Exception:
         pass
-    return _skill_commands
+    return _skill_commands[resolved_platform]
 
 
-def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty)."""
-    if not _skill_commands:
-        scan_skill_commands()
-    return _skill_commands
+def get_skill_commands(platform: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """Return the skill commands mapping for the given platform.
+
+    Args:
+        platform: Explicit platform name.  When *None*, resolved from
+            session context or environment (same as ``scan_skill_commands``).
+    """
+    resolved_platform = _resolve_platform(platform)
+    if resolved_platform not in _skill_commands:
+        scan_skill_commands(resolved_platform)
+    return _skill_commands[resolved_platform]
 
 
 def resolve_skill_command_key(command: str) -> Optional[str]:

@@ -405,3 +405,98 @@ class TestPlanSkillHelpers:
         assert "Add a /plan command" in msg
         assert ".hermes/plans/plan.md" in msg
         assert "Runtime note:" in msg
+
+
+class TestPlatformAwareCache:
+    """Regression tests for #14536 — per-platform skill command cache."""
+
+    def _make_skill_file(self, skills_dir, name):
+        d = Path(skills_dir) / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill\n---\nDo the thing.\n"
+        )
+
+    def _make_disabled_fn(self, rules: dict):
+        """Return a get_disabled_skill_names replacement honouring a simple rules dict.
+
+        rules keys are platform names (str) or None for the global list.
+        Each value is a list of disabled skill names.
+        """
+        import os
+        def _impl(platform=None):
+            from gateway.session_context import get_session_env
+            resolved = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM") or None
+            if resolved and resolved in rules:
+                return set(rules[resolved])
+            return set(rules.get(None, []))
+        return _impl
+
+    def test_different_platforms_get_independent_caches(self, tmp_path):
+        """Two platforms with different disabled lists must not share cache entries."""
+        from agent.skill_commands import get_skill_commands
+
+        skills_dir = tmp_path / "skills"
+        for name in ["alpha", "beta"]:
+            self._make_skill_file(skills_dir, name)
+
+        disabled_fn = self._make_disabled_fn({"telegram": ["beta"], "discord": ["alpha"]})
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_external_skills_dirs", return_value=[]), \
+             patch("tools.skills_tool._get_disabled_skill_names", disabled_fn):
+
+            telegram_cmds = get_skill_commands(platform="telegram")
+            discord_cmds = get_skill_commands(platform="discord")
+
+        tg_names = {info["name"] for info in telegram_cmds.values()}
+        dc_names = {info["name"] for info in discord_cmds.values()}
+
+        assert "alpha" in tg_names, "telegram should have alpha"
+        assert "beta" not in tg_names, "telegram should not have beta (disabled)"
+        assert "beta" in dc_names, "discord should have beta"
+        assert "alpha" not in dc_names, "discord should not have alpha (disabled)"
+
+    def test_platform_none_uses_global_disabled_list(self, tmp_path):
+        """When platform is None, the global disabled list is respected."""
+        from agent.skill_commands import get_skill_commands
+
+        skills_dir = tmp_path / "skills"
+        for name in ["gamma", "delta"]:
+            self._make_skill_file(skills_dir, name)
+
+        disabled_fn = self._make_disabled_fn({None: ["delta"]})
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_external_skills_dirs", return_value=[]), \
+             patch("tools.skills_tool._get_disabled_skill_names", disabled_fn), \
+             patch.dict(os.environ, {"HERMES_PLATFORM": ""}, clear=False):
+
+            cmds = get_skill_commands(platform=None)
+
+        names = {info["name"] for info in cmds.values()}
+        assert "gamma" in names
+        assert "delta" not in names
+
+    def test_rescan_updates_platform_cache_entry(self, tmp_path):
+        """Calling scan_skill_commands again replaces the cached entry for that platform."""
+        from agent.skill_commands import scan_skill_commands
+
+        skills_dir = tmp_path / "skills"
+        self._make_skill_file(skills_dir, "epsilon")
+
+        disabled_v1 = self._make_disabled_fn({"telegram": []})
+        disabled_v2 = self._make_disabled_fn({"telegram": ["epsilon"]})
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_external_skills_dirs", return_value=[]), \
+             patch("tools.skills_tool._get_disabled_skill_names", disabled_v1):
+            cmds_v1 = scan_skill_commands(platform="telegram")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_external_skills_dirs", return_value=[]), \
+             patch("tools.skills_tool._get_disabled_skill_names", disabled_v2):
+            cmds_v2 = scan_skill_commands(platform="telegram")
+
+        assert "epsilon" in {i["name"] for i in cmds_v1.values()}
+        assert "epsilon" not in {i["name"] for i in cmds_v2.values()}

@@ -287,6 +287,20 @@ class TestBundledBackendAutoLoad:
         assert loaded.manifest.kind == "backend"
         assert loaded.enabled is True, f"error: {loaded.error}"
 
+    def test_bundled_image_gen_codex_autoloads(self, tmp_path, monkeypatch):
+        """The bundled ``plugins/image_gen/codex/`` plugin also auto-loads."""
+        import os
+        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "image_gen/codex" in mgr._plugins
+        loaded = mgr._plugins["image_gen/codex"]
+        assert loaded.manifest.source == "bundled"
+        assert loaded.manifest.kind == "backend"
+        assert loaded.enabled is True, f"error: {loaded.error}"
+
 
 # ── PluginContext.register_image_gen_provider ───────────────────────────────
 

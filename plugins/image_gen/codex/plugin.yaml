@@ -1,0 +1,5 @@
+name: codex
+version: 1.0.0
+description: "Codex / ChatGPT subscription image generation backend. Uses Hermes openai-codex OAuth and saves generated images to $HERMES_HOME/cache/images/."
+author: Agent Hammy
+kind: backend

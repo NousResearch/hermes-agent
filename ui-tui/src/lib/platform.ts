@@ -16,15 +16,18 @@ export const isActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean
   isMac ? key.meta || key.super === true : key.ctrl
 
 /**
- * Some macOS terminals rewrite Cmd navigation/deletion into readline control keys.
- * Treat those as action shortcuts too, but only for the specific fallbacks we
- * have observed from terminals: Cmd+Left → Ctrl+A, Cmd+Right → Ctrl+E,
- * Cmd+Backspace → Ctrl+U.
+ * Accept raw Ctrl+<letter> as an action shortcut on macOS, where `isActionMod`
+ * otherwise means Cmd. Two motivations:
+ *   - Some macOS terminals rewrite Cmd navigation/deletion into readline control
+ *     keys (Cmd+Left → Ctrl+A, Cmd+Right → Ctrl+E, Cmd+Backspace → Ctrl+U).
+ *   - Ctrl+K (kill-to-end) and Ctrl+W (delete-word-back) are standard readline
+ *     bindings that users expect to work regardless of platform, even though
+ *     no terminal rewrites Cmd into them.
  */
 export const isMacActionFallback = (
   key: { ctrl: boolean; meta: boolean; super?: boolean },
   ch: string,
-  target: 'a' | 'e' | 'u'
+  target: 'a' | 'e' | 'u' | 'k' | 'w'
 ): boolean => isMac && key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === target
 
 /** Match action-modifier + a single character (case-insensitive). */

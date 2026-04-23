@@ -787,6 +787,33 @@ class TestPluginCommands:
         assert entry["handler"] is handler
         assert entry["description"] == "My custom command"
         assert entry["plugin"] == "test-plugin"
+        # args_hint defaults to empty string when not passed.
+        assert entry["args_hint"] == ""
+
+    def test_register_command_with_args_hint(self):
+        """args_hint is stored and surfaced for gateway-native UI registration."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "metricas",
+            lambda a: a,
+            description="Metrics dashboard",
+            args_hint="dias:7 formato:json",
+        )
+
+        entry = mgr._plugin_commands["metricas"]
+        assert entry["args_hint"] == "dias:7 formato:json"
+
+    def test_register_command_args_hint_whitespace_trimmed(self):
+        """args_hint leading/trailing whitespace is stripped."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("foo", lambda a: a, args_hint="  <file>  ")
+        assert mgr._plugin_commands["foo"]["args_hint"] == "<file>"
 
     def test_register_command_normalizes_name(self):
         """Names are lowercased, stripped, and leading slashes removed."""

@@ -371,6 +371,7 @@ AUTHOR_MAP = {
     "projectadmin@wit.id": "projectadmin-dev",
     "mrigankamondal10@gmail.com": "Dev-Mriganka",
     "132275809+shushuzn@users.noreply.github.com": "shushuzn",
+    "ibrahimozsarac@gmail.com": "iborazzi",
 }
 
 

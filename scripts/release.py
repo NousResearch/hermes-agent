@@ -368,6 +368,7 @@ AUTHOR_MAP = {
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",
+    "projectadmin@wit.id": "projectadmin-dev",
 }
 
 

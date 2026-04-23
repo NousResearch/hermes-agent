@@ -1473,3 +1473,207 @@ class TestDiscoverUserThemes:
         assert "ok" in names
         assert "bad" not in names  # malformed YAML
         assert len(results) == 1  # only the valid one
+
+
+class TestNormaliseThemeExtensions:
+    """Tests for the extended normaliser fields (assets, customCSS,
+    componentStyles, layoutVariant) — the surfaces themes use to reskin
+    the dashboard without shipping code."""
+
+    def test_layout_variant_defaults_to_standard(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        result = _normalise_theme_definition({"name": "t"})
+        assert result["layoutVariant"] == "standard"
+
+    def test_layout_variant_accepts_known_values(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        for variant in ("standard", "cockpit", "tiled"):
+            r = _normalise_theme_definition({"name": "t", "layoutVariant": variant})
+            assert r["layoutVariant"] == variant
+
+    def test_layout_variant_rejects_unknown(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        r = _normalise_theme_definition({"name": "t", "layoutVariant": "warship"})
+        assert r["layoutVariant"] == "standard"
+        r2 = _normalise_theme_definition({"name": "t", "layoutVariant": 12})
+        assert r2["layoutVariant"] == "standard"
+
+    def test_assets_named_slots_passthrough(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        r = _normalise_theme_definition({
+            "name": "t",
+            "assets": {
+                "bg": "https://example.com/bg.jpg",
+                "hero": "linear-gradient(180deg, red, blue)",
+                "crest": "/ds-assets/crest.svg",
+                "logo": "  ",  # whitespace-only — dropped
+                "notAKnownKey": "ignored",
+            },
+        })
+        assert r["assets"]["bg"] == "https://example.com/bg.jpg"
+        assert r["assets"]["hero"].startswith("linear-gradient")
+        assert r["assets"]["crest"] == "/ds-assets/crest.svg"
+        assert "logo" not in r["assets"]  # whitespace-only rejected
+        assert "notAKnownKey" not in r["assets"]  # unknown slot ignored
+
+    def test_assets_custom_block(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        r = _normalise_theme_definition({
+            "name": "t",
+            "assets": {
+                "custom": {
+                    "scan-lines": "/img/scan.png",
+                    "my_overlay": "/img/ov.png",
+                    "bad key!": "x",  # non-alnum key — rejected
+                    "empty": "",        # empty value — rejected
+                },
+            },
+        })
+        assert r["assets"]["custom"] == {
+            "scan-lines": "/img/scan.png",
+            "my_overlay": "/img/ov.png",
+        }
+
+    def test_assets_absent_means_no_field(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        r = _normalise_theme_definition({"name": "t"})
+        assert "assets" not in r
+
+    def test_custom_css_passthrough_and_capped(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        # Small CSS passes through verbatim.
+        r = _normalise_theme_definition({
+            "name": "t",
+            "customCSS": "body { color: red; }",
+        })
+        assert r["customCSS"] == "body { color: red; }"
+
+        # 40 KiB of CSS gets clipped to the 32 KiB cap.
+        huge = "/* x */ " * (40 * 1024 // 8 + 10)
+        r2 = _normalise_theme_definition({"name": "t", "customCSS": huge})
+        assert len(r2["customCSS"]) <= 32 * 1024
+
+    def test_custom_css_empty_dropped(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        for val in ("", "   \n\t", None):
+            r = _normalise_theme_definition({"name": "t", "customCSS": val})
+            assert "customCSS" not in r
+
+    def test_component_styles_per_bucket(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        r = _normalise_theme_definition({
+            "name": "t",
+            "componentStyles": {
+                "card": {
+                    "clipPath": "polygon(0 0, 100% 0, 100% 100%, 0 100%)",
+                    "boxShadow": "inset 0 0 0 1px red",
+                    "bad prop!": "ignored",  # non-alnum prop rejected
+                },
+                "header": {"background": "linear-gradient(red, blue)"},
+                "rogueBucket": {"foo": "bar"},  # not a known bucket — rejected
+            },
+        })
+        assert r["componentStyles"]["card"] == {
+            "clipPath": "polygon(0 0, 100% 0, 100% 100%, 0 100%)",
+            "boxShadow": "inset 0 0 0 1px red",
+        }
+        assert r["componentStyles"]["header"]["background"].startswith("linear-gradient")
+        assert "rogueBucket" not in r["componentStyles"]
+
+    def test_component_styles_empty_buckets_dropped(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+        r = _normalise_theme_definition({
+            "name": "t",
+            "componentStyles": {
+                "card": {},        # empty — dropped entirely
+                "header": {"bad prop!": "ignored"},  # all props rejected — bucket dropped
+                "footer": {"background": "black"},
+            },
+        })
+        assert "card" not in r.get("componentStyles", {})
+        assert "header" not in r.get("componentStyles", {})
+        assert r["componentStyles"]["footer"]["background"] == "black"
+
+    def test_component_styles_accepts_numeric_values(self):
+        """Numeric values (e.g. opacity: 0.8) are coerced to strings."""
+        from hermes_cli.web_server import _normalise_theme_definition
+        r = _normalise_theme_definition({
+            "name": "t",
+            "componentStyles": {"card": {"opacity": 0.8, "zIndex": 5}},
+        })
+        assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
+
+
+class TestDashboardPluginManifestExtensions:
+    """Tests for the extended plugin manifest fields (tab.override,
+    tab.hidden, slots) read by _discover_dashboard_plugins()."""
+
+    def _write_plugin(self, tmp_path, name, manifest):
+        import json
+        plug_dir = tmp_path / "plugins" / name / "dashboard"
+        plug_dir.mkdir(parents=True)
+        (plug_dir / "manifest.json").write_text(json.dumps(manifest))
+        return plug_dir
+
+    def test_override_and_hidden_carried_through(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "skin-home", {
+            "name": "skin-home",
+            "label": "Skin Home",
+            "tab": {"path": "/skin-home", "override": "/", "hidden": True},
+            "slots": ["sidebar", "header-left"],
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        # Bust the process-level cache so the test plugin is picked up.
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "skin-home")
+        assert entry["tab"]["override"] == "/"
+        assert entry["tab"]["hidden"] is True
+        assert entry["slots"] == ["sidebar", "header-left"]
+
+    def test_override_requires_leading_slash(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "bad-override", {
+            "name": "bad-override",
+            "label": "Bad",
+            "tab": {"path": "/bad", "override": "no-leading-slash"},
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "bad-override")
+        assert "override" not in entry["tab"]
+
+    def test_slots_default_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "no-slots", {
+            "name": "no-slots",
+            "label": "No Slots",
+            "tab": {"path": "/no-slots"},
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "no-slots")
+        assert entry["slots"] == []
+        assert "hidden" not in entry["tab"]
+        assert "override" not in entry["tab"]
+
+    def test_slots_filters_non_string_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "mixed-slots", {
+            "name": "mixed-slots",
+            "label": "Mixed",
+            "tab": {"path": "/mixed-slots"},
+            "slots": ["sidebar", "", 42, None, "header-right"],
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "mixed-slots")
+        assert entry["slots"] == ["sidebar", "header-right"]

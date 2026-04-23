@@ -1,0 +1,126 @@
+# Strike Freedom — Hermes dashboard theme demo
+#
+# Copy this file to ~/.hermes/dashboard-themes/strike-freedom.yaml and
+# restart the web UI (or hit `/api/dashboard/plugins/rescan`). Pair with
+# the `strike-freedom-cockpit` plugin (plugins/strike-freedom-cockpit/)
+# for the full cockpit experience — this theme paints the palette,
+# chrome, and layout; the plugin supplies the MS-STATUS sidebar + header
+# crest that the cockpit layout variant reserves space for.
+#
+# Demonstrates every theme extension point added alongside the plugin
+# slot system: palette, typography, layoutVariant, assets, customCSS,
+# componentStyles, colorOverrides.
+name: strike-freedom
+label: "Strike Freedom"
+description: "Cockpit HUD — deep navy + cyan + gold accents"
+
+# ------- palette (3-layer) -------
+palette:
+  background: "#05091a"
+  midground: "#d8f0ff"
+  foreground:
+    hex: "#ffffff"
+    alpha: 0
+  warmGlow: "rgba(255, 199, 55, 0.24)"
+  noiseOpacity: 0.7
+
+# ------- typography -------
+typography:
+  fontSans: '"Orbitron", "Eurostile", "Bank Gothic", "Impact", sans-serif'
+  fontMono: '"Share Tech Mono", "JetBrains Mono", ui-monospace, monospace'
+  fontDisplay: '"Orbitron", "Eurostile", "Impact", sans-serif'
+  fontUrl: "https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800&family=Share+Tech+Mono&display=swap"
+  baseSize: "14px"
+  lineHeight: "1.5"
+  letterSpacing: "0.04em"
+
+# ------- layout -------
+layout:
+  radius: "0"
+  density: "compact"
+
+# ``cockpit`` reserves a 260px left rail that the shell renders when the
+# user is on this theme. A paired plugin populates the rail via the
+# ``sidebar`` slot; with no plugin the rail shows a placeholder.
+layoutVariant: cockpit
+
+# ------- assets -------
+# Use any URL (https, data:, /dashboard-plugins/...) or a pre-wrapped
+# ``url(...)``/``linear-gradient(...)`` expression. The shell exposes
+# each as a CSS var so plugins can read the same imagery.
+assets:
+  bg: "linear-gradient(140deg, #05091a 0%, #0a1530 55%, #102048 100%)"
+  # Plugin reads --theme-asset-hero / --theme-asset-crest to populate
+  # its sidebar hero render + header crest. Replace these URLs with your
+  # own artwork (copy files into ~/.hermes/dashboard-themes/assets/ and
+  # reference them as /dashboard-themes-assets/strike-freedom/hero.png
+  # once that static route is wired up — for now use inline data URLs or
+  # remote URLs).
+  hero: ""
+  crest: ""
+
+# ------- component chrome -------
+# Each bucket's props become CSS vars (--component-<bucket>-<kebab>) that
+# built-in shell components (Card, header, sidebar, backdrop) consume.
+componentStyles:
+  card:
+    # Notched corners on the top-left + bottom-right — classic mecha UI.
+    clipPath: "polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px)"
+    background: "linear-gradient(180deg, rgba(10, 22, 52, 0.85) 0%, rgba(5, 9, 26, 0.92) 100%)"
+    boxShadow: "inset 0 0 0 1px rgba(64, 200, 255, 0.28), 0 0 18px -6px rgba(64, 200, 255, 0.4)"
+  header:
+    background: "linear-gradient(180deg, rgba(16, 32, 72, 0.95) 0%, rgba(5, 9, 26, 0.9) 100%)"
+  sidebar:
+    background: "linear-gradient(180deg, rgba(8, 18, 42, 0.88) 0%, rgba(5, 9, 26, 0.85) 100%)"
+  tab:
+    clipPath: "polygon(6px 0, 100% 0, calc(100% - 6px) 100%, 0 100%)"
+  backdrop:
+    backgroundSize: "cover"
+    backgroundPosition: "center"
+    fillerOpacity: "1"
+    fillerBlendMode: "normal"
+
+# ------- color overrides -------
+colorOverrides:
+  primary: "#ffce3a"
+  primaryForeground: "#05091a"
+  accent: "#3fd3ff"
+  accentForeground: "#05091a"
+  ring: "#3fd3ff"
+  success: "#4ade80"
+  warning: "#ffce3a"
+  destructive: "#ff3a5e"
+  border: "rgba(64, 200, 255, 0.28)"
+
+# ------- customCSS -------
+# Raw CSS injected as a scoped <style> tag on theme apply. Use this for
+# selector-level tweaks componentStyles can't express (pseudo-elements,
+# animations, media queries). Bounded to 32 KiB per theme.
+customCSS: |
+  /* Scanline overlay — subtle, only when theme is active. */
+  :root[data-layout-variant="cockpit"] body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 2px,
+      rgba(64, 200, 255, 0.035) 3px,
+      rgba(64, 200, 255, 0.035) 4px
+    );
+    mix-blend-mode: screen;
+  }
+
+  /* Chevron pips on card corners. */
+  [data-layout-variant="cockpit"] .border-border::before,
+  [data-layout-variant="cockpit"] .border-border::after {
+    content: "";
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border: 1px solid rgba(64, 200, 255, 0.55);
+    pointer-events: none;
+  }

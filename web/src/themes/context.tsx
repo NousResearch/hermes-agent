@@ -10,10 +10,13 @@ import {
 import { BUILTIN_THEMES, defaultTheme } from "./presets";
 import type {
   DashboardTheme,
+  ThemeAssets,
   ThemeColorOverrides,
+  ThemeComponentStyles,
   ThemeDensity,
   ThemeLayer,
   ThemeLayout,
+  ThemeLayoutVariant,
   ThemePalette,
   ThemeTypography,
 } from "./types";
@@ -123,6 +126,113 @@ function overrideVars(
 }
 
 // ---------------------------------------------------------------------------
+// Asset + component-style + layout variant vars
+// ---------------------------------------------------------------------------
+
+/** Well-known named asset slots a theme may populate. Kept in sync with
+ *  `_THEME_NAMED_ASSET_KEYS` in `hermes_cli/web_server.py`. */
+const NAMED_ASSET_KEYS = ["bg", "hero", "logo", "crest", "sidebar", "header"] as const;
+
+/** Component buckets mirrored from the backend's `_THEME_COMPONENT_BUCKETS`.
+ *  Each bucket emits `--component-<bucket>-<kebab-prop>` CSS vars. */
+const COMPONENT_BUCKETS = [
+  "card", "header", "footer", "sidebar", "tab",
+  "progress", "badge", "backdrop", "page",
+] as const;
+
+/** Camel → kebab (`clipPath` → `clip-path`). */
+function toKebab(s: string): string {
+  return s.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+}
+
+/** Build `--theme-asset-*` CSS vars from the assets block. Values are wrapped
+ *  in `url(...)` when they look like a bare path/URL; raw CSS expressions
+ *  (`linear-gradient(...)`, pre-wrapped `url(...)`, `none`) pass through. */
+function assetVars(assets: ThemeAssets | undefined): Record<string, string> {
+  if (!assets) return {};
+  const out: Record<string, string> = {};
+  const wrap = (v: string): string => {
+    const trimmed = v.trim();
+    if (!trimmed) return "";
+    // Already a CSS image/gradient/url/none — don't re-wrap.
+    if (/^(url\(|linear-gradient|radial-gradient|conic-gradient|none$)/i.test(trimmed)) {
+      return trimmed;
+    }
+    // Bare path / http(s) URL / data: URL → wrap in url().
+    return `url("${trimmed.replace(/"/g, '\\"')}")`;
+  };
+  for (const key of NAMED_ASSET_KEYS) {
+    const val = assets[key];
+    if (typeof val === "string" && val.trim()) {
+      out[`--theme-asset-${key}`] = wrap(val);
+      out[`--theme-asset-${key}-raw`] = val;
+    }
+  }
+  if (assets.custom) {
+    for (const [key, val] of Object.entries(assets.custom)) {
+      if (typeof val !== "string" || !val.trim()) continue;
+      if (!/^[a-zA-Z0-9_-]+$/.test(key)) continue;
+      out[`--theme-asset-custom-${key}`] = wrap(val);
+      out[`--theme-asset-custom-${key}-raw`] = val;
+    }
+  }
+  return out;
+}
+
+/** Build `--component-<bucket>-<prop>` CSS vars from the componentStyles
+ *  block. Values pass through untouched so themes can use any CSS expression. */
+function componentStyleVars(
+  styles: ThemeComponentStyles | undefined,
+): Record<string, string> {
+  if (!styles) return {};
+  const out: Record<string, string> = {};
+  for (const bucket of COMPONENT_BUCKETS) {
+    const props = (styles as Record<string, Record<string, string> | undefined>)[bucket];
+    if (!props) continue;
+    for (const [prop, value] of Object.entries(props)) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      // Same guardrail as backend — camelCase or kebab-case alnum only.
+      if (!/^[a-zA-Z0-9_-]+$/.test(prop)) continue;
+      out[`--component-${bucket}-${toKebab(prop)}`] = value;
+    }
+  }
+  return out;
+}
+
+// Tracks keys we set on the previous theme so we can clear them when the
+// next theme has fewer assets / component vars. Without this, switching
+// from a richly-decorated theme to a plain one would leave stale vars.
+let _PREV_DYNAMIC_VAR_KEYS: Set<string> = new Set();
+
+/** ID for the injected <style> tag that carries a theme's customCSS.
+ *  A single tag is reused + replaced on every theme switch. */
+const CUSTOM_CSS_STYLE_ID = "hermes-theme-custom-css";
+
+function applyCustomCSS(css: string | undefined) {
+  if (typeof document === "undefined") return;
+  let el = document.getElementById(CUSTOM_CSS_STYLE_ID) as HTMLStyleElement | null;
+  if (!css || !css.trim()) {
+    if (el) el.remove();
+    return;
+  }
+  if (!el) {
+    el = document.createElement("style");
+    el.id = CUSTOM_CSS_STYLE_ID;
+    el.setAttribute("data-hermes-theme-css", "true");
+    document.head.appendChild(el);
+  }
+  el.textContent = css;
+}
+
+function applyLayoutVariant(variant: ThemeLayoutVariant | undefined) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  const final: ThemeLayoutVariant = variant ?? "standard";
+  root.dataset.layoutVariant = final;
+  root.style.setProperty("--theme-layout-variant", final);
+}
+
+// ---------------------------------------------------------------------------
 // Font stylesheet injection
 // ---------------------------------------------------------------------------
 
@@ -157,18 +267,35 @@ function applyTheme(theme: DashboardTheme) {
   for (const cssVar of ALL_OVERRIDE_VARS) {
     root.style.removeProperty(cssVar);
   }
+  // Clear dynamic (asset/component) vars from the previous theme so the
+  // new one starts clean — otherwise stale notched clip-paths, hero URLs,
+  // etc. would bleed across theme switches.
+  for (const prevKey of _PREV_DYNAMIC_VAR_KEYS) {
+    root.style.removeProperty(prevKey);
+  }
+
+  const assetMap = assetVars(theme.assets);
+  const componentMap = componentStyleVars(theme.componentStyles);
+  _PREV_DYNAMIC_VAR_KEYS = new Set([
+    ...Object.keys(assetMap),
+    ...Object.keys(componentMap),
+  ]);
 
   const vars = {
     ...paletteVars(theme.palette),
     ...typographyVars(theme.typography),
     ...layoutVars(theme.layout),
     ...overrideVars(theme.colorOverrides),
+    ...assetMap,
+    ...componentMap,
   };
   for (const [k, v] of Object.entries(vars)) {
     root.style.setProperty(k, v);
   }
 
   injectFontStylesheet(theme.typography.fontUrl);
+  applyCustomCSS(theme.customCSS);
+  applyLayoutVariant(theme.layoutVariant);
 }
 
 // ---------------------------------------------------------------------------

@@ -70,6 +70,55 @@ export interface ThemeLayout {
   density: ThemeDensity;
 }
 
+/** Overall layout variant the shell renders. `standard` = default single-
+ *  column page layout. `cockpit` = reserves a left sidebar rail for a
+ *  plugin slot (intended for HUD-style themes with persistent status panels).
+ *  `tiled` = relaxes the main content max-width so pages can use the full
+ *  viewport width. Themes set this; plugins react via CSS vars /
+ *  `[data-layout-variant="..."]` selectors. */
+export type ThemeLayoutVariant = "standard" | "cockpit" | "tiled";
+
+/** Named hero/background assets a theme can populate. Each value is
+ *  emitted as a CSS var (`--theme-asset-<name>`). The default shell
+ *  consumes `bg` in `<Backdrop />` when present; other slots are
+ *  plugin-facing — a cockpit sidebar plugin reads `--theme-asset-hero`
+ *  to render its hero render without coupling to the theme name. */
+export interface ThemeAssets {
+  /** Full-viewport background image URL, injected under the noise layer. */
+  bg?: string;
+  /** Hero render (Gundam, mascot, wallpaper) — for plugin sidebars/overlays. */
+  hero?: string;
+  /** Logo mark — header slot consumers use this. */
+  logo?: string;
+  /** Faction/brand crest — header-left decoration. */
+  crest?: string;
+  /** Secondary sidebar illustration. */
+  sidebar?: string;
+  /** Alternate header artwork. */
+  header?: string;
+  /** User-defined named assets. Keyed by [a-zA-Z0-9_-] only.
+   *  Emitted as `--theme-asset-custom-<key>`. */
+  custom?: Record<string, string>;
+}
+
+/** Component-style override buckets. Each bucket's entries become CSS
+ *  vars (`--component-<bucket>-<kebab-property>`) that shell components
+ *  (Card, Backdrop, App header/footer, etc.) read. Values are plain CSS
+ *  strings — we don't parse them, so themes can use `clip-path`,
+ *  `border-image`, `background`, `box-shadow`, and anything else CSS
+ *  accepts. */
+export interface ThemeComponentStyles {
+  card?: Record<string, string>;
+  header?: Record<string, string>;
+  footer?: Record<string, string>;
+  sidebar?: Record<string, string>;
+  tab?: Record<string, string>;
+  progress?: Record<string, string>;
+  badge?: Record<string, string>;
+  backdrop?: Record<string, string>;
+  page?: Record<string, string>;
+}
+
 /** Optional hex overrides keyed by shadcn-compat token name (without the
  *  `--color-` prefix). Any key set here wins over the DS cascade. */
 export interface ThemeColorOverrides {
@@ -101,6 +150,17 @@ export interface DashboardTheme {
   palette: ThemePalette;
   typography: ThemeTypography;
   layout: ThemeLayout;
+  /** Overall shell layout. Defaults to `"standard"` when absent. */
+  layoutVariant?: ThemeLayoutVariant;
+  /** Named + custom asset URLs exposed as CSS vars on theme apply. */
+  assets?: ThemeAssets;
+  /** Raw CSS injected as a scoped `<style>` tag on theme apply, cleaned up
+   *  on theme switch. Intended for selector-level chrome that's too
+   *  expressive for componentStyles alone (e.g. `::before` pseudo-elements,
+   *  complex animations, media queries). */
+  customCSS?: string;
+  /** Per-component CSS-var overrides. See `ThemeComponentStyles`. */
+  componentStyles?: ThemeComponentStyles;
   colorOverrides?: ThemeColorOverrides;
 }
 

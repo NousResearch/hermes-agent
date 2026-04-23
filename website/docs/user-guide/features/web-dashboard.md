@@ -422,6 +422,148 @@ Supported keys: `card`, `cardForeground`, `popover`, `popoverForeground`, `prima
 
 Any key set here overrides the derived value for the active theme only — switching to another theme clears the overrides.
 
+### Layout variants
+
+`layoutVariant` selects the overall shell layout. Defaults to `standard`.
+
+| Variant | Behaviour |
+|---------|-----------|
+| `standard` | Single column, 1600px max-width (default) |
+| `cockpit` | Left sidebar rail (260px) + main content. Populated by plugins via the `sidebar` slot |
+| `tiled` | Drops the max-width clamp so pages can use the full viewport |
+
+```yaml
+layoutVariant: cockpit
+```
+
+The current variant is exposed as `document.documentElement.dataset.layoutVariant` so custom CSS can target it via `:root[data-layout-variant="cockpit"]`.
+
+### Theme assets
+
+Ship artwork URLs with a theme. Each named slot becomes a CSS var (`--theme-asset-<name>`) that plugins and the built-in shell read; the `bg` slot is automatically wired into the backdrop.
+
+```yaml
+assets:
+  bg: "https://example.com/hero-bg.jpg"       # full-viewport background
+  hero: "/my-images/strike-freedom.png"       # for plugin sidebars
+  crest: "/my-images/crest.svg"               # for header slot plugins
+  logo: "/my-images/logo.png"
+  sidebar: "/my-images/rail.png"
+  header: "/my-images/header-art.png"
+  custom:
+    scanLines: "/my-images/scanlines.png"     # → --theme-asset-custom-scanLines
+```
+
+Values accept bare URLs (wrapped in `url(...)` automatically), pre-wrapped `url(...)`/`linear-gradient(...)`/`radial-gradient(...)` expressions, and `none`.
+
+### Component chrome overrides
+
+Themes can restyle individual shell components without writing CSS selectors via the `componentStyles` block. Each bucket's entries become CSS vars (`--component-<bucket>-<kebab-property>`) that the shell's shared components read — so `card:` overrides apply to every `<Card>`, `header:` to the app bar, etc.
+
+```yaml
+componentStyles:
+  card:
+    clipPath: "polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px)"
+    background: "linear-gradient(180deg, rgba(10, 22, 52, 0.85), rgba(5, 9, 26, 0.92))"
+    boxShadow: "inset 0 0 0 1px rgba(64, 200, 255, 0.28)"
+  header:
+    background: "linear-gradient(180deg, rgba(16, 32, 72, 0.95), rgba(5, 9, 26, 0.9))"
+  tab:
+    clipPath: "polygon(6px 0, 100% 0, calc(100% - 6px) 100%, 0 100%)"
+  sidebar: {...}
+  backdrop: {...}
+  footer: {...}
+  progress: {...}
+  badge: {...}
+  page: {...}
+```
+
+Supported buckets: `card`, `header`, `footer`, `sidebar`, `tab`, `progress`, `badge`, `backdrop`, `page`. Property names use camelCase (`clipPath`) and are emitted as kebab (`clip-path`). Values are plain CSS strings — anything CSS accepts (`clip-path`, `border-image`, `background`, `box-shadow`, animations, etc.).
+
+### Custom CSS
+
+For selector-level chrome that doesn't fit `componentStyles` — pseudo-elements, animations, media queries, theme-scoped overrides — drop raw CSS into the `customCSS` field:
+
+```yaml
+customCSS: |
+  :root[data-layout-variant="cockpit"] body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    background: repeating-linear-gradient(to bottom,
+      transparent 0px, transparent 2px,
+      rgba(64, 200, 255, 0.035) 3px, rgba(64, 200, 255, 0.035) 4px);
+    mix-blend-mode: screen;
+  }
+```
+
+The CSS is injected as a single scoped `<style data-hermes-theme-css>` tag on theme apply and cleaned up on theme switch. Capped at 32 KiB per theme.
+
+## Dashboard plugins
+
+Plugins live in `~/.hermes/plugins/<name>/dashboard/` (user) or repo `plugins/<name>/dashboard/` (bundled). Each ships a `manifest.json` plus a plain JS bundle that uses the plugin SDK exposed on `window.__HERMES_PLUGIN_SDK__`.
+
+### Manifest
+
+```json
+{
+  "name": "my-plugin",
+  "label": "My Plugin",
+  "icon": "Sparkles",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/my-plugin",
+    "position": "after:skills",
+    "override": "/",
+    "hidden": false
+  },
+  "slots": ["sidebar", "header-left"],
+  "entry": "dist/index.js",
+  "css": "dist/index.css",
+  "api": "api.py"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tab.path` | Route path the plugin component renders at |
+| `tab.position` | `end`, `after:<tab>`, or `before:<tab>` |
+| `tab.override` | When set to a built-in path (`/`, `/sessions`, etc.), this plugin replaces that page instead of adding a new tab |
+| `tab.hidden` | When true, register component + slots but skip the nav entry. Used by slot-only plugins |
+| `slots` | Shell slots this plugin populates (documentation aid; actual registration happens from the JS bundle) |
+
+### Shell slots
+
+Plugins inject components into named shell locations by calling `window.__HERMES_PLUGINS__.registerSlot(pluginName, slotName, Component)`. Multiple plugins can populate the same slot — they render stacked in registration order.
+
+| Slot | Location |
+|------|----------|
+| `backdrop` | Inside the backdrop layer stack |
+| `header-left` | Before the Hermes brand in the top bar |
+| `header-right` | Before the theme/language switchers |
+| `header-banner` | Full-width strip below the nav |
+| `sidebar` | Cockpit sidebar rail (only rendered when `layoutVariant === "cockpit"`) |
+| `pre-main` | Above the route outlet |
+| `post-main` | Below the route outlet |
+| `footer-left` / `footer-right` | Footer cell content (replaces default) |
+| `overlay` | Fixed-position layer above everything else |
+
+### Plugin SDK
+
+Exposed on `window.__HERMES_PLUGIN_SDK__`:
+
+- `React` + `hooks` (useState, useEffect, useCallback, useMemo, useRef, useContext, createContext)
+- `components` — Card, Badge, Button, Input, Label, Select, Separator, Tabs, **PluginSlot**
+- `api` — Hermes API client, plus raw `fetchJSON`
+- `utils` — `cn()`, `timeAgo()`, `isoTimeAgo()`
+- `useI18n` — i18n hook for multi-language plugins
+
+### Demo: Strike Freedom Cockpit
+
+`plugins/strike-freedom-cockpit/` ships a complete skin demo showing every extension point — cockpit layout variant, theme-supplied hero/crest assets, notched card corners via `componentStyles`, scanlines via `customCSS`, and a slot-only plugin that populates the sidebar, header, and footer. Copy the theme YAML into `~/.hermes/dashboard-themes/` and the plugin directory into `~/.hermes/plugins/` to try it.
+
 ### Theme API
 
 | Endpoint | Method | Description |

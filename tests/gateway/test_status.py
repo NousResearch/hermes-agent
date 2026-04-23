@@ -51,6 +51,29 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_cleans_stale_record_from_dead_process(self, tmp_path, monkeypatch):
+        # Simulates the aftermath of a crash: the PID file still points at a
+        # process that no longer exists. The next gateway startup must be
+        # able to unlink it so ``write_pid_file``'s O_EXCL create succeeds —
+        # otherwise systemd's restart loop hits "PID file race lost" forever.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        dead_pid = 999999  # not our pid, and below we simulate it's dead
+        pid_path.write_text(json.dumps({
+            "pid": dead_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 111,
+        }))
+
+        def _dead_process(pid, sig):
+            raise ProcessLookupError
+
+        monkeypatch.setattr(status.os, "kill", _dead_process)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+
     def test_get_running_pid_accepts_gateway_metadata_when_cmdline_unavailable(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"

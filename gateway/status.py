@@ -213,13 +213,19 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
 
 
 def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
+    # Callers only reach this helper after ``get_running_pid`` has already
+    # determined the file's record is stale (dead pid, unparseable record,
+    # or mismatched start_time). At that point the file never belongs to a
+    # live process, so it must always be unlinked — ``remove_pid_file``'s
+    # "only touch files that belong to me" safety check is for the atexit
+    # --replace handoff and would here leave the stale file in place,
+    # causing the next ``write_pid_file()`` (O_EXCL) to fail with
+    # ``FileExistsError`` and the gateway to exit with
+    # "PID file race lost to another gateway instance".
     if not cleanup_stale:
         return
     try:
-        if pid_path == _get_pid_path():
-            remove_pid_file()
-        else:
-            pid_path.unlink(missing_ok=True)
+        pid_path.unlink(missing_ok=True)
     except Exception:
         pass
 

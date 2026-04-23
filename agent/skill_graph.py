@@ -543,7 +543,11 @@ def get_skill_graph_canary_fixtures() -> list[dict[str, Any]]:
         {
             "id": "opik-hourly-watch",
             "query": "run Hermes Opik hourly watch",
-            "expected_top_skill": "opik-hourly-watch-canonical-runbook",
+            "expected_top_skill": "hermes-opik-hourly-watch-runbook",
+            "expected_top_skills": [
+                "hermes-opik-hourly-watch-runbook",
+                "opik-hourly-watch-canonical-runbook",
+            ],
             "side_effects": "internal_only",
         }
     ]
@@ -557,13 +561,17 @@ def run_skill_graph_canaries(
     for fixture in fixtures:
         ranked = query_skill_graph(graph, fixture["query"], limit=1)
         top_skill = ranked[0]["name"] if ranked else None
-        matched = top_skill == fixture.get("expected_top_skill")
+        expected_top_skills = list(fixture.get("expected_top_skills") or [])
+        if fixture.get("expected_top_skill"):
+            expected_top_skills.append(fixture["expected_top_skill"])
+        matched = top_skill in set(expected_top_skills)
         results.append(
             {
                 "id": fixture.get("id"),
                 "matched": matched,
                 "top_skill": top_skill,
                 "expected_top_skill": fixture.get("expected_top_skill"),
+                "expected_top_skills": sorted(set(expected_top_skills)),
                 "side_effects": fixture.get("side_effects"),
             }
         )

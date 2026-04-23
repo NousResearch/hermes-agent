@@ -56,18 +56,18 @@ class TestTruncatedAnthropicResponseNormalization:
         response = _make_anthropic_response(
             [_make_anthropic_text_block("partial response that was cut off")]
         )
-        msg, finish = normalize_anthropic_response(response)
+        nr = normalize_anthropic_response(response)
 
         # The continuation block checks these two attributes:
         #   assistant_message.content  → appended to truncated_response_prefix
         #   assistant_message.tool_calls → guards the text-retry branch
-        assert msg.content is not None
-        assert "partial response" in msg.content
-        assert not msg.tool_calls, (
+        assert nr.content is not None
+        assert "partial response" in nr.content
+        assert not nr.tool_calls, (
             "Pure-text truncation must have no tool_calls so the text-continuation "
             "branch (not the tool-retry branch) fires"
         )
-        assert finish == "length", "max_tokens stop_reason must map to OpenAI-style 'length'"
+        assert nr.finish_reason == "length", "max_tokens stop_reason must map to OpenAI-style 'length'"
 
     def test_truncated_tool_call_produces_tool_calls(self):
         """Tool-use truncation → tool-call retry path should fire."""
@@ -79,24 +79,24 @@ class TestTruncatedAnthropicResponseNormalization:
                 _make_anthropic_tool_use_block(),
             ]
         )
-        msg, finish = normalize_anthropic_response(response)
+        nr = normalize_anthropic_response(response)
 
-        assert bool(msg.tool_calls), (
+        assert bool(nr.tool_calls), (
             "Truncation mid-tool_use must expose tool_calls so the "
             "tool-call retry branch fires instead of text continuation"
         )
-        assert finish == "length"
+        assert nr.finish_reason == "length"
 
     def test_empty_content_does_not_crash(self):
         """Empty response.content — defensive: treat as a truncation with no text."""
         from agent.anthropic_adapter import normalize_anthropic_response
 
         response = _make_anthropic_response([])
-        msg, finish = normalize_anthropic_response(response)
+        nr = normalize_anthropic_response(response)
         # Depending on the adapter, content may be "" or None — both are
         # acceptable; what matters is no exception.
-        assert msg is not None
-        assert not msg.tool_calls
+        assert nr is not None
+        assert not nr.tool_calls
 
 
 class TestContinuationLogicBranching:

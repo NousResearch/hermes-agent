@@ -18,6 +18,7 @@ const upperBound = (offsets: ArrayLike<number>, target: number) => {
 export const stickyPromptFromViewport = (
   messages: readonly Msg[],
   offsets: ArrayLike<number>,
+  bottom: number,
   top: number,
   sticky: boolean
 ) => {
@@ -26,8 +27,15 @@ export const stickyPromptFromViewport = (
   }
 
   const first = Math.max(0, Math.min(messages.length - 1, upperBound(offsets, top) - 1))
+  const last = Math.max(first, Math.min(messages.length - 1, upperBound(offsets, bottom) - 1))
 
-  for (let i = first; i >= 0; i--) {
+  for (let i = first; i <= last; i++) {
+    if (messages[i]?.role === 'user') {
+      return ''
+    }
+  }
+
+  for (let i = first - 1; i >= 0; i--) {
     if (messages[i]?.role !== 'user') {
       continue
     }

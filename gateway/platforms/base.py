@@ -2379,15 +2379,14 @@ class BasePlatformAdapter(ABC):
                 # Leave _active_sessions[session_key] populated — the drain
                 # task's own lifecycle will clean it up.
             else:
-                # Clean up session tracking.  Only release the guard if this
-                # task still owns it (protects against the case where a
-                # reset-like command already swapped in its own guard while
-                # we were unwinding).
+                # Clean up session tracking.  Guard-match both deletes so a
+                # reset-like command that already swapped in its own
+                # command_guard (and cancelled us) can't be accidentally
+                # cleared by our unwind.  The command owns the session now.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     del self._session_tasks[session_key]
-                if session_key in self._active_sessions:
-                    del self._active_sessions[session_key]
+                self._release_session_guard(session_key, guard=interrupt_event)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.

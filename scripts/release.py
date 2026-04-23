@@ -398,6 +398,7 @@ AUTHOR_MAP = {
     "63502660+azhengbot@users.noreply.github.com": "azhengbot",
     "sharvil.saxena@gmail.com": "sharziki",
     "yuanhe@minimaxi.com": "RyanLee-Dev",
+    "curtis992250@gmail.com": "TaroballzChen",
 }
 
 

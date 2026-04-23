@@ -1,0 +1,14 @@
+{
+  "name": "theia-constellation",
+  "label": "Constellation",
+  "description": "Theia session constellation — visualize session relationships as an interactive force-directed graph",
+  "icon": "Eye",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/constellation",
+    "position": "after:sessions"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

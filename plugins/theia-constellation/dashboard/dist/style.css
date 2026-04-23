@@ -1,0 +1,47 @@
+/* Theia Constellation Plugin — Styles */
+
+.theia-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 400px;
+  max-height: 75vh;
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: 0.25rem;
+  overflow: hidden;
+  background: #07080d;
+}
+
+.theia-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+/* Fullscreen mode */
+.theia-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #07080d;
+  display: flex;
+  flex-direction: column;
+}
+
+.theia-fullscreen-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  background: rgba(7, 8, 13, 0.95);
+  border-bottom: 1px solid var(--color-border, rgba(255, 255, 255, 0.1));
+  z-index: 1;
+}
+
+.theia-iframe-full {
+  flex: 1;
+  width: 100%;
+  border: none;
+  display: block;
+}

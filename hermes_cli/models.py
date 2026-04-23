@@ -1110,7 +1110,10 @@ def fetch_models_with_pricing(
         return _pricing_cache[cache_key]
 
     url = cache_key.rstrip("/") + "/v1/models"
-    headers: dict[str, str] = {"Accept": "application/json"}
+    headers: dict[str, str] = {
+        "Accept": "application/json",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -2241,7 +2244,10 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
         base_url = AI_GATEWAY_BASE_URL
 
     url = base_url.rstrip("/") + "/models"
-    headers: dict[str, str] = {"Authorization": f"Bearer {api_key}"}
+    headers: dict[str, str] = {
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

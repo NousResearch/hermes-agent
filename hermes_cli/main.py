@@ -4516,8 +4516,18 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
+    dist_dir = web_dir / "dist"
+    # Avoid false positives from stale dist/ content.
+    if dist_dir.exists():
+        shutil.rmtree(dist_dir, ignore_errors=True)
     r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
     if r2.returncode != 0:
+        # Some Windows environments can produce a non-zero exit code even when the
+        # build output is successfully written. Treat dist/index.html as the
+        # authoritative success indicator.
+        if (dist_dir / "index.html").exists():
+            print("  ✓ Web UI built")
+            return True
         print(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
             + ("" if fatal else " (hermes web will not be available)")

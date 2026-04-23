@@ -87,6 +87,18 @@ _recorder_lock = threading.Lock()
 _continuous_lock = threading.Lock()
 _continuous_active = False
 _continuous_recorder: Any = None
+
+# ── TTS-vs-STT feedback guard ────────────────────────────────────────
+# When TTS plays the agent reply over the speakers, the live microphone
+# picks it up and transcribes the agent's own voice as user input — an
+# infinite loop the agent happily joins ("Ha, looks like we're in a loop").
+# This Event mirrors cli.py:_voice_tts_done: cleared while speak_text is
+# playing, set while silent. _continuous_on_silence waits on it before
+# re-arming the recorder, and speak_text itself cancels any live capture
+# before starting playback so the tail of the previous utterance doesn't
+# leak into the mic.
+_tts_playing = threading.Event()
+_tts_playing.set()  # initially "not playing"
 _continuous_on_transcript: Optional[Callable[[str], None]] = None
 _continuous_on_status: Optional[Callable[[str], None]] = None
 _continuous_on_silent_limit: Optional[Callable[[], None]] = None
@@ -379,6 +391,23 @@ def _continuous_on_silence() -> None:
                 pass
         return
 
+    # CLI parity (cli.py:10619-10621): wait for any in-flight TTS to
+    # finish before re-arming the mic, then leave a small gap to avoid
+    # catching the tail of the speaker output.  Without this the voice
+    # loop becomes a feedback loop — the agent's spoken reply lands
+    # back in the mic and gets re-submitted.
+    if not _tts_playing.is_set():
+        _debug("_continuous_on_silence: waiting for TTS to finish")
+        _tts_playing.wait(timeout=60)
+        import time as _time
+        _time.sleep(0.3)
+
+        # User may have stopped the loop during the wait.
+        with _continuous_lock:
+            if not _continuous_active:
+                _debug("_continuous_on_silence: stopped while waiting for TTS")
+                return
+
     # Restart for the next turn.
     _debug(f"_continuous_on_silence: restarting loop (no_speech={no_speech})")
     _play_beep(frequency=880, count=1)
@@ -409,6 +438,11 @@ def speak_text(text: str) -> None:
     MP3-over-OGG playback choice (afplay misbehaves on OGG), same cleanup
     of both extensions. Keeping these in sync means a voice-mode TTS
     session in the TUI sounds identical to one in the classic CLI.
+
+    While playback is in flight the module-level _tts_playing Event is
+    cleared so the continuous-recording loop knows to wait before
+    re-arming the mic (otherwise the agent's spoken reply feedback-loops
+    through the microphone and the agent ends up replying to itself).
     """
     if not text or not text.strip():
         return
@@ -416,6 +450,26 @@ def speak_text(text: str) -> None:
     import re
     import tempfile
     import time
+
+    # Cancel any live capture before we open the speakers — otherwise the
+    # last ~200ms of the user's turn tail + the first syllables of our TTS
+    # both end up in the next recording window.  The continuous loop will
+    # re-arm itself after _tts_playing flips back (see _continuous_on_silence).
+    paused_recording = False
+    with _continuous_lock:
+        if (
+            _continuous_active
+            and _continuous_recorder is not None
+            and getattr(_continuous_recorder, "is_recording", False)
+        ):
+            try:
+                _continuous_recorder.cancel()
+                paused_recording = True
+            except Exception as e:
+                logger.warning("failed to pause recorder for TTS: %s", e)
+
+    _tts_playing.clear()
+    _debug(f"speak_text: TTS begin (paused_recording={paused_recording})")
 
     try:
         from tools.tts_tool import text_to_speech_tool
@@ -463,3 +517,23 @@ def speak_text(text: str) -> None:
     except Exception as e:
         logger.warning("Voice TTS playback failed: %s", e)
         _debug(f"speak_text raised {type(e).__name__}: {e}")
+    finally:
+        _tts_playing.set()
+        _debug("speak_text: TTS done")
+
+        # Re-arm the mic so the user can answer without pressing Ctrl+B.
+        # Small delay lets the OS flush speaker output and afplay fully
+        # release the audio device before sounddevice re-opens the input.
+        if paused_recording:
+            time.sleep(0.3)
+            with _continuous_lock:
+                if _continuous_active and _continuous_recorder is not None:
+                    try:
+                        _continuous_recorder.start(
+                            on_silence_stop=_continuous_on_silence
+                        )
+                        _debug("speak_text: recording resumed after TTS")
+                    except Exception as e:
+                        logger.warning(
+                            "failed to resume recorder after TTS: %s", e
+                        )

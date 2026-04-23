@@ -304,8 +304,15 @@ def _iter_custom_providers(config: Optional[dict] = None):
         yield _normalize_custom_pool_name(name), entry
 
 
-def get_custom_provider_pool_key(base_url: str) -> Optional[str]:
-    """Look up the custom_providers list in config.yaml and return 'custom:<name>' for a matching base_url.
+def get_custom_provider_pool_key(
+    base_url: str, provider_name: Optional[str] = None
+) -> Optional[str]:
+    """Look up the custom_providers list in config.yaml and return 'custom:<name>' for a matching entry.
+
+    When *provider_name* is given, both name and base_url must match.  This
+    prevents two providers that share the same base_url from returning each
+    other's pool key.  When omitted, the first URL match wins (legacy
+    behaviour).
 
     Returns None if no match is found.
     """
@@ -314,8 +321,13 @@ def get_custom_provider_pool_key(base_url: str) -> Optional[str]:
     normalized_url = base_url.strip().rstrip("/")
     for norm_name, entry in _iter_custom_providers():
         entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
-        if entry_url and entry_url == normalized_url:
-            return f"{CUSTOM_POOL_PREFIX}{norm_name}"
+        if not entry_url or entry_url != normalized_url:
+            continue
+        if provider_name is not None:
+            entry_name = entry.get("name", "")
+            if _normalize_custom_pool_name(entry_name) != _normalize_custom_pool_name(provider_name):
+                continue
+        return f"{CUSTOM_POOL_PREFIX}{norm_name}"
     return None
 
 

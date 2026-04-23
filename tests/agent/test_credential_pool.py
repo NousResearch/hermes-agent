@@ -866,6 +866,46 @@ def test_get_custom_provider_pool_key(tmp_path, monkeypatch):
     assert get_custom_provider_pool_key("") is None
 
 
+def test_get_custom_provider_pool_key_isolates_by_name(tmp_path, monkeypatch):
+    """Two providers sharing base_url should resolve to different pool keys when provider_name is given."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "provider-alpha",
+                "base_url": "https://api.shared-host.com/v1",
+                "api_key": "key-alpha",
+            },
+            {
+                "name": "provider-beta",
+                "base_url": "https://api.shared-host.com/v1",
+                "api_key": "key-beta",
+            },
+        ]
+    }))
+
+    from agent.credential_pool import get_custom_provider_pool_key
+
+    # Without provider_name: first URL match wins (legacy)
+    assert get_custom_provider_pool_key("https://api.shared-host.com/v1") == "custom:provider-alpha"
+
+    # With provider_name: each gets its own pool key
+    assert get_custom_provider_pool_key(
+        "https://api.shared-host.com/v1", provider_name="provider-alpha"
+    ) == "custom:provider-alpha"
+    assert get_custom_provider_pool_key(
+        "https://api.shared-host.com/v1", provider_name="provider-beta"
+    ) == "custom:provider-beta"
+
+    # Non-existent provider name with matching URL: returns None
+    assert get_custom_provider_pool_key(
+        "https://api.shared-host.com/v1", provider_name="provider-gamma"
+    ) is None
+
+
 def test_list_custom_pool_providers(tmp_path, monkeypatch):
     """list_custom_pool_providers returns custom: pool keys from auth.json."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

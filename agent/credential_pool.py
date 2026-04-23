@@ -739,8 +739,11 @@ class CredentialPool:
 
         if self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
+            # Increment usage counter so subsequent selections distribute load
+            updated = replace(entry, request_count=entry.request_count + 1)
+            self._replace_entry(entry, updated)
             self._current_id = entry.id
-            return entry
+            return updated
 
         if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             entry = available[0]

@@ -121,6 +121,13 @@ class TestFreezeThreadSensitiveOriginDelivery:
         )
         assert result == "origin"
 
+    def test_keeps_explicit_thread_target_unchanged(self):
+        result = _freeze_thread_sensitive_origin_delivery(
+            "discord:1493169190197268510:1496085239917973644",
+            {"platform": "discord", "chat_id": "1493169190197268510", "thread_id": "1496085239917973644"},
+        )
+        assert result == "discord:1493169190197268510:1496085239917973644"
+
 
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)

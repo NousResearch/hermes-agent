@@ -157,8 +157,8 @@ class TextBatchAggregator:
 # Pre-compiled regexes for performance
 _RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
-_RE_BOLD_UNDER = re.compile(r"__(.+?)__", re.DOTALL)
-_RE_ITALIC_UNDER = re.compile(r"_(.+?)_", re.DOTALL)
+_RE_BOLD_UNDER = re.compile(r"(?<![a-zA-Z0-9])__(?=[^_\s])(.+?)(?<=[^_])__(?![a-zA-Z0-9])", re.DOTALL)
+_RE_ITALIC_UNDER = re.compile(r"(?<![a-zA-Z0-9])_(?=[^_\s])(.+?)(?<=[^_])_(?![a-zA-Z0-9])", re.DOTALL)
 _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
 _RE_INLINE_CODE = re.compile(r"`(.+?)`")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)

@@ -15,7 +15,8 @@ const buildCtx = (appended: Msg[]) =>
     composer: {
       dequeue: () => undefined,
       queueEditRef: ref<null | number>(null),
-      sendQueued: vi.fn()
+      sendQueued: vi.fn(),
+      setInput: vi.fn()
     },
     gateway: {
       gw: { request: vi.fn() },
@@ -29,6 +30,9 @@ const buildCtx = (appended: Msg[]) =>
       resumeById: vi.fn(),
       setCatalog: vi.fn()
     },
+    submission: {
+      submitRef: { current: vi.fn() }
+    },
     system: {
       bellOnComplete: false,
       sys: vi.fn()
@@ -38,6 +42,11 @@ const buildCtx = (appended: Msg[]) =>
       panel: (title: string, sections: any[]) =>
         appended.push({ kind: 'panel', panelData: { sections, title }, role: 'system', text: '' }),
       setHistoryItems: vi.fn()
+    },
+    voice: {
+      setProcessing: vi.fn(),
+      setRecording: vi.fn(),
+      setVoiceEnabled: vi.fn()
     }
   }) as any
 

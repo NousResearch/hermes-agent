@@ -51,6 +51,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
+  const { setInput } = ctx.composer
+  const { submitRef } = ctx.submission
+  const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
 
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
@@ -257,6 +260,60 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const line = String(ev.payload.line).slice(0, 120)
 
         turnController.pushActivity(line, 'info')
+
+        return
+      }
+
+      case 'voice.status': {
+        // Continuous VAD loop reports its internal state so the status bar
+        // can show listening / transcribing / idle without polling.
+        const state = String(ev.payload?.state ?? '')
+
+        if (state === 'listening') {
+          setVoiceRecording(true)
+          setVoiceProcessing(false)
+        } else if (state === 'transcribing') {
+          setVoiceRecording(false)
+          setVoiceProcessing(true)
+        } else {
+          setVoiceRecording(false)
+          setVoiceProcessing(false)
+        }
+
+        return
+      }
+
+      case 'voice.transcript': {
+        // CLI parity: the 3-strikes silence detector flipped off automatically.
+        // Mirror that on the UI side and tell the user why the mode is off.
+        if (ev.payload?.no_speech_limit) {
+          setVoiceEnabled(false)
+          setVoiceRecording(false)
+          setVoiceProcessing(false)
+          sys('voice: no speech detected 3 times, continuous mode stopped')
+
+          return
+        }
+
+        const text = String(ev.payload?.text ?? '').trim()
+
+        if (!text) {
+          return
+        }
+
+        // Match CLI's _pending_input.put(transcript): auto-submit when the
+        // composer is empty, otherwise append so the user can keep editing
+        // a partial draft they were working on.
+        setInput(prev => {
+          if (!prev) {
+            // defer submit so React commits the state change first
+            setTimeout(() => submitRef.current(text), 0)
+
+            return ''
+          }
+
+          return `${prev}${/\s$/.test(prev) ? '' : ' '}${text}`
+        })
 
         return
       }

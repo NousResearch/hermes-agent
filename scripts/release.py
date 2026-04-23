@@ -377,6 +377,7 @@ AUTHOR_MAP = {
     "tanishq@exa.ai": "10ishq",
     "363708+christopherwoodall@users.noreply.github.com": "christopherwoodall",
     "zhang9w0v5@qq.com": "zhang9w0v5",
+    "fuleinist@outlook.com": "fuleinist",
 }
 
 

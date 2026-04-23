@@ -347,6 +347,7 @@ AUTHOR_MAP = {
     "89228157+Feranmi10@users.noreply.github.com": "Feranmi10",
     "simon@gtcl.us": "simon-gtcl",
     "suzukaze.haduki@gmail.com": "houko",
+    "cliff@cigii.com": "cgarwood82",
 }
 
 

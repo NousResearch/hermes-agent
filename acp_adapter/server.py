@@ -289,6 +289,21 @@ def _format_spar_output(raw_text: str) -> str:
     return "\n".join(lines).strip()
 
 
+async def _send_forced_mode_thought(
+    conn: acp.Client | None,
+    session_id: str,
+    prompt_route: str,
+) -> None:
+    if conn is None:
+        return
+    thought_text = (
+        "MoA: gathering reference answers and aggregating them into one final answer."
+        if prompt_route == "force-moa"
+        else "Spar: drafting, reviewing, and judge-checking this answer before returning it."
+    )
+    await conn.session_update(session_id, acp.update_agent_thought_text(thought_text))
+
+
 class HermesACPAgent(acp.Agent):
     """ACP Agent implementation wrapping Hermes AIAgent."""
 
@@ -754,6 +769,7 @@ class HermesACPAgent(acp.Agent):
             )
             routed_prompt = _build_routed_prompt(user_text, state.history)
             try:
+                await _send_forced_mode_thought(conn, session_id, prompt_route)
                 if prompt_route == "force-spar":
                     from tools.spar_tool import spar_tool
 

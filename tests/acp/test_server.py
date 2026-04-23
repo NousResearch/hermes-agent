@@ -586,6 +586,34 @@ class TestPrompt:
         assert routed_prompt.endswith("User: analyze this hard problem")
 
     @pytest.mark.asyncio
+    async def test_prompt_force_moa_emits_thought_chunk(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa"
+        state.agent.run_conversation = MagicMock()
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value='{"success": true, "response": "moa answer", "models_used": {"reference_models": [], "aggregator_model": "xiaomi/mimo-v2-pro"}}'
+            ),
+        ):
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="analyze this hard problem")],
+                session_id=new_resp.session_id,
+            )
+
+        update_types = [
+            getattr((call.kwargs.get("update") or call.args[1]), "session_update", None)
+            for call in mock_conn.session_update.await_args_list
+        ]
+        assert "agent_thought_chunk" in update_types
+
+    @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
         """After a prompt, session history should be updated."""
         new_resp = await agent.new_session(cwd=".")

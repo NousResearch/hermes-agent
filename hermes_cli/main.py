@@ -4471,6 +4471,25 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     return default
 
 
+def _npm_deps_install_cmd(
+    npm: str, cwd: Path, extra_args: Optional[list[str]] = None
+) -> list[str]:
+    """Build the npm command for installing dependencies in ``cwd``.
+
+    Uses ``npm ci`` when a ``package-lock.json`` is present so the lockfile is
+    respected byte-for-byte. Falls back to ``npm install`` when no lockfile
+    exists (e.g. a fresh dir or a repo that does not commit its lockfile).
+    ``npm install`` without a matching lockfile can silently rewrite
+    ``package-lock.json`` under certain npm-version / peer-resolution deltas,
+    which then trips ``hermes update``'s autostash on every subsequent run.
+    """
+    subcommand = "ci" if (cwd / "package-lock.json").exists() else "install"
+    cmd = [npm, subcommand]
+    if extra_args:
+        cmd.extend(extra_args)
+    return cmd
+
+
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
@@ -4491,7 +4510,11 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     print("→ Building web UI...")
-    r1 = subprocess.run([npm, "install", "--silent"], cwd=web_dir, capture_output=True)
+    r1 = subprocess.run(
+        _npm_deps_install_cmd(npm, web_dir, ["--silent"]),
+        cwd=web_dir,
+        capture_output=True,
+    )
     if r1.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -5203,7 +5226,9 @@ def _update_node_dependencies() -> None:
             continue
 
         result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
+            _npm_deps_install_cmd(
+                npm, path, ["--silent", "--no-fund", "--no-audit", "--progress=false"]
+            ),
             cwd=path,
             capture_output=True,
             text=True,

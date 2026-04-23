@@ -664,6 +664,15 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 _QWEN_CODE_VERSION = "0.14.1"
 
 
+def _routermint_headers() -> dict:
+    """Return the User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
+    from hermes_cli import __version__ as _HERMES_VERSION
+
+    return {
+        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    }
+
+
 def _qwen_portal_headers() -> dict:
     """Return default HTTP headers required by Qwen Portal API."""
     import platform as _plat
@@ -1180,6 +1189,8 @@ class AIAgent:
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
+                elif base_url_host_matches(effective_base, "api.routermint.com"):
+                    client_kwargs["default_headers"] = _routermint_headers()
                 elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
                     from hermes_cli.models import copilot_default_headers
 
@@ -5097,6 +5108,8 @@ class AIAgent:
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+        elif base_url_host_matches(base_url, "api.routermint.com"):
+            self._client_kwargs["default_headers"] = _routermint_headers()
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 

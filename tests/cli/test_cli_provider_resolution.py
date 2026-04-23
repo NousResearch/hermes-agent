@@ -338,6 +338,41 @@ def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatc
     assert "Tool Gateway" in out
 
 
+def test_model_flow_nous_filters_curated_picker_against_live_catalog(monkeypatch):
+    config = {
+        "model": {"provider": "nous", "default": "stepfun/step-3.5-flash"},
+    }
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_provider_auth_state",
+        lambda provider: {"access_token": "***"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda *args, **kwargs: {
+            "base_url": "https://inference.example.com/v1",
+            "api_key": "***",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.fetch_nous_models",
+        lambda *args, **kwargs: ["openai/gpt-5.4"],
+    )
+
+    def _capture_prompt(model_ids, current_model="", pricing=None, **kwargs):
+        captured["model_ids"] = list(model_ids)
+        return "openai/gpt-5.4"
+
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", _capture_prompt)
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
+
+    hermes_main._model_flow_nous(config, current_model="stepfun/step-3.5-flash")
+
+    assert captured["model_ids"] == ["openai/gpt-5.4"]
+
+
 def test_codex_provider_uses_config_model(monkeypatch):
     """Model comes from config.yaml, not LLM_MODEL env var.
     Config.yaml is the single source of truth to avoid multi-agent conflicts."""

@@ -2133,6 +2133,7 @@ def _model_flow_nous(config, current_model="", args=None):
         _save_model_choice,
         _update_config_for_provider,
         resolve_nous_runtime_credentials,
+        fetch_nous_models,
         AuthError,
         format_auth_error,
         _login_nous,
@@ -2177,9 +2178,9 @@ def _model_flow_nous(config, current_model="", args=None):
         # login_nous already handles model selection + config update
         return
 
-    # Already logged in — use curated model list (same as OpenRouter defaults).
-    # The live /models endpoint returns hundreds of models; the curated list
-    # shows only agentic models users recognize from OpenRouter.
+    # Already logged in — prefer the curated list, but filter it against the
+    # live Nous /models catalog so the picker doesn't surface stale entries
+    # that the current Portal account cannot actually invoke.
     from hermes_cli.models import (
         _PROVIDER_MODELS,
         get_pricing_for_provider,
@@ -2187,10 +2188,12 @@ def _model_flow_nous(config, current_model="", args=None):
         partition_nous_models_by_tier,
     )
 
-    model_ids = _PROVIDER_MODELS.get("nous", [])
-    if not model_ids:
+    curated_model_ids = list(_PROVIDER_MODELS.get("nous", []))
+    if not curated_model_ids:
         print("No curated models available for Nous Portal.")
         return
+
+    model_ids = list(curated_model_ids)
 
     # Verify credentials are still valid (catches expired sessions early)
     try:
@@ -2218,6 +2221,18 @@ def _model_flow_nous(config, current_model="", args=None):
             return
         print(f"Could not verify credentials: {msg}")
         return
+
+    try:
+        live_model_ids = fetch_nous_models(
+            api_key=creds.get("api_key", ""),
+            inference_base_url=creds.get("base_url", ""),
+        )
+    except Exception:
+        live_model_ids = []
+    if live_model_ids:
+        live_set = {str(model_id).strip() for model_id in live_model_ids if str(model_id).strip()}
+        filtered_curated = [model_id for model_id in curated_model_ids if model_id in live_set]
+        model_ids = filtered_curated or list(live_model_ids)
 
     # Fetch live pricing (non-blocking — returns empty dict on failure)
     pricing = get_pricing_for_provider("nous")

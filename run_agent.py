@@ -66,6 +66,14 @@ else:
     logger.info("No .env file found. Using system environment variables.")
 
 
+def _is_local_validation_error(error: BaseException) -> bool:
+    """Return True for local request-shaping bugs, not transport failures."""
+    return (
+        isinstance(error, (ValueError, TypeError))
+        and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError, ssl.SSLError))
+    )
+
+
 # Import our tool system
 from model_tools import (
     get_tool_definitions,
@@ -11344,27 +11352,7 @@ class AIAgent:
                     # already accounts for 413, 429, 529 (transient), context
                     # overflow, and generic-400 heuristics.  Local validation
                     # errors (ValueError, TypeError) are programming bugs.
-                    # Exclude UnicodeEncodeError — it's a ValueError subclass
-                    # but is handled separately by the surrogate sanitization
-                    # path above.  Exclude json.JSONDecodeError — also a
-                    # ValueError subclass, but it indicates a transient
-                    # provider/network failure (malformed response body,
-                    # truncated stream, routing layer corruption), not a
-                    # local programming bug, and should be retried (#14782).
-                    is_local_validation_error = (
-                        isinstance(api_error, (ValueError, TypeError))
-                        and not isinstance(
-                            api_error, (UnicodeEncodeError, json.JSONDecodeError)
-                        )
-                        # ssl.SSLError (and its subclass SSLCertVerificationError)
-                        # inherits from OSError *and* ValueError via Python MRO,
-                        # so the isinstance(ValueError) check above would
-                        # misclassify a TLS transport failure as a local
-                        # programming bug and abort without retrying.  Exclude
-                        # ssl.SSLError explicitly so the error classifier's
-                        # retryable=True mapping takes effect instead.
-                        and not isinstance(api_error, ssl.SSLError)
-                    )
+                    is_local_validation_error = _is_local_validation_error(api_error)
                     is_client_error = (
                         is_local_validation_error
                         or (

@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import re
+import ssl
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -50,6 +51,31 @@ def test_is_destructive_command_treats_cp_as_mutating():
 
 def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
+
+
+def test_ssl_cert_verification_error_is_not_local_validation():
+    """TLS certificate failures inherit ValueError but should remain retryable transport errors."""
+    error = ssl.SSLCertVerificationError("certificate verify failed")
+
+    assert isinstance(error, (ValueError, OSError))
+    assert run_agent._is_local_validation_error(error) is False
+
+
+@pytest.mark.parametrize("error", [ValueError("bad request"), TypeError("bad type")])
+def test_request_shaping_errors_are_local_validation(error):
+    assert run_agent._is_local_validation_error(error) is True
+
+
+def test_unicode_encode_error_is_not_local_validation():
+    error = UnicodeEncodeError("ascii", "é", 0, 1, "ordinal not in range")
+
+    assert run_agent._is_local_validation_error(error) is False
+
+
+def test_json_decode_error_is_not_local_validation():
+    error = json.JSONDecodeError("bad response", "", 0)
+
+    assert run_agent._is_local_validation_error(error) is False
 
 
 @pytest.fixture()

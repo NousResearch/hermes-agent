@@ -70,7 +70,7 @@ import {
   startSelection,
   updateSelection
 } from './selection.js'
-import { isXtermJs, supportsExtendedKeys, SYNC_OUTPUT_SUPPORTED, type Terminal, writeDiffToTerminal } from './terminal.js'
+import { supportsExtendedKeys, SYNC_OUTPUT_SUPPORTED, type Terminal, writeDiffToTerminal } from './terminal.js'
 import {
   CURSOR_HOME,
   cursorMove,
@@ -463,23 +463,22 @@ export default class Ink {
       this.resetFramesForAltScreen()
       this.needsEraseBeforePaint = true
 
-      // xterm.js burst-drift healer: 160ms after the last resize, force one
-      // full reconcile so Yoga/React catch up to the final viewport. No flag
-      // dance — setTimeout already drained the burst coalescer; a concurrent
-      // render would be idempotent.
-      if (isXtermJs()) {
-        this.resizeSettleTimer = setTimeout(() => {
-          this.resizeSettleTimer = null
+      // Post-resize drift healer: 160ms after the last resize, force one full
+      // reconcile so Yoga/React catch up to the final viewport and any stale
+      // terminal cells from host-side reflow get repainted away. Ink upstream
+      // and ConPTY/xterm reports point to this as a general resize/reflow
+      // desync class, not an xterm.js-only quirk.
+      this.resizeSettleTimer = setTimeout(() => {
+        this.resizeSettleTimer = null
 
-          if (!this.canAltScreenRepaint()) {
-            return
-          }
+        if (!this.canAltScreenRepaint()) {
+          return
+        }
 
-          this.resetFramesForAltScreen()
-          this.needsEraseBeforePaint = true
-          this.render(this.currentNode!)
-        }, 160)
-      }
+        this.resetFramesForAltScreen()
+        this.needsEraseBeforePaint = true
+        this.render(this.currentNode!)
+      }, 160)
     }
 
     // Already queued: later events in this burst updated dims/alt-screen

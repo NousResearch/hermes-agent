@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -1203,3 +1204,58 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+
+class TestCodexAuxiliaryAdapter:
+    @staticmethod
+    def _make_streaming_client():
+        final = SimpleNamespace(output=[], usage=None)
+
+        class _StreamCtx:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return final
+
+        stream_mock = MagicMock(return_value=_StreamCtx())
+        client = SimpleNamespace(
+            responses=SimpleNamespace(stream=stream_mock)
+        )
+        return client, stream_mock
+
+    def test_codex_adapter_maps_max_tokens_to_max_output_tokens(self):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        client, stream_mock = self._make_streaming_client()
+        adapter = _CodexCompletionsAdapter(client, "gpt-5.4")
+
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+        )
+
+        kwargs = stream_mock.call_args.kwargs
+        assert kwargs["max_output_tokens"] == 1234
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    def test_codex_adapter_forwards_timeout_to_responses_stream(self):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        client, stream_mock = self._make_streaming_client()
+        adapter = _CodexCompletionsAdapter(client, "gpt-5.4")
+
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            timeout=900,
+        )
+
+        kwargs = stream_mock.call_args.kwargs
+        assert kwargs["timeout"] == 900

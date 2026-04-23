@@ -356,6 +356,7 @@ class _CodexCompletionsAdapter:
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
+        timeout = kwargs.get("timeout")
 
         # Separate system/instructions from conversation messages.
         # Convert chat.completions multimodal content blocks to Responses
@@ -380,8 +381,20 @@ class _CodexCompletionsAdapter:
             "store": False,
         }
 
+        # Responses API expects max_output_tokens, while auxiliary callers
+        # use chat.completions-style token params.
+        max_output_tokens = (
+            kwargs.get("max_output_tokens")
+            or kwargs.get("max_completion_tokens")
+            or kwargs.get("max_tokens")
+        )
+        if max_output_tokens is not None:
+            resp_kwargs["max_output_tokens"] = max_output_tokens
+        if timeout is not None:
+            resp_kwargs["timeout"] = timeout
+
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
-        # support max_output_tokens or temperature — omit to avoid 400 errors.
+        # support temperature — omit to avoid 400 errors.
 
         # Tools support for flush_memories and similar callers
         tools = kwargs.get("tools")

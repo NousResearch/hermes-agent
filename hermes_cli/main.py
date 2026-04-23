@@ -5864,12 +5864,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Write exit code *before* the gateway restart attempt.
         # When running as ``hermes update --gateway`` (spawned by the gateway's
         # /update command), this process lives inside the gateway's systemd
-        # cgroup.  ``systemctl restart hermes-gateway`` kills everything in the
-        # cgroup (KillMode=mixed → SIGKILL to remaining processes), including
-        # us and the wrapping bash shell.  The shell never reaches its
-        # ``printf $status > .update_exit_code`` epilogue, so the exit-code
-        # marker file is never created.  The new gateway's update watcher then
-        # polls for 30 minutes and sends a spurious timeout message.
+        # cgroup.  A graceful SIGUSR1 restart keeps the drain loop alive long
+        # enough for the exit-code marker to be written below, but the
+        # fallback ``systemctl restart`` path (see below) kills everything in
+        # the cgroup (KillMode=mixed → SIGKILL to remaining processes),
+        # including us and the wrapping bash shell.  The shell never reaches
+        # its ``printf $status > .update_exit_code`` epilogue, so the
+        # exit-code marker file would never be created.  The new gateway's
+        # update watcher would then poll for 30 minutes and send a spurious
+        # timeout message.
         #
         # Writing the marker here — after git pull + pip install succeed but
         # before we attempt the restart — ensures the new gateway sees it
@@ -5891,8 +5894,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _ensure_user_systemd_env,
                 find_gateway_pids,
                 _get_service_pids,
+                _graceful_restart_via_sigusr1,
             )
             import signal as _signal
+
+            # Drain budget for graceful SIGUSR1 restarts.  The gateway drains
+            # for up to ``agent.restart_drain_timeout`` (default 60s) before
+            # exiting with code 75; we wait slightly longer so the drain
+            # completes before we fall back to a hard restart.  On older
+            # systemd units without SIGUSR1 wiring this wait just times out
+            # and we fall back to ``systemctl restart`` (the old behaviour).
+            try:
+                from hermes_constants import (
+                    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT as _DEFAULT_DRAIN,
+                )
+            except Exception:
+                _DEFAULT_DRAIN = 60.0
+            _cfg_drain = None
+            try:
+                from hermes_cli.config import load_config
+                _cfg_agent = (load_config().get("agent") or {})
+                _cfg_drain = _cfg_agent.get("restart_drain_timeout")
+            except Exception:
+                pass
+            try:
+                _drain_budget = float(_cfg_drain) if _cfg_drain is not None else float(_DEFAULT_DRAIN)
+            except (TypeError, ValueError):
+                _drain_budget = float(_DEFAULT_DRAIN)
+            # Add a 15s margin so the drain loop + final exit finish before
+            # we escalate to ``systemctl restart`` / SIGTERM.
+            _drain_budget = max(_drain_budget, 30.0) + 15.0
 
             restarted_services = []
             killed_pids = set()
@@ -5940,59 +5971,114 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 text=True,
                                 timeout=5,
                             )
-                            if check.stdout.strip() == "active":
-                                restart = subprocess.run(
-                                    scope_cmd + ["restart", svc_name],
+                            if check.stdout.strip() != "active":
+                                continue
+
+                            # Prefer a graceful SIGUSR1 restart so in-flight
+                            # agent runs drain instead of being SIGKILLed.
+                            # The gateway's SIGUSR1 handler calls
+                            # request_restart(via_service=True) → drain →
+                            # exit(75); systemd's Restart=on-failure (and
+                            # RestartForceExitStatus=75) respawns the unit.
+                            _main_pid = 0
+                            try:
+                                _show = subprocess.run(
+                                    scope_cmd + [
+                                        "show", svc_name,
+                                        "--property=MainPID", "--value",
+                                    ],
+                                    capture_output=True, text=True, timeout=5,
+                                )
+                                _main_pid = int((_show.stdout or "").strip() or 0)
+                            except (ValueError, subprocess.TimeoutExpired, FileNotFoundError):
+                                _main_pid = 0
+
+                            _graceful_ok = False
+                            if _main_pid > 0:
+                                print(
+                                    f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
+                                )
+                                _graceful_ok = _graceful_restart_via_sigusr1(
+                                    _main_pid, drain_timeout=_drain_budget,
+                                )
+
+                            if _graceful_ok:
+                                # Gateway exited 75; systemd should relaunch
+                                # via Restart=on-failure.  Verify the new
+                                # process came up.
+                                _time.sleep(3)
+                                verify = subprocess.run(
+                                    scope_cmd + ["is-active", svc_name],
+                                    capture_output=True, text=True, timeout=5,
+                                )
+                                if verify.stdout.strip() == "active":
+                                    restarted_services.append(svc_name)
+                                    continue
+                                # Process exited but wasn't respawned (older
+                                # unit without Restart=on-failure or
+                                # RestartForceExitStatus=75).  Fall through
+                                # to systemctl start/restart.
+                                print(
+                                    f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
+                                )
+
+                            # Fallback: blunt systemctl restart.  This is
+                            # what the old code always did; we get here only
+                            # when the graceful path failed (unit missing
+                            # SIGUSR1 wiring, drain exceeded the budget,
+                            # restart-policy mismatch).
+                            restart = subprocess.run(
+                                scope_cmd + ["restart", svc_name],
+                                capture_output=True,
+                                text=True,
+                                timeout=15,
+                            )
+                            if restart.returncode == 0:
+                                # Verify the service actually survived the
+                                # restart.  systemctl restart returns 0 even
+                                # if the new process crashes immediately.
+                                _time.sleep(3)
+                                verify = subprocess.run(
+                                    scope_cmd + ["is-active", svc_name],
                                     capture_output=True,
                                     text=True,
-                                    timeout=15,
+                                    timeout=5,
                                 )
-                                if restart.returncode == 0:
-                                    # Verify the service actually survived the
-                                    # restart.  systemctl restart returns 0 even
-                                    # if the new process crashes immediately.
+                                if verify.stdout.strip() == "active":
+                                    restarted_services.append(svc_name)
+                                else:
+                                    # Retry once — transient startup failures
+                                    # (stale module cache, import race) often
+                                    # resolve on the second attempt.
+                                    print(
+                                        f"  ⚠ {svc_name} died after restart, retrying..."
+                                    )
+                                    retry = subprocess.run(
+                                        scope_cmd + ["restart", svc_name],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=15,
+                                    )
                                     _time.sleep(3)
-                                    verify = subprocess.run(
+                                    verify2 = subprocess.run(
                                         scope_cmd + ["is-active", svc_name],
                                         capture_output=True,
                                         text=True,
                                         timeout=5,
                                     )
-                                    if verify.stdout.strip() == "active":
+                                    if verify2.stdout.strip() == "active":
                                         restarted_services.append(svc_name)
+                                        print(f"  ✓ {svc_name} recovered on retry")
                                     else:
-                                        # Retry once — transient startup failures
-                                        # (stale module cache, import race) often
-                                        # resolve on the second attempt.
                                         print(
-                                            f"  ⚠ {svc_name} died after restart, retrying..."
+                                            f"  ✗ {svc_name} failed to stay running after restart.\n"
+                                            f"    Check logs: journalctl --user -u {svc_name} --since '2 min ago'\n"
+                                            f"    Restart manually: systemctl {'--user ' if scope == 'user' else ''}restart {svc_name}"
                                         )
-                                        retry = subprocess.run(
-                                            scope_cmd + ["restart", svc_name],
-                                            capture_output=True,
-                                            text=True,
-                                            timeout=15,
-                                        )
-                                        _time.sleep(3)
-                                        verify2 = subprocess.run(
-                                            scope_cmd + ["is-active", svc_name],
-                                            capture_output=True,
-                                            text=True,
-                                            timeout=5,
-                                        )
-                                        if verify2.stdout.strip() == "active":
-                                            restarted_services.append(svc_name)
-                                            print(f"  ✓ {svc_name} recovered on retry")
-                                        else:
-                                            print(
-                                                f"  ✗ {svc_name} failed to stay running after restart.\n"
-                                                f"    Check logs: journalctl --user -u {svc_name} --since '2 min ago'\n"
-                                                f"    Restart manually: systemctl {'--user ' if scope == 'user' else ''}restart {svc_name}"
-                                            )
-                                else:
-                                    print(
-                                        f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
-                                    )
+                            else:
+                                print(
+                                    f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
+                                )
                     except (FileNotFoundError, subprocess.TimeoutExpired):
                         pass
 

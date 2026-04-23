@@ -384,7 +384,11 @@ DEFAULT_CONFIG = {
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
-        "gateway_notify_interval": 600,
+        # Lower values mean faster feedback on slow tasks but more chat
+        # noise; 180s is a compromise that catches spinning weak-model runs
+        # (60+ tool iterations with tiny output) before users assume the
+        # bot is dead and /restart.
+        "gateway_notify_interval": 180,
     },
     
     "terminal": {

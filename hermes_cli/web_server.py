@@ -49,7 +49,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request, WebSocket
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -2785,6 +2785,23 @@ def _mount_plugin_api_routes():
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+
+
+# ---------------------------------------------------------------------------
+# tui_gateway WebSocket — wire-compatible with `python -m tui_gateway.entry`.
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/api/ws")
+async def _tui_gateway_websocket(ws: WebSocket):
+    token = ws.query_params.get("token", "")
+    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        await ws.close(code=4401)
+        return
+
+    from tui_gateway.ws import handle_ws
+
+    await handle_ws(ws)
 
 
 # Mount plugin API routes before the SPA catch-all.

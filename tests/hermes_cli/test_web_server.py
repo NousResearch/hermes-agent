@@ -110,12 +110,12 @@ class TestWebServerEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
         self.client = TestClient(app)
-        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def test_get_status(self):
         resp = self.client.get("/api/status")
@@ -221,12 +221,12 @@ class TestWebServerEndpoints:
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_TOKEN
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
         save_env_value("TEST_REVEAL_KEY", "super-secret-value-12345")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_KEY"},
-            headers={"Authorization": f"Bearer {_SESSION_TOKEN}"},
+            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -235,11 +235,11 @@ class TestWebServerEndpoints:
 
     def test_reveal_env_var_not_found(self):
         """POST /api/env/reveal should 404 for unknown keys."""
-        from hermes_cli.web_server import _SESSION_TOKEN
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "NONEXISTENT_KEY_XYZ"},
-            headers={"Authorization": f"Bearer {_SESSION_TOKEN}"},
+            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
         )
         assert resp.status_code == 404
 
@@ -249,7 +249,7 @@ class TestWebServerEndpoints:
         from hermes_cli.web_server import app
         from hermes_cli.config import save_env_value
         save_env_value("TEST_REVEAL_NOAUTH", "secret-value")
-        # Use a fresh client WITHOUT the Authorization header
+        # Use a fresh client WITHOUT the dashboard session header
         unauth_client = TestClient(app)
         resp = unauth_client.post(
             "/api/env/reveal",
@@ -260,13 +260,46 @@ class TestWebServerEndpoints:
     def test_reveal_env_var_bad_token(self, tmp_path):
         """POST /api/env/reveal with wrong token should return 401."""
         from hermes_cli.config import save_env_value
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
         save_env_value("TEST_REVEAL_BADAUTH", "secret-value")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_BADAUTH"},
-            headers={"Authorization": "Bearer wrong-token-here"},
+            headers={_SESSION_HEADER_NAME: "wrong-token-here"},
         )
         assert resp.status_code == 401
+
+    def test_reveal_env_var_custom_session_header_ignores_proxy_authorization(self, tmp_path):
+        """A valid dashboard session header should coexist with proxy auth."""
+        from hermes_cli.config import save_env_value
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        save_env_value("TEST_REVEAL_PROXY_AUTH", "secret-value")
+        resp = self.client.post(
+            "/api/env/reveal",
+            json={"key": "TEST_REVEAL_PROXY_AUTH"},
+            headers={
+                _SESSION_HEADER_NAME: _SESSION_TOKEN,
+                "Authorization": "Basic dXNlcjpwYXNz",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["value"] == "secret-value"
+
+    def test_reveal_env_var_legacy_authorization_header_still_works(self, tmp_path):
+        """Keep old dashboard bundles working while the new header rolls out."""
+        from hermes_cli.config import save_env_value
+        from hermes_cli.web_server import _SESSION_TOKEN
+
+        save_env_value("TEST_REVEAL_LEGACY_AUTH", "secret-value")
+        resp = self.client.post(
+            "/api/env/reveal",
+            json={"key": "TEST_REVEAL_LEGACY_AUTH"},
+            headers={"Authorization": f"Bearer {_SESSION_TOKEN}"},
+        )
+
+        assert resp.status_code == 200
 
     def test_session_token_endpoint_removed(self):
         """GET /api/auth/session-token should no longer exist (token injected via HTML)."""
@@ -285,7 +318,7 @@ class TestWebServerEndpoints:
         """API requests without the session token should be rejected."""
         from starlette.testclient import TestClient
         from hermes_cli.web_server import app
-        # Create a client WITHOUT the Authorization header
+        # Create a client WITHOUT the dashboard session header
         unauth_client = TestClient(app)
         resp = unauth_client.get("/api/env")
         assert resp.status_code == 401
@@ -388,9 +421,9 @@ class TestConfigRoundTrip:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
         self.client = TestClient(app)
-        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def test_get_config_no_internal_keys(self):
         """GET /api/config should not expose _config_version or _model_meta."""
@@ -524,12 +557,12 @@ class TestNewEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
         self.client = TestClient(app)
-        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")
@@ -1176,9 +1209,9 @@ class TestStatusRemoteGateway:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
         self.client = TestClient(app)
-        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def test_status_falls_back_to_remote_probe(self, monkeypatch):
         """When local PID check fails and remote probe succeeds, gateway shows running."""

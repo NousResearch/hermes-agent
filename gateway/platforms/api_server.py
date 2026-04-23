@@ -58,7 +58,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+def _parse_max_request_bytes(default: int = 10_000_000) -> int:
+    """Resolve the API server request-body limit.
+
+    Default is 10 MB — accommodates long agent conversations with tool calls
+    and small image payloads.  Override via ``API_SERVER_MAX_REQUEST_BYTES``
+    (raw byte count) for vision-heavy workloads.
+    """
+    raw = os.environ.get("API_SERVER_MAX_REQUEST_BYTES")
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "API_SERVER_MAX_REQUEST_BYTES=%r is not a valid integer; using default %d",
+            raw, default,
+        )
+        return default
+
+MAX_REQUEST_BYTES = _parse_max_request_bytes()
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array

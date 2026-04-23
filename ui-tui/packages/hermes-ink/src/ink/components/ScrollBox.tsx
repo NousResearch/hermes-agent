@@ -257,6 +257,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
 
         if (el) {
           el.scrollTop ??= 0
+          el.notifyScrollChange = notify
         }
       }}
       style={{

@@ -12,6 +12,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 import copy
 from typing import Any, Dict, List, Optional
 
+from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
@@ -172,6 +173,11 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Tools
         if tools:
+            # Moonshot/Kimi uses a stricter flavored JSON Schema.  Rewriting
+            # tool parameters here keeps aggregator routes (Nous, OpenRouter,
+            # etc.) compatible, in addition to direct moonshot.ai endpoints.
+            if is_moonshot_model(model):
+                tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > provider default

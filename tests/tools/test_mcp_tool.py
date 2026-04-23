@@ -186,6 +186,111 @@ class TestSchemaConversion:
         assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
         assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
 
+    def test_missing_type_on_object_is_coerced(self):
+        """Schemas that describe an object but omit ``type`` get type='object'."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "properties": {"q": {"type": "string"}},
+            "required": ["q"],
+        })
+
+        assert schema["type"] == "object"
+        assert schema["properties"]["q"]["type"] == "string"
+        assert schema["required"] == ["q"]
+
+    def test_null_type_on_object_is_coerced(self):
+        """type: None should be treated like missing type (common MCP server bug)."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": None,
+            "properties": {"x": {"type": "integer"}},
+        })
+
+        assert schema["type"] == "object"
+
+    def test_required_pruned_when_property_missing(self):
+        """Gemini 400s on required names that don't exist in properties."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a", "ghost", "phantom"],
+        })
+
+        assert schema["required"] == ["a"]
+
+    def test_required_removed_when_all_names_dangle(self):
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {},
+            "required": ["ghost"],
+        })
+
+        assert "required" not in schema
+
+    def test_required_pruning_applies_recursively_inside_nested_objects(self):
+        """Nested object schemas also get required pruning."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {"field": {"type": "string"}},
+                    "required": ["field", "missing"],
+                },
+            },
+        })
+
+        assert schema["properties"]["filter"]["required"] == ["field"]
+
+    def test_object_in_array_items_gets_properties_filled(self):
+        """Array-item object schemas without properties get an empty dict."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+            },
+        })
+
+        assert schema["properties"]["items"]["items"]["properties"] == {}
+
+    def test_convert_mcp_schema_survives_missing_inputschema_attribute(self):
+        """A Tool object without .inputSchema must not crash registration."""
+        import types
+
+        from tools.mcp_tool import _convert_mcp_schema
+
+        bare_tool = types.SimpleNamespace(name="probe", description="Probe")
+        schema = _convert_mcp_schema("srv", bare_tool)
+
+        assert schema["name"] == "mcp_srv_probe"
+        assert schema["parameters"] == {"type": "object", "properties": {}}
+
+    def test_convert_mcp_schema_with_none_inputschema(self):
+        """Tool with inputSchema=None produces a valid empty object schema."""
+        import types
+
+        from tools.mcp_tool import _convert_mcp_schema
+
+        # Note: _make_mcp_tool(input_schema=None) falls back to a default —
+        # build the namespace directly so .inputSchema really is None.
+        mcp_tool = types.SimpleNamespace(name="probe", description="Probe", inputSchema=None)
+        schema = _convert_mcp_schema("srv", mcp_tool)
+
+        assert schema["parameters"] == {"type": "object", "properties": {}}
+
     def test_tool_name_prefix_format(self):
         from tools.mcp_tool import _convert_mcp_schema
 

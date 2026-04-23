@@ -253,3 +253,148 @@ def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
     ds_rows = [p for p in providers if p["name"] == "DeepSeek"]
     assert ds_rows[0]["models"].count("deepseek-chat") == 1
     assert ds_rows[0]["models"] == ["deepseek-chat", "deepseek-reasoner"]
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #9210: group custom_providers by (base_url, api_key) in /model picker
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
+    """Multiple custom_providers entries sharing a base_url+api_key must be
+    returned as a single picker row with all their models merged."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="http://localhost:11434/v1",
+        user_providers={},
+        custom_providers=[
+            {"name": "Ollama — MiniMax M2.7", "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "minimax-m2.7"},
+            {"name": "Ollama — GLM 5.1",      "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "glm-5.1"},
+            {"name": "Ollama — Qwen3-coder", "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "qwen3-coder"},
+        ],
+        max_models=50,
+    )
+
+    custom_groups = [p for p in providers if p.get("is_user_defined")]
+    assert len(custom_groups) == 1, (
+        "Expected 1 group for shared endpoint, got "
+        f"{[p['slug'] for p in custom_groups]}"
+    )
+    group = custom_groups[0]
+    assert set(group["models"]) == {"minimax-m2.7", "glm-5.1", "qwen3-coder"}
+    assert group["total_models"] == 3
+    # Per-model suffix stripped from display name
+    assert group["name"] == "Ollama"
+
+
+def test_list_authenticated_providers_current_endpoint_uses_current_slug(monkeypatch):
+    """When current_base_url matches the grouped endpoint, the slug must
+    equal current_provider so picker selection routes through the live
+    credential pipeline."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="http://localhost:11434/v1",
+        user_providers={},
+        custom_providers=[
+            {"name": "Ollama — GLM 5.1", "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "glm-5.1"},
+        ],
+        max_models=50,
+    )
+
+    matches = [p for p in providers if p.get("is_user_defined")]
+    assert len(matches) == 1
+    group = matches[0]
+    assert group["slug"] == "custom"
+    assert group["is_current"] is True
+
+
+def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypatch):
+    """Entries with different base_urls must produce separate picker rows
+    even if some display names happen to be similar."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        user_providers={},
+        custom_providers=[
+            {"name": "Ollama — GLM 5.1", "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "glm-5.1"},
+            {"name": "Moonshot", "base_url": "https://api.moonshot.cn/v1",
+             "api_key": "sk-m", "model": "moonshot-v1"},
+            {"name": "Ollama — Qwen3-coder", "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "qwen3-coder"},
+        ],
+        max_models=50,
+    )
+
+    custom_groups = [p for p in providers if p.get("is_user_defined")]
+    assert len(custom_groups) == 2
+    # Ollama endpoint collapses to one row with both models
+    ollama = next(p for p in custom_groups if p["name"] == "Ollama")
+    assert set(ollama["models"]) == {"glm-5.1", "qwen3-coder"}
+    moonshot = next(p for p in custom_groups if p["name"] == "Moonshot")
+    assert moonshot["models"] == ["moonshot-v1"]
+
+
+def test_list_authenticated_providers_same_url_different_keys_disambiguated(monkeypatch):
+    """Two custom_providers entries with the same base_url but different
+    api_keys (and identical cleaned names) must both stay visible in the
+    picker — slug is suffixed to disambiguate."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        user_providers={},
+        custom_providers=[
+            {"name": "OpenAI — key A", "base_url": "https://api.openai.com/v1",
+             "api_key": "sk-AAA", "model": "gpt-5.4"},
+            {"name": "OpenAI — key B", "base_url": "https://api.openai.com/v1",
+             "api_key": "sk-BBB", "model": "gpt-4.6"},
+        ],
+        max_models=50,
+    )
+
+    custom_groups = [p for p in providers if p.get("is_user_defined")]
+    assert len(custom_groups) == 2
+    slugs = sorted(p["slug"] for p in custom_groups)
+    # First group keeps the base slug, second gets a numeric suffix
+    assert slugs == ["custom:openai", "custom:openai-2"]
+    # Each row has a distinct model
+    models = {p["slug"]: p["models"] for p in custom_groups}
+    assert models["custom:openai"] == ["gpt-5.4"]
+    assert models["custom:openai-2"] == ["gpt-4.6"]
+
+
+def test_list_authenticated_providers_total_models_reflects_grouped_count(monkeypatch):
+    """After grouping six entries into one row, total_models must reflect
+    the full count, and every grouped model appears in the list."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    entries = [
+        {"name": f"Ollama \u2014 Model {i}", "base_url": "http://localhost:11434/v1",
+         "api_key": "ollama", "model": f"model-{i}"}
+        for i in range(6)
+    ]
+    providers = list_authenticated_providers(
+        user_providers={},
+        custom_providers=entries,
+        max_models=4,
+    )
+
+    groups = [p for p in providers if p.get("is_user_defined")]
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["total_models"] == 6
+    # All six models are preserved in the grouped row.
+    assert sorted(group["models"]) == sorted(f"model-{i}" for i in range(6))

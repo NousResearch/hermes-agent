@@ -352,6 +352,33 @@ def render_markdown(data: Dict[str, Any]) -> str:
         lines.append(f"- Latest change log date: {dr['latest_change_log_date']}")
     lines.append("")
 
+    # --- Git divergence ---
+    gd = data.get("git_divergence", {})
+    lines.append("## 🔀 Git divergence（hermes-agent）")
+    if "error" in gd:
+        lines.append(f"- ⚠️ {gd['error']}")
+    else:
+        ahead = gd.get("ahead", 0) or 0
+        behind = gd.get("behind", 0) or 0
+        dups = gd.get("duplicate_subjects", []) or []
+        worktrees = gd.get("worktree_count", 0)
+        last_fetch = gd.get("last_fetch_sec")
+        emoji = "🟢"
+        if behind > 20 or len(dups) > 0:
+            emoji = "🔴"
+        elif behind > 5 or ahead > 5:
+            emoji = "🟡"
+        lines.append(f"- main: ahead {ahead} · behind {behind}  {emoji}")
+        if last_fetch is not None:
+            h = last_fetch // 3600
+            lines.append(f"- origin/main 上次更新: {h}h 前（> 24h 代表 fetch 久未跑）")
+        lines.append(f"- worktrees: {worktrees}")
+        if dups:
+            lines.append(f"- **cherry-pick 重複警示**: {len(dups)} 個 subject 雙邊都有：")
+            for s in dups[:5]:
+                lines.append(f"  - `{s[:80]}`")
+    lines.append("")
+
     # --- Rate-limit events ---
     rl = data["ratelimit"]
     lines.append("## ⚡ Codex rate-limit events (§9 throttle efficacy)")
@@ -566,6 +593,59 @@ def daily_review_freshness() -> Dict[str, Any]:
     }
 
 
+def git_divergence_summary() -> Dict[str, Any]:
+    """Check local main vs origin/main divergence for the hermes-agent repo.
+
+    Signals:
+    - ahead:    commits on local main not on origin/main
+    - behind:   commits on origin/main not on local main
+    - last_fetch_sec: seconds since last `git fetch`
+    - duplicate_candidates: commits on local that share a subject line with
+      commits on origin (cherry-pick signal)
+    """
+    import subprocess
+    repo = Path.home() / "dev" / "hermes-agent"
+    if not (repo / ".git").exists():
+        return {"error": "repo not found"}
+
+    def run(cmd: list[str]) -> str:
+        try:
+            return subprocess.check_output(
+                cmd, cwd=repo, text=True, stderr=subprocess.DEVNULL, timeout=5,
+            ).strip()
+        except Exception:
+            return ""
+
+    # Don't auto-fetch from the dashboard — just read state
+    ahead = run(["git", "rev-list", "--count", "origin/main..main"])
+    behind = run(["git", "rev-list", "--count", "main..origin/main"])
+    last_fetch_epoch = run(["git", "log", "-1", "--format=%ct", "origin/main"])
+
+    # Cherry-pick duplicate detection: subjects present on both sides
+    local_subjects = run(["git", "log", "origin/main..main", "--format=%s"]).splitlines()
+    origin_subjects = set(
+        run(["git", "log", "main..origin/main", "--format=%s"]).splitlines()
+    )
+    duplicates = [s for s in local_subjects if s in origin_subjects]
+
+    # Worktree count (informational)
+    worktree_list = run(["git", "worktree", "list"])
+    worktree_count = len([ln for ln in worktree_list.splitlines() if ln.strip()])
+
+    try:
+        last_fetch_sec = int(time.time()) - int(last_fetch_epoch) if last_fetch_epoch else None
+    except (TypeError, ValueError):
+        last_fetch_sec = None
+
+    return {
+        "ahead": int(ahead) if ahead.isdigit() else None,
+        "behind": int(behind) if behind.isdigit() else None,
+        "last_fetch_sec": last_fetch_sec,
+        "duplicate_subjects": duplicates,
+        "worktree_count": worktree_count,
+    }
+
+
 def trend_analysis() -> Dict[str, Any]:
     """Compare current with previous snapshot — score delta + signal flips."""
     snap_dir = WIKI / "operations" / "learning-progress-snapshots"
@@ -610,6 +690,7 @@ def collect_all() -> Dict[str, Any]:
         "coaching": coaching_session_summary(),
         "ratelimit": ratelimit_event_summary(),
         "daily_review": daily_review_freshness(),
+        "git_divergence": git_divergence_summary(),
         "trend": trend_analysis(),
     }
 

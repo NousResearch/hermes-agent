@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Pre-commit hook — refuses direct commits to main branch.
+#
+# Rationale: See ~/wiki/sop/worktree-integration-workflow.md
+# All work must go through feature branches and integrate via merge / rebase.
+# Direct commits to main are the root cause of the 9-ahead/94-behind problem.
+#
+# To install:
+#   git config core.hooksPath .githooks
+#
+# To bypass (explicit override, logged):
+#   GIT_COMMIT_ALLOW_MAIN=1 git commit ...
+#
+# To uninstall:
+#   git config --unset core.hooksPath
+
+set -e
+
+current_branch=$(git symbolic-ref --short -q HEAD 2>/dev/null || echo "")
+
+if [ "$current_branch" = "main" ]; then
+    if [ "${GIT_COMMIT_ALLOW_MAIN:-}" != "1" ]; then
+        echo ""
+        echo "❌ Direct commits to 'main' are blocked by .githooks/pre-commit"
+        echo ""
+        echo "Why: local main has diverged 9/94 from origin/main exactly because"
+        echo "of direct-to-main commits + cherry-picks (see"
+        echo "~/wiki/sop/worktree-integration-workflow.md for full context)."
+        echo ""
+        echo "What to do instead:"
+        echo "  # Start a feature branch from up-to-date origin/main"
+        echo "  git fetch origin"
+        echo "  git checkout -b feat/short-description origin/main"
+        echo "  git add ..."
+        echo "  git commit ..."
+        echo "  # Merge back via PR or merge commit once ready"
+        echo ""
+        echo "Emergency bypass (logged):"
+        echo "  GIT_COMMIT_ALLOW_MAIN=1 git commit ..."
+        echo ""
+        exit 1
+    else
+        echo "⚠️  GIT_COMMIT_ALLOW_MAIN bypass used — logging to ~/.hermes/logs/main-commits.log"
+        mkdir -p ~/.hermes/logs
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) bypass by $(whoami) in $(pwd)" >> ~/.hermes/logs/main-commits.log
+    fi
+fi
+
+exit 0

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Hermes-agent hourly git fetch — keeps origin/main fresh without modifying
+local main.
+
+  This is a TEMPLATE — not auto-loaded.
+
+Why: Dashboard's 🔀 Git divergence signal reads `git rev-list main..origin/main`
+which only sees new commits after a local `fetch`. Without this cron, divergence
+only updates when Brian (or Claude) happens to run `git fetch`.
+
+What it does:
+  - Runs `git -C ~/dev/hermes-agent fetch origin --prune` hourly
+  - Logs to ~/.hermes/logs/git-fetch.log
+  - Never modifies local branches
+
+To install:
+    cp ~/dev/hermes-agent/scripts/com.brian.hermes-git-fetch.plist.template \
+       ~/Library/LaunchAgents/com.brian.hermes-git-fetch.plist
+    launchctl load ~/Library/LaunchAgents/com.brian.hermes-git-fetch.plist
+
+To uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.brian.hermes-git-fetch.plist
+    rm ~/Library/LaunchAgents/com.brian.hermes-git-fetch.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.brian.hermes-git-fetch</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>cd /Users/brian/dev/hermes-agent && /opt/homebrew/bin/git fetch origin --prune 2>&amp;1 | /usr/bin/tee -a /Users/brian/.hermes/logs/git-fetch.log</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/brian</string>
+  </dict>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/brian/.hermes/logs/git-fetch.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/brian/.hermes/logs/git-fetch.stderr.log</string>
+</dict>
+</plist>

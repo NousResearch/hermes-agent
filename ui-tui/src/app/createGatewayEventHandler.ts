@@ -301,19 +301,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        // Match CLI's _pending_input.put(transcript): auto-submit when the
-        // composer is empty, otherwise append so the user can keep editing
-        // a partial draft they were working on.
-        setInput(prev => {
-          if (!prev) {
-            // defer submit so React commits the state change first
-            setTimeout(() => submitRef.current(text), 0)
-
-            return ''
-          }
-
-          return `${prev}${/\s$/.test(prev) ? '' : ' '}${text}`
-        })
+        // CLI parity: _pending_input.put(transcript) unconditionally feeds
+        // the transcript to the agent as its next turn — draft handling
+        // doesn't apply because voice-mode users are speaking, not typing.
+        //
+        // We can't branch on composer input from inside a setInput updater
+        // (React strict mode double-invokes it, duplicating the submit).
+        // Just clear + defer submit so the cleared input is committed before
+        // submit reads it.
+        setInput('')
+        setTimeout(() => submitRef.current(text), 0)
 
         return
       }

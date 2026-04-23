@@ -21,7 +21,6 @@ Two usage modes are exposed:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sys
@@ -405,34 +404,62 @@ def _continuous_on_silence() -> None:
 def speak_text(text: str) -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
-    The gateway spawns a daemon thread to call this so the RPC returns
-    immediately. Failures are logged and swallowed.
+    Mirrors cli.py:_voice_speak_response exactly — same markdown strip
+    pipeline, same 4000-char cap, same explicit mp3 output path, same
+    MP3-over-OGG playback choice (afplay misbehaves on OGG), same cleanup
+    of both extensions. Keeping these in sync means a voice-mode TTS
+    session in the TUI sounds identical to one in the classic CLI.
     """
     if not text or not text.strip():
         return
 
-    # Lazy import — tts_tool pulls optional provider SDKs.
-    from tools.tts_tool import text_to_speech_tool
+    import re
+    import tempfile
+    import time
 
     try:
-        raw = text_to_speech_tool(text)
+        from tools.tts_tool import text_to_speech_tool
+
+        tts_text = text[:4000] if len(text) > 4000 else text
+        tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
+        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
+        tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
+        tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
+        tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
+        tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
+        tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+        tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
+        tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
+        tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
+        tts_text = tts_text.strip()
+        if not tts_text:
+            return
+
+        # MP3 output path, pre-chosen so we can play the MP3 directly even
+        # when text_to_speech_tool auto-converts to OGG for messaging
+        # platforms.  afplay's OGG support is flaky, MP3 always works.
+        os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
+        mp3_path = os.path.join(
+            tempfile.gettempdir(),
+            "hermes_voice",
+            f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
+        )
+
+        _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
+        text_to_speech_tool(text=tts_text, output_path=mp3_path)
+
+        if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
+            _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
+            play_audio_file(mp3_path)
+            try:
+                os.unlink(mp3_path)
+                ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+                if os.path.isfile(ogg_path):
+                    os.unlink(ogg_path)
+            except OSError:
+                pass
+        else:
+            _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
     except Exception as e:
-        logger.warning("TTS synthesis failed: %s", e)
-        return
-
-    try:
-        result = json.loads(raw) if isinstance(raw, str) else raw
-    except json.JSONDecodeError:
-        logger.warning("TTS returned non-JSON result")
-        return
-
-    if not isinstance(result, dict):
-        return
-
-    file_path = result.get("file_path")
-    if not file_path:
-        err = result.get("error") or "no file_path in TTS result"
-        logger.warning("TTS succeeded but produced no audio: %s", err)
-        return
-
-    play_audio_file(file_path)
+        logger.warning("Voice TTS playback failed: %s", e)
+        _debug(f"speak_text raised {type(e).__name__}: {e}")

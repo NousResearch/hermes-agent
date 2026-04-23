@@ -456,6 +456,19 @@ def remove_pid_file() -> None:
         pass
 
 
+def force_remove_pid_file() -> None:
+    """Remove the gateway PID file regardless of the recorded PID.
+
+    Safe only for recovery paths that already proved no sibling gateway owns
+    this HERMES_HOME anymore, such as startup after the runtime lock has been
+    claimed successfully.
+    """
+    try:
+        _get_pid_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity.
 

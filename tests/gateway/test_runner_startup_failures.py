@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import AsyncMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -331,6 +332,43 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     assert ok is False
     # Marker must NOT be left behind
     assert not (tmp_path / ".gateway-takeover.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_recovers_from_stale_pid_file_after_lock(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _CleanExitRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            return True
+
+        async def stop(self):
+            return None
+
+    pid_path = tmp_path / "gateway.pid"
+    pid_path.write_text(json.dumps({"pid": 999999, "start_time": 1}), encoding="utf-8")
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert ok is True
+    record = json.loads(pid_path.read_text(encoding="utf-8"))
+    assert record["pid"] != 999999
 
 
 def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatch, tmp_path, caplog):

@@ -190,6 +190,32 @@ class TestAgentCacheLifecycle:
             assert "session-A" not in runner._agent_cache
             assert "session-B" in runner._agent_cache
 
+    def test_evict_triggers_soft_release(self, monkeypatch):
+        """Direct cache eviction should release provider clients asynchronously."""
+        runner = _make_runner()
+        agent = MagicMock()
+        released: list = []
+
+        class _ImmediateThread:
+            def __init__(self, *args, **kwargs):
+                self._target = kwargs["target"]
+                self._args = kwargs.get("args", ())
+
+            def start(self):
+                self._target(*self._args)
+
+        monkeypatch.setattr("gateway.run.threading.Thread", _ImmediateThread)
+        runner._release_evicted_agent_soft = lambda a: released.append(a)
+
+        with runner._agent_cache_lock:
+            runner._agent_cache["session-A"] = (agent, "sig-A")
+
+        runner._evict_cached_agent("session-A")
+
+        assert released == [agent]
+        with runner._agent_cache_lock:
+            assert "session-A" not in runner._agent_cache
+
     def test_reasoning_config_updates_in_place(self):
         """Reasoning config can be set on a cached agent without eviction."""
         from run_agent import AIAgent

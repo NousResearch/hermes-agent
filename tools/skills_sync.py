@@ -29,6 +29,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Tuple
 
+from utils import _preserve_file_mode, _restore_file_mode
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,6 +88,7 @@ def _write_manifest(entries: Dict[str, str]):
 
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = "\n".join(f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())) + "\n"
+    original_mode = _preserve_file_mode(MANIFEST_FILE)
 
     try:
         fd, tmp_path = tempfile.mkstemp(
@@ -98,7 +101,10 @@ def _write_manifest(entries: Dict[str, str]):
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
+            if original_mode is not None:
+                os.chmod(tmp_path, original_mode)
             os.replace(tmp_path, MANIFEST_FILE)
+            _restore_file_mode(MANIFEST_FILE, original_mode)
         except BaseException:
             try:
                 os.unlink(tmp_path)

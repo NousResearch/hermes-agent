@@ -75,6 +75,8 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
 
 import yaml
 
+from utils import _preserve_file_mode, _restore_file_mode
+
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
@@ -279,6 +281,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         encoding: Text encoding (default: utf-8)
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = _preserve_file_mode(file_path)
     fd, temp_path = tempfile.mkstemp(
         dir=str(file_path.parent),
         prefix=f".{file_path.name}.tmp.",
@@ -287,7 +290,10 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
+        if original_mode is not None:
+            os.chmod(temp_path, original_mode)
         os.replace(temp_path, file_path)
+        _restore_file_mode(file_path, original_mode)
     except Exception:
         # Clean up temp file on error
         try:

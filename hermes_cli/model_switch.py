@@ -304,6 +304,113 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
 # Alias resolution
 # ---------------------------------------------------------------------------
 
+def _model_sort_key(model_id: str, prefix: str) -> tuple:
+    """Sort key for model version preference.
+
+    Extracts version numbers after the family prefix and returns a sort key
+    that prefers higher versions.  Suffix tokens (``pro``, ``omni``, etc.)
+    are used as tiebreakers, with common quality indicators ranked.
+
+    Examples (with prefix ``"mimo"``)::
+
+        mimo-v2.5-pro   → (-2.5, 0, 'pro')     # highest version wins
+        mimo-v2.5       → (-2.5, 1, '')          # no suffix = lower than pro
+        mimo-v2-pro     → (-2.0, 0, 'pro')
+        mimo-v2-omni    → (-2.0, 1, 'omni')
+        mimo-v2-flash   → (-2.0, 1, 'flash')
+    """
+    # Strip the prefix (and optional "/" separator for aggregator slugs)
+    rest = model_id[len(prefix):]
+    if rest.startswith("/"):
+        rest = rest[1:]
+    rest = rest.lstrip("-").strip()
+
+    # Parse version and suffix from the remainder.
+    # "v2.5-pro" → version [2.5], suffix "pro"
+    # "-omni"    → version [],    suffix "omni"
+    # State machine: start → in_version → between → in_suffix
+    nums: list[float] = []
+    suffix_buf = ""
+    state = "start"
+    num_buf = ""
+
+    for ch in rest:
+        if state == "start":
+            if ch in "vV":
+                state = "in_version"
+            elif ch.isdigit():
+                state = "in_version"
+                num_buf += ch
+            elif ch in "-_.":
+                pass  # skip separators before any content
+            else:
+                state = "in_suffix"
+                suffix_buf += ch
+        elif state == "in_version":
+            if ch.isdigit():
+                num_buf += ch
+            elif ch == ".":
+                if "." in num_buf:
+                    # Second dot — flush current number, start new component
+                    try:
+                        nums.append(float(num_buf.rstrip(".")))
+                    except ValueError:
+                        pass
+                    num_buf = ""
+                else:
+                    num_buf += ch
+            elif ch in "-_.":
+                if num_buf:
+                    try:
+                        nums.append(float(num_buf.rstrip(".")))
+                    except ValueError:
+                        pass
+                    num_buf = ""
+                state = "between"
+            else:
+                if num_buf:
+                    try:
+                        nums.append(float(num_buf.rstrip(".")))
+                    except ValueError:
+                        pass
+                    num_buf = ""
+                state = "in_suffix"
+                suffix_buf += ch
+        elif state == "between":
+            if ch.isdigit():
+                state = "in_version"
+                num_buf = ch
+            elif ch in "vV":
+                state = "in_version"
+            elif ch in "-_.":
+                pass
+            else:
+                state = "in_suffix"
+                suffix_buf += ch
+        elif state == "in_suffix":
+            suffix_buf += ch
+
+    # Flush remaining buffer (strip trailing dots — "5.4." → "5.4")
+    if num_buf and state == "in_version":
+        try:
+            nums.append(float(num_buf.rstrip(".")))
+        except ValueError:
+            pass
+
+    suffix = suffix_buf.lower().strip("-_.")
+    suffix = suffix.strip()
+
+    # Negate versions so higher → sorts first
+    version_key = tuple(-n for n in nums)
+
+    # Suffix quality ranking: pro/max > (no suffix) > omni/flash/mini/lite
+    # Lower number = preferred
+    _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0}
+    suffix_rank = _SUFFIX_RANK.get(suffix, 1)
+
+    return version_key + (suffix_rank, suffix)
+
+
 def resolve_alias(
     raw_input: str,
     current_provider: str,
@@ -311,9 +418,9 @@ def resolve_alias(
     """Resolve a short alias against the current provider's catalog.
 
     Looks up *raw_input* in :data:`MODEL_ALIASES`, then searches the
-    current provider's models.dev catalog for the first model whose ID
-    starts with ``vendor/family`` (or just ``family`` for non-aggregator
-    providers).
+    current provider's models.dev catalog for the model whose ID starts
+    with ``vendor/family`` (or just ``family`` for non-aggregator
+    providers) and has the **highest version**.
 
     Returns:
         ``(provider, resolved_model_id, alias_name)`` if a match is
@@ -341,28 +448,44 @@ def resolve_alias(
 
     vendor, family = identity
 
-    # Search the provider's catalog from models.dev
+    # Build catalog from models.dev, then merge in static _PROVIDER_MODELS
+    # entries that models.dev may be missing (e.g. newly added models not
+    # yet synced to the registry).
     catalog = list_provider_models(current_provider)
-    if not catalog:
-        return None
+    try:
+        from hermes_cli.models import _PROVIDER_MODELS
+        static = _PROVIDER_MODELS.get(current_provider, [])
+        if static:
+            seen = {m.lower() for m in catalog}
+            for m in static:
+                if m.lower() not in seen:
+                    catalog.append(m)
+    except Exception:
+        pass
 
     # For aggregators, models are vendor/model-name format
     aggregator = is_aggregator(current_provider)
 
-    for model_id in catalog:
-        mid_lower = model_id.lower()
-        if aggregator:
-            # Match vendor/family prefix -- e.g. "anthropic/claude-sonnet"
-            prefix = f"{vendor}/{family}".lower()
-            if mid_lower.startswith(prefix):
-                return (current_provider, model_id, key)
-        else:
-            # Non-aggregator: bare names -- e.g. "claude-sonnet-4-6"
-            family_lower = family.lower()
-            if mid_lower.startswith(family_lower):
-                return (current_provider, model_id, key)
+    if aggregator:
+        prefix = f"{vendor}/{family}".lower()
+        matches = [
+            mid for mid in catalog
+            if mid.lower().startswith(prefix)
+        ]
+    else:
+        family_lower = family.lower()
+        matches = [
+            mid for mid in catalog
+            if mid.lower().startswith(family_lower)
+        ]
 
-    return None
+    if not matches:
+        return None
+
+    # Sort by version descending — prefer the latest/highest version
+    prefix_for_sort = f"{vendor}/{family}" if aggregator else family
+    matches.sort(key=lambda m: _model_sort_key(m, prefix_for_sort))
+    return (current_provider, matches[0], key)
 
 
 def get_authenticated_provider_slugs(

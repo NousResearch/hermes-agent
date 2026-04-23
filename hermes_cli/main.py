@@ -3984,7 +3984,18 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             pass
 
         if mdev_models:
-            model_list = mdev_models
+            # Merge models.dev with curated list so newly added models
+            # (not yet in models.dev) still appear in the picker.
+            if curated:
+                seen = {m.lower() for m in mdev_models}
+                merged = list(mdev_models)
+                for m in curated:
+                    if m.lower() not in seen:
+                        merged.append(m)
+                        seen.add(m.lower())
+                model_list = merged
+            else:
+                model_list = mdev_models
             print(f"  Found {len(model_list)} model(s) from models.dev registry")
         elif curated and len(curated) >= 8:
             # Curated list is substantial — use it directly, skip live probe

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -41,7 +42,18 @@ def get(path: str):
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode())
 
-pr = get('/pulls/14297')
+
+def get_pr_with_mergeability(max_attempts: int = 6, delay_seconds: int = 2):
+    pr = get('/pulls/14297')
+    attempts = 1
+    while attempts < max_attempts and pr.get('mergeable') is None:
+        time.sleep(delay_seconds)
+        pr = get('/pulls/14297')
+        attempts += 1
+    return pr, attempts
+
+
+pr, mergeability_attempts = get_pr_with_mergeability()
 head_sha = pr['head']['sha']
 base_sha = pr['base']['sha']
 mergeable = pr.get('mergeable')
@@ -77,5 +89,5 @@ text = text.replace('95 tests passing, 0 failures', '131 tests passing, 0 failur
 text = text.replace('confirm 95 pass', 'confirm 131 pass')
 text = text.replace('95 passed, 1 warning in 2.93s', '131 passed, 1 warning in 3.32s')
 handoff_path.write_text(text, encoding='utf-8')
-print(f'SYNCED_REVIEWER_HANDOFF_BASELINE head={head_sha} base={base_sha} action_required={action_required} check_runs={check_run_count} reviews={review_count} comments={issue_comment_count} mergeable={mergeable} mergeable_state={merge_state}')
+print(f'SYNCED_REVIEWER_HANDOFF_BASELINE head={head_sha} base={base_sha} action_required={action_required} check_runs={check_run_count} reviews={review_count} comments={issue_comment_count} mergeable={mergeable} mergeable_state={merge_state} mergeability_attempts={mergeability_attempts}')
 PY

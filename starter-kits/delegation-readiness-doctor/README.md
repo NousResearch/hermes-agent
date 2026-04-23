@@ -27,10 +27,22 @@ This starter kit now packages the proof line, not just the kickoff gap, so the s
 ## Folder layout
 - `scripts/verify-current-gap.sh` — current-gap verifier that writes a durable report
 - `scripts/prove-broken-state-roundtrip.sh` — isolated blocked→ready doctor roundtrip proof that leaves the real `~/.hermes/config.yaml` untouched
+- `scripts/emit-pr-review-monitor.sh` — live GitHub PR monitor for the clean upstream handoff surface
+- `scripts/emit-ci-result-interpreter.sh` — fail-closed first-CI interpreter that maps the first real check-run result back to the clean local proof line
+- `scripts/emit-workflow-approval-brief.sh` — blocker-specific brief for the current fork-workflow approval gate
+- `scripts/emit-workflow-approval-state-change.sh` — state-change detector; surfaces blocker-clear transitions vs. persist states so automation knows when maintainer approval happened without manual snapshot comparison
+- `scripts/emit-workflow-approval-trigger.sh` — posting-state-aware nudge/approval packet for the repeated fork-workflow approval stall; prints `WORKFLOW_APPROVAL_TRIGGER_ALREADY_POSTED` when the maintainer request is already live so automation does not mistake a reference-only packet for a fresh action
+- `scripts/sync-reviewer-handoff-baseline.sh` — keeps `latest-reviewer-handoff.md` aligned to the live PR head/base before state-change detection; polls GitHub mergeability before writing so the handoff does not regress to first-response `mergeability unknown` noise
+- `scripts/refresh-upstream-blocker-packet.sh` — one-command refresh that syncs the reviewer handoff, reruns the state-change detector, PR monitor, CI interpreter, and approval trigger together, then emits a consolidated blocker packet from the same live PR state; prints `UPSTREAM_BLOCKER_PACKET_UNCHANGED` when the blocker signature is materially identical to the previous latest packet so cron can distinguish revalidation from a real transition
 - `artifacts/latest-current-gap-report.md` — most recent proof packet emitted by the gap verifier
 - `artifacts/latest-broken-state-roundtrip.md` — canonical blocked-state proof packet with before/after doctor output
-- `scripts/refresh-upstream-blocker-packet.sh` — one-command PR blocker refresh that distinguishes stale-base drift from pure workflow approval
-- `artifacts/latest-upstream-blocker-refresh.md` — canonical live PR blocker packet with state signature + change-vs-previous marker
+- `artifacts/latest-pr-review-monitor.md` — canonical live review/merge monitor for PR `#14297`
+- `artifacts/latest-ci-result-interpreter.md` — first-CI decision surface that fail-closes until real check runs exist, then routes pass/fail signals back to the proof artifacts
+- `artifacts/latest-workflow-approval-brief.md` — exact maintainer action surface when GitHub Actions suites stay `action_required` with `0` check runs
+- `artifacts/latest-workflow-approval-state-change.md` — state-change detector; records previous vs current action_required suite count and check-run count so automation can detect when the blocker cleared vs still persists
+- `artifacts/latest-workflow-approval-trigger.md` — posting-state-aware maintainer nudge/reference packet + exact approval/recheck surfaces for the current head SHA
+- `artifacts/latest-reviewer-handoff.md` — blocker-specific maintainer brief that maps the PR diff to proof, verification commands, and merge criteria
+- `artifacts/latest-upstream-blocker-refresh.md` — consolidated one-command blocker packet used by recurring momentum blocks to decide whether the blocker changed, stayed external, or needs current-base refresh
 
 ## Fast start
 From the Hermes repo root:
@@ -38,6 +50,12 @@ From the Hermes repo root:
 ```bash
 python -m hermes_cli.main doctor
 bash starter-kits/delegation-readiness-doctor/scripts/prove-broken-state-roundtrip.sh
+bash starter-kits/delegation-readiness-doctor/scripts/emit-pr-review-monitor.sh
+bash starter-kits/delegation-readiness-doctor/scripts/emit-ci-result-interpreter.sh
+bash starter-kits/delegation-readiness-doctor/scripts/emit-workflow-approval-brief.sh
+bash starter-kits/delegation-readiness-doctor/scripts/emit-workflow-approval-state-change.sh
+bash starter-kits/delegation-readiness-doctor/scripts/emit-workflow-approval-trigger.sh
+bash starter-kits/delegation-readiness-doctor/scripts/refresh-upstream-blocker-packet.sh
 ```
 
 Historical kickoff verifier:
@@ -64,16 +82,3 @@ What is now frozen on disk:
 - multi-provider credential orchestration cleanup
 - dashboard/control-plane expansion
 - claiming delegation is fixed before one real delegated run passes
-
-## PR handoff monitoring
-When the MVP is already open as a PR, use the blocker packet instead of freehand status checks:
-
-```bash
-bash starter-kits/delegation-readiness-doctor/scripts/refresh-upstream-blocker-packet.sh
-```
-
-Expected behavior:
-- prints `UPSTREAM_BLOCKER_PACKET_REFRESHED` only when the live blocker signature actually changed
-- prints `UPSTREAM_BLOCKER_PACKET_UNCHANGED` on timestamp-only reruns
-- marks stale-base drift explicitly when the PR falls behind `origin/main`
-- keeps workflow approval as the blocker only when the branch is current and check suites are still `action_required` with `0` real check runs

@@ -7349,6 +7349,9 @@ class HermesCLI:
             self._stream_box_opened = False
         self._close_reasoning_box()
 
+        if tool_name == "delegate_task":
+            return
+
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")
         _cprint(f"  ┊ {emoji} preparing {tool_name}…")
@@ -7372,8 +7375,101 @@ class HermesCLI:
         stacked line to scrollback on tool.completed so users can see the
         full history of tool calls (not just the current one in the spinner).
         """
+        if event_type == "subagent_progress":
+            event_type = "subagent.progress"
+        if event_type.startswith("subagent."):
+            if self.tool_progress_mode == "off":
+                return
+            from agent.display import KawaiiSpinner, get_tool_emoji, get_tool_preview_max_len
+
+            def _clean_subagent_text(text):
+                text = str(text or "").replace("\n", " ")
+                text = " ".join(text.split())
+                if text.startswith("🔀 "):
+                    text = text[2:].strip()
+                return text
+
+            def _truncate_subagent_text(text, limit=None, reserve=0):
+                text = _clean_subagent_text(text)
+                if not text:
+                    return text
+                max_width = max(20, self._get_tui_terminal_width() - max(int(reserve or 0), 0))
+                if limit:
+                    max_width = min(max_width, int(limit))
+                return self._trim_status_bar_text(text, max_width)
+
+            def _polish_subagent_summary(text):
+                text = _clean_subagent_text(text)
+                if not text:
+                    return text
+                while text.startswith("#") or text.startswith("-") or text.startswith("*"):
+                    text = text[1:].strip()
+                markdown_tokens = (
+                    "## ", "### ", "#### ", "--- ", "**", "`"
+                )
+                for token in markdown_tokens:
+                    text = text.replace(token, "")
+                text = text.replace(" - ", " ")
+                text = " ".join(text.split())
+                for sep in (". ", "! ", "? ", " — ", " | "):
+                    if sep in text:
+                        text = text.split(sep, 1)[0].strip()
+                        break
+                return _truncate_subagent_text(text, reserve=6)
+
+            def _is_decorative_thinking(text):
+                raw = _clean_subagent_text(text)
+                if not raw.endswith("..."):
+                    return False
+                lowered = raw[:-3].strip().lower()
+                try:
+                    verbs = {str(v).strip().lower() for v in KawaiiSpinner.get_thinking_verbs()}
+                except Exception:
+                    verbs = set()
+                return any(lowered.endswith(f" {verb}") or lowered == verb for verb in verbs if verb)
+
+            line = None
+            if event_type == "subagent.start":
+                text = _truncate_subagent_text(preview or kwargs.get("goal") or function_name or "delegated task", reserve=6)
+                line = f"  🔀 {text}"
+                self._spinner_text = f"🔀 {text}"
+                self._tool_start_time = time.monotonic()
+            elif event_type == "subagent.thinking":
+                text = _truncate_subagent_text(preview or function_name or "thinking", reserve=6)
+                self._spinner_text = f"💭 {text}"
+                if not _is_decorative_thinking(text):
+                    line = f"  💭 {text}"
+            elif event_type == "subagent.tool":
+                emoji = get_tool_emoji(function_name or "")
+                label = _truncate_subagent_text(preview or function_name or "tool", reserve=20)
+                _pl = get_tool_preview_max_len()
+                spinner_label = f"{emoji} {function_name or 'tool'}"
+                if label and label != function_name:
+                    spinner_label += f" {label}"
+                if _pl > 0 and len(spinner_label) > _pl:
+                    spinner_label = spinner_label[:_pl - 3] + "..."
+                line = f"  ↳ {emoji} {function_name or 'tool'}"
+                if preview:
+                    line += f'  "{label}"'
+                self._spinner_text = spinner_label
+            elif event_type == "subagent.progress":
+                text = _truncate_subagent_text(preview or kwargs.get("summary") or function_name or "progress", reserve=6)
+                self._spinner_text = f"🔀 {text}"
+            elif event_type == "subagent.complete":
+                text = _polish_subagent_summary(kwargs.get("summary") or preview or kwargs.get("status") or "completed")
+                status = str(kwargs.get("status") or "completed")
+                icon = "✅" if status == "completed" else ("⏱️" if status == "timeout" else "⚠️")
+                line = f"  {icon} {text}"
+                self._tool_start_time = 0.0
+            if line and self.tool_progress_mode in ("all", "new"):
+                _cprint(line)
+            self._invalidate()
+            return
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            if function_name == "delegate_task":
+                self._invalidate()
+                return
             # Print stacked scrollback line for "all" / "new" modes
             if function_name and self.tool_progress_mode in ("all", "new"):
                 duration = kwargs.get("duration", 0.0)

@@ -187,3 +187,111 @@ class TestToolProgressScrollback:
         # First entry consumed, second remains
         assert len(cli._pending_tool_info.get("terminal", [])) == 1
         assert cli._pending_tool_info["terminal"][0] == {"command": "pwd"}
+
+    def test_subagent_events_print_scrollback_lines(self):
+        """Delegated child progress should be visible in the CLI scrollback."""
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("subagent.start", None, "Inspect repo", None, goal="Inspect repo")
+            cli._on_tool_progress("subagent.thinking", None, "Planning next step", None, goal="Inspect repo")
+            cli._on_tool_progress("subagent.tool", "read_file", "README.md", {"path": "README.md"}, goal="Inspect repo")
+            cli._on_tool_progress("subagent_progress", "Read README.md, PLAN.md", None, None, goal="Inspect repo")
+            cli._on_tool_progress("subagent.complete", None, "done", None, goal="Inspect repo", status="completed", summary="done")
+
+        rendered = "\n".join(call.args[0] for call in mock_print.call_args_list)
+        assert "Inspect repo" in rendered
+        assert "Planning next step" in rendered
+        assert "read_file" in rendered
+        assert "done" in rendered
+        assert "🔀 🔀" not in rendered
+        assert "Read README.md, PLAN.md" not in rendered
+        assert cli._spinner_text == "🔀 Read README.md, PLAN.md"
+
+    def test_subagent_start_prints_single_scrollback_line_and_updates_spinner(self):
+        """Delegated starts should announce the child run once and update the spinner."""
+        cli = _make_cli(tool_progress="all")
+        long_goal = "Step 1\nStep 2\nStep 3 " + ("A" * 180)
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("subagent.start", None, long_goal, None, goal=long_goal)
+        mock_print.assert_called_once()
+        line = mock_print.call_args[0][0]
+        assert "Step 1 Step 2 Step 3" in line
+        assert "\n" not in line
+        assert line.endswith("...")
+        assert cli._spinner_text.endswith("...")
+
+    def test_subagent_start_uses_terminal_width_instead_of_short_fixed_cap(self):
+        """Wide terminals should keep more delegated text before truncating."""
+        cli = _make_cli(tool_progress="all")
+        goal = "Step 1 " + ("A" * 120)
+        with patch.object(cli, "_get_tui_terminal_width", return_value=160), \
+             patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("subagent.start", None, goal, None, goal=goal)
+        line = mock_print.call_args[0][0]
+        assert goal in line
+        assert not line.endswith("...")
+
+    def test_delegate_task_preparation_and_completion_are_suppressed_from_scrollback(self):
+        """delegate_task should rely on child events instead of adding extra wrapper lines."""
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_gen_start("delegate_task")
+            cli._on_tool_progress(
+                "tool.started",
+                "delegate_task",
+                "Inspect repo",
+                {"goal": "Inspect repo"},
+            )
+            cli._on_tool_progress(
+                "tool.completed",
+                "delegate_task",
+                None,
+                None,
+                duration=1.2,
+                is_error=False,
+            )
+        mock_print.assert_not_called()
+
+    def test_subagent_complete_polishes_markdown_summary(self):
+        """Completion lines should strip markdown-heavy summaries down to one concise line."""
+        cli = _make_cli(tool_progress="all")
+        summary = "## SUMMARY\n- Found delegate tests. More detail below.\n- Extra text"
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.complete",
+                None,
+                None,
+                None,
+                goal="Inspect repo",
+                status="completed",
+                summary=summary,
+            )
+        line = mock_print.call_args[0][0]
+        assert "##" not in line
+        assert "- " not in line
+        assert "Found delegate tests" in line
+        assert "More detail below" not in line
+
+    def test_decorative_subagent_thinking_is_suppressed(self):
+        """Face+verb thinking filler should update spinner only, not scrollback."""
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("subagent.thinking", None, "(¬_¬) reflecting...", None, goal="Inspect repo")
+        mock_print.assert_not_called()
+        assert "reflecting" in cli._spinner_text
+
+    def test_subagent_tool_updates_spinner_text(self):
+        """A delegated child tool event should update the live spinner text."""
+        cli = _make_cli(tool_progress="all")
+        cli._on_tool_progress("subagent.tool", "read_file", "README.md", {"path": "README.md"}, goal="Inspect repo")
+        assert "read_file" in cli._spinner_text
+        assert "README.md" in cli._spinner_text
+
+    def test_subagent_events_suppressed_in_off_mode(self):
+        """tool_progress=off should suppress delegated scrollback output too."""
+        cli = _make_cli(tool_progress="off")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("subagent.start", None, "Inspect repo", None, goal="Inspect repo")
+            cli._on_tool_progress("subagent.progress", None, "Read README.md", None, goal="Inspect repo")
+            cli._on_tool_progress("subagent.complete", None, "done", None, goal="Inspect repo", status="completed")
+        mock_print.assert_not_called()

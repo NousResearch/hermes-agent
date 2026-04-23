@@ -71,6 +71,7 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # Injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
+_SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -104,14 +105,29 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 })
 
 
-def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch.
+def _has_valid_session_token(request: Request) -> bool:
+    """True if the request carries a valid dashboard session token.
 
-    Uses ``hmac.compare_digest`` to prevent timing side-channels.
+    The dedicated session header avoids collisions with reverse proxies that
+    already use ``Authorization`` (for example Caddy ``basic_auth``). We still
+    accept the legacy Bearer path for backward compatibility with older
+    dashboard bundles.
     """
+    session_header = request.headers.get(_SESSION_HEADER_NAME, "")
+    if session_header and hmac.compare_digest(
+        session_header.encode(),
+        _SESSION_TOKEN.encode(),
+    ):
+        return True
+
     auth = request.headers.get("authorization", "")
     expected = f"Bearer {_SESSION_TOKEN}"
-    if not hmac.compare_digest(auth.encode(), expected.encode()):
+    return hmac.compare_digest(auth.encode(), expected.encode())
+
+
+def _require_token(request: Request) -> None:
+    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -205,9 +221,7 @@ async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
-        auth = request.headers.get("authorization", "")
-        expected = f"Bearer {_SESSION_TOKEN}"
-        if not hmac.compare_digest(auth.encode(), expected.encode()):
+        if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},

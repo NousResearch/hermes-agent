@@ -205,7 +205,7 @@ def _get_command_timeout() -> int:
     """
     global _cached_command_timeout, _command_timeout_resolved
     if _command_timeout_resolved:
-        return _cached_command_timeout  # type: ignore[return-value]
+        return _cached_command_timeout or DEFAULT_COMMAND_TIMEOUT
 
     _command_timeout_resolved = True
     result = DEFAULT_COMMAND_TIMEOUT

@@ -73,6 +73,10 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
 }
 
+#root {
+  min-height: 100dvh;
+}
+
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
    dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }
@@ -123,6 +127,16 @@ code { font-size: 0.875rem; }
 @keyframes toast-out {
   from { opacity: 1; transform: translateX(0); }
   to   { opacity: 0; transform: translateX(16px); }
+}
+
+/* Generic fade + dialog entrance used by popovers and confirm dialogs. */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* Hide scrollbar utility — used by the header's overflow-x nav row. */

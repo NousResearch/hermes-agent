@@ -1,8 +1,12 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
 import {
+  AlertTriangle,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Database,
+  Loader2,
   MessageSquare,
   Search,
   Trash2,
@@ -13,19 +17,27 @@ import {
   Hash,
   X,
 } from "lucide-react";
-import { H2 } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type {
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
+  StatusResponse,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
+import { PlatformsCard } from "@/components/PlatformsCard";
+import { Toast } from "@/components/Toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { Input } from "@/components/ui/input";
+import { useSystemActions } from "@/contexts/useSystemActions";
+import { useToast } from "@/hooks/useToast";
 import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -381,7 +393,62 @@ export default function SessionsPage() {
   >(null);
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const logScrollRef = useRef<HTMLPreElement | null>(null);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
+  const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const { setAfterTitle, setEnd } = usePageHeader();
+  const { activeAction, actionStatus, dismissLog } = useSystemActions();
+
+  useLayoutEffect(() => {
+    if (loading) {
+      setAfterTitle(null);
+      setEnd(null);
+      return;
+    }
+    setAfterTitle(
+      <Badge variant="secondary" className="text-xs tabular-nums">
+        {total}
+      </Badge>,
+    );
+    setEnd(
+      <div className="relative w-full min-w-0 sm:max-w-xs">
+        {searching ? (
+          <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+        ) : (
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        )}
+        <Input
+          placeholder={t.sessions.searchPlaceholder}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="h-8 pr-7 pl-8 text-xs"
+        />
+        {search && (
+          <button
+            type="button"
+            className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
+            onClick={() => setSearch("")}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>,
+    );
+    return () => {
+      setAfterTitle(null);
+      setEnd(null);
+    };
+  }, [
+    loading,
+    search,
+    searching,
+    setAfterTitle,
+    setEnd,
+    t.sessions.searchPlaceholder,
+    total,
+  ]);
 
   const loadSessions = useCallback((p: number) => {
     setLoading(true);
@@ -398,6 +465,24 @@ export default function SessionsPage() {
   useEffect(() => {
     loadSessions(page);
   }, [loadSessions, page]);
+
+  useEffect(() => {
+    const loadOverview = () => {
+      api.getStatus().then(setStatus).catch(() => {});
+      api
+        .getSessions(50)
+        .then((r) => setOverviewSessions(r.sessions))
+        .catch(() => {});
+    };
+    loadOverview();
+    const id = setInterval(loadOverview, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const el = logScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [actionStatus?.lines]);
 
   // Debounced FTS search
   useEffect(() => {
@@ -423,16 +508,27 @@ export default function SessionsPage() {
     };
   }, [search]);
 
-  const handleDelete = async (id: string) => {
-    try {
-      await api.deleteSession(id);
-      setSessions((prev) => prev.filter((s) => s.id !== id));
-      setTotal((prev) => prev - 1);
-      if (expandedId === id) setExpandedId(null);
-    } catch {
-      // ignore
-    }
-  };
+  const sessionDelete = useConfirmDelete({
+    onDelete: useCallback(
+      async (id: string) => {
+        try {
+          await api.deleteSession(id);
+          setSessions((prev) => prev.filter((s) => s.id !== id));
+          setTotal((prev) => prev - 1);
+          if (expandedId === id) setExpandedId(null);
+          showToast(t.sessions.sessionDeleted, "success");
+        } catch {
+          showToast(t.sessions.failedToDelete, "error");
+          throw new Error("delete failed");
+        }
+      },
+      [expandedId, showToast, t.sessions.sessionDeleted, t.sessions.failedToDelete],
+    ),
+  });
+
+  const pendingSession = sessionDelete.pendingId
+    ? sessions.find((s) => s.id === sessionDelete.pendingId)
+    : null;
 
   // Build snippet map from search results (session_id → snippet)
   const snippetMap = new Map<string, string>();
@@ -448,6 +544,36 @@ export default function SessionsPage() {
     ? sessions.filter((s) => snippetMap.has(s.id))
     : sessions;
 
+  const platformEntries = status
+    ? Object.entries(status.gateway_platforms ?? {})
+    : [];
+  const recentSessions = overviewSessions
+    .filter((s) => !s.is_active)
+    .slice(0, 5);
+
+  const alerts: { message: string; detail?: string }[] = [];
+  if (status) {
+    if (status.gateway_state === "startup_failed") {
+      alerts.push({
+        message: t.status.gatewayFailedToStart,
+        detail: status.gateway_exit_reason ?? undefined,
+      });
+    }
+    const failedPlatformEntries = platformEntries.filter(
+      ([, info]) => info.state === "fatal" || info.state === "disconnected",
+    );
+    for (const [name, info] of failedPlatformEntries) {
+      const stateLabel =
+        info.state === "fatal"
+          ? t.status.platformError
+          : t.status.platformDisconnected;
+      alerts.push({
+        message: `${name.charAt(0).toUpperCase() + name.slice(1)} ${stateLabel}`,
+        detail: info.error_message ?? undefined,
+      });
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -458,38 +584,159 @@ export default function SessionsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Header outside card for lighter feel */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between">
-        <div className="flex items-center gap-2">
-          <MessageSquare className="h-5 w-5 text-muted-foreground" />
-          <H2 variant="sm">{t.sessions.title}</H2>
-          <Badge variant="secondary" className="text-xs">
-            {total}
-          </Badge>
+      <Toast toast={toast} />
+
+      <DeleteConfirmDialog
+        open={sessionDelete.isOpen}
+        onCancel={sessionDelete.cancel}
+        onConfirm={sessionDelete.confirm}
+        title={t.sessions.confirmDeleteTitle}
+        description={
+          pendingSession?.title && pendingSession.title !== "Untitled"
+            ? `"${pendingSession.title}" — ${t.sessions.confirmDeleteMessage}`
+            : t.sessions.confirmDeleteMessage
+        }
+        loading={sessionDelete.isDeleting}
+      />
+
+      {alerts.length > 0 && (
+        <div className="border border-destructive/30 bg-destructive/[0.06] p-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+            <div className="flex flex-col gap-2 min-w-0">
+              {alerts.map((alert, i) => (
+                <div key={i}>
+                  <p className="text-sm font-medium text-destructive">
+                    {alert.message}
+                  </p>
+                  {alert.detail && (
+                    <p className="text-xs text-destructive/70 mt-0.5">
+                      {alert.detail}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
-        <div className="relative w-full sm:w-64">
-          {searching ? (
-            <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
-          ) : (
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          )}
-          <Input
-            placeholder={t.sessions.searchPlaceholder}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 pr-7 h-8 text-xs"
-          />
-          {search && (
+      )}
+
+      {activeAction && (
+        <div className="border border-border bg-background-base/50">
+          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {actionStatus?.running ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-warning" />
+              ) : actionStatus?.exit_code === 0 ? (
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+              ) : actionStatus !== null ? (
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+              ) : (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+              )}
+
+              <span className="text-xs font-mondwest tracking-[0.12em] truncate">
+                {activeAction === "restart"
+                  ? t.status.restartGateway
+                  : t.status.updateHermes}
+              </span>
+
+              <Badge
+                variant={
+                  actionStatus?.running
+                    ? "warning"
+                    : actionStatus?.exit_code === 0
+                      ? "success"
+                      : actionStatus
+                        ? "destructive"
+                        : "outline"
+                }
+                className="text-[10px] shrink-0"
+              >
+                {actionStatus?.running
+                  ? t.status.running
+                  : actionStatus?.exit_code === 0
+                    ? t.status.actionFinished
+                    : actionStatus
+                      ? `${t.status.actionFailed} (${actionStatus.exit_code ?? "?"})`
+                      : t.common.loading}
+              </Badge>
+            </div>
+
             <button
               type="button"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
-              onClick={() => setSearch("")}
+              onClick={dismissLog}
+              className="shrink-0 opacity-60 hover:opacity-100 cursor-pointer"
+              aria-label={t.common.close}
             >
-              <X className="h-3 w-3" />
+              <X className="h-3.5 w-3.5" />
             </button>
-          )}
+          </div>
+
+          <pre
+            ref={logScrollRef}
+            className="max-h-72 overflow-auto px-3 py-2 font-mono-ui text-[11px] leading-relaxed whitespace-pre-wrap break-all"
+          >
+            {actionStatus?.lines && actionStatus.lines.length > 0
+              ? actionStatus.lines.join("\n")
+              : t.status.waitingForOutput}
+          </pre>
         </div>
-      </div>
+      )}
+
+      {platformEntries.length > 0 && status && (
+        <PlatformsCard platforms={platformEntries} />
+      )}
+
+      {recentSessions.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Clock className="h-5 w-5 text-muted-foreground" />
+              <CardTitle className="text-base">
+                {t.status.recentSessions}
+              </CardTitle>
+            </div>
+          </CardHeader>
+
+          <CardContent className="grid gap-3">
+            {recentSessions.map((s) => (
+              <div
+                key={s.id}
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
+              >
+                <div className="flex flex-col gap-1 min-w-0 w-full">
+                  <span className="font-medium text-sm truncate">
+                    {s.title ?? t.common.untitled}
+                  </span>
+
+                  <span className="text-xs text-muted-foreground truncate">
+                    <span className="font-mono-ui">
+                      {(s.model ?? t.common.unknown).split("/").pop()}
+                    </span>{" "}
+                    · {s.message_count} {t.common.msgs} ·{" "}
+                    {timeAgo(s.last_active)}
+                  </span>
+
+                  {s.preview && (
+                    <span className="text-xs text-muted-foreground/70 truncate">
+                      {s.preview}
+                    </span>
+                  )}
+                </div>
+
+                <Badge
+                  variant="outline"
+                  className="text-[10px] shrink-0 self-start sm:self-center"
+                >
+                  <Database className="mr-1 h-3 w-3" />
+                  {s.source ?? "local"}
+                </Badge>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
@@ -516,7 +763,7 @@ export default function SessionsPage() {
                 onToggle={() =>
                   setExpandedId((prev) => (prev === s.id ? null : s.id))
                 }
-                onDelete={() => handleDelete(s.id)}
+                onDelete={() => sessionDelete.requestDelete(s.id)}
               />
             ))}
           </div>

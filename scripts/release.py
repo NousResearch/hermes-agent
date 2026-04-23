@@ -353,6 +353,7 @@ AUTHOR_MAP = {
     "hxp@hxp.plus": "hxp-plus",
     "3580442280@qq.com": "Tianworld",
     "wujianxu91@gmail.com": "wujhsu",
+    "zhrh120@gmail.com": "niyoh120",
 }
 
 

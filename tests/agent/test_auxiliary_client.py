@@ -447,6 +447,34 @@ class TestExplicitProviderRouting:
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
+    def test_explicit_openrouter_pool_exhausted_logs_precise_warning(self, monkeypatch, caplog):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = resolve_provider_client("openrouter")
+        assert client is None
+        assert model is None
+        assert any(
+            "credential pool has no usable entries" in record.message
+            for record in caplog.records
+        )
+        assert not any(
+            "OPENROUTER_API_KEY not set" in record.message
+            for record in caplog.records
+        )
+
+    def test_explicit_openrouter_missing_env_keeps_not_set_warning(self, monkeypatch, caplog):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = resolve_provider_client("openrouter")
+        assert client is None
+        assert model is None
+        assert any(
+            "OPENROUTER_API_KEY not set" in record.message
+            for record in caplog.records
+        )
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

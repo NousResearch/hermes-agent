@@ -542,6 +542,171 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
+# Token budget for the <pinned_skills> block — keeps the system prompt lean
+# regardless of how many skills the user has loaded over time.
+_PINNED_SKILLS_CHAR_BUDGET = 1200  # ≈ 300 tokens
+
+# Minimum view count in the lookback window for a skill to be pinned.
+_PINNED_MIN_VIEWS = 2
+
+# Lookback window in seconds (30 days).
+_PINNED_LOOKBACK_S = 30 * 24 * 3600
+
+
+def _query_skill_usage() -> list[tuple[str, int, float]]:
+    """Return (skill_name, view_count, last_used_ts) from state.db.
+
+    Scans ``messages.tool_calls`` for ``skill_view`` invocations within the
+    lookback window, mirroring the extraction pattern in
+    ``insights.py:_get_skill_usage``.
+
+    Returns an empty list on any failure (missing DB, corrupt data, etc.) —
+    callers always have a fallback path.
+    """
+    try:
+        import time as _time
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        cutoff = _time.time() - _PINNED_LOOKBACK_S
+        cursor = db._conn.execute(
+            """SELECT m.tool_calls, m.timestamp
+               FROM messages m
+               JOIN sessions s ON s.id = m.session_id
+               WHERE s.started_at >= ?
+                 AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+            (cutoff,),
+        )
+
+        counts: dict[str, list] = {}  # name → [view_count, max_timestamp]
+        for row in cursor.fetchall():
+            try:
+                calls = row["tool_calls"]
+                if isinstance(calls, str):
+                    calls = json.loads(calls)
+                if not isinstance(calls, list):
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            ts = row["timestamp"]
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                func = call.get("function") or {}
+                if func.get("name") != "skill_view":
+                    continue
+                args = func.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                if not isinstance(args, dict):
+                    continue
+                skill = args.get("name")
+                if not isinstance(skill, str) or not skill.strip():
+                    continue
+                skill = skill.strip()
+                entry = counts.setdefault(skill, [0, 0.0])
+                entry[0] += 1
+                if ts is not None and ts > entry[1]:
+                    entry[1] = ts
+
+        return [
+            (name, vals[0], vals[1])
+            for name, vals in counts.items()
+            if vals[0] >= _PINNED_MIN_VIEWS
+        ]
+    except Exception:
+        logger.debug("Could not query skill usage from state.db", exc_info=True)
+        return []
+
+
+def _get_usage_epoch() -> int:
+    """Return a coarse timestamp for cache-key differentiation.
+
+    Rounds the latest ``skill_view`` message timestamp to the current hour.
+    This means pinned skills refresh at most once per hour — avoiding cache
+    thrashing while still reflecting evolving usage patterns.
+    """
+    try:
+        import time as _time
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        row = db._conn.execute(
+            """SELECT MAX(m.timestamp) AS latest
+               FROM messages m
+               WHERE m.role = 'assistant' AND m.tool_calls LIKE '%skill_view%'"""
+        ).fetchone()
+        ts = row["latest"] if row else None
+        if ts is not None:
+            return int(ts // 3600)
+    except Exception:
+        pass
+    return 0
+
+
+def _get_pinned_skills(
+    skills_by_category: dict[str, list[tuple[str, str]]],
+) -> list[tuple[str, str]]:
+    """Select skills to pin in the system prompt.
+
+    Strategy (in priority order):
+    1. **Usage-driven** — skills with ≥ ``_PINNED_MIN_VIEWS`` calls in the
+       last 30 days, ordered by frequency then recency.
+    2. **Category representative fallback** — when no usage data exists, pick
+       one skill per category (alphabetically first) so the agent has at
+       least *some* concrete examples across the full breadth.
+
+    The result is trimmed to fit ``_PINNED_SKILLS_CHAR_BUDGET`` so the
+    system prompt stays compact regardless of how many skills qualify.
+    """
+    # Build a lookup: name → (name, description)
+    all_skills: dict[str, tuple[str, str]] = {}
+    for entries in skills_by_category.values():
+        for name, desc in entries:
+            all_skills.setdefault(name, (name, desc))
+
+    if not all_skills:
+        return []
+
+    # ── Try usage data first ──
+    usage = _query_skill_usage()
+    if usage:
+        # Sort by view_count desc, then last_used desc
+        usage.sort(key=lambda u: (-u[1], -u[2]))
+        pinned: list[tuple[str, str]] = []
+        chars = 0
+        for skill_name, _count, _ts in usage:
+            entry = all_skills.get(skill_name)
+            if entry is None:
+                continue  # Skill no longer installed
+            line_cost = len(entry[0]) + len(entry[1]) + 6  # "  - name: desc\n"
+            if chars + line_cost > _PINNED_SKILLS_CHAR_BUDGET:
+                break
+            pinned.append(entry)
+            chars += line_cost
+        if pinned:
+            return pinned
+
+    # ── Fallback: one representative per category ──
+    pinned = []
+    chars = 0
+    for cat in sorted(skills_by_category.keys()):
+        entries = skills_by_category[cat]
+        if not entries:
+            continue
+        # Pick alphabetically first skill in the category
+        rep = min(entries, key=lambda e: e[0])
+        line_cost = len(rep[0]) + len(rep[1]) + 6
+        if chars + line_cost > _PINNED_SKILLS_CHAR_BUDGET:
+            break
+        pinned.append(rep)
+        chars += line_cost
+    return pinned
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
@@ -626,6 +791,7 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    usage_epoch = _get_usage_epoch()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -633,6 +799,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        usage_epoch,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -769,47 +936,69 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
-        index_lines = []
-        for category in sorted(skills_by_category.keys()):
-            cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
-                else:
-                    index_lines.append(f"    - {name}")
+        # ── Count total skills (deduplicated) ──
+        all_skill_names: set[str] = set()
+        for entries in skills_by_category.values():
+            for name, _desc in entries:
+                all_skill_names.add(name)
+        total_skills = len(all_skill_names)
 
-        result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
-            "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+        # ── Collect top-level categories with skill counts ──
+        top_categories: dict[str, int] = {}
+        for cat, entries in skills_by_category.items():
+            top = cat.split("/")[0] if "/" in cat else cat
+            seen = set()
+            for name, _ in entries:
+                if name not in seen:
+                    seen.add(name)
+                    top_categories[top] = top_categories.get(top, 0) + 1
+
+        cat_summary = ", ".join(
+            f"{cat} ({count})"
+            for cat, count in sorted(top_categories.items())
         )
+
+        # ── Pinned skills (usage-driven or category representatives) ──
+        pinned = _get_pinned_skills(skills_by_category)
+
+        parts: list[str] = []
+
+        parts.append(
+            f"## Skills\n"
+            f"You have access to {total_skills} specialized skills "
+            f"across {len(top_categories)} categories."
+        )
+
+        if pinned:
+            pinned_lines = []
+            for name, desc in pinned:
+                if desc:
+                    pinned_lines.append(f"  - {name}: {desc}")
+                else:
+                    pinned_lines.append(f"  - {name}")
+            parts.append(
+                "<pinned_skills>\n"
+                + "\n".join(pinned_lines) + "\n"
+                "</pinned_skills>"
+            )
+
+        parts.append(
+            "<skill_categories>\n"
+            f"  {cat_summary}\n"
+            "</skill_categories>"
+        )
+
+        parts.append(
+            "For pinned skills above, load directly with skill_view(name).\n"
+            "For other tasks, search with skills_list(query=\"keyword\") first — "
+            "skills contain domain knowledge and proven workflows that outperform "
+            "general-purpose approaches.\n"
+            "Always search before assuming no skill exists.\n"
+            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "After difficult/iterative tasks, offer to save learnings as a skill."
+        )
+
+        result = "\n\n".join(parts)
 
     # ── Store in LRU cache ────────────────────────────────────────────
     with _SKILLS_PROMPT_CACHE_LOCK:

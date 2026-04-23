@@ -288,6 +288,59 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
 
+    def test_query_matches_name(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "python-debug")
+            _make_skill(tmp_path, "web-search")
+            raw = skills_list(query="python")
+        result = json.loads(raw)
+        assert result["count"] == 1
+        assert result["skills"][0]["name"] == "python-debug"
+
+    def test_query_matches_description(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "my-tool", body="Deploy containers easily.")
+            _make_skill(tmp_path, "other-tool")
+            raw = skills_list(query="description")
+        result = json.loads(raw)
+        # Both have "Description for <name>." in auto-generated description
+        assert result["count"] == 2
+
+    def test_query_matches_category(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", category="machine-learning")
+            _make_skill(tmp_path, "beta", category="devops")
+            raw = skills_list(query="machine")
+        result = json.loads(raw)
+        assert result["count"] == 1
+        assert result["skills"][0]["name"] == "alpha"
+
+    def test_query_case_insensitive(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "Python-Debug")
+            raw = skills_list(query="PYTHON")
+        result = json.loads(raw)
+        assert result["count"] == 1
+
+    def test_query_no_match_returns_empty(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "web-search")
+            raw = skills_list(query="zzz-nonexistent")
+        result = json.loads(raw)
+        assert result["count"] == 0
+        assert result["skills"] == []
+
+    def test_query_combined_with_category(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "py-debug", category="dev")
+            _make_skill(tmp_path, "py-lint", category="dev")
+            _make_skill(tmp_path, "py-notebook", category="data")
+            raw = skills_list(category="dev", query="py")
+        result = json.loads(raw)
+        assert result["count"] == 2
+        names = {s["name"] for s in result["skills"]}
+        assert names == {"py-debug", "py-lint"}
+
 
 # ---------------------------------------------------------------------------
 # skill_view

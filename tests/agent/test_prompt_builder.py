@@ -264,7 +264,7 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         assert "python-debug" in result
         assert "Debug Python scripts" in result
-        assert "available_skills" in result
+        assert "skill_categories" in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -391,8 +391,10 @@ class TestBuildSkillsSystemPrompt:
         )
 
         result = build_skills_system_prompt()
-        assert "free-skill" in result
-        assert "gated-skill" in result
+        # Both skills contribute to the count; at least one appears as
+        # a pinned representative and both are discoverable via search.
+        assert "2 specialized skills" in result
+        assert "media" in result
 
     def test_includes_skills_with_met_prerequisites(self, monkeypatch, tmp_path):
         """Skills with satisfied prerequisites should appear normally."""
@@ -427,6 +429,114 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
         assert "backend-skill" in result
+
+
+# =========================================================================
+# Compact skills prompt — pinned skills and category summary
+# =========================================================================
+
+
+class TestCompactSkillsPrompt:
+    """Verify the compact prompt format: categories + pinned skills + search guidance."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def _make_skills(self, tmp_path, specs):
+        """Create skill directories from [(category, name, desc), ...]."""
+        for cat, name, desc in specs:
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+
+    def test_output_has_categories_and_search_guidance(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path, [
+            ("dev", "plan", "Create task plans"),
+            ("dev", "debug", "Debug code"),
+            ("media", "gif", "Search GIFs"),
+        ])
+        result = build_skills_system_prompt()
+        assert "## Skills" in result
+        assert "3 specialized skills" in result
+        assert "skill_categories" in result
+        assert "dev (2)" in result
+        assert "media (1)" in result
+        assert 'skills_list(query=' in result
+
+    def test_pinned_skills_from_usage_data(self, monkeypatch, tmp_path):
+        """When usage data exists, pinned skills reflect actual usage."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path, [
+            ("dev", "plan", "Create plans"),
+            ("dev", "debug", "Debug code"),
+            ("media", "gif", "Search GIFs"),
+        ])
+
+        from unittest.mock import patch
+        # Mock usage data: "debug" has 5 views, "gif" has 3
+        mock_usage = [
+            ("debug", 5, 1000.0),
+            ("gif", 3, 900.0),
+        ]
+        with patch("agent.prompt_builder._query_skill_usage", return_value=mock_usage):
+            result = build_skills_system_prompt()
+
+        assert "pinned_skills" in result
+        # "debug" should appear before "gif" (more views)
+        debug_pos = result.find("debug")
+        gif_pos = result.find("gif")
+        assert debug_pos < gif_pos
+        # "plan" is not in pinned (no usage) but still in category count
+        assert "plan" not in result.split("</pinned_skills>")[0]
+        assert "dev (2)" in result
+
+    def test_no_usage_data_uses_category_representatives(self, monkeypatch, tmp_path):
+        """With no usage data, one skill per category is pinned."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path, [
+            ("dev", "alpha-skill", "First"),
+            ("dev", "beta-skill", "Second"),
+            ("media", "gamma-skill", "Third"),
+        ])
+        from unittest.mock import patch
+        with patch("agent.prompt_builder._query_skill_usage", return_value=[]):
+            result = build_skills_system_prompt()
+
+        pinned_block = result.split("<pinned_skills>")[1].split("</pinned_skills>")[0]
+        # One per category: alphabetically first from each
+        assert "alpha-skill" in pinned_block
+        assert "gamma-skill" in pinned_block
+        # beta-skill is NOT pinned (alpha-skill represents dev category)
+        assert "beta-skill" not in pinned_block
+
+    def test_pinned_skills_respects_token_budget(self, monkeypatch, tmp_path):
+        """Pinned skills stop accumulating when the char budget is reached."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Create many skills with long descriptions — these get truncated to
+        # ~60 chars by extract_skill_description, so we need enough categories
+        # to exceed the budget even with short entries.
+        specs = [
+            (f"cat{i}", f"skill-{i}", "A" * 200)
+            for i in range(30)
+        ]
+        self._make_skills(tmp_path, specs)
+
+        from unittest.mock import patch
+        with patch("agent.prompt_builder._query_skill_usage", return_value=[]):
+            result = build_skills_system_prompt()
+
+        pinned_block = result.split("<pinned_skills>")[1].split("</pinned_skills>")[0]
+        pinned_count = pinned_block.count("  - skill-")
+        # Budget caps the count well below the total 30 categories
+        assert pinned_count < 30
+        assert pinned_count > 0
 
 
 class TestBuildNousSubscriptionPrompt:

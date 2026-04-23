@@ -663,19 +663,21 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
         return None
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
-    """
-    List all available skills (progressive disclosure tier 1 - minimal metadata).
+def skills_list(category: str = None, query: str = None, task_id: str = None) -> str:
+    """List available skills (progressive disclosure tier 1 — metadata).
 
-    Returns only name + description to minimize token usage. Use skill_view() to
-    load full content, tags, related files, etc.
+    Returns name + description to minimise token usage.  Use ``skill_view()``
+    to load full content, tags, related files, etc.
 
     Args:
-        category: Optional category filter (e.g., "mlops")
-        task_id: Optional task identifier used to probe the active backend
+        category: Optional category filter (e.g., ``"mlops"``).
+        query: Optional search keyword — matched case-insensitively against
+            skill name, description, and category.  Combine with *category*
+            for narrower results.
+        task_id: Optional task identifier used to probe the active backend.
 
     Returns:
-        JSON string with minimal skill info: name, description, category
+        JSON string with minimal skill info: name, description, category.
     """
     try:
         if not SKILLS_DIR.exists():
@@ -707,6 +709,16 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         # Filter by category if specified
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
+
+        # Keyword search across name, description, and category
+        if query:
+            q = query.lower()
+            all_skills = [
+                s for s in all_skills
+                if q in s["name"].lower()
+                or q in (s.get("description") or "").lower()
+                or q in (s.get("category") or "").lower()
+            ]
 
         # Sort by category then name
         all_skills.sort(key=lambda s: (s.get("category") or "", s["name"]))
@@ -1384,14 +1396,18 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "Search and list available skills (name + description). Use skill_view(name) to load full content.",
     "parameters": {
         "type": "object",
         "properties": {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
-            }
+            },
+            "query": {
+                "type": "string",
+                "description": "Search keyword — matches skill name, description, and category (case-insensitive)",
+            },
         },
         "required": [],
     },
@@ -1421,7 +1437,7 @@ registry.register(
     toolset="skills",
     schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
+        category=args.get("category"), query=args.get("query"), task_id=kw.get("task_id")
     ),
     check_fn=check_skills_requirements,
     emoji="📚",

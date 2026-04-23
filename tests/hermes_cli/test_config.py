@@ -435,6 +435,15 @@ class TestOptionalEnvVarsRegistry:
 
         assert OPTIONAL_ENV_VARS["BRAVE_AUTOSUGGEST_API_KEY"]["tools"] == ["brave_suggest"]
 
+    def test_brave_api_url_is_registered_as_tool_override(self):
+        """BRAVE_API_URL is registered as a non-secret Brave tool override."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        info = OPTIONAL_ENV_VARS["BRAVE_API_URL"]
+        assert info["category"] == "tool"
+        assert info["password"] is False
+        assert "brave_answers" in info["tools"]
+        assert "brave_search" in info["tools"]
 
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""

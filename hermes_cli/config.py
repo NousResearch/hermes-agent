@@ -56,7 +56,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
-    "BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_ANSWERS_API_KEY", "BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_API_KEY",
+    "BRAVE_SEARCH_API_KEY", "BRAVE_FREE_API_KEY", "BRAVE_ANSWERS_API_KEY", "BRAVE_AUTOSUGGEST_API_KEY", "BRAVE_API_KEY", "BRAVE_API_URL",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
 })
@@ -1365,6 +1365,24 @@ OPTIONAL_ENV_VARS = {
         "url": "https://api-dashboard.search.brave.com/",
         "tools": ["brave_answers"],
         "password": True,
+        "category": "tool",
+    },
+    "BRAVE_API_URL": {
+        "description": "Optional Brave API base URL override for proxies or alternate Brave-compatible gateways.",
+        "prompt": "Brave API base URL",
+        "url": "https://api.search.brave.com/res/v1",
+        "tools": [
+            "web_search",
+            "brave_search",
+            "brave_news",
+            "brave_images",
+            "brave_videos",
+            "brave_local_pois",
+            "brave_local_descriptions",
+            "brave_suggest",
+            "brave_answers",
+        ],
+        "password": False,
         "category": "tool",
     },
     "BRAVE_AUTOSUGGEST_API_KEY": {

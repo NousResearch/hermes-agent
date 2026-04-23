@@ -67,6 +67,24 @@ class TestBraveSearch:
         assert call.kwargs["headers"]["Accept"] == "application/json"
         assert call.kwargs["headers"]["Accept-Encoding"] == "gzip"
 
+    def test_search_honors_brave_api_url_override(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "web": {"results": [{"title": "Result 1", "url": "https://example.com/1", "description": "Snippet 1"}]}
+        }
+
+        with patch.dict(
+            os.environ,
+            {"BRAVE_SEARCH_API_KEY": "brave-test", "BRAVE_API_URL": "https://proxy.example.com/custom/res/v1/"},
+        ), patch("tools.brave_search_tool.httpx.get", return_value=response) as mock_get:
+            from tools.brave_search_tool import brave_search
+
+            result = json.loads(brave_search("python testing", count=1))
+
+        assert result["success"] is True
+        assert mock_get.call_args.args[0] == "https://proxy.example.com/custom/res/v1/web/search"
+
     def test_search_forwards_documented_brave_query_params(self):
         response = MagicMock()
         response.raise_for_status = MagicMock()
@@ -445,6 +463,15 @@ class TestBraveSearch:
         assert messages_schema["minItems"] == 1
         assert messages_schema["maxItems"] == 1
         assert messages_schema["items"]["properties"]["role"]["const"] == "user"
+
+    def test_news_schema_requires_query_only(self):
+        from tools.brave_search_tool import BRAVE_NEWS_SCHEMA
+
+        parameters = BRAVE_NEWS_SCHEMA["parameters"]
+        assert parameters.get("required") == ["query"]
+        assert "oneOf" not in parameters
+        assert "anyOf" not in parameters
+        assert "messages" not in parameters.get("properties", {})
 
     def test_answers_surfaces_structured_brave_http_errors(self):
         error_response = _make_brave_http_error_response(

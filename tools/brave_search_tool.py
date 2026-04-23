@@ -29,8 +29,13 @@ from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
-_BRAVE_BASE_URL = "https://api.search.brave.com/res/v1"
+_BRAVE_DEFAULT_BASE_URL = "https://api.search.brave.com/res/v1"
 _BRAVE_DEFAULT_MODEL = "brave-pro"
+
+
+def _brave_base_url() -> str:
+    """Return the Brave API base URL, honoring an optional proxy override."""
+    return (os.getenv("BRAVE_API_URL", _BRAVE_DEFAULT_BASE_URL).strip() or _BRAVE_DEFAULT_BASE_URL).rstrip("/")
 
 
 def _brave_search_api_key() -> str:
@@ -202,7 +207,7 @@ def _brave_get_json(
 ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
     try:
         response = httpx.get(
-            f"{_BRAVE_BASE_URL}{path}",
+            f"{_brave_base_url()}{path}",
             params=params,
             headers=headers_factory(),
             timeout=60,
@@ -734,7 +739,7 @@ def brave_answers(
 
     try:
         response = httpx.post(
-            f"{_BRAVE_BASE_URL}/chat/completions",
+            f"{_brave_base_url()}/chat/completions",
             json=payload,
             headers={**_brave_answers_headers(), "Content-Type": "application/json"},
             timeout=60,
@@ -792,10 +797,7 @@ BRAVE_NEWS_SCHEMA = {
             "include_fetch_metadata": {"type": "boolean", "description": "Include fetch metadata"},
             "operators": {"type": "boolean", "description": "Apply Brave search operators"},
         },
-        "oneOf": [
-            {"required": ["query"]},
-            {"required": ["messages"]},
-        ],
+        "required": ["query"],
     },
 }
 

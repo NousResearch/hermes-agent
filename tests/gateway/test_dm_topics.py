@@ -245,6 +245,28 @@ async def test_update_thread_title_returns_false_on_api_error():
     assert adapter._get_cached_thread_topic_title("111", "222") is None
 
 
+def test_cache_thread_topic_title_ignores_incomplete_values():
+    """Empty title/chat/thread inputs should not populate the runtime cache."""
+    adapter = _make_adapter()
+
+    adapter._cache_thread_topic_title("111", "222", "")
+    adapter._cache_thread_topic_title("", "222", "Title")
+    adapter._cache_thread_topic_title("111", "", "Title")
+
+    assert adapter._thread_topic_titles == {}
+
+
+@pytest.mark.asyncio
+async def test_update_thread_title_returns_false_without_bot_or_title():
+    """Missing bot or blank title should short-circuit before any API call."""
+    adapter = _make_adapter()
+    assert await adapter.update_thread_title("111", "222", "Title") is False
+
+    adapter._bot = AsyncMock()
+    assert await adapter.update_thread_title("111", "222", "   ") is False
+    adapter._bot.edit_forum_topic.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_forum_topic_service_handler_caches_created_and_edited_names():
     """Service messages should hot-update the runtime topic-title cache."""
@@ -261,6 +283,24 @@ async def test_forum_topic_service_handler_caches_created_and_edited_names():
     await adapter._handle_forum_topic_service_message(update, None)
 
     assert adapter._get_cached_thread_topic_title("111", "222") == "Edited Title"
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_service_handler_ignores_missing_message_or_context():
+    """Service handler should no-op when update lacks message/thread/chat context."""
+    adapter = _make_adapter()
+
+    await adapter._handle_forum_topic_service_message(SimpleNamespace(message=None), None)
+    await adapter._handle_forum_topic_service_message(
+        SimpleNamespace(message=SimpleNamespace(message_thread_id=None, chat=SimpleNamespace(id=111))),
+        None,
+    )
+    await adapter._handle_forum_topic_service_message(
+        SimpleNamespace(message=SimpleNamespace(message_thread_id=222, chat=None)),
+        None,
+    )
+
+    assert adapter._thread_topic_titles == {}
 
 
 # ── _persist_dm_topic_thread_id ──
@@ -594,6 +634,37 @@ def test_build_message_event_no_auto_skill_without_thread():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.auto_skill is None
+
+
+def test_build_message_event_prefers_cached_thread_topic_title():
+    """Runtime-cached topic titles should flow into the built SessionSource."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    adapter._cache_thread_topic_title("111", "200", "Cached Topic")
+
+    msg = _make_mock_message(chat_id=111, thread_id=200)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.chat_topic == "Cached Topic"
+
+
+def test_build_message_event_uses_topic_created_and_edited_service_names():
+    """Forum-topic service payloads should update the event topic name immediately."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(
+        chat_id=111,
+        thread_id=300,
+        forum_topic_created=SimpleNamespace(name="Created Topic"),
+    )
+    msg.forum_topic_edited = SimpleNamespace(name="Edited Topic")
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.chat_topic == "Edited Topic"
+    assert adapter._get_cached_thread_topic_title("111", "300") == "Edited Topic"
 
 
 # ── _build_message_event: group_topics skill binding ──

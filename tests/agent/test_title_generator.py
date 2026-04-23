@@ -105,6 +105,14 @@ class TestAutoTitleSession:
         with patch("agent.title_generator.generate_title", return_value="New Title"):
             assert generate_title_if_missing(db, "sess-1", "hi", "hello") == "New Title"
 
+    def test_generate_title_if_missing_returns_none_on_lookup_error(self):
+        db = MagicMock()
+        db.get_session_title.side_effect = RuntimeError("db unavailable")
+
+        with patch("agent.title_generator.generate_title") as gen:
+            assert generate_title_if_missing(db, "sess-1", "hi", "hello") is None
+            gen.assert_not_called()
+
     def test_generates_and_sets_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None
@@ -120,6 +128,14 @@ class TestAutoTitleSession:
         with patch("agent.title_generator.generate_title_if_missing", return_value=None):
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_not_called()
+
+    def test_swallows_set_title_errors(self):
+        db = MagicMock()
+        db.set_session_title.side_effect = RuntimeError("write failed")
+
+        with patch("agent.title_generator.generate_title_if_missing", return_value="New Title"):
+            auto_title_session(db, "sess-1", "hi", "hello")
+            db.set_session_title.assert_called_once_with("sess-1", "New Title")
 
 
 class TestMaybeAutoTitle:

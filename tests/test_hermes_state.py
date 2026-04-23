@@ -974,6 +974,12 @@ class TestSessionTitle:
         with pytest.raises(ValueError, match="already in use"):
             db.set_session_title_if_missing("s2", "Taken")
 
+    def test_set_title_if_missing_rejects_empty_title(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        assert db.set_session_title_if_missing("s1", "   ") is False
+        assert db.get_session("s1")["title"] is None
+
     def test_title_in_search_sessions(self, db):
         db.create_session(session_id="s1", source="cli")
         db.set_session_title("s1", "Debugging Auth")

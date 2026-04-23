@@ -799,6 +799,43 @@ async def test_post_delivery_callbacks_compose_for_same_session():
 
 
 @pytest.mark.asyncio
+async def test_post_delivery_callbacks_append_to_existing_list_and_preserve_unmatched_generation():
+    """Generation filtering should leave unmatched callbacks queued for a later pop."""
+    adapter = ProgressCaptureAdapter()
+    fired = []
+
+    adapter.register_post_delivery_callback("sess", lambda: fired.append("first"), generation=3)
+    adapter.register_post_delivery_callback("sess", lambda: fired.append("second"), generation=3)
+    adapter.register_post_delivery_callback("sess", lambda: fired.append("third"), generation=4)
+
+    callback = adapter.pop_post_delivery_callback("sess", generation=3)
+    assert callable(callback)
+    callback()
+    assert fired == ["first", "second"]
+
+    callback = adapter.pop_post_delivery_callback("sess", generation=4)
+    assert callable(callback)
+    callback()
+    assert fired == ["first", "second", "third"]
+
+
+@pytest.mark.asyncio
+async def test_post_delivery_callback_plain_entry_survives_generation_filtered_pop():
+    """A plain callback should remain queued when popping with a generation filter."""
+    adapter = ProgressCaptureAdapter()
+    fired = []
+
+    adapter.register_post_delivery_callback("sess", lambda: fired.append("plain"))
+
+    assert adapter.pop_post_delivery_callback("sess", generation=7) is None
+    callback = adapter.pop_post_delivery_callback("sess")
+    assert callable(callback)
+    callback()
+
+    assert fired == ["plain"]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_drops_tool_progress_after_generation_invalidation(monkeypatch, tmp_path):
     import yaml
 

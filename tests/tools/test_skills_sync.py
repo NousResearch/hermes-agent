@@ -402,6 +402,64 @@ class TestSyncSkills:
 
         assert (user_skill / "SKILL.md").read_text() == "# User modified"
 
+    def test_collision_does_not_poison_manifest(self, tmp_path):
+        """Collision with an unmanifested user skill must NOT record bundled_hash.
+
+        Otherwise the next sync compares user_hash against the recorded
+        bundled_hash, finds a mismatch, and permanently flags the skill as
+        'user-modified' — even though the user never touched a bundled copy.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Pre-existing user skill (e.g. from hub, custom, or leftover) that
+        # happens to share a name with a newly bundled skill.
+        user_skill = skills_dir / "category" / "new-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# From hub — unrelated to bundled")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+        # User file must survive (existing invariant).
+        assert (user_skill / "SKILL.md").read_text() == (
+            "# From hub — unrelated to bundled"
+        )
+
+        # Manifest must NOT contain the skill — it was never synced from bundled.
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            manifest = _read_manifest()
+        assert "new-skill" not in manifest, (
+            "Collision path wrote bundled_hash to the manifest even though "
+            "the on-disk copy is unrelated to bundled. This poisons update "
+            "detection: the next sync will mark the skill as 'user-modified'."
+        )
+
+    def test_collision_does_not_trigger_false_user_modified_on_resync(self, tmp_path):
+        """End-to-end: after a collision, a second sync must not flag user_modified.
+
+        Pre-fix bug: first sync wrote bundled_hash to the manifest; second
+        sync then diffed user_hash vs bundled_hash, mismatched, and shoved
+        the skill into the user_modified bucket forever.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        user_skill = skills_dir / "category" / "new-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# From hub — unrelated to bundled")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)  # first sync: collision path
+            result2 = sync_skills(quiet=True)  # second sync: must not flag
+
+        assert "new-skill" not in result2["user_modified"], (
+            "Second sync after a collision falsely flagged the user's skill "
+            "as 'user-modified' — the manifest was poisoned on the first sync."
+        )
+
     def test_nonexistent_bundled_dir(self, tmp_path):
         with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)

@@ -22,7 +22,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
-import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
+import { type AppLayoutProgressProps, type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { $turnState, patchTurnState } from './turnStore.js'
@@ -658,10 +658,35 @@ export function useMainApp(gw: GatewayClient) {
     [cols, composerActions, composerState, empty, pagerPageSize, submit]
   )
 
-  const appProgress = useMemo(
+  const liveTailVisible = (() => {
+    const s = scrollRef.current
+
+    if (!s) {
+      return true
+    }
+
+    const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
+    const vp = Math.max(0, s.getViewportHeight())
+    const total = Math.max(vp, s.getScrollHeight())
+
+    return top + vp >= total - 3
+  })()
+
+  const liveProgress = useMemo<AppLayoutProgressProps>(
     () => ({ ...turn, showProgressArea, showStreamingArea: Boolean(turn.streaming) }),
     [turn, showProgressArea]
   )
+
+  const frozenProgressRef = useRef(liveProgress)
+
+  // When the live tail is offscreen, freeze its snapshot so scroll work doesn't
+  // keep rebuilding the streaming/thinking subtree the user can't see. Thaw as
+  // soon as the viewport comes back near the bottom or the turn finishes.
+  if (liveTailVisible || !ui.busy) {
+    frozenProgressRef.current = liveProgress
+  }
+
+  const appProgress = liveTailVisible || !ui.busy ? liveProgress : frozenProgressRef.current
 
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
   const gitBranch = useGitBranch(cwd)

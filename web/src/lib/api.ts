@@ -1,5 +1,7 @@
 const BASE = "";
 
+import type { DashboardTheme } from "@/themes/types";
+
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
 declare global {
@@ -486,6 +488,9 @@ export interface DashboardThemeSummary {
   description: string;
   label: string;
   name: string;
+  /** Full theme definition for user themes; undefined for built-ins
+   *  (which the frontend already has locally). */
+  definition?: DashboardTheme;
 }
 
 export interface DashboardThemesResponse {

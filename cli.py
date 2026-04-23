@@ -2090,8 +2090,6 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
         self._queued_turn_preview: str = ""
-        self._side_state: Optional[Dict[str, Any]] = None
-        self._side_queue: list[tuple[str, list[Path]]] = []
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""

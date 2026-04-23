@@ -9,6 +9,7 @@ import pytest
 
 from tools.credential_files import (
     clear_credential_files,
+    get_cache_file_container_path,
     get_credential_file_mounts,
     get_cache_directory_mounts,
     get_skills_directory_mount,
@@ -386,16 +387,23 @@ class TestCacheDirectoryMounts:
         assert "/root/.hermes/cache/audio" in paths
 
     def test_skips_nonexistent_dirs(self, tmp_path, monkeypatch):
-        """Dirs that don't exist on disk are not returned."""
+        """Standard cache dirs are created so new sandboxes mount them."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
-        # Create only one cache dir
-        (hermes_home / "cache" / "documents").mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mounts = get_cache_directory_mounts()
-        assert len(mounts) == 1
-        assert mounts[0]["container_path"] == "/root/.hermes/cache/documents"
+        paths = {m["container_path"] for m in mounts}
+        assert paths == {
+            "/root/.hermes/cache/documents",
+            "/root/.hermes/cache/images",
+            "/root/.hermes/cache/audio",
+            "/root/.hermes/cache/screenshots",
+        }
+        assert (hermes_home / "cache" / "documents").is_dir()
+        assert (hermes_home / "cache" / "images").is_dir()
+        assert (hermes_home / "cache" / "audio").is_dir()
+        assert (hermes_home / "cache" / "screenshots").is_dir()
 
     def test_legacy_dir_names_resolved(self, tmp_path, monkeypatch):
         """Old-style dir names (e.g. document_cache) are resolved correctly."""
@@ -416,12 +424,48 @@ class TestCacheDirectoryMounts:
         assert "/root/.hermes/cache/images" in container_paths
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
-        """No cache dirs → empty list."""
+        """Empty HERMES_HOME still yields standard cache mounts."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        assert get_cache_directory_mounts() == []
+        assert len(get_cache_directory_mounts()) == 4
+
+    def test_cache_file_container_path_new_layout(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        doc_dir = hermes_home / "cache" / "documents"
+        doc_dir.mkdir(parents=True)
+        cached = doc_dir / "doc_abc_report.pdf"
+        cached.write_bytes(b"%PDF")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert (
+            get_cache_file_container_path(cached)
+            == "/root/.hermes/cache/documents/doc_abc_report.pdf"
+        )
+
+    def test_cache_file_container_path_legacy_layout(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        doc_dir = hermes_home / "document_cache"
+        doc_dir.mkdir(parents=True)
+        cached = doc_dir / "doc_abc_report.pdf"
+        cached.write_bytes(b"%PDF")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert (
+            get_cache_file_container_path(cached, container_base="/home/user/.hermes")
+            == "/home/user/.hermes/cache/documents/doc_abc_report.pdf"
+        )
+
+    def test_cache_file_container_path_rejects_non_cache_file(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("no")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(ValueError):
+            get_cache_file_container_path(outside)
 
 
 class TestIterCacheFiles:

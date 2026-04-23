@@ -339,22 +339,28 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
-        )
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                preexec_fn=None if _IS_WINDOWS else os.setsid,
+            )
 
-        if stdin_data is not None:
-            _pipe_stdin(proc, stdin_data)
+            if stdin_data is not None:
+                _pipe_stdin(proc, stdin_data)
 
-        return proc
+            return proc
+        except (KeyboardInterrupt, SystemExit):
+            if proc is not None:
+                self._kill_process(proc)
+            raise
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""

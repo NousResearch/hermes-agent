@@ -28,7 +28,9 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _CORS_HEADERS,
+    _aiohttp_client_max_size,
     _derive_chat_session_id,
+    _parse_max_request_bytes,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -47,6 +49,24 @@ class TestCheckRequirements:
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_api_server_requirements() is False
+
+
+class TestRequestBodyLimitConfig:
+    def test_default_when_unset(self):
+        assert _parse_max_request_bytes(None, default=123) == 123
+
+    def test_positive_integer_override(self):
+        assert _parse_max_request_bytes("2097152", default=123) == 2_097_152
+
+    def test_malformed_override_falls_back(self):
+        assert _parse_max_request_bytes("not-an-int", default=123) == 123
+
+    def test_non_positive_override_falls_back(self):
+        assert _parse_max_request_bytes("0", default=123) == 123
+
+    def test_aiohttp_parser_cap_stays_above_logical_limit(self):
+        with patch("gateway.platforms.api_server.MAX_REQUEST_BYTES", 10):
+            assert _aiohttp_client_max_size() > 10
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +221,10 @@ class TestIdempotencyCache:
 
 
 class TestAdapterInit:
-    def test_default_config(self):
+    def test_default_config(self, monkeypatch):
+        monkeypatch.delenv("API_SERVER_PORT", raising=False)
+        monkeypatch.delenv("API_SERVER_HOST", raising=False)
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
         assert adapter._host == "127.0.0.1"

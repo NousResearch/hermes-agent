@@ -21,6 +21,8 @@ Requires:
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -31,6 +33,7 @@ import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -44,6 +47,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
+    cache_document_from_bytes,
+    cleanup_document_cache,
     is_network_accessible,
 )
 
@@ -53,10 +59,41 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+DEFAULT_MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+MAX_INLINE_FILE_BYTES = 20 * 1024 * 1024  # Match common gateway document limits
+MAX_TEXT_DOCUMENT_INLINE_BYTES = 100 * 1024
+TEXT_DOCUMENT_INLINE_EXTENSIONS = frozenset({".txt", ".md", ".log"})
+
+
+def _parse_max_request_bytes(value: Any, default: int = DEFAULT_MAX_REQUEST_BYTES) -> int:
+    """Parse the API-server body-size override, falling back safely."""
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        logger.warning("Invalid API_SERVER_MAX_REQUEST_BYTES=%r; using %d", value, default)
+        return default
+    if parsed <= 0:
+        logger.warning("API_SERVER_MAX_REQUEST_BYTES must be positive; using %d", default)
+        return default
+    return parsed
+
+
+MAX_REQUEST_BYTES = _parse_max_request_bytes(os.getenv("API_SERVER_MAX_REQUEST_BYTES"))
+
+
+def _aiohttp_client_max_size() -> int:
+    """Keep aiohttp's parser cap above Hermes' logical request limit.
+
+    The middleware rejects oversized Content-Length values with an OpenAI-style
+    JSON error before reading the body. aiohttp still needs a larger hard cap
+    for requests without a usable Content-Length.
+    """
+    return max(MAX_REQUEST_BYTES * 2, MAX_REQUEST_BYTES + DEFAULT_MAX_REQUEST_BYTES)
 
 
 def _normalize_chat_content(
@@ -126,20 +163,107 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
 
 
-def _normalize_multimodal_content(content: Any) -> Any:
+def _openai_file_error() -> ValueError:
+    return ValueError(
+        "unsupported_content_type:Inline image inputs and inline file_data documents are supported, "
+        "but uploaded file IDs are not supported on this endpoint."
+    )
+
+
+def _safe_display_filename(filename: Any) -> str:
+    safe_name = Path(str(filename or "document")).name.replace("\x00", "").strip()
+    if not safe_name or safe_name in (".", ".."):
+        safe_name = "document"
+    return re.sub(r"[^\w.\- ]", "_", safe_name)
+
+
+def _display_name_from_cached_path(path: str) -> str:
+    basename = os.path.basename(path)
+    parts = basename.split("_", 2)
+    return _safe_display_filename(parts[2] if len(parts) >= 3 else basename)
+
+
+def _normalize_file_content_part(part: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate a file/input_file part shape and emit one canonical form."""
+    part_type = str(part.get("type") or "").strip().lower()
+
+    if part.get("file_id"):
+        raise _openai_file_error()
+
+    file_obj = part.get("file") if isinstance(part.get("file"), dict) else {}
+    if isinstance(file_obj, dict) and file_obj.get("file_id"):
+        raise _openai_file_error()
+
+    if part_type == "file":
+        if not isinstance(file_obj, dict) or not file_obj:
+            raise ValueError("invalid_content_part:File parts must include a file object.")
+        filename = file_obj.get("filename") or part.get("filename")
+        file_data = file_obj.get("file_data")
+    elif part_type == "input_file":
+        filename = part.get("filename") or file_obj.get("filename")
+        file_data = part.get("file_data") or file_obj.get("file_data")
+    else:  # pragma: no cover - caller guards part_type
+        raise ValueError(f"unsupported_content_type:Unsupported content part type {part_type!r}.")
+
+    if not isinstance(filename, str) or not filename.strip():
+        raise ValueError("invalid_content_part:File parts must include a non-empty filename.")
+    if not isinstance(file_data, str) or not file_data.strip():
+        raise ValueError("invalid_content_part:File parts must include non-empty file_data.")
+
+    return {
+        "type": "file",
+        "file": {
+            "filename": filename.strip(),
+            "file_data": file_data.strip(),
+        },
+    }
+
+
+def _extract_document_extension(filename: str) -> str:
+    return Path(_safe_display_filename(filename)).suffix.lower()
+
+
+def _decode_inline_file_data(file_data: str) -> bytes:
+    data = file_data.strip()
+    if data.lower().startswith("data:"):
+        header, sep, payload = data.partition(",")
+        if not sep or ";base64" not in header.lower():
+            raise ValueError("invalid_content_part:File data URLs must use base64 encoding.")
+        data = payload.strip()
+
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("invalid_content_part:File data must be valid base64.") from None
+
+    if not raw:
+        raise ValueError("invalid_content_part:File data must decode to non-empty bytes.")
+    if len(raw) > MAX_INLINE_FILE_BYTES:
+        raise ValueError("unsupported_content_type:File input is too large.")
+    return raw
+
+
+def _text_part(text: str) -> Dict[str, str]:
+    return {"type": "text", "text": text}
+
+
+def _normalize_multimodal_content(content: Any, *, allow_files: bool = False) -> Any:
     """Validate and normalize multimodal content for the API server.
 
     Returns a plain string when the content is text-only, or a list of
-    ``{"type": "text"|"image_url", ...}`` parts when images are present.
+    ``{"type": "text"|"image_url"|"file", ...}`` parts when images or
+    accepted inline documents are present.
     The output shape is the native OpenAI Chat Completions vision format,
     which the agent pipeline accepts verbatim (OpenAI-wire providers) or
-    converts (``_preprocess_anthropic_content`` for Anthropic).
+    converts (``_preprocess_anthropic_content`` for Anthropic).  File parts
+    are an API-server boundary format and are converted to text notes before
+    the agent sees them.
 
     Raises ``ValueError`` with an OpenAI-style code on invalid input:
-      * ``unsupported_content_type`` — file/input_file/file_id parts, or
-        non-image ``data:`` URLs.
+      * ``unsupported_content_type`` — file/input_file/file_id parts when not
+        allowed, uploaded file IDs, or non-image ``data:`` URLs.
       * ``invalid_image_url`` — missing URL or unsupported scheme.
-      * ``invalid_content_part`` — malformed text/image objects.
+      * ``invalid_content_part`` — malformed text/image/file objects.
 
     Callers translate the ValueError into a 400 response.
     """
@@ -220,10 +344,13 @@ def _normalize_multimodal_content(content: Any) -> Any:
             continue
 
         if part_type in _FILE_PART_TYPES:
-            raise ValueError(
-                "unsupported_content_type:Inline image inputs are supported, "
-                "but uploaded files and document inputs are not supported on this endpoint."
-            )
+            if not allow_files:
+                raise ValueError(
+                    "unsupported_content_type:Inline file inputs are supported only on "
+                    "the latest Chat Completions user message."
+                )
+            normalized_parts.append(_normalize_file_content_part(part))
+            continue
 
         # Unknown part type — reject explicitly so clients get a clear error
         # instead of a silently dropped turn.
@@ -255,6 +382,8 @@ def _content_has_visible_payload(content: Any) -> bool:
                 if ptype in _TEXT_PART_TYPES and str(part.get("text") or "").strip():
                     return True
                 if ptype in _IMAGE_PART_TYPES:
+                    return True
+                if ptype in _FILE_PART_TYPES:
                     return True
     return False
 
@@ -623,6 +752,89 @@ class APIServerAdapter(BasePlatformAdapter):
             pass
         return "hermes-agent"
 
+    def _process_file_content_parts(self, content: Any) -> Any:
+        """Convert API-server file parts into gateway-style document notes."""
+        if not isinstance(content, list):
+            return content
+
+        output_parts: List[Dict[str, Any]] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype == "file":
+                output_parts.extend(self._process_file_content_part(part))
+            else:
+                output_parts.append(part)
+
+        if not output_parts:
+            return ""
+        if all(p.get("type") == "text" for p in output_parts):
+            return "\n\n".join(str(p.get("text") or "") for p in output_parts if p.get("text"))
+        return output_parts
+
+    def _process_file_content_part(self, part: Dict[str, Any]) -> List[Dict[str, str]]:
+        file_meta = part.get("file") if isinstance(part.get("file"), dict) else {}
+        filename = str(file_meta.get("filename") or "document")
+        display_name = _safe_display_filename(filename)
+        ext = _extract_document_extension(filename)
+        if ext not in SUPPORTED_DOCUMENT_TYPES:
+            supported = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES))
+            raise ValueError(
+                f"unsupported_content_type:Unsupported document type {ext or 'unknown'}. "
+                f"Supported types: {supported}."
+            )
+
+        raw = _decode_inline_file_data(str(file_meta.get("file_data") or ""))
+        mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+
+        try:
+            cached_path = cache_document_from_bytes(raw, filename)
+            cleanup_document_cache(max_age_hours=24)
+        except Exception as exc:
+            logger.warning("Failed to cache API-server document %s: %s", display_name, exc, exc_info=True)
+            raise ValueError("invalid_content_part:File input could not be cached.") from None
+
+        try:
+            from tools.credential_files import get_cache_file_container_path
+
+            sandbox_path = get_cache_file_container_path(cached_path)
+        except Exception as exc:
+            logger.warning("Failed to map cached API-server document into sandbox path: %s", exc, exc_info=True)
+            raise ValueError("invalid_content_part:Cached file could not be mapped into the agent sandbox.") from None
+
+        display_name = _display_name_from_cached_path(cached_path)
+        is_text_document = mime_type.startswith("text/")
+        notes: List[Dict[str, str]] = []
+        text_included = False
+
+        if ext in TEXT_DOCUMENT_INLINE_EXTENSIONS and len(raw) <= MAX_TEXT_DOCUMENT_INLINE_BYTES:
+            try:
+                text_content = raw.decode("utf-8")
+                text_included = True
+            except UnicodeDecodeError:
+                text_content = ""
+        else:
+            text_content = ""
+
+        if is_text_document and text_included:
+            notes.append(_text_part(
+                f"[The user sent a text document: '{display_name}'. "
+                f"Its content has been included below. "
+                f"The file is also saved at: {sandbox_path}]"
+            ))
+        else:
+            size_kb = max(1, len(raw) // 1024)
+            notes.append(_text_part(
+                f"[The user sent a document: '{display_name}' ({mime_type}, {size_kb} KB). "
+                f"The file is saved at: {sandbox_path}.]"
+            ))
+
+        if text_included:
+            notes.append(_text_part(f"[Content of {display_name}]:\n{text_content}"))
+
+        return notes
+
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
         if not origin or not self._cors_origins:
@@ -827,7 +1039,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
+        conversation_messages: List[Dict[str, Any]] = []
+        last_user_idx = next(
+            (
+                idx
+                for idx in range(len(messages) - 1, -1, -1)
+                if isinstance(messages[idx], dict) and messages[idx].get("role") == "user"
+            ),
+            None,
+        )
 
         for idx, msg in enumerate(messages):
             role = msg.get("role", "")
@@ -842,7 +1062,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     system_prompt = system_prompt + "\n" + content
             elif role in ("user", "assistant"):
                 try:
-                    content = _normalize_multimodal_content(raw_content)
+                    content = _normalize_multimodal_content(
+                        raw_content,
+                        allow_files=(role == "user" and idx == last_user_idx),
+                    )
+                    if role == "user" and idx == last_user_idx:
+                        content = self._process_file_content_parts(content)
                 except ValueError as exc:
                     return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
                 conversation_messages.append({"role": role, "content": content})
@@ -2488,7 +2713,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            self._app = web.Application(middlewares=mws, client_max_size=_aiohttp_client_max_size())
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)

@@ -100,7 +100,34 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 }
 ```
 
-Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+**Inline file input:** the latest user message may also include inline document bytes as a `file` content part. Hermes decodes the file, stores it in the document cache, and gives the agent a sandbox-visible path such as `/root/.hermes/cache/documents/doc_abc_report.pdf`. Small UTF-8 text documents are also included directly in the prompt.
+
+```json
+{
+  "model": "hermes-agent",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Summarize this document."},
+        {
+          "type": "file",
+          "file": {
+            "filename": "report.pdf",
+            "file_data": "JVBERi0xLjQK..."
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+`input_file` with top-level `filename` and `file_data` is accepted as an alias on the latest Chat Completions user message. Uploaded file IDs are not implemented: `file_id` returns `400 unsupported_content_type`. File parts in system messages, assistant messages, historical user messages, Responses requests, or `conversation_history` are rejected.
+
+Supported document extensions are `.pdf`, `.md`, `.txt`, `.log`, `.zip`, `.docx`, `.xlsx`, and `.pptx`. Inline file data must be base64, optionally using a `data:<mime>;base64,...` prefix. Individual decoded files are capped at 20 MB. Text-like `.txt`, `.md`, and `.log` files up to 100 KB are included in the prompt as text as well as saved to the document cache.
+
+Non-image `data:` URLs in image parts return `400 unsupported_content_type`.
 
 **Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
@@ -286,6 +313,7 @@ The default bind address (`127.0.0.1`) is for local-only use. Browser access is 
 | `API_SERVER_KEY` | _(none)_ | Bearer token for auth |
 | `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
 | `API_SERVER_MODEL_NAME` | _(profile name)_ | Model name on `/v1/models`. Defaults to profile name, or `hermes-agent` for default profile. |
+| `API_SERVER_MAX_REQUEST_BYTES` | `1000000` | Max POST body size checked from `Content-Length`; increase for inline file uploads. |
 
 ### config.yaml
 

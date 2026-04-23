@@ -352,25 +352,52 @@ _CACHE_DIRS: list[tuple[str, str]] = [
 def get_cache_directory_mounts(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:
-    """Return mount entries for each cache directory that exists on disk.
+    """Return mount entries for each standard cache directory.
 
     Used by Docker to create bind mounts.  Each entry has ``host_path`` and
     ``container_path`` keys.  The host path is resolved via
     ``get_hermes_dir()`` for backward compatibility with old directory layouts.
+    Cache directories are created before returning so new sandboxes always
+    receive the mounts they need for later gateway/API-server attachments.
     """
     from hermes_constants import get_hermes_dir
 
     mounts: List[Dict[str, str]] = []
     for new_subpath, old_name in _CACHE_DIRS:
         host_dir = get_hermes_dir(new_subpath, old_name)
-        if host_dir.is_dir():
-            # Always map to the *new* container layout regardless of host layout.
-            container_path = f"{container_base.rstrip('/')}/{new_subpath}"
-            mounts.append({
-                "host_path": str(host_dir),
-                "container_path": container_path,
-            })
+        host_dir.mkdir(parents=True, exist_ok=True)
+        # Always map to the *new* container layout regardless of host layout.
+        container_path = f"{container_base.rstrip('/')}/{new_subpath}"
+        mounts.append({
+            "host_path": str(host_dir),
+            "container_path": container_path,
+        })
     return mounts
+
+
+def get_cache_file_container_path(
+    host_path: str | os.PathLike[str],
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Map a host-side Hermes cache file to its sandbox-visible path.
+
+    Docker mounts cache directories read-only and Modal/file-sync mirrors cache
+    files individually.  Both use the canonical container layout under
+    ``<container_base>/cache/...`` even when the host uses an old cache
+    directory name such as ``document_cache``.
+    """
+    from hermes_constants import get_hermes_dir
+
+    resolved_host = Path(host_path).resolve(strict=False)
+    for new_subpath, old_name in _CACHE_DIRS:
+        host_dir = get_hermes_dir(new_subpath, old_name)
+        try:
+            rel = resolved_host.relative_to(host_dir.resolve(strict=False))
+        except ValueError:
+            continue
+        return f"{container_base.rstrip('/')}/{new_subpath}/{rel.as_posix()}"
+
+    raise ValueError(f"Path is not inside a Hermes cache directory: {host_path}")
 
 
 def iter_cache_files(
@@ -403,5 +430,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 

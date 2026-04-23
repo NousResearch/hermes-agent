@@ -396,7 +396,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
-                "read_history": set(), "dedup": {},
+                "read_history": set(), "dedup": {}, "read_timestamps": {},
             })
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
@@ -784,7 +784,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         )
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
-                "last_key": None, "consecutive": 0, "read_history": set(),
+                "last_key": None, "consecutive": 0,
+                "read_history": set(), "dedup": {}, "read_timestamps": {},
             })
             if task_data["last_key"] == search_key:
                 task_data["consecutive"] += 1

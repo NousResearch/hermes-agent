@@ -2035,8 +2035,9 @@ class AIAgent:
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         if old_norm and new_norm and old_norm != new_norm:
+            fallback_chain = getattr(self, "_fallback_chain", [])
             self._fallback_chain = [
-                entry for entry in self._fallback_chain
+                entry for entry in fallback_chain
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
             ]
             self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
@@ -3913,13 +3914,15 @@ class AIAgent:
 
         # 2. Clean terminal sandbox environments
         try:
-            cleanup_vm(task_id)
+            from tools import terminal_tool
+            terminal_tool.cleanup_vm(task_id)
         except Exception:
             pass
 
         # 3. Clean browser daemon sessions
         try:
-            cleanup_browser(task_id)
+            from tools import browser_tool
+            browser_tool.cleanup_browser(task_id)
         except Exception:
             pass
 

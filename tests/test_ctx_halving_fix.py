@@ -180,6 +180,8 @@ class TestEphemeralMaxOutputTokens:
         )
         agent._anthropic_preserve_dots = MagicMock(return_value=False)
         agent.request_overrides = {}
+        from agent.transports.anthropic import AnthropicTransport
+        agent._anthropic_transport = AnthropicTransport()
         return agent
 
     def test_ephemeral_override_is_used_on_first_call(self):

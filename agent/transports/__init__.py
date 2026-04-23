@@ -27,6 +27,9 @@ def get_transport(api_mode: str):
         _discover_transports()
     cls = _REGISTRY.get(api_mode)
     if cls is None:
+        _discover_transports()
+        cls = _REGISTRY.get(api_mode)
+    if cls is None:
         return None
     return cls()
 

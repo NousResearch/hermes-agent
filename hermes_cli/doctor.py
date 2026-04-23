@@ -33,6 +33,14 @@ from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
 
+def _which(command: str) -> str | None:
+    """Return an executable path, tolerating platform monkeypatches in tests."""
+    try:
+        return shutil.which(command)
+    except AttributeError:
+        return None
+
+
 _PROVIDER_ENV_HINTS = (
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
@@ -490,7 +498,7 @@ def run_doctor(args):
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
-    if shutil.which("codex"):
+    if _which("codex"):
         check_ok("codex CLI")
     else:
         check_warn("codex CLI not found", "(required for openai-codex login)")
@@ -701,13 +709,13 @@ def run_doctor(args):
     print(color("◆ External Tools", Colors.CYAN, Colors.BOLD))
     
     # Git
-    if shutil.which("git"):
+    if _which("git"):
         check_ok("git")
     else:
         check_warn("git not found", "(optional)")
     
     # ripgrep (optional, for faster file search)
-    if shutil.which("rg"):
+    if _which("rg"):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
@@ -716,7 +724,7 @@ def run_doctor(args):
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     if terminal_env == "docker":
-        if shutil.which("docker"):
+        if _which("docker"):
             # Check if docker daemon is running
             try:
                 result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
@@ -731,7 +739,7 @@ def run_doctor(args):
             check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
             issues.append("Install Docker or change TERMINAL_ENV")
     else:
-        if shutil.which("docker"):
+        if _which("docker"):
             check_ok("docker", "(optional)")
         else:
             if _is_termux():
@@ -778,7 +786,7 @@ def run_doctor(args):
             issues.append("Install daytona SDK: pip install daytona")
 
     # Node.js + agent-browser (for browser automation tools)
-    if shutil.which("node"):
+    if _which("node"):
         check_ok("Node.js")
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
@@ -804,7 +812,7 @@ def run_doctor(args):
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
-    if shutil.which("npm"):
+    if _which("npm"):
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
             (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),

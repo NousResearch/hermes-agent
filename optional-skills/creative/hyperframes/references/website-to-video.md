@@ -7,16 +7,18 @@ The workflow has 7 steps. Each produces an artifact that gates the next. **Do no
 ## Step 1: Capture & Understand
 
 ```bash
-npx hyperframes capture https://example.com --out captured/
+npx hyperframes capture https://example.com -o example-video
 ```
 
-Produces:
-- `captured/snapshot.html` — self-contained page
-- `captured/screenshot.png` — above-the-fold visual
-- `captured/assets/` — logos, hero images, background video (if any)
-- `captured/palette.json` — extracted colors (sorted by pixel coverage)
-- `captured/text.md` — extracted headings, paragraphs, CTAs
-- `captured/fonts.json` — font families and stacks detected in computed styles
+Produces `example-video/capture/` with:
+- `capture/screenshots/` — above-the-fold + section screenshots (up to `--max-screenshots`)
+- `capture/assets/` — logos, hero images, background video (if any)
+- `capture/extracted/tokens.json` — colors, fonts, and spacing tokens
+- `capture/extracted/visible-text.txt` — extracted headings, paragraphs, CTAs
+- `capture/extracted/fonts.json` — font families and stacks detected in computed styles
+- `capture/asset-descriptions.md` — auto-generated asset catalog
+
+All subsequent steps read from the `capture/` subfolder — `capture/extracted/tokens.json`, `capture/assets/hero.png`, etc. Never strip the `capture/` prefix when referencing these files.
 
 **Gate:** Print a site summary — name, top 3 colors, primary + display fonts, hero asset path, one-sentence vibe. Keep it in your context — don't re-capture.
 
@@ -46,8 +48,8 @@ Small brand reference at the project root. 6 sections, ~90 lines. This is the ch
 - Eases: `power3.out` for entrances, `expo.in` for exits
 
 ## Assets
-- Logo: `captured/assets/logo.svg`
-- Hero image: `captured/assets/hero.png`
+- Logo: `capture/assets/logo.svg`
+- Hero image: `capture/assets/hero.png`
 
 ## What NOT to Do
 - No purple, no pastels, no serif body

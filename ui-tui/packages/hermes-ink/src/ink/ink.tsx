@@ -70,7 +70,7 @@ import {
   startSelection,
   updateSelection
 } from './selection.js'
-import { supportsExtendedKeys, SYNC_OUTPUT_SUPPORTED, type Terminal, writeDiffToTerminal } from './terminal.js'
+import { isXtermJs, supportsExtendedKeys, SYNC_OUTPUT_SUPPORTED, type Terminal, writeDiffToTerminal } from './terminal.js'
 import {
   CURSOR_HOME,
   cursorMove,
@@ -245,6 +245,7 @@ export default class Ink {
   // microtask. Dims are captured sync in handleResize; only the
   // expensive tree rebuild defers.
   private pendingResizeRender = false
+  private resizeSettleTimer: ReturnType<typeof setTimeout> | null = null
 
   // Fold synchronous re-entry (selection fanout, onFrame callback)
   // into one follow-up microtask instead of stacking renders.
@@ -439,6 +440,11 @@ export default class Ink {
       this.drainTimer = null
     }
 
+    if (this.resizeSettleTimer !== null) {
+      clearTimeout(this.resizeSettleTimer)
+      this.resizeSettleTimer = null
+    }
+
     // Alt screen: reset frame buffers so the next render repaints from
     // scratch (prevFrameContaminated → every cell written, wrapped in
     // BSU/ESU — old content stays visible until the new frame swaps
@@ -456,6 +462,20 @@ export default class Ink {
 
       this.resetFramesForAltScreen()
       this.needsEraseBeforePaint = true
+
+      if (isXtermJs()) {
+        this.resizeSettleTimer = setTimeout(() => {
+          this.resizeSettleTimer = null
+
+          if (this.isUnmounted || this.isPaused || !this.altScreenActive || !this.options.stdout.isTTY) {
+            return
+          }
+
+          this.resetFramesForAltScreen()
+          this.needsEraseBeforePaint = true
+          this.scheduleRender()
+        }, 160)
+      }
     }
 
     // Already queued: later events in this burst updated dims/alt-screen

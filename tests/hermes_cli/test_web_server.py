@@ -784,6 +784,25 @@ class TestNewEndpoints:
         except Exception:
             pass
 
+    def test_session_search_returns_limit_unique_sessions(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="session-a", source="cli", model="anthropic/claude-sonnet-4")
+            db.create_session(session_id="session-b", source="cli", model="anthropic/claude-sonnet-4")
+            for _ in range(25):
+                db.append_message("session-a", role="user", content="needle exact phrase")
+            db.append_message("session-b", role="user", content="needle exact phrase")
+        finally:
+            db.close()
+
+        resp = self.client.get('/api/sessions/search?q="needle exact phrase"&limit=2')
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [result["session_id"] for result in data["results"]] == ["session-a", "session-b"]
+
 
 # ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info

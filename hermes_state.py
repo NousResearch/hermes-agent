@@ -1227,7 +1227,7 @@ class SessionDB:
             JOIN messages m ON m.id = messages_fts.rowid
             JOIN sessions s ON s.id = m.session_id
             WHERE {where_sql}
-            ORDER BY rank
+            ORDER BY rank, m.id
             LIMIT ? OFFSET ?
         """
 

@@ -736,20 +736,32 @@ async def search_sessions(q: str = "", limit: int = 20):
                 else:
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
+            # search_messages() limits raw message hits, but this endpoint returns
+            # unique sessions. Overfetch in batches until we either collect the
+            # requested number of unique sessions or exhaust the match list.
             seen: dict = {}
-            for m in matches:
-                sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
+            offset = 0
+            batch_size = max(limit, 20)
+            while len(seen) < limit:
+                matches = db.search_messages(query=prefix_query, limit=batch_size, offset=offset)
+                if not matches:
+                    break
+                for m in matches:
+                    sid = m["session_id"]
+                    if sid not in seen:
+                        seen[sid] = {
+                            "session_id": sid,
+                            "snippet": m.get("snippet", ""),
+                            "role": m.get("role"),
+                            "source": m.get("source"),
+                            "model": m.get("model"),
+                            "session_started": m.get("session_started"),
+                        }
+                        if len(seen) >= limit:
+                            break
+                if len(matches) < batch_size:
+                    break
+                offset += batch_size
             return {"results": list(seen.values())}
         finally:
             db.close()

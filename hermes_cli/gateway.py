@@ -1129,6 +1129,14 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _bundled_node_bin_dir(home: Path) -> str | None:
+    """Return the bundled Hermes node bin dir for *home* when present."""
+    bundled_node = home / ".hermes" / "node" / "bin" / "node"
+    if bundled_node.exists():
+        return str(bundled_node.parent)
+    return None
+
+
 def _remap_path_for_user(path: str, target_home_dir: str) -> str:
     """Remap *path* from the current user's home to *target_home_dir*.
 
@@ -1190,12 +1198,6 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]
-    resolved_node = shutil.which("node")
-    if resolved_node:
-        resolved_node_dir = str(Path(resolved_node).resolve().parent)
-        if resolved_node_dir not in path_entries:
-            path_entries.append(resolved_node_dir)
-
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
     restart_timeout = max(60, int(_get_restart_drain_timeout() or 0))
 
@@ -1212,6 +1214,9 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         venv_bin = _remap_path_for_user(venv_bin, home_dir)
         node_bin = _remap_path_for_user(node_bin, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
+        bundled_node_dir = _bundled_node_bin_dir(Path(home_dir))
+        if bundled_node_dir and bundled_node_dir not in path_entries:
+            path_entries.append(bundled_node_dir)
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
@@ -1250,6 +1255,9 @@ WantedBy=multi-user.target
 
     hermes_home = str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
+    bundled_node_dir = _bundled_node_bin_dir(Path.home())
+    if bundled_node_dir and bundled_node_dir not in path_entries:
+        path_entries.append(bundled_node_dir)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)

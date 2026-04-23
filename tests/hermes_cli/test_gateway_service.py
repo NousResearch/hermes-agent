@@ -198,12 +198,43 @@ class TestGeneratedSystemdUnits:
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert "TimeoutStopSec=60" in unit
 
-    def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
-        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
+    def test_generate_systemd_unit_deterministic_across_user_contexts(self, monkeypatch, tmp_path):
+        current_home = tmp_path / "root"
+        current_home.mkdir()
+        (current_home / ".hermes").mkdir()
 
-        unit = gateway_cli.generate_systemd_unit(system=False)
+        target_home = tmp_path / "home" / "hermes"
+        bundled_node = target_home / ".hermes" / "node" / "bin" / "node"
+        bundled_node.parent.mkdir(parents=True)
+        bundled_node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        bundled_node.chmod(0o755)
 
-        assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
+        shim_dir = tmp_path / "node-shim"
+        shim_dir.mkdir()
+        shim_node = shim_dir / "node"
+        shim_node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        shim_node.chmod(0o755)
+
+        empty_dir = tmp_path / "empty-path"
+        empty_dir.mkdir()
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: current_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: current_home / ".hermes")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("hermes", "hermes", str(target_home)),
+        )
+
+        monkeypatch.setenv("PATH", str(shim_dir))
+        with_node_on_caller_path = gateway_cli.generate_systemd_unit(system=True, run_as_user="hermes")
+
+        monkeypatch.setenv("PATH", str(empty_dir))
+        without_node_on_caller_path = gateway_cli.generate_systemd_unit(system=True, run_as_user="hermes")
+
+        assert with_node_on_caller_path == without_node_on_caller_path
+        assert str(bundled_node.parent) in with_node_on_caller_path
+        assert str(shim_dir) not in with_node_on_caller_path
 
     def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
         unit = gateway_cli.generate_systemd_unit(system=True)

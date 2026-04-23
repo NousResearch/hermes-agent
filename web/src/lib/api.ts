@@ -513,7 +513,12 @@ export interface PluginManifestResponse {
   description: string;
   icon: string;
   version: string;
-  tab: { path: string; position: string };
+  tab: {
+    path: string;
+    position?: string;
+    override?: string;
+    hidden?: boolean;
+  };
   entry: string;
   css?: string | null;
   has_api: boolean;

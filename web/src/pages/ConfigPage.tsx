@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
   Code,
   Download,
@@ -8,7 +8,6 @@ import {
   Search,
   Upload,
   X,
-  ChevronRight,
   Settings2,
   FileText,
   Settings,
@@ -27,6 +26,7 @@ import {
   MessageCircle,
   Wrench,
   FileQuestion,
+  Filter,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
@@ -38,6 +38,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -85,6 +86,35 @@ export default function ConfigPage() {
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
+  const { setEnd } = usePageHeader();
+
+  useLayoutEffect(() => {
+    if (!config || !schema) {
+      setEnd(null);
+      return;
+    }
+    setEnd(
+      <div className="relative w-full min-w-0 sm:max-w-xs">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Input
+          className="h-8 pl-8 pr-7 text-xs"
+          placeholder={t.common.search}
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+        />
+        {searchQuery && (
+          <button
+            type="button"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            onClick={() => setSearchQuery("")}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>,
+    );
+    return () => setEnd(null);
+  }, [config, schema, searchQuery, setEnd, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
@@ -366,62 +396,66 @@ export default function ConfigPage() {
         </Card>
       ) : (
         /* ═══════════════ Form Mode ═══════════════ */
-        <div className="flex flex-col sm:flex-row gap-4" style={{ minHeight: "calc(100vh - 180px)" }}>
-          {/* ---- Sidebar — horizontal scroll on mobile, fixed column on sm+ ---- */}
-          <div className="sm:w-52 sm:shrink-0">
-            <div className="sm:sticky sm:top-[72px] flex flex-col gap-1">
-              {/* Search */}
-              <div className="relative mb-2 hidden sm:block">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  className="pl-8 h-8 text-xs"
-                  placeholder={t.common.search}
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    onClick={() => setSearchQuery("")}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
+        <div className="flex flex-col sm:flex-row gap-4">
+          {/* ---- Filter panel ---- */}
+          <aside aria-label={t.config.filters} className="sm:w-56 sm:shrink-0">
+            <div className="sm:sticky sm:top-4">
+              <div className="flex flex-col border border-border bg-muted/20">
+                {/* Panel heading */}
+                <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
+                  <Filter className="h-3 w-3 text-muted-foreground" />
+                  <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
+                    {t.config.filters}
+                  </span>
+                </div>
 
-              {/* Category nav — horizontal scroll on mobile */}
-              <div className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-x-visible scrollbar-none pb-1 sm:pb-0">
-                {categories.map((cat) => {
-                const isActive = !isSearching && activeCategory === cat;
-                return (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => {
-                      setSearchQuery("");
-                      setActiveCategory(cat);
-                    }}
-                    className={`group flex items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer ${
-                      isActive
-                        ? "bg-primary/10 text-primary font-medium"
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                    }`}
-                  >
-                    <CategoryIcon category={cat} className="h-3.5 w-3.5 shrink-0" />
-                    <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
-                    <span className={`text-[10px] tabular-nums ${isActive ? "text-primary/60" : "text-muted-foreground/50"}`}>
-                      {categoryCounts[cat] || 0}
-                    </span>
-                    {isActive && (
-                      <ChevronRight className="h-3 w-3 text-primary/50 shrink-0" />
-                    )}
-                  </button>
-                );
-              })}
+                {/* Sections heading (hidden on mobile since it becomes a horizontal scroll) */}
+                <div className="hidden sm:block px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
+                  {t.config.sections}
+                </div>
+
+                {/* Category nav — horizontal scroll on mobile, pill list on sm+ */}
+                <div className="flex sm:flex-col gap-1 sm:gap-px p-2 sm:pt-1 overflow-x-auto sm:overflow-x-visible scrollbar-none sm:max-h-[calc(100vh-260px)] sm:overflow-y-auto">
+                  {categories.map((cat) => {
+                    const isActive = !isSearching && activeCategory === cat;
+
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery("");
+                          setActiveCategory(cat);
+                        }}
+                        className={`
+                          group flex items-center gap-2 px-2 py-1
+                          rounded-sm text-left text-[11px] cursor-pointer whitespace-nowrap
+                          transition-colors
+                          ${
+                            isActive
+                              ? "bg-foreground/10 text-foreground"
+                              : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
+                          }
+                        `}
+                      >
+                        <CategoryIcon category={cat} className="h-3.5 w-3.5 shrink-0" />
+                        <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
+                        <span
+                          className={`text-[10px] tabular-nums ${
+                            isActive
+                              ? "text-foreground/60"
+                              : "text-muted-foreground/50"
+                          }`}
+                        >
+                          {categoryCounts[cat] || 0}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
+          </aside>
 
           {/* ---- Content ---- */}
           <div className="flex-1 min-w-0">

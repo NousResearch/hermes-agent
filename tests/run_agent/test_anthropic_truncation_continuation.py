@@ -47,16 +47,16 @@ def _make_anthropic_response(blocks, stop_reason: str = "max_tokens"):
 
 
 class TestTruncatedAnthropicResponseNormalization:
-    """normalize_anthropic_response() gives us the shape _build_assistant_message expects."""
+    """AnthropicTransport.normalize_response() gives us the shape _build_assistant_message expects."""
 
     def test_text_only_truncation_produces_text_content_no_tool_calls(self):
         """Pure-text Anthropic truncation → continuation path should fire."""
-        from agent.anthropic_adapter import normalize_anthropic_response
+        from agent.transports import get_transport
 
         response = _make_anthropic_response(
             [_make_anthropic_text_block("partial response that was cut off")]
         )
-        nr = normalize_anthropic_response(response)
+        nr = get_transport("anthropic_messages").normalize_response(response)
 
         # The continuation block checks these two attributes:
         #   assistant_message.content  → appended to truncated_response_prefix
@@ -71,7 +71,7 @@ class TestTruncatedAnthropicResponseNormalization:
 
     def test_truncated_tool_call_produces_tool_calls(self):
         """Tool-use truncation → tool-call retry path should fire."""
-        from agent.anthropic_adapter import normalize_anthropic_response
+        from agent.transports import get_transport
 
         response = _make_anthropic_response(
             [
@@ -79,7 +79,7 @@ class TestTruncatedAnthropicResponseNormalization:
                 _make_anthropic_tool_use_block(),
             ]
         )
-        nr = normalize_anthropic_response(response)
+        nr = get_transport("anthropic_messages").normalize_response(response)
 
         assert bool(nr.tool_calls), (
             "Truncation mid-tool_use must expose tool_calls so the "
@@ -89,10 +89,10 @@ class TestTruncatedAnthropicResponseNormalization:
 
     def test_empty_content_does_not_crash(self):
         """Empty response.content — defensive: treat as a truncation with no text."""
-        from agent.anthropic_adapter import normalize_anthropic_response
+        from agent.transports import get_transport
 
         response = _make_anthropic_response([])
-        nr = normalize_anthropic_response(response)
+        nr = get_transport("anthropic_messages").normalize_response(response)
         # Depending on the adapter, content may be "" or None — both are
         # acceptable; what matters is no exception.
         assert nr is not None

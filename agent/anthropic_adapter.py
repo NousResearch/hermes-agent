@@ -17,7 +17,6 @@ import os
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from utils import normalize_proxy_env_vars
 
@@ -1599,64 +1598,4 @@ def build_anthropic_kwargs(
     return kwargs
 
 
-def normalize_anthropic_response(
-    response,
-    strip_tool_prefix: bool = False,
-) -> "NormalizedResponse":
-    """Normalize Anthropic response to NormalizedResponse.
 
-    Returns a NormalizedResponse with content, tool_calls, finish_reason,
-    reasoning, and provider_data fields.
-
-    When *strip_tool_prefix* is True, removes the ``mcp_`` prefix that was
-    added to tool names for OAuth Claude Code compatibility.
-    """
-    from agent.transports.types import NormalizedResponse, ToolCall
-
-    text_parts = []
-    reasoning_parts = []
-    reasoning_details = []
-    tool_calls = []
-
-    for block in response.content:
-        if block.type == "text":
-            text_parts.append(block.text)
-        elif block.type == "thinking":
-            reasoning_parts.append(block.thinking)
-            block_dict = _to_plain_data(block)
-            if isinstance(block_dict, dict):
-                reasoning_details.append(block_dict)
-        elif block.type == "tool_use":
-            name = block.name
-            if strip_tool_prefix and name.startswith(_MCP_TOOL_PREFIX):
-                name = name[len(_MCP_TOOL_PREFIX):]
-            tool_calls.append(
-                ToolCall(
-                    id=block.id,
-                    name=name,
-                    arguments=json.dumps(block.input),
-                )
-            )
-
-    stop_reason_map = {
-        "end_turn": "stop",
-        "tool_use": "tool_calls",
-        "max_tokens": "length",
-        "stop_sequence": "stop",
-        "refusal": "content_filter",
-        "model_context_window_exceeded": "length",
-    }
-    finish_reason = stop_reason_map.get(response.stop_reason, "stop")
-
-    provider_data = {}
-    if reasoning_details:
-        provider_data["reasoning_details"] = reasoning_details
-
-    return NormalizedResponse(
-        content="\n".join(text_parts) if text_parts else None,
-        tool_calls=tool_calls or None,
-        finish_reason=finish_reason,
-        reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
-        usage=None,
-        provider_data=provider_data or None,
-    )

@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Computer use (macOS, gated on cua-driver being installed via check_fn)
+    "computer_use",
 ]
 
 
@@ -90,7 +92,17 @@ TOOLSETS = {
         "tools": ["image_generate"],
         "includes": []
     },
-    
+
+    "computer_use": {
+        "description": (
+            "Background macOS desktop control via cua-driver — screenshots, "
+            "mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
+            "or keyboard focus. Works with any tool-capable model."
+        ),
+        "tools": ["computer_use"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],

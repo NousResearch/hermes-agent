@@ -17,7 +17,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. |
-| **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
+| **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. For `/sethome`, a normal text-channel thread stores the parent channel as the stable home destination, while forum-post threads keep their own thread ID. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
 
@@ -442,13 +442,30 @@ Hermes automatically registers installed skills as **native Discord Application 
 
 No extra configuration is needed — any skill installed via `hermes skills install` is automatically registered as a Discord slash command on the next gateway restart.
 
+## Recommended Personal Workflow
+
+For a single operator using Hermes heavily in Discord, the smoothest pattern is:
+
+1. **Pick one durable parent channel** (for example `#agent-ops`) as the home base for deliveries.
+2. **Run `/sethome` there once**. If you happen to run `/sethome` from a normal thread under that channel, Hermes stores the parent channel ID so cron jobs and cross-platform deliveries still land in the stable parent channel.
+3. **Use one thread per substantial task**. Start a new thread for each feature, bug, or research lane so transcript history stays isolated and easy to revisit.
+4. **Lead with the work item ID** when you want continuity, e.g. `pick up hermes-mge; continue ...`. This gives Hermes a strong retrieval handle for Beads issues and past session search.
+5. **Name the session with `/title`** if you expect to resume it from another surface later. A good default is the Beads ID plus a short slug, such as `/title hermes-mge discord workflow`.
+6. **Resume in place when possible**. If the original thread is still the right lane, keep talking there. If you need to move surfaces or recover after a reset, use `/resume <name>` or explicitly say `pick up <bead-id>`.
+
+This gives you a stable inbox for proactive deliveries plus disposable task threads for execution.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:
 
 ### Using the Slash Command
 
-Type `/sethome` in any Discord channel where the bot is present. That channel becomes the home channel.
+Type `/sethome` in any Discord channel where the bot is present.
+
+- In a **regular channel**, that channel becomes the home channel.
+- In a **normal text-channel thread**, Hermes stores the **parent channel** as the home destination so scheduled deliveries do not get stranded in one ephemeral thread.
+- In a **forum post thread**, Hermes keeps the **thread itself** as the destination, because forum parents are not directly messageable like normal text channels.
 
 ### Manual Configuration
 

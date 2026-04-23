@@ -157,9 +157,13 @@ Run `/usage` periodically to see your token consumption. Run `/insights` for a b
 
 Use `/sethome` in your preferred Telegram or Discord chat to designate it as the home channel. Cron job results and scheduled task outputs are delivered here. Without it, the agent has nowhere to send proactive messages.
 
+For Discord, the best personal pattern is a durable parent channel (for example `#agent-ops`) plus one thread per task. If you run `/sethome` from a normal thread, Hermes stores the parent channel so deliveries still land in the stable channel instead of a single task thread.
+
 ### Use /title to Organize Sessions
 
 Name your sessions with `/title auth-refactor` or `/title research-llm-quantization`. Named sessions are easy to find with `hermes sessions list` and resume with `hermes -r "auth-refactor"`. Unnamed sessions pile up and become impossible to distinguish.
+
+For Beads-driven work in Discord, include the issue ID in the title or opening message (`hermes-mge discord workflow`). That makes later pickup prompts like `pick up hermes-mge` much more reliable across threads and sessions.
 
 ### DM Pairing for Team Access
 

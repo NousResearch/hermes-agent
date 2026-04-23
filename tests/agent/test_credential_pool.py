@@ -1171,3 +1171,33 @@ def test_nous_seed_from_singletons_preserves_obtained_at_timestamps(tmp_path, mo
     assert e.agent_key_expires_in == 86400
     assert e.agent_key_reused is False
 
+
+class TestLeastUsedStrategy:
+    """Regression: least_used strategy must increment request_count on select."""
+
+    def test_request_count_increments(self):
+        """Each select() call should increment the chosen entry's request_count."""
+        from unittest.mock import patch as _patch
+        from agent.credential_pool import CredentialPool, PooledCredential, STRATEGY_LEAST_USED
+
+        entries = [
+            PooledCredential(provider="test", id="a", label="a", auth_type="api_key",
+                             source="a", access_token="tok-a", priority=0, request_count=0),
+            PooledCredential(provider="test", id="b", label="b", auth_type="api_key",
+                             source="b", access_token="tok-b", priority=1, request_count=0),
+        ]
+        with _patch("agent.credential_pool.get_pool_strategy", return_value=STRATEGY_LEAST_USED):
+            pool = CredentialPool("test", entries)
+
+        # First select should pick entry with lowest count (both 0 → first)
+        e1 = pool.select()
+        assert e1 is not None
+        count_after_first = e1.request_count
+        assert count_after_first == 1, f"Expected 1 after first select, got {count_after_first}"
+
+        # Second select should pick the OTHER entry (now has lower count)
+        e2 = pool.select()
+        assert e2 is not None
+        assert e2.id != e1.id or e2.request_count == 2, (
+            "least_used should alternate or increment"
+        )

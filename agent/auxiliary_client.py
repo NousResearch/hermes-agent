@@ -2218,10 +2218,14 @@ def _build_call_kwargs(
     if tools:
         kwargs["tools"] = tools
 
-    # Provider-specific extra_body
-    merged_extra = dict(extra_body or {})
+    # Provider-specific extra_body — deep-copy to avoid mutating the caller's
+    # dict (or the module-level NOUS_EXTRA_BODY constant's tags list).
+    merged_extra = {
+        k: list(v) if isinstance(v, list) else v
+        for k, v in (extra_body or {}).items()
+    }
     if provider == "nous" or auxiliary_is_nous:
-        merged_extra.setdefault("tags", []).extend(["product=hermes-agent"])
+        merged_extra.setdefault("tags", []).append("product=hermes-agent")
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 

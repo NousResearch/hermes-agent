@@ -1624,3 +1624,36 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+
+class TestBuildCallKwargsExtraBody:
+    """Regression: _build_call_kwargs must not mutate the caller's extra_body dict."""
+
+    def test_nous_tags_not_accumulated(self):
+        """NOUS_EXTRA_BODY tags list must not grow across calls."""
+        from agent.auxiliary_client import NOUS_EXTRA_BODY, _build_call_kwargs
+
+        original_tags = list(NOUS_EXTRA_BODY["tags"])
+        msgs = [{"role": "user", "content": "hi"}]
+        for _ in range(5):
+            _build_call_kwargs("nous", "test-model", msgs, extra_body=NOUS_EXTRA_BODY)
+        assert NOUS_EXTRA_BODY["tags"] == original_tags, (
+            f"NOUS_EXTRA_BODY tags mutated: {NOUS_EXTRA_BODY['tags']}"
+        )
+
+    def test_caller_dict_not_mutated(self):
+        """Caller's extra_body dict must not be modified."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        caller_body = {"tags": ["custom-tag"], "other": 42}
+        msgs = [{"role": "user", "content": "hi"}]
+        _build_call_kwargs("nous", "test-model", msgs, extra_body=caller_body)
+        assert caller_body == {"tags": ["custom-tag"], "other": 42}
+
+    def test_merged_extra_has_tag(self):
+        """Returned kwargs should contain the product tag."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        msgs = [{"role": "user", "content": "hi"}]
+        kw = _build_call_kwargs("nous", "test-model", msgs)
+        assert "product=hermes-agent" in kw["extra_body"]["tags"]

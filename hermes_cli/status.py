@@ -164,19 +164,26 @@ def show_status(args):
         qwen_status = {}
 
     nous_logged_in = bool(nous_status.get("logged_in"))
+    nous_error = nous_status.get("error")
+    nous_label = "logged in" if nous_logged_in else "not logged in (run: hermes auth add nous --type oauth)"
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{'logged in' if nous_logged_in else 'not logged in (run: hermes model)'}"
+        f"{nous_label}"
     )
-    if nous_logged_in:
-        portal_url = nous_status.get("portal_base_url") or "(unknown)"
-        access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
-        key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
-        refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
+    portal_url = nous_status.get("portal_base_url") or "(unknown)"
+    access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
+    key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
+    refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
+    if nous_logged_in or portal_url != "(unknown)" or nous_error:
         print(f"    Portal URL: {portal_url}")
+    if nous_logged_in or nous_status.get("access_expires_at"):
         print(f"    Access exp: {access_exp}")
+    if nous_logged_in or nous_status.get("agent_key_expires_at"):
         print(f"    Key exp:    {key_exp}")
+    if nous_logged_in or nous_status.get("has_refresh_token"):
         print(f"    Refresh:    {refresh_label}")
+    if nous_error and not nous_logged_in:
+        print(f"    Error:      {nous_error}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
     print(

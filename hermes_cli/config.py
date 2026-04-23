@@ -1291,7 +1291,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "XIAOMI_API_KEY": {
-        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
+        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
         "prompt": "Xiaomi MiMo API Key",
         "url": "https://platform.xiaomimimo.com",
         "password": True,

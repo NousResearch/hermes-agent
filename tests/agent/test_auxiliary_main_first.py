@@ -245,7 +245,7 @@ class TestResolveVisionMainFirst:
         assert model == "xiaomi/mimo-v2-omni"
 
     def test_exotic_provider_with_vision_override_preserved(self):
-        """xiaomi → mimo-v2-omni override still wins over main_model."""
+        """xiaomi → mimo-v2.5 override still wins over main_model."""
         with patch(
             "agent.auxiliary_client._read_main_provider", return_value="xiaomi",
         ), patch(
@@ -257,15 +257,15 @@ class TestResolveVisionMainFirst:
             "agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ):
-            mock_resolve.return_value = (MagicMock(), "mimo-v2-omni")
+            mock_resolve.return_value = (MagicMock(), "mimo-v2.5")
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
         assert provider == "xiaomi"
-        # Should use mimo-v2-omni (vision override), not mimo-v2-pro (text main)
-        assert mock_resolve.call_args.args[1] == "mimo-v2-omni"
+        # Should use mimo-v2.5 (vision override), not mimo-v2-pro (text main)
+        assert mock_resolve.call_args.args[1] == "mimo-v2.5"
 
     def test_main_unavailable_vision_falls_through_to_aggregators(self):
         """Main provider fails → fall back to OpenRouter/Nous strict backends."""

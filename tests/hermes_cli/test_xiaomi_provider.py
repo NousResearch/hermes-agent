@@ -287,10 +287,10 @@ class TestXiaomiAuxiliary:
         assert "xiaomi" not in _API_KEY_PROVIDER_AUX_MODELS
 
     def test_vision_model_override(self):
-        """Xiaomi vision tasks should use mimo-v2-omni (multimodal), not the main model."""
+        """Xiaomi vision tasks should use mimo-v2.5 (multimodal), not the main model."""
         from agent.auxiliary_client import _PROVIDER_VISION_MODELS
         assert "xiaomi" in _PROVIDER_VISION_MODELS
-        assert _PROVIDER_VISION_MODELS["xiaomi"] == "mimo-v2-omni"
+        assert _PROVIDER_VISION_MODELS["xiaomi"] == "mimo-v2.5"
 
 
 # =============================================================================

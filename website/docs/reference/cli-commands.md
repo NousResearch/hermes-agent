@@ -585,11 +585,21 @@ hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
 hermes import <zipfile> [options]
 ```
 
-Restore a previously created Hermes backup into your Hermes home directory.
+Restore a previously created Hermes backup into your Hermes home directory. All files in the archive overwrite existing files in your Hermes home; `--force` only skips the confirmation prompt that fires when the target already has a Hermes installation.
 
 | Option | Description |
 |--------|-------------|
-| `-f`, `--force` | Overwrite existing files without confirmation. |
+| `-f`, `--force` | Skip the existing-installation confirmation prompt. |
+
+:::warning
+Stop the gateway before importing to avoid conflicts with running processes.
+:::
+
+### Examples
+```bash
+hermes import ~/hermes-backup-20260423.zip           # Prompts before overwriting existing config
+hermes import ~/hermes-backup-20260423.zip --force   # Overwrite without prompting
+```
 
 ## `hermes logs`
 

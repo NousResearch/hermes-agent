@@ -1349,6 +1349,68 @@ def _is_auth_error(exc: Exception) -> bool:
     return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
 
 
+def _evict_cached_clients(provider: str) -> None:
+    """Drop cached auxiliary clients for a provider so fresh creds are used."""
+    normalized = _normalize_aux_provider(provider)
+    with _client_cache_lock:
+        stale_keys = [
+            key for key in _client_cache
+            if _normalize_aux_provider(str(key[0])) == normalized
+        ]
+        for key in stale_keys:
+            client = _client_cache.get(key, (None, None, None))[0]
+            if client is not None:
+                _force_close_async_httpx(client)
+                try:
+                    close_fn = getattr(client, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:
+                    pass
+            _client_cache.pop(key, None)
+
+
+def _refresh_provider_credentials(provider: str) -> bool:
+    """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
+    normalized = _normalize_aux_provider(provider)
+    try:
+        if normalized == "openai-codex":
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+
+            creds = resolve_codex_runtime_credentials(force_refresh=True)
+            if not str(creds.get("api_key", "") or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+        if normalized == "nous":
+            from hermes_cli.auth import resolve_nous_runtime_credentials
+
+            creds = resolve_nous_runtime_credentials(
+                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                force_mint=True,
+            )
+            if not str(creds.get("api_key", "") or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+        if normalized == "anthropic":
+            from agent.anthropic_adapter import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
+
+            creds = read_claude_code_credentials()
+            token = _refresh_oauth_token(creds) if isinstance(creds, dict) and creds.get("refreshToken") else None
+            if not str(token or "").strip():
+                token = resolve_anthropic_token()
+            if not str(token or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+    except Exception as exc:
+        logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
+        return False
+    return False
+
+
 def _try_payment_fallback(
     failed_provider: str,
     task: str = None,

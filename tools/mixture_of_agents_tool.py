@@ -722,7 +722,8 @@ async def _run_moa_forensic_analysis(
 async def mixture_of_agents_tool(
     user_prompt: str,
     reference_models: Optional[List[Any]] = None,
-    aggregator_model: Optional[Any] = None
+    aggregator_model: Optional[Any] = None,
+    enable_forensic_analysis: bool = False,
 ) -> str:
     """
     Process a complex query using the Mixture-of-Agents methodology.
@@ -817,27 +818,30 @@ async def mixture_of_agents_tool(
             )
 
         self_draft_route = _build_self_draft_route(agg_route)
-        draft_jobs: List[Tuple[ModelRoute, float]] = [
-            (self_draft_route, AGGREGATOR_TEMPERATURE),
-            *[(route, REFERENCE_TEMPERATURE) for route in available_ref_routes],
+        external_jobs: List[Tuple[ModelRoute, float]] = [
+            (route, REFERENCE_TEMPERATURE) for route in available_ref_routes
         ]
 
         logger.info(
             "Using %s draft models in MoA-v2 (self-draft + references)",
-            len(draft_jobs),
+            len(external_jobs) + 1,
         )
 
         # Layer 1: Generate MiMo self-draft plus reference responses.
         logger.info("Layer 1: Generating self-draft and reference responses...")
-        model_results = await asyncio.gather(*[
-            _run_reference_model_detailed(route, user_prompt, temperature)
-            for route, temperature in draft_jobs
-        ])
-        
+        self_draft_result, *external_results = await asyncio.gather(
+            _run_reference_model_detailed(self_draft_route, user_prompt, AGGREGATOR_TEMPERATURE),
+            *[
+                _run_reference_model_detailed(route, user_prompt, temperature)
+                for route, temperature in external_jobs
+            ],
+        )
+
         # Separate successful and failed responses
         successful_responses: List[Tuple[str, str]] = []
-        
-        for result_row in model_results:
+        external_successes = 0
+
+        for result_row in [self_draft_result, *external_results]:
             model_name = result_row["model"]
             per_model_metrics["reference_models"][model_name] = {
                 "provider": result_row.get("provider"),
@@ -852,6 +856,8 @@ async def mixture_of_agents_tool(
                 successful_responses.append((model_name, content))
                 reference_outputs[model_name] = content
                 reference_previews[model_name] = _preview_reference_response(content)
+                if model_name != _route_label(self_draft_route):
+                    external_successes += 1
             else:
                 failed_models.append(model_name)
                 failed_model_errors[model_name] = str(result_row.get("error") or "")
@@ -864,12 +870,12 @@ async def mixture_of_agents_tool(
         if failed_models:
             logger.warning("Failed models: %s", ', '.join(failed_models))
         
-        # Check if we have enough successful responses to proceed
-        if successful_count < MIN_SUCCESSFUL_REFERENCES:
+        # MoA-v2 must include at least one successful external reference.
+        if external_successes < MIN_SUCCESSFUL_REFERENCES:
             raise ValueError(
-                "Insufficient successful reference models "
-                f"({successful_count}/{len(available_ref_routes)}). Need at least "
-                f"{MIN_SUCCESSFUL_REFERENCES} successful responses."
+                "Insufficient successful external reference models "
+                f"({external_successes}/{len(available_ref_routes)}). Need at least "
+                f"{MIN_SUCCESSFUL_REFERENCES} successful external response."
             )
         
         debug_call_data["reference_responses_count"] = successful_count
@@ -899,12 +905,24 @@ async def mixture_of_agents_tool(
             "output_chars": len(final_response or ""),
         }
 
-        forensic_analysis, forensic_metrics = await _run_moa_forensic_analysis(
-            agg_route,
-            user_prompt,
-            reference_outputs,
-            final_response,
-        )
+        if enable_forensic_analysis:
+            forensic_analysis, forensic_metrics = await _run_moa_forensic_analysis(
+                agg_route,
+                user_prompt,
+                reference_outputs,
+                final_response,
+            )
+        else:
+            forensic_analysis = _fallback_forensic_analysis(reference_outputs, final_response)
+            forensic_metrics = {
+                "model": _route_label(agg_route),
+                "provider": agg_route.get("provider"),
+                "success": False,
+                "latency_seconds": 0.0,
+                "output_chars": 0,
+                "error": "",
+                "skipped": True,
+            }
         per_model_metrics["forensic_analysis"] = forensic_metrics
         
         # Calculate processing time

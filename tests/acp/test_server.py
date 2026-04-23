@@ -582,6 +582,7 @@ class TestPrompt:
         state.agent.run_conversation.assert_not_called()
         assert state.history[-1]["content"] == "moa answer"
         routed_prompt = mock_moa.await_args.kwargs["user_prompt"]
+        assert mock_moa.await_args.kwargs["enable_forensic_analysis"] is True
         assert "We are choosing between three laptops." in routed_prompt
         assert "You care most about performance and battery." in routed_prompt
         assert routed_prompt.endswith("User: analyze this hard problem")

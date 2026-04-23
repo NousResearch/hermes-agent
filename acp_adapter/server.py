@@ -895,7 +895,10 @@ class HermesACPAgent(acp.Agent):
                 else:
                     from tools.mixture_of_agents_tool import mixture_of_agents_tool
 
-                    raw_output = await mixture_of_agents_tool(user_prompt=routed_prompt)
+                    raw_output = await mixture_of_agents_tool(
+                        user_prompt=routed_prompt,
+                        enable_forensic_analysis=True,
+                    )
                     final_text = _format_moa_output(raw_output)
                 _log_route_forensics(
                     event_type="route_result",

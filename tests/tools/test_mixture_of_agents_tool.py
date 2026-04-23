@@ -263,7 +263,7 @@ async def test_moa_returns_full_reference_forensics(monkeypatch):
     )
     monkeypatch.setattr(moa, "_route_is_available", lambda route: True)
 
-    result = json.loads(await moa.mixture_of_agents_tool("compare assets"))
+    result = json.loads(await moa.mixture_of_agents_tool("compare assets", enable_forensic_analysis=True))
 
     assert result["success"] is True
     assert result["models_used"]["reference_models"] == [
@@ -289,3 +289,127 @@ async def test_moa_returns_full_reference_forensics(monkeypatch):
     assert result["aggregator_influence_log"]["kept_from_models"] == {
         "minimax/MiniMax-M2.7-highspeed": ["crypto momentum"]
     }
+
+
+@pytest.mark.asyncio
+async def test_moa_v2_requires_successful_external_reference(monkeypatch):
+    monkeypatch.setattr(
+        moa,
+        "_run_reference_model_detailed",
+        AsyncMock(side_effect=[
+            {
+                "model": "xiaomi/mimo-v2-pro (self-draft)",
+                "provider": "xiaomi",
+                "success": True,
+                "content": "MiMo self-draft",
+                "error": "",
+                "attempts": 1,
+                "latency_seconds": 0.9,
+                "output_chars": 15,
+            },
+            {
+                "model": "minimax/MiniMax-M2.7-highspeed",
+                "provider": "minimax",
+                "success": False,
+                "content": "",
+                "error": "minimax failed",
+                "attempts": 2,
+                "latency_seconds": 1.2,
+                "output_chars": 0,
+            },
+            {
+                "model": "deepseek/deepseek-reasoner",
+                "provider": "deepseek",
+                "success": False,
+                "content": "",
+                "error": "deepseek failed",
+                "attempts": 2,
+                "latency_seconds": 1.5,
+                "output_chars": 0,
+            },
+        ]),
+    )
+    monkeypatch.setattr(
+        moa,
+        "_run_aggregator_model",
+        AsyncMock(return_value="should not run"),
+    )
+    monkeypatch.setattr(
+        moa,
+        "_run_moa_forensic_analysis",
+        AsyncMock(return_value=(moa._empty_forensic_analysis(), {})),
+    )
+    monkeypatch.setattr(
+        moa,
+        "_debug",
+        SimpleNamespace(log_call=MagicMock(), save=MagicMock(), active=False),
+    )
+    monkeypatch.setattr(moa, "_route_is_available", lambda route: True)
+
+    result = json.loads(await moa.mixture_of_agents_tool("compare assets"))
+
+    assert result["success"] is False
+    assert "Insufficient successful external reference models" in result["error"]
+    assert result["reference_outputs"] == {
+        "xiaomi/mimo-v2-pro (self-draft)": "MiMo self-draft"
+    }
+
+
+@pytest.mark.asyncio
+async def test_moa_skips_extra_forensic_llm_call_by_default(monkeypatch):
+    monkeypatch.setattr(
+        moa,
+        "_run_reference_model_detailed",
+        AsyncMock(side_effect=[
+            {
+                "model": "xiaomi/mimo-v2-pro (self-draft)",
+                "provider": "xiaomi",
+                "success": True,
+                "content": "MiMo self-draft says buy index funds.",
+                "error": "",
+                "attempts": 1,
+                "latency_seconds": 0.9,
+                "output_chars": 38,
+            },
+            {
+                "model": "minimax/MiniMax-M2.7-highspeed",
+                "provider": "minimax",
+                "success": True,
+                "content": "MiniMax says buy index funds.",
+                "error": "",
+                "attempts": 1,
+                "latency_seconds": 1.2,
+                "output_chars": 29,
+            },
+            {
+                "model": "deepseek/deepseek-reasoner",
+                "provider": "deepseek",
+                "success": False,
+                "content": "",
+                "error": "deepseek failed",
+                "attempts": 2,
+                "latency_seconds": 1.5,
+                "output_chars": 0,
+            },
+        ]),
+    )
+    monkeypatch.setattr(
+        moa,
+        "_run_aggregator_model",
+        AsyncMock(return_value="Final synthesized answer"),
+    )
+    forensic = AsyncMock(return_value=(moa._empty_forensic_analysis(), {}))
+    monkeypatch.setattr(moa, "_run_moa_forensic_analysis", forensic)
+    monkeypatch.setattr(
+        moa,
+        "_debug",
+        SimpleNamespace(log_call=MagicMock(), save=MagicMock(), active=False),
+    )
+    monkeypatch.setattr(moa, "_route_is_available", lambda route: True)
+
+    result = json.loads(await moa.mixture_of_agents_tool("compare assets"))
+
+    forensic.assert_not_awaited()
+    assert result["success"] is True
+    assert result["per_model_metrics"]["forensic_analysis"]["skipped"] is True
+    assert result["decision_trace"]["final_candidates"]

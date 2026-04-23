@@ -2768,6 +2768,17 @@ class BasePlatformAdapter(ABC):
                     session_key,
                 )
                 response = None
+            # [SILENT] sentinel: model chose to stay quiet. Strip the token
+            # exactly and suppress the outbound send entirely. Parallels the
+            # cron scheduler's SILENT_MARKER handling so messaging surfaces
+            # (Slack, WhatsApp, etc.) honor the same contract. (#13249)
+            if response and response.strip() == "[SILENT]":
+                logger.info(
+                    "[%s] Response is [SILENT] sentinel — suppressing delivery for %s",
+                    self.name,
+                    event.source.chat_id,
+                )
+                response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:

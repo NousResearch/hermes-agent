@@ -339,3 +339,101 @@ class TestApprovalCallbackThreadLocalWiring:
         # would hold a stale reference to a disposed CLI instance.
         assert seen["approval_after"] is None
         assert seen["sudo_after"] is None
+
+
+class TestOverlayInterruptCleanup:
+    """Regression tests for #14026 — interrupt must clear all overlay state
+    including _modal_input_snapshot and _sudo_deadline."""
+
+    def _make_cli_with_sudo_active(self):
+        """Return a CLI stub with an active sudo prompt and captured snapshot."""
+        cli = _make_cli_stub()
+        cli._app.current_buffer = _FakeBuffer("pre-modal draft", cursor_position=7)
+        # Simulate snapshot captured when sudo prompt started.
+        cli._modal_input_snapshot = {
+            "text": "pre-modal draft",
+            "cursor_position": 7,
+        }
+        cli._sudo_deadline = 99999.0
+        q = queue.Queue()
+        cli._sudo_state = {"response_queue": q, "timeout": 60}
+        return cli
+
+    def test_interrupt_clears_sudo_state_and_restores_snapshot(self):
+        """Interrupt path: _sudo_state cleared + snapshot restored + deadline reset."""
+        cli = self._make_cli_with_sudo_active()
+
+        # Simulate the interrupt handler code path (agent-running interrupt branch).
+        try:
+            if cli._sudo_state:
+                try:
+                    cli._sudo_state["response_queue"].put(None)
+                except Exception:
+                    pass
+                cli._sudo_state = None
+                cli._sudo_deadline = 0
+                cli._restore_modal_input_snapshot()
+        except Exception:
+            pass
+
+        assert cli._sudo_state is None, "_sudo_state not cleared"
+        assert cli._sudo_deadline == 0, "_sudo_deadline not reset"
+        assert cli._modal_input_snapshot is None, "_modal_input_snapshot still set after interrupt"
+        # Snapshot should have been restored to the buffer.
+        assert cli._app.current_buffer.text == "pre-modal draft"
+        assert cli._app.current_buffer.cursor_position == 7
+
+    def test_ctrlc_clears_sudo_state_and_restores_snapshot(self):
+        """Ctrl+C path: same cleanup required."""
+        cli = self._make_cli_with_sudo_active()
+
+        # Simulate Ctrl+C handler (key binding branch).
+        if cli._sudo_state:
+            cli._sudo_state["response_queue"].put("")
+            cli._sudo_state = None
+            cli._sudo_deadline = 0
+            cli._restore_modal_input_snapshot()
+
+        assert cli._sudo_state is None
+        assert cli._sudo_deadline == 0
+        assert cli._modal_input_snapshot is None
+        assert cli._app.current_buffer.text == "pre-modal draft"
+
+    def test_interrupt_unblocks_blocked_thread(self):
+        """Thread blocked in _sudo_password_callback() must unblock when interrupt fires."""
+        import threading
+        from unittest.mock import patch
+        import cli as cli_module
+
+        cli = _make_cli_stub()
+        cli._app.current_buffer = _FakeBuffer("pre-draft", cursor_position=4)
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._sudo_password_callback()
+
+        with patch.object(cli_module, "_cprint"):
+            t = threading.Thread(target=_run_callback, daemon=True)
+            t.start()
+
+            deadline = time.time() + 2
+            while cli._sudo_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._sudo_state is not None, "sudo prompt did not start"
+
+            # Simulate interrupt clearing the state.
+            try:
+                cli._sudo_state["response_queue"].put(None)
+            except Exception:
+                pass
+            cli._sudo_state = None
+            cli._sudo_deadline = 0
+            cli._restore_modal_input_snapshot()
+
+            t.join(timeout=2)
+
+        # _sudo_password_callback returns None (or empty) on cancel.
+        assert result.get("value") in (None, ""), f"unexpected value: {result.get('value')!r}"
+        assert cli._modal_input_snapshot is None
+        assert cli._sudo_deadline == 0

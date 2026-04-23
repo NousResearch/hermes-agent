@@ -8503,6 +8503,8 @@ class HermesCLI:
                                     except Exception:
                                         pass
                                     self._sudo_state = None
+                                    self._sudo_deadline = 0
+                                    self._restore_modal_input_snapshot()
                                 if self._secret_state:
                                     try:
                                         self._secret_state["response_queue"].put(None)
@@ -9478,6 +9480,8 @@ class HermesCLI:
             if self._sudo_state:
                 self._sudo_state["response_queue"].put("")
                 self._sudo_state = None
+                self._sudo_deadline = 0
+                self._restore_modal_input_snapshot()
                 event.app.invalidate()
                 _overlay_cleared = True
 

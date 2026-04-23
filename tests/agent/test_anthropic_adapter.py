@@ -11,6 +11,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
+    _supports_anthropic_signature_validation,
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
@@ -1608,6 +1609,53 @@ class TestThinkingBlockSignatureManagement:
         ]
         assert len(last_thinking) == 1
         assert last_thinking[0]["signature"] == "sig_3"
+
+    def test_non_signature_validating_third_party_strips_all_thinking(self):
+        """Generic third-party endpoints should strip every thinking block."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "thought", "signature": "sig_1"},
+                ],
+            },
+            {"role": "user", "content": "next"},
+        ]
+        _, result = convert_messages_to_anthropic(messages, base_url="https://custom.api.com/v1")
+        assistant = next(m for m in result if m["role"] == "assistant")
+        assert not any(
+            isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+            for b in assistant["content"]
+        )
+
+    def test_apimart_keeps_signed_last_thinking_for_signature_validation(self):
+        """Apimart passthrough validates signatures, so keep latest signed block."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "answer",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "latest", "signature": "sig_keep"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages, base_url="https://api.apimart.ai/v1")
+        blocks = result[0]["content"]
+        thinking = [b for b in blocks if isinstance(b, dict) and b.get("type") == "thinking"]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_keep"
+
+
+class TestSignatureValidationEndpointDetection:
+    def test_direct_anthropic_supports_signature_validation(self):
+        assert _supports_anthropic_signature_validation("https://api.anthropic.com") is True
+
+    def test_apimart_supports_signature_validation(self):
+        assert _supports_anthropic_signature_validation("https://api.apimart.ai/v1") is True
+
+    def test_generic_third_party_does_not_support_signature_validation(self):
+        assert _supports_anthropic_signature_validation("https://custom.example.com") is False
 
 
 # ---------------------------------------------------------------------------

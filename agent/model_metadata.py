@@ -1199,6 +1199,7 @@ def get_model_context_length(
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
     1. Persistent cache (previously discovered via probing)
+    1b. AWS Bedrock static table (must precede custom-endpoint probe)
     2. Active endpoint metadata (/models for explicit custom endpoints)
     3. Local server query (for local endpoints)
     4. Anthropic /v1/models API (API-key users only, not OAuth)
@@ -1236,6 +1237,26 @@ def get_model_context_length(
                 _invalidate_cached_context_length(model, base_url)
             else:
                 return cached
+
+    # 1b. AWS Bedrock — use static context length table.
+    # Bedrock's ListFoundationModels API doesn't expose context window sizes,
+    # so we maintain a curated table in bedrock_adapter.py that reflects
+    # AWS-imposed limits (e.g. 200K for Claude models vs 1M on the native
+    # Anthropic API).  This must run BEFORE the custom-endpoint probe at
+    # step 2 — bedrock-runtime.<region>.amazonaws.com is not in
+    # _URL_TO_PROVIDER, so it would otherwise be treated as a custom endpoint,
+    # fail the /models probe (Bedrock doesn't expose that shape), and fall
+    # back to the 128K default before reaching the original step 4b branch.
+    if provider == "bedrock" or (
+        base_url
+        and base_url_hostname(base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url, "amazonaws.com")
+    ):
+        try:
+            from agent.bedrock_adapter import get_bedrock_context_length
+            return get_bedrock_context_length(model)
+        except ImportError:
+            pass  # boto3 not installed — fall through to generic resolution
 
     # 2. Active endpoint metadata for truly custom/unknown endpoints.
     # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their
@@ -1282,19 +1303,7 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 4b. AWS Bedrock — use static context length table.
-    # Bedrock's ListFoundationModels doesn't expose context window sizes,
-    # so we maintain a curated table in bedrock_adapter.py.
-    if provider == "bedrock" or (
-        base_url
-        and base_url_hostname(base_url).startswith("bedrock-runtime.")
-        and base_url_host_matches(base_url, "amazonaws.com")
-    ):
-        try:
-            from agent.bedrock_adapter import get_bedrock_context_length
-            return get_bedrock_context_length(model)
-        except ImportError:
-            pass  # boto3 not installed — fall through to generic resolution
+    # 4b. (Bedrock handled earlier at step 1b — before custom-endpoint probe.)
 
     # 5. Provider-aware lookups (before generic OpenRouter cache)
     # These are provider-specific and take priority over the generic OR cache,

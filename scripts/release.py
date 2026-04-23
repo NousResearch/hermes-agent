@@ -386,6 +386,7 @@ AUTHOR_MAP = {
     "mike@mikewaters.net": "mikewaters",
     "65117428+WadydX@users.noreply.github.com": "WadydX",
     "216480837+isaachuangGMICLOUD@users.noreply.github.com": "isaachuangGMICLOUD",
+    "nukuom976228@gmail.com": "hsy5571616",
 }
 
 

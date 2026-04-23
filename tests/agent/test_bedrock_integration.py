@@ -493,3 +493,98 @@ class TestBedrockModelIdDetection:
             preserve_dots=False,
         )
         assert kwargs["model"] == "anthropic.claude-opus-4-7"
+
+
+# ---------------------------------------------------------------------------
+# auxiliary_client Bedrock resolution — fix for #13919
+# ---------------------------------------------------------------------------
+# Before the fix, resolve_provider_client("bedrock", ...) fell through to the
+# "unhandled auth_type" warning and returned (None, None), breaking all
+# auxiliary tasks (compression, memory, summarization) for Bedrock users.
+
+
+class TestAuxiliaryClientBedrockResolution:
+    """Verify resolve_provider_client handles Bedrock's aws_sdk auth type."""
+
+    def test_bedrock_returns_client_with_credentials(self, monkeypatch):
+        """With valid AWS credentials, Bedrock should return a usable client."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+
+        mock_anthropic_bedrock = MagicMock()
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",
+                   return_value=mock_anthropic_bedrock):
+            from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+            client, model = resolve_provider_client("bedrock", None)
+
+        assert client is not None, (
+            "resolve_provider_client('bedrock') returned None — "
+            "aws_sdk auth type is not handled"
+        )
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert model is not None
+        assert client.api_key == "aws-sdk"
+        assert "us-west-2" in client.base_url
+
+    def test_bedrock_returns_none_without_credentials(self, monkeypatch):
+        """Without AWS credentials, Bedrock should return (None, None) gracefully."""
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False):
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("bedrock", None)
+
+        assert client is None
+        assert model is None
+
+    def test_bedrock_uses_configured_region(self, monkeypatch):
+        """Bedrock client base_url should reflect AWS_REGION."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",
+                   return_value=MagicMock()):
+            from agent.auxiliary_client import resolve_provider_client
+            client, _ = resolve_provider_client("bedrock", None)
+
+        assert client is not None
+        assert "eu-central-1" in client.base_url
+
+    def test_bedrock_respects_explicit_model(self, monkeypatch):
+        """When caller passes an explicit model, it should be used."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",
+                   return_value=MagicMock()):
+            from agent.auxiliary_client import resolve_provider_client
+            _, model = resolve_provider_client(
+                "bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            )
+
+        assert "claude-sonnet" in model
+
+    def test_bedrock_async_mode(self, monkeypatch):
+        """Async mode should return an AsyncAnthropicAuxiliaryClient."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",
+                   return_value=MagicMock()):
+            from agent.auxiliary_client import resolve_provider_client, AsyncAnthropicAuxiliaryClient
+            client, model = resolve_provider_client("bedrock", None, async_mode=True)
+
+        assert client is not None
+        assert isinstance(client, AsyncAnthropicAuxiliaryClient)
+
+    def test_bedrock_default_model_is_haiku(self, monkeypatch):
+        """Default auxiliary model for Bedrock should be Haiku (fast, cheap)."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        with patch("agent.anthropic_adapter.build_anthropic_bedrock_client",
+                   return_value=MagicMock()):
+            from agent.auxiliary_client import resolve_provider_client
+            _, model = resolve_provider_client("bedrock", None)
+
+        assert "haiku" in model.lower()

@@ -671,6 +671,61 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 f"{prompt}"
             )
 
+    # Inject output from referenced cron jobs as context.
+    context_from = job.get("context_from")
+    if context_from:
+        from cron.jobs import OUTPUT_DIR
+        if isinstance(context_from, str):
+            context_from = [context_from]
+        for source_job_id in context_from:
+            # Guard against path traversal — valid job IDs are 12-char hex strings
+            if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
+                logger.warning("context_from: skipping invalid job_id %r", source_job_id)
+                continue
+            try:
+                job_output_dir = OUTPUT_DIR / source_job_id
+                if not job_output_dir.exists():
+                    prompt = (
+                        f"[Context job '{source_job_id}' has no output yet.]\n\n"
+                        f"{prompt}"
+                    )
+                    continue
+                output_files = sorted(
+                    job_output_dir.glob("*.md"),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True,
+                )
+                if not output_files:
+                    prompt = (
+                        f"[Context job '{source_job_id}' has no output yet.]\n\n"
+                        f"{prompt}"
+                    )
+                    continue
+                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                # Truncate to 8K characters to avoid prompt bloat
+                _MAX_CONTEXT_CHARS = 8000
+                if len(latest_output) > _MAX_CONTEXT_CHARS:
+                    latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
+                if latest_output:
+                    prompt = (
+                        f"## Output from job '{source_job_id}'\n"
+                        "The following is the most recent output from a preceding "
+                        "cron job. Use it as context for your analysis.\n\n"
+                        f"```\n{latest_output}\n```\n\n"
+                        f"{prompt}"
+                    )
+                else:
+                    prompt = (
+                        f"[Context job '{source_job_id}' has no output yet.]\n\n"
+                        f"{prompt}"
+                    )
+            except (OSError, PermissionError) as e:
+                logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
+                prompt = (
+                    f"[Context job '{source_job_id}' output could not be read.]\n\n"
+                    f"{prompt}"
+                )
+
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (

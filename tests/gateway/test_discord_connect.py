@@ -241,6 +241,39 @@ async def test_connect_does_not_wait_for_slash_sync(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_respects_slash_commands_opt_out(monkeypatch):
+    adapter = DiscordAdapter(
+        PlatformConfig(enabled=True, token="test-token", extra={"slash_commands": False})
+    )
+
+    monkeypatch.setenv("DISCORD_COMMAND_SYNC_POLICY", "off")
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: FakeBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+    register_mock = MagicMock()
+    monkeypatch.setattr(adapter, "_register_slash_commands", register_mock)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    register_mock.assert_not_called()
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_safe_sync_slash_commands_only_mutates_diffs():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 

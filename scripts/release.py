@@ -404,6 +404,7 @@ AUTHOR_MAP = {
     "1352808998@qq.com": "phpoh",
     "caliberoviv@gmail.com": "vivganes",
     "michaelfackerell@gmail.com": "MikeFac",
+    "18024642@qq.com": "GuyCui",
 }
 
 

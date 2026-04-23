@@ -10,11 +10,9 @@ Tests cover:
 """
 
 import concurrent.futures
-import os
 import sys
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -240,16 +238,56 @@ class TestStagedInactivityWarning:
 
     def test_warning_env_var_respected(self, monkeypatch):
         """HERMES_AGENT_TIMEOUT_WARNING env var is parsed correctly."""
+        from gateway.run import _parse_nonnegative_float_env
+
         monkeypatch.setenv("HERMES_AGENT_TIMEOUT_WARNING", "600")
-        _warning = float(os.getenv("HERMES_AGENT_TIMEOUT_WARNING", 900))
+        _warning = _parse_nonnegative_float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
         assert _warning == 600.0
 
     def test_warning_zero_means_disabled(self, monkeypatch):
         """HERMES_AGENT_TIMEOUT_WARNING=0 disables the warning."""
+        from gateway.run import _parse_nonnegative_float_env
+
         monkeypatch.setenv("HERMES_AGENT_TIMEOUT_WARNING", "0")
-        _raw = float(os.getenv("HERMES_AGENT_TIMEOUT_WARNING", 900))
+        _raw = _parse_nonnegative_float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
         _warning = _raw if _raw > 0 else None
         assert _warning is None
+
+    @pytest.mark.parametrize(
+        ("env_name", "default"),
+        [
+            ("HERMES_AGENT_TIMEOUT", 1800.0),
+            ("HERMES_AGENT_TIMEOUT_WARNING", 900.0),
+            ("HERMES_AGENT_NOTIFY_INTERVAL", 600.0),
+            ("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0),
+        ],
+    )
+    def test_invalid_numeric_env_values_fall_back_to_defaults(
+        self, monkeypatch, env_name, default
+    ):
+        """Invalid gateway numeric env vars should not crash message handling."""
+        from gateway.run import _parse_nonnegative_float_env
+
+        monkeypatch.setenv(env_name, "not-a-number")
+        assert _parse_nonnegative_float_env(env_name, default) == default
+
+    @pytest.mark.parametrize(
+        "env_name",
+        [
+            "HERMES_AGENT_TIMEOUT",
+            "HERMES_AGENT_TIMEOUT_WARNING",
+            "HERMES_AGENT_NOTIFY_INTERVAL",
+            "HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS",
+        ],
+    )
+    def test_negative_numeric_env_values_fall_back_to_defaults(
+        self, monkeypatch, env_name
+    ):
+        """Negative intervals are invalid and should use the documented default."""
+        from gateway.run import _parse_nonnegative_float_env
+
+        monkeypatch.setenv(env_name, "-1")
+        assert _parse_nonnegative_float_env(env_name, 42.0) == 42.0
 
     def test_unlimited_timeout_no_warning(self):
         """When timeout is unlimited (0), no warning fires either."""

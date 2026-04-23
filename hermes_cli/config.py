@@ -394,17 +394,23 @@ DEFAULT_CONFIG = {
         # (bash doesn't source bashrc in non-interactive login mode) or
         # zsh-specific files like ``~/.zshrc`` / ``~/.zprofile``.
         # Paths support ``~`` / ``${VAR}``. Missing files are silently
-        # skipped. When empty, Hermes auto-appends ``~/.bashrc`` if the
+        # skipped. When empty, Hermes auto-sources ``~/.profile``,
+        # ``~/.bash_profile``, and ``~/.bashrc`` (in that order) if the
         # snapshot shell is bash (this is the ``auto_source_bashrc``
         # behaviour — disable with that key if you want strict login-only
         # semantics).
         "shell_init_files": [],
-        # When true (default), Hermes sources ``~/.bashrc`` in the login
-        # shell used to build the environment snapshot.  This captures
-        # PATH additions, shell functions, and aliases defined in the
-        # user's bashrc — which a plain ``bash -l -c`` would otherwise
-        # miss because bash skips bashrc in non-interactive login mode.
-        # Turn this off if you have a bashrc that misbehaves when sourced
+        # When true (default), Hermes sources the user's shell rc files
+        # (``~/.profile``, ``~/.bash_profile``, ``~/.bashrc``) in the
+        # login shell used to build the environment snapshot. This
+        # captures PATH additions, shell functions, and aliases — which a
+        # plain ``bash -l -c`` would otherwise miss because bash skips
+        # bashrc in non-interactive login mode, and because a default
+        # Debian/Ubuntu ``~/.bashrc`` short-circuits on non-interactive
+        # sources. ``~/.profile`` and ``~/.bash_profile`` are tried first
+        # because ``n`` / ``nvm`` / ``asdf`` installers typically write
+        # their PATH exports there without an interactivity guard. Turn
+        # this off if your rc files misbehave when sourced
         # non-interactively (e.g. one that hard-exits on TTY checks).
         "auto_source_bashrc": True,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",

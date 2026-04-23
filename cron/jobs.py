@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
 
@@ -417,6 +417,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -438,6 +439,9 @@ def create_job(
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
+        context_from: Optional job ID (or list of job IDs) whose most recent output
+                      is injected into the prompt as context before each run.
+                      Useful for chaining cron jobs: job A finds data, job B processes it.
         enabled_toolsets: Optional list of toolset names to restrict the agent to.
                           When set, only tools from these toolsets are loaded, reducing
                           token overhead. When omitted, all default tools are loaded.
@@ -481,6 +485,14 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
 
+    # Normalize context_from: accept str or list of str, store as list or None
+    if isinstance(context_from, str):
+        context_from = [context_from.strip()] if context_from.strip() else None
+    elif isinstance(context_from, list):
+        context_from = [str(j).strip() for j in context_from if str(j).strip()] or None
+    else:
+        context_from = None
+
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
         "id": job_id,
@@ -492,6 +504,7 @@ def create_job(
         "provider": normalized_provider,
         "base_url": normalized_base_url,
         "script": normalized_script,
+        "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {

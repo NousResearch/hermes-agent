@@ -13,8 +13,10 @@ import os
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
+from tools import file_state
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
@@ -76,6 +78,7 @@ class TestStalenessCheck(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
+        file_state.get_registry().clear()
         self._tmpdir = tempfile.mkdtemp()
         self._tmpfile = os.path.join(self._tmpdir, "stale_test.txt")
         with open(self._tmpfile, "w") as f:
@@ -83,6 +86,7 @@ class TestStalenessCheck(unittest.TestCase):
 
     def tearDown(self):
         _read_tracker.clear()
+        file_state.get_registry().clear()
         try:
             os.unlink(self._tmpfile)
             os.rmdir(self._tmpdir)
@@ -145,6 +149,53 @@ class TestStalenessCheck(unittest.TestCase):
         result = json.loads(write_file_tool(self._tmpfile, "new", task_id="task_b"))
         self.assertNotIn("_warning", result)
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_relative_path_uses_live_cwd_for_staleness_tracking(self, mock_ops):
+        """Relative-path stale tracking must follow the live terminal cwd."""
+        start_dir = os.path.join(self._tmpdir, "start")
+        live_dir = os.path.join(self._tmpdir, "worktree")
+        os.makedirs(start_dir, exist_ok=True)
+        os.makedirs(live_dir, exist_ok=True)
+
+        start_file = os.path.join(start_dir, "shared.txt")
+        live_file = os.path.join(live_dir, "shared.txt")
+        with open(start_file, "w") as f:
+            f.write("start copy\n")
+        with open(live_file, "w") as f:
+            f.write("live copy\n")
+
+        fake_ops = _make_fake_ops("live copy\n", 10)
+        fake_ops.env = SimpleNamespace(cwd=live_dir)
+        fake_ops.cwd = start_dir
+        mock_ops.return_value = fake_ops
+
+        from tools import file_tools
+
+        with file_tools._file_ops_lock:
+            previous = file_tools._file_ops_cache.get("live_task")
+            file_tools._file_ops_cache["live_task"] = fake_ops
+
+        try:
+            with patch.dict(os.environ, {"TERMINAL_CWD": start_dir}, clear=False):
+                read_file_tool("shared.txt", task_id="live_task")
+
+                time.sleep(0.05)
+                with open(live_file, "w") as f:
+                    f.write("live copy modified elsewhere\n")
+
+                result = json.loads(
+                    write_file_tool("shared.txt", "replacement", task_id="live_task")
+                )
+        finally:
+            with file_tools._file_ops_lock:
+                if previous is None:
+                    file_tools._file_ops_cache.pop("live_task", None)
+                else:
+                    file_tools._file_ops_cache["live_task"] = previous
+
+        self.assertIn("_warning", result)
+        self.assertIn("modified since you last read", result["_warning"])
+
 
 # ---------------------------------------------------------------------------
 # Staleness in patch
@@ -154,6 +205,7 @@ class TestPatchStaleness(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
+        file_state.get_registry().clear()
         self._tmpdir = tempfile.mkdtemp()
         self._tmpfile = os.path.join(self._tmpdir, "patch_test.txt")
         with open(self._tmpfile, "w") as f:
@@ -161,6 +213,7 @@ class TestPatchStaleness(unittest.TestCase):
 
     def tearDown(self):
         _read_tracker.clear()
+        file_state.get_registry().clear()
         try:
             os.unlink(self._tmpfile)
             os.rmdir(self._tmpdir)
@@ -207,9 +260,11 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
+        file_state.get_registry().clear()
 
     def tearDown(self):
         _read_tracker.clear()
+        file_state.get_registry().clear()
 
     def test_returns_none_for_unknown_task(self):
         self.assertIsNone(_check_file_staleness("/tmp/x.py", "nonexistent"))

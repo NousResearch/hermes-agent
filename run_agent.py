@@ -262,6 +262,7 @@ _MAX_TOOL_WORKERS = 8
 _DESTRUCTIVE_PATTERNS = re.compile(
     r"""(?:^|\s|&&|\|\||;|`)(?:
         rm\s|rmdir\s|
+        cp\s|install\s|
         mv\s|
         sed\s+-i|
         truncate\s|

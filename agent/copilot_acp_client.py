@@ -21,6 +21,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from openai.types.chat.chat_completion_message_tool_call import (
+    ChatCompletionMessageToolCall,
+    Function,
+)
+
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
@@ -228,11 +233,27 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
-def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
+def _build_openai_tool_call(
+    *,
+    call_id: str,
+    name: str,
+    arguments: str,
+) -> ChatCompletionMessageToolCall:
+    """Build an OpenAI-compatible tool-call object for downstream handling."""
+    return ChatCompletionMessageToolCall(
+        id=call_id,
+        call_id=call_id,
+        response_item_id=None,
+        type="function",
+        function=Function(name=name, arguments=arguments),
+    )
+
+
+def _extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageToolCall], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
 
-    extracted: list[SimpleNamespace] = []
+    extracted: list[ChatCompletionMessageToolCall] = []
     consumed_spans: list[tuple[int, int]] = []
 
     def _try_add_tool_call(raw_json: str) -> None:
@@ -256,12 +277,10 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
             call_id = f"acp_call_{len(extracted)+1}"
 
         extracted.append(
-            SimpleNamespace(
-                id=call_id,
+            _build_openai_tool_call(
                 call_id=call_id,
-                response_item_id=None,
-                type="function",
-                function=SimpleNamespace(name=fn_name.strip(), arguments=fn_args),
+                name=fn_name.strip(),
+                arguments=fn_args,
             )
         )
 

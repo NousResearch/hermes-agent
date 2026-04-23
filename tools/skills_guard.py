@@ -43,11 +43,11 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    # Agent-created skills run in the same process as the agent that
-    # wrote them — the agent could already execute the same code via
-    # terminal(), so a dangerous-pattern gate on skill_manage adds
-    # friction without meaningful security. Allow all verdicts.
-    "agent-created": ("allow",  "allow",   "allow"),
+    # Agent-created: "ask" on dangerous surfaces as an error to the agent,
+    # which can retry without the flagged content. This gate only runs when
+    # skills.guard_agent_created is enabled (off by default) — see
+    # tools/skill_manager_tool.py::_guard_agent_created_enabled.
+    "agent-created": ("allow",  "allow",   "ask"),
 }
 
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}

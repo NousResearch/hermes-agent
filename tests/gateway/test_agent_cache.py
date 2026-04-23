@@ -949,8 +949,8 @@ class TestAgentCacheIdleResume:
         (full teardown — session is done), cache-eviction path uses
         release_clients() (soft — session may resume).
         """
+        import run_agent as _ra
         from run_agent import AIAgent
-        from tools import terminal_tool as _tt
 
         # Agent A: evicted from cache (soft) — terminal survives.
         # Agent B: session expired (hard) — terminal torn down.
@@ -970,13 +970,13 @@ class TestAgentCacheIdleResume:
         )
 
         vm_calls: list = []
-        original_vm = _tt.cleanup_vm
-        _tt.cleanup_vm = lambda tid: vm_calls.append(tid)
+        original_vm = _ra.cleanup_vm
+        _ra.cleanup_vm = lambda tid: vm_calls.append(tid)
         try:
             agent_a.release_clients()   # cache eviction
             agent_b.close()              # session expiry
         finally:
-            _tt.cleanup_vm = original_vm
+            _ra.cleanup_vm = original_vm
             try:
                 agent_a.close()
             except Exception:

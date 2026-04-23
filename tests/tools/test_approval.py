@@ -460,6 +460,24 @@ class TestProjectSensitiveCopyPattern:
         assert key is not None
         assert "project env/config" in desc.lower()
 
+    def test_cp_absolute_path_to_dotenv_requires_approval(self):
+        # Regression: the real-world bug report was `cp /opt/data/.env.local /opt/data/.env`.
+        # The regex must cover absolute paths, not just `./` / bare relative paths.
+        dangerous, key, desc = detect_dangerous_command(
+            "cp /opt/data/.env.local /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_absolute_path_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "cat /opt/data/.env.local > /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
     def test_mv_to_nested_config_yaml_requires_approval(self):
         dangerous, key, desc = detect_dangerous_command("mv tmp/generated.yaml config/config.yaml")
         assert dangerous is True

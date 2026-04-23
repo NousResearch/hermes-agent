@@ -237,6 +237,8 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim}>⚕ {ui.status}</Text>}
+
+      <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
   )
 })
@@ -320,8 +322,6 @@ export const AppLayout = memo(function AppLayout({
             />
 
             <ComposerPane actions={actions} composer={composer} status={status} />
-
-            <StatusRulePane at="bottom" composer={composer} status={status} />
           </>
         )}
       </Box>

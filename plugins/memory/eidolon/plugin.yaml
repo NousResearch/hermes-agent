@@ -1,0 +1,7 @@
+name: eidolon
+version: 1.0.0
+description: "Eidolon Agent Memory — semantic fact storage with pgvector, companion profiles, and graceful omission."
+pip_dependencies: []
+requires_env: []
+hooks:
+  - on_session_end

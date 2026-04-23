@@ -383,6 +383,7 @@ AUTHOR_MAP = {
     "l.moncany@gmail.com": "lmoncany",
     "fatinghenji@users.noreply.github.com": "fatinghenji",
     "xin.peng.dr@gmail.com": "xinpengdr",
+    "mike@mikewaters.net": "mikewaters",
 }
 
 

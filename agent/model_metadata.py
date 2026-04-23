@@ -123,6 +123,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude": 200000,
     # OpenAI — GPT-5 family (most have 400k; specific overrides first)
     # Source: https://developers.openai.com/api/docs/models
+    # GPT-5.5 (launched Apr 23 2026). Verified via live ChatGPT codex/models
+    # endpoint: bare slug `gpt-5.5`, no -pro/-mini variants. 400k context on Codex.
+    "gpt-5.5": 400000,
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)

@@ -286,6 +286,10 @@ if _config_path.exists():
                     # Only bridge explicit absolute paths from config.yaml.
                     if _cfg_key == "cwd" and str(_val) in (".", "auto", "cwd"):
                         continue
+                    # Expand shell tilde in cwd so subprocess.Popen never
+                    # receives a literal "~/" which the kernel rejects.
+                    if _cfg_key == "cwd" and isinstance(_val, str):
+                        _val = os.path.expanduser(_val)
                     if isinstance(_val, list):
                         os.environ[_env_var] = json.dumps(_val)
                     else:

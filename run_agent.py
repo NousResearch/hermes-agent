@@ -147,7 +147,10 @@ class _SafeWriter:
             pass
 
     def fileno(self):
-        return self._inner.fileno()
+        try:
+            return self._inner.fileno()
+        except (OSError, ValueError):
+            return -1  # Sentinel: stream is closed/broken
 
     def isatty(self):
         try:
@@ -203,7 +206,8 @@ class IterationBudget:
 
     @property
     def used(self) -> int:
-        return self._used
+        with self._lock:
+            return self._used
 
     @property
     def remaining(self) -> int:

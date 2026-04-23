@@ -78,13 +78,34 @@ class AnthropicTransport(ProviderTransport):
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Anthropic response to NormalizedResponse.
 
-        kwargs:
-            strip_tool_prefix: bool — strip 'mcp_mcp_' prefixes from tool names.
+        Calls the adapter's v1 normalize and maps the (SimpleNamespace, finish_reason)
+        tuple to the shared NormalizedResponse type.
         """
-        from agent.anthropic_adapter import normalize_anthropic_response_v2
+        from agent.anthropic_adapter import normalize_anthropic_response
+        from agent.transports.types import build_tool_call
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        return normalize_anthropic_response_v2(response, strip_tool_prefix=strip_tool_prefix)
+        assistant_msg, finish_reason = normalize_anthropic_response(response, strip_tool_prefix)
+
+        tool_calls = None
+        if assistant_msg.tool_calls:
+            tool_calls = [
+                build_tool_call(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
+                for tc in assistant_msg.tool_calls
+            ]
+
+        provider_data = {}
+        if getattr(assistant_msg, "reasoning_details", None):
+            provider_data["reasoning_details"] = assistant_msg.reasoning_details
+
+        return NormalizedResponse(
+            content=assistant_msg.content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            reasoning=getattr(assistant_msg, "reasoning", None),
+            usage=None,
+            provider_data=provider_data or None,
+        )
 
     def validate_response(self, response: Any) -> bool:
         """Check Anthropic response structure is valid.

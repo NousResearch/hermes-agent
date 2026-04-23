@@ -847,6 +847,10 @@ def list_authenticated_providers(
         # source of truth.  models.dev can have wrong mappings (e.g.
         # minimax-cn → MINIMAX_API_KEY instead of MINIMAX_CN_API_KEY).
         pconfig = PROVIDER_REGISTRY.get(hermes_id)
+        # Skip non-API-key auth providers here — they are handled in
+        # section 2 (HERMES_OVERLAYS) with proper auth store checking.
+        if pconfig and pconfig.auth_type != "api_key":
+            continue
         if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:

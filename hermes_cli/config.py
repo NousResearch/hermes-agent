@@ -714,6 +714,12 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        # When delegate_task narrows child toolsets explicitly, preserve any
+        # MCP toolsets the parent already has enabled. On by default so
+        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
+        # extras" without silently stripping MCP tools the parent already has.
+        # Set to false for strict intersection.
+        "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
@@ -3189,7 +3195,7 @@ def save_config(config: Dict[str, Any]):
     if not sec or sec.get("redact_secrets") is None:
         parts.append(_SECURITY_COMMENT)
     fb = normalized.get("fallback_model", {})
-    if not fb or not (fb.get("provider") and fb.get("model")):
+    if not fb or not isinstance(fb, dict) or not (fb.get("provider") and fb.get("model")):
         parts.append(_FALLBACK_COMMENT)
 
     atomic_yaml_write(

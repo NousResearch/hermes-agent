@@ -108,6 +108,11 @@ def _strip_reasoning_tags(text: str) -> str:
     ``<thought>`` (Gemma 4).  Must stay in sync with
     ``run_agent.py::_strip_think_blocks`` and the stream consumer's
     ``_OPEN_THINK_TAGS`` / ``_CLOSE_THINK_TAGS`` tuples.
+
+    Also strips tool-call XML blocks some open models leak into visible
+    content (``<tool_call>``, ``<function_calls>``, Gemma-style
+    ``<function name="…">…</function>``). Ported from
+    openclaw/openclaw#67318.
     """
     cleaned = text
     for tag in _REASONING_TAGS:
@@ -132,6 +137,31 @@ def _strip_reasoning_tags(text: str) -> str:
             cleaned,
             flags=re.IGNORECASE,
         )
+    # Tool-call XML blocks (openclaw/openclaw#67318).
+    for tc_tag in ("tool_call", "tool_calls", "tool_result",
+                   "function_call", "function_calls"):
+        cleaned = re.sub(
+            rf"<{tc_tag}\b[^>]*>.*?</{tc_tag}>\s*",
+            "",
+            cleaned,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    # <function name="..."> — boundary + attribute gated to avoid prose FPs.
+    cleaned = re.sub(
+        r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
+        r'<function\b[^>]*\bname\s*=[^>]*>'
+        r'(?:(?:(?!</function>).)*)</function>\s*',
+        '',
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    # Stray tool-call close tags.
+    cleaned = re.sub(
+        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
+        '',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     return cleaned.strip()
 
 
@@ -275,13 +305,23 @@ def load_cli_config() -> Dict[str, Any]:
     
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
+
+    If HERMES_IGNORE_USER_CONFIG=1 is set (via ``hermes chat --ignore-user-config``),
+    the user config at ``~/.hermes/config.yaml`` is skipped entirely and only the
+    built-in defaults plus the project-level ``cli-config.yaml`` (if any) are used.
+    Credentials in ``.env`` are still loaded — this flag only suppresses
+    behavioral/config settings.
     """
     # Check user config first ({HERMES_HOME}/config.yaml)
     user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
 
+    # --ignore-user-config: force-skip the user config.yaml (still honor project
+    # config as a fallback so defaults stay sensible).
+    ignore_user_config = os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
+
     # Use user config if it exists, otherwise project config
-    if user_config_path.exists():
+    if user_config_path.exists() and not ignore_user_config:
         config_path = user_config_path
     else:
         config_path = project_config_path
@@ -1772,6 +1812,7 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        ignore_rules: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1925,6 +1966,11 @@ class HermesCLI:
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
         self.pass_session_id = pass_session_id
+        # --ignore-rules: honor either the constructor flag or the env var set
+        # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
+        # pass skip_context_files=True and skip_memory=True to AIAgent so
+        # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
+        self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -3282,6 +3328,8 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                skip_context_files=self.ignore_rules,
+                skip_memory=self.ignore_rules,
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
@@ -10786,6 +10834,8 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    ignore_user_config: bool = False,
+    ignore_rules: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -10895,6 +10945,7 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        ignore_rules=ignore_rules,
     )
 
     if parsed_skills:

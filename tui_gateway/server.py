@@ -2,6 +2,7 @@ import atexit
 import concurrent.futures
 import copy
 import json
+import logging
 import os
 import queue
 import subprocess
@@ -14,6 +15,8 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+
+logger = logging.getLogger(__name__)
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -34,6 +37,7 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _answers: dict[str, str] = {}
 _db = None
+_db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
@@ -170,12 +174,26 @@ atexit.register(
 
 
 def _get_db():
-    global _db
+    global _db, _db_error
     if _db is None:
         from hermes_state import SessionDB
 
-        _db = SessionDB()
+        try:
+            _db = SessionDB()
+            _db_error = None
+        except Exception as exc:
+            _db_error = str(exc)
+            logger.warning(
+                "TUI session store unavailable — continuing without state.db features: %s",
+                exc,
+            )
+            return None
     return _db
+
+
+def _db_unavailable_error(rid, *, code: int):
+    detail = _db_error or "state.db unavailable"
+    return _err(rid, code, f"state.db unavailable: {detail}")
 
 
 def write_json(obj: dict) -> bool:
@@ -1124,13 +1142,22 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
 
 def _make_agent(sid: str, key: str, session_id: str | None = None):
     from run_agent import AIAgent
+    from hermes_cli.runtime_provider import resolve_runtime_provider
 
     cfg = _load_cfg()
     system_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
     if not system_prompt:
         system_prompt = _resolve_personality_prompt(cfg)
+    runtime = resolve_runtime_provider(requested=None)
     return AIAgent(
         model=_resolve_model(),
+        provider=runtime.get("provider"),
+        base_url=runtime.get("base_url"),
+        api_key=runtime.get("api_key"),
+        api_mode=runtime.get("api_mode"),
+        acp_command=runtime.get("command"),
+        acp_args=runtime.get("args"),
+        credential_pool=runtime.get("credential_pool"),
         quiet_mode=True,
         verbose_logging=_load_tool_progress_mode() == "verbose",
         reasoning_config=_load_reasoning_config(),
@@ -1329,7 +1356,9 @@ def _(rid, params: dict) -> dict:
             finally:
                 _clear_session_context(tokens)
 
-            _get_db().create_session(key, source="tui", model=_resolve_model())
+            db = _get_db()
+            if db is not None:
+                db.create_session(key, source="tui", model=_resolve_model())
             session["agent"] = agent
 
             try:
@@ -1401,6 +1430,9 @@ def _(rid, params: dict) -> dict:
 
 @method("session.list")
 def _(rid, params: dict) -> dict:
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5006)
     try:
         # Resume picker should include human conversation surfaces beyond
         # tui/cli (notably telegram from blitz row #7), but avoid internal
@@ -1427,7 +1459,7 @@ def _(rid, params: dict) -> dict:
         fetch_limit = max(limit * 5, 100)
         rows = [
             s
-            for s in _get_db().list_sessions_rich(source=None, limit=fetch_limit)
+            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
             if (s.get("source") or "").strip().lower() in allow
         ][:limit]
         return _ok(
@@ -1456,6 +1488,8 @@ def _(rid, params: dict) -> dict:
     if not target:
         return _err(rid, 4006, "session_id required")
     db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5000)
     found = db.get_session(target)
     if not found:
         found = db.get_session_by_title(target)
@@ -1494,13 +1528,16 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5007)
     title, key = params.get("title", ""), session["session_key"]
     if not title:
         return _ok(
-            rid, {"title": _get_db().get_session_title(key) or "", "session_key": key}
+            rid, {"title": db.get_session_title(key) or "", "session_key": key}
         )
     try:
-        _get_db().set_session_title(key, title)
+        db.set_session_title(key, title)
         return _ok(rid, {"title": title})
     except Exception as e:
         return _err(rid, 5007, str(e))
@@ -1636,6 +1673,8 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
     old_key = session["session_key"]
     with session["history_lock"]:
         history = [dict(msg) for msg in session.get("history", [])]
@@ -3483,11 +3522,14 @@ def _(rid, params: dict) -> dict:
 @method("insights.get")
 def _(rid, params: dict) -> dict:
     days = params.get("days", 30)
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5017)
     try:
         cutoff = time.time() - days * 86400
         rows = [
             s
-            for s in _get_db().list_sessions_rich(limit=500)
+            for s in db.list_sessions_rich(limit=500)
             if (s.get("started_at") or 0) >= cutoff
         ]
         return _ok(

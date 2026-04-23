@@ -117,6 +117,63 @@ def _get_anthropic_max_output(model: str) -> int:
     return best_val
 
 
+def _resolve_positive_anthropic_max_tokens(value) -> Optional[int]:
+    """Return ``value`` floored to a positive int, or ``None`` if it is not a
+    finite positive number. Ported from openclaw/openclaw#66664.
+
+    Anthropic's Messages API rejects ``max_tokens`` values that are 0,
+    negative, non-integer, or non-finite with HTTP 400. Python's ``or``
+    idiom (``max_tokens or fallback``) correctly catches ``0`` but lets
+    negative ints and fractional floats (``-1``, ``0.5``) through to the
+    API, producing a user-visible failure instead of a local error.
+    """
+    # Booleans are a subclass of int — exclude explicitly so ``True`` doesn't
+    # silently become 1 and ``False`` doesn't become 0.
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        import math
+        if not math.isfinite(value):
+            return None
+    except Exception:
+        return None
+    floored = int(value)  # truncates toward zero for floats
+    return floored if floored > 0 else None
+
+
+def _resolve_anthropic_messages_max_tokens(
+    requested,
+    model: str,
+    context_length: Optional[int] = None,
+) -> int:
+    """Resolve the ``max_tokens`` budget for an Anthropic Messages call.
+
+    Prefers ``requested`` when it is a positive finite number; otherwise
+    falls back to the model's output ceiling. Raises ``ValueError`` if no
+    positive budget can be resolved (should not happen with current model
+    table defaults, but guards against a future regression where
+    ``_get_anthropic_max_output`` could return ``0``).
+
+    Separately, callers apply a context-window clamp — this resolver does
+    not, to keep the positive-value contract independent of endpoint
+    specifics.
+
+    Ported from openclaw/openclaw#66664 (resolveAnthropicMessagesMaxTokens).
+    """
+    resolved = _resolve_positive_anthropic_max_tokens(requested)
+    if resolved is not None:
+        return resolved
+    fallback = _get_anthropic_max_output(model)
+    if fallback > 0:
+        return fallback
+    raise ValueError(
+        f"Anthropic Messages adapter requires a positive max_tokens value for "
+        f"model {model!r}; got {requested!r} and no model default resolved."
+    )
+
+
 def _supports_adaptive_thinking(model: str) -> bool:
     """Return True for Claude 4.6+ models that support adaptive thinking."""
     return any(v in model for v in _ADAPTIVE_THINKING_SUBSTRINGS)
@@ -1391,7 +1448,12 @@ def build_anthropic_kwargs(
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
     # effective_max_tokens = output cap for this call (≠ total context window)
-    effective_max_tokens = max_tokens or _get_anthropic_max_output(model)
+    # Use the resolver helper so non-positive values (negative ints,
+    # fractional floats, NaN, non-numeric) fail locally with a clear error
+    # rather than 400-ing at the Anthropic API. See openclaw/openclaw#66664.
+    effective_max_tokens = _resolve_anthropic_messages_max_tokens(
+        max_tokens, model, context_length=context_length
+    )
 
     # Clamp output cap to fit inside the total context window.
     # Only matters for small custom endpoints where context_length < native
@@ -1603,43 +1665,4 @@ def normalize_anthropic_response(
             reasoning_details=reasoning_details or None,
         ),
         finish_reason,
-    )
-
-
-def normalize_anthropic_response_v2(
-    response,
-    strip_tool_prefix: bool = False,
-) -> "NormalizedResponse":
-    """Normalize Anthropic response to NormalizedResponse.
-
-    Wraps the existing normalize_anthropic_response() and maps its output
-    to the shared transport types.  This allows incremental migration —
-    one call site at a time — without changing the original function.
-    """
-    from agent.transports.types import NormalizedResponse, build_tool_call
-
-    assistant_msg, finish_reason = normalize_anthropic_response(response, strip_tool_prefix)
-
-    tool_calls = None
-    if assistant_msg.tool_calls:
-        tool_calls = [
-            build_tool_call(
-                id=tc.id,
-                name=tc.function.name,
-                arguments=tc.function.arguments,
-            )
-            for tc in assistant_msg.tool_calls
-        ]
-
-    provider_data = {}
-    if getattr(assistant_msg, "reasoning_details", None):
-        provider_data["reasoning_details"] = assistant_msg.reasoning_details
-
-    return NormalizedResponse(
-        content=assistant_msg.content,
-        tool_calls=tool_calls,
-        finish_reason=finish_reason,
-        reasoning=getattr(assistant_msg, "reasoning", None),
-        usage=None,  # Anthropic usage is on the raw response, not the normaliser
-        provider_data=provider_data or None,
     )

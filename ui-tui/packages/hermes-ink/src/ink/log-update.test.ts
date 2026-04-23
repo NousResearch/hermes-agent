@@ -2,15 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Frame } from './frame.js'
 import { LogUpdate } from './log-update.js'
-import {
-  CellWidth,
-  CharPool,
-  createScreen,
-  HyperlinkPool,
-  type Screen,
-  setCellAt,
-  StylePool
-} from './screen.js'
+import { CellWidth, CharPool, createScreen, HyperlinkPool, type Screen, setCellAt, StylePool } from './screen.js'
 
 /**
  * Contract tests for LogUpdate.render() — the diff-to-ANSI path that owns

@@ -404,6 +404,53 @@ class TestScopedLocks:
         status.release_scoped_lock("telegram-bot-token", "secret")
         assert not lock_path.exists()
 
+    def test_release_all_scoped_locks_can_target_single_owner(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+
+        target_lock = lock_dir / "telegram-bot-token-target.lock"
+        other_lock = lock_dir / "slack-app-token-other.lock"
+        target_lock.write_text(json.dumps({
+            "pid": 111,
+            "start_time": 222,
+            "kind": "hermes-gateway",
+        }))
+        other_lock.write_text(json.dumps({
+            "pid": 999,
+            "start_time": 333,
+            "kind": "hermes-gateway",
+        }))
+
+        removed = status.release_all_scoped_locks(
+            owner_pid=111,
+            owner_start_time=222,
+        )
+
+        assert removed == 1
+        assert not target_lock.exists()
+        assert other_lock.exists()
+
+    def test_release_all_scoped_locks_skips_pid_reuse_mismatch(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+
+        reused_pid_lock = lock_dir / "telegram-bot-token-reused.lock"
+        reused_pid_lock.write_text(json.dumps({
+            "pid": 111,
+            "start_time": 999,
+            "kind": "hermes-gateway",
+        }))
+
+        removed = status.release_all_scoped_locks(
+            owner_pid=111,
+            owner_start_time=222,
+        )
+
+        assert removed == 0
+        assert reused_pid_lock.exists()
+
 
 class TestTakeoverMarker:
     """Tests for the --replace takeover marker.

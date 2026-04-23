@@ -285,6 +285,103 @@ def cron_command(args):
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
 
+    if subcmd == "audit":
+        return cron_audit(args)
+
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick|audit]")
     sys.exit(1)
+
+
+def cron_audit(args) -> int:
+    """Display the cron audit log."""
+    from cron.audit import _load_audit_config
+
+    cfg = _load_audit_config()
+    log_path = cfg.get("log_path", "")
+
+    if not log_path:
+        print(color("No audit log path configured.", Colors.RED))
+        return 1
+
+    log_file = Path(log_path).expanduser()
+    if not log_file.exists():
+        print(color("Audit log is empty (no events recorded yet).", Colors.DIM))
+        if not cfg.get("enabled"):
+            print(color("Enable with: cron.audit_log: true in config.yaml or HERMES_CRON_AUDIT_LOG=1", Colors.DIM))
+        return 0
+
+    # Parse args
+    limit = getattr(args, "limit", 50) or 50
+    job_filter = getattr(args, "job_id", None)
+    action_filter = getattr(args, "action", None)
+    follow = getattr(args, "follow", False)
+
+    import json as _json
+
+    entries = []
+    with open(log_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            if job_filter and entry.get("job_id") != job_filter:
+                continue
+            if action_filter and entry.get("action") != action_filter:
+                continue
+            entries.append(entry)
+
+    # Show last N entries
+    entries = entries[-limit:]
+
+    if not entries:
+        print(color("No matching audit entries found.", Colors.DIM))
+        return 0
+
+    print()
+    print(color("┌─────────────────────────────────────────────────────────────────────────┐", Colors.CYAN))
+    print(color(f"│  Cron Audit Log ({len(entries)} entries, path: {log_file.name})              │", Colors.CYAN))
+    print(color("└─────────────────────────────────────────────────────────────────────────┘", Colors.CYAN))
+    print()
+
+    for entry in entries:
+        ts = entry.get("ts", "?")[:19]  # Trim to local time
+        job_name = entry.get("job_name", "?")
+        job_id = entry.get("job_id", "?")[:12]
+        action = entry.get("action", "?")
+        actor = entry.get("actor", "?")
+        details = entry.get("details", {})
+
+        # Color code by action
+        if action in ("created", "enabled"):
+            action_colored = color(action, Colors.GREEN)
+        elif action in ("removed", "disabled", "failed"):
+            action_colored = color(action, Colors.RED)
+        elif action in ("paused",):
+            action_colored = color(action, Colors.YELLOW)
+        elif action in ("completed",):
+            action_colored = color(action, Colors.CYAN)
+        else:
+            action_colored = color(action, Colors.BLUE)
+
+        detail_str = ""
+        if details:
+            parts = []
+            for k, v in details.items():
+                if isinstance(v, dict) and k == "changes":
+                    parts.append(f"fields: {','.join(str(x) for x in v.keys())}")
+                else:
+                    parts.append(f"{k}={v}")
+            detail_str = " ".join(parts)
+
+        print(f"  {ts}  {color(job_id, Colors.YELLOW)}  {action_colored}  by {actor}")
+        print(f"    {job_name}")
+        if detail_str:
+            print(f"    {color(detail_str, Colors.DIM)}")
+        print()
+
+    return 0

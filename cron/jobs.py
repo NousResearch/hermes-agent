@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 
+# Audit logging — no-op when not enabled (cron.audit_log in config.yaml)
+from cron.audit import (
+    audit_created,
+    audit_disabled,
+    audit_paused,
+    audit_removed,
+    audit_resumed,
+    audit_run_completed,
+    audit_updated,
+)
+
 try:
     from croniter import croniter
     HAS_CRONITER = True
@@ -470,6 +481,8 @@ def create_job(
     jobs.append(job)
     save_jobs(jobs)
 
+    audit_created(job)
+
     return job
 
 
@@ -525,13 +538,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         jobs[i] = updated
         save_jobs(jobs)
+
+        audit_updated(job_id, updated.get("name", ""), updates)
+
         return _apply_skill_fields(jobs[i])
     return None
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Pause a job without deleting it."""
-    return update_job(
+    result = update_job(
         job_id,
         {
             "enabled": False,
@@ -540,6 +556,9 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
             "paused_reason": reason,
         },
     )
+    if result:
+        audit_paused(job_id, result.get("name", ""), reason)
+    return result
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -549,7 +568,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     next_run_at = compute_next_run(job["schedule"])
-    return update_job(
+    result = update_job(
         job_id,
         {
             "enabled": True,
@@ -559,6 +578,9 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
             "next_run_at": next_run_at,
         },
     )
+    if result:
+        audit_resumed(job_id, result.get("name", ""))
+    return result
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -582,9 +604,16 @@ def remove_job(job_id: str) -> bool:
     """Remove a job by ID."""
     jobs = load_jobs()
     original_len = len(jobs)
+    # Capture name before removal for audit
+    removed_name = ""
+    for j in jobs:
+        if j["id"] == job_id:
+            removed_name = j.get("name", "")
+            break
     jobs = [j for j in jobs if j["id"] != job_id]
     if len(jobs) < original_len:
         save_jobs(jobs)
+        audit_removed(job_id, removed_name)
         return True
     return False
 
@@ -620,8 +649,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     completed = job["repeat"]["completed"]
                     if times is not None and times > 0 and completed >= times:
                         # Remove the job (limit reached)
+                        _name = job.get("name", "")
                         jobs.pop(i)
                         save_jobs(jobs)
+                        audit_run_completed(job_id, _name, success, error)
+                        audit_removed(job_id, _name)
                         return
                 
                 # Compute next run
@@ -631,10 +663,12 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 if job["next_run_at"] is None:
                     job["enabled"] = False
                     job["state"] = "completed"
+                    audit_disabled(job_id, job.get("name", ""), "oneshot_completed")
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 
                 save_jobs(jobs)
+                audit_run_completed(job_id, job.get("name", ""), success, error)
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)

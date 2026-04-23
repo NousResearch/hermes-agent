@@ -198,9 +198,79 @@ def test_get_nous_auth_status_auth_store_fallback(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(hermes_home, access_token="at-123")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda min_key_ttl_seconds=60: {
+            "base_url": "https://inference.example.com/v1",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "key_id": "key-1",
+            "source": "cache",
+        },
+    )
 
     status = get_nous_auth_status()
     assert status["logged_in"] is True
+    assert status["portal_base_url"] == "https://portal.example.com"
+
+
+def test_get_nous_auth_status_prefers_runtime_auth_store_over_stale_pool(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_nous_auth_status
+    from agent.credential_pool import PooledCredential, load_pool
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="at-fresh")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    pool = load_pool("nous")
+    stale = PooledCredential.from_dict("nous", {
+        "access_token": "at-stale",
+        "refresh_token": "rt-stale",
+        "portal_base_url": "https://portal.stale.example.com",
+        "inference_base_url": "https://inference.stale.example.com/v1",
+        "agent_key": "agent-stale",
+        "agent_key_expires_at": "2020-01-01T00:00:00+00:00",
+        "expires_at": "2020-01-01T00:00:00+00:00",
+        "label": "dashboard device_code",
+        "auth_type": "oauth",
+        "source": "manual:dashboard_device_code",
+        "base_url": "https://inference.stale.example.com/v1",
+        "priority": 0,
+    })
+    pool.add_entry(stale)
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda min_key_ttl_seconds=60: {
+            "base_url": "https://inference.example.com/v1",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "key_id": "key-fresh",
+            "source": "portal",
+        },
+    )
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is True
+    assert status["portal_base_url"] == "https://portal.example.com"
+    assert status["inference_base_url"] == "https://inference.example.com/v1"
+    assert status["source"] == "runtime:portal"
+
+
+def test_get_nous_auth_status_reports_revoked_refresh_session(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_nous_auth_status
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="at-123")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _boom(min_key_ttl_seconds=60):
+        raise AuthError("Refresh session has been revoked", provider="nous", relogin_required=True)
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", _boom)
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is False
+    assert status["relogin_required"] is True
+    assert "revoked" in status["error"].lower()
     assert status["portal_base_url"] == "https://portal.example.com"
 
 

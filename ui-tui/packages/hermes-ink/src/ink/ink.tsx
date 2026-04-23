@@ -467,13 +467,29 @@ export default class Ink {
         this.resizeSettleTimer = setTimeout(() => {
           this.resizeSettleTimer = null
 
-          if (this.isUnmounted || this.isPaused || !this.altScreenActive || !this.options.stdout.isTTY) {
+          if (
+            this.isUnmounted ||
+            this.isPaused ||
+            !this.altScreenActive ||
+            !this.options.stdout.isTTY ||
+            this.currentNode === null ||
+            this.pendingResizeRender
+          ) {
             return
           }
 
-          this.resetFramesForAltScreen()
-          this.needsEraseBeforePaint = true
-          this.scheduleRender()
+          this.pendingResizeRender = true
+          queueMicrotask(() => {
+            this.pendingResizeRender = false
+
+            if (this.isUnmounted || this.isPaused || !this.altScreenActive || !this.options.stdout.isTTY || this.currentNode === null) {
+              return
+            }
+
+            this.resetFramesForAltScreen()
+            this.needsEraseBeforePaint = true
+            this.render(this.currentNode)
+          })
         }, 160)
       }
     }
@@ -1953,6 +1969,10 @@ export default class Ink {
     if (this.drainTimer !== null) {
       clearTimeout(this.drainTimer)
       this.drainTimer = null
+    }
+    if (this.resizeSettleTimer !== null) {
+      clearTimeout(this.resizeSettleTimer)
+      this.resizeSettleTimer = null
     }
 
     reconciler.updateContainerSync(null, this.container, null, noop)

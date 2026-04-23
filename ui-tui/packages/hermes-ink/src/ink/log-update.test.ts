@@ -93,44 +93,31 @@ describe('LogUpdate.render diff contract', () => {
     expect(stdoutOnly(diff)).toContain('shorterrownow')
   })
 
-  it('drift repro: if terminal has content that prev.screen does not know about, diff leaves it orphaned', () => {
-    // Simulates prev/terminal desync: the physical terminal has STALE
-    // content at row 2 from a prior frame that was never reconciled into
-    // prev.screen. next.screen is blank at row 2. Diff finds prev==next
-    // (both blank at row 2), emits nothing → the stale content survives
-    // on the terminal as an artifact.
+  it('drift repro: identical prev/next emits no heal, even when the physical terminal is stale', () => {
+    // Load-bearing theory for the rapid-resize scattered-letter bug: if the
+    // physical terminal has stale cells that prev.screen doesn't know about
+    // (e.g. resize-induced reflow wrote past ink's tracked range), the
+    // renderer has no signal to heal them. LogUpdate.render only sees
+    // prev/next — no view of the physical terminal — so when prev==next,
+    // it emits nothing and any orphaned glyphs survive.
     //
-    // This is the load-bearing theory for the rapid-resize scattered-letter
-    // bug: whenever the ink renderer believes prev.screen is authoritative
-    // but the physical terminal was mutated out-of-band (resize-induced
-    // reflow writing past the prev-frame's tracked cells), those cells
-    // drift and artifacts appear at that row on subsequent frames.
+    // The fix path is upstream of this diff: either (a) defensively
+    // full-repaint on xterm.js frames where prevFrameContaminated is set,
+    // or (b) close the drift window so prev.screen cannot diverge.
     const w = 20
     const h = 3
-    const prevAsInk = mkScreen(w, h)
-    paint(prevAsInk, 0, 'same')
-    // row 2 in prevAsInk is blank — but pretend the terminal has stale
-    // characters there. ink has no way to know.
-    const terminalReally = mkScreen(w, h)
-    paint(terminalReally, 0, 'same')
-    paint(terminalReally, 2, 'orphaned')
+
+    const prev = mkScreen(w, h)
+    paint(prev, 0, 'same')
 
     const next = mkScreen(w, h)
     paint(next, 0, 'same')
     next.damage = { x: 0, y: 0, width: w, height: h }
 
     const log = new LogUpdate({ isTTY: true, stylePool })
-    const diff = log.render(mkFrame(prevAsInk, w, h), mkFrame(next, w, h), true, false)
+    const diff = log.render(mkFrame(prev, w, h), mkFrame(next, w, h), true, false)
 
-    const written = stdoutOnly(diff)
-    expect(written).not.toContain('orphaned')
+    expect(stdoutOnly(diff)).toBe('')
     expect(diff.some(p => p.type === 'clearTerminal')).toBe(false)
-    // Verdict: in this configuration the renderer cannot heal the drift.
-    // The only recovery path from ink's side is fullResetSequence — which
-    // triggers only on viewport resize or scrollback-change detection,
-    // neither of which fires on a pure drift. A fix has to either (a)
-    // defensively emit a full repaint on every xterm.js frame where
-    // prevFrameContaminated is set, or (b) close the drift window at the
-    // renderer level so the in-memory prev.screen cannot diverge.
   })
 })

@@ -120,6 +120,72 @@ class TestSchemaConversion:
 
         assert schema["parameters"] == {"type": "object", "properties": {}}
 
+    def test_definitions_refs_are_rewritten_to_defs(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="submit",
+            description="Submit a payload",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "input": {"$ref": "#/definitions/Payload"},
+                },
+                "required": ["input"],
+                "definitions": {
+                    "Payload": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                        },
+                        "required": ["query"],
+                    }
+                },
+            },
+        )
+
+        schema = _convert_mcp_schema("forms", mcp_tool)
+
+        assert schema["parameters"]["properties"]["input"]["$ref"] == "#/$defs/Payload"
+        assert "$defs" in schema["parameters"]
+        assert "definitions" not in schema["parameters"]
+
+    def test_nested_definition_refs_are_rewritten_recursively(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="nested",
+            description="Nested schema",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {"$ref": "#/definitions/Entry"},
+                    },
+                },
+                "definitions": {
+                    "Entry": {
+                        "type": "object",
+                        "properties": {
+                            "child": {"$ref": "#/definitions/Child"},
+                        },
+                    },
+                    "Child": {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        )
+
+        schema = _convert_mcp_schema("forms", mcp_tool)
+
+        assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
+        assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
+
     def test_tool_name_prefix_format(self):
         from tools.mcp_tool import _convert_mcp_schema
 

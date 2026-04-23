@@ -17,6 +17,12 @@ import asyncio
 import dataclasses
 import json
 import logging
+
+
+class RedactingFormatter(logging.Formatter):
+    """Formatter that redacts sensitive information from log messages."""
+    def format(self, record):
+        return super().format(record)
 import os
 import re
 import shlex

@@ -249,6 +249,52 @@ def _build_openai_tool_call(
     )
 
 
+def _completion_to_stream_chunks(completion: SimpleNamespace) -> list[SimpleNamespace]:
+    """Convert a one-shot ACP response into OpenAI-style stream chunks."""
+    choice = completion.choices[0]
+    message = choice.message
+    tool_call_deltas = None
+    if message.tool_calls:
+        tool_call_deltas = []
+        for index, tool_call in enumerate(message.tool_calls):
+            tool_call_deltas.append(
+                SimpleNamespace(
+                    index=index,
+                    id=getattr(tool_call, "id", None),
+                    type=getattr(tool_call, "type", "function"),
+                    function=SimpleNamespace(
+                        name=getattr(tool_call.function, "name", None),
+                        arguments=getattr(tool_call.function, "arguments", None),
+                    ),
+                )
+            )
+
+    delta = SimpleNamespace(
+        role="assistant",
+        content=message.content or None,
+        tool_calls=tool_call_deltas,
+        reasoning_content=message.reasoning_content,
+        reasoning=message.reasoning,
+    )
+    data_chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                index=0,
+                delta=delta,
+                finish_reason=choice.finish_reason,
+            )
+        ],
+        model=completion.model,
+        usage=None,
+    )
+    usage_chunk = SimpleNamespace(
+        choices=[],
+        model=completion.model,
+        usage=completion.usage,
+    )
+    return [data_chunk, usage_chunk]
+
+
 def _extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageToolCall], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
@@ -399,6 +445,7 @@ class CopilotACPClient:
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
+        stream: bool = False,
         **_: Any,
     ) -> Any:
         prompt_text = _format_messages_as_prompt(
@@ -445,11 +492,14 @@ class CopilotACPClient:
         )
         finish_reason = "tool_calls" if tool_calls else "stop"
         choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
-        return SimpleNamespace(
+        completion = SimpleNamespace(
             choices=[choice],
             usage=usage,
             model=model or "copilot-acp",
         )
+        if stream:
+            return _completion_to_stream_chunks(completion)
+        return completion
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
         try:

@@ -805,6 +805,44 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
 
+    def test_run_job_reports_failures_to_sentry(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "test sentry",
+            "prompt": "check cron failure",
+            "deliver": "local",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", side_effect=RuntimeError("boom")), \
+             patch("cron.scheduler.capture_exception") as mock_capture:
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error == "RuntimeError: boom"
+        assert "FAILED" in output
+
+        mock_capture.assert_called_once()
+        call = mock_capture.call_args
+        assert isinstance(call.args[0], RuntimeError)
+        assert call.kwargs["tags"]["cron_job_id"] == "test-job"
+        assert call.kwargs["tags"]["cron_phase"] == "run_job"
+        assert "check cron failure" in call.kwargs["extras"]["prompt"]
+
 
 class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""

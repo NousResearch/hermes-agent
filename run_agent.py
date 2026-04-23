@@ -7247,19 +7247,37 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
-        # Allow _vprint during tool execution even with stream consumers
-        self._executing_tools = True
+        # Sentry span: wrap entire tool-call batch
         try:
-            if not _should_parallelize_tool_batch(tool_calls):
-                return self._execute_tool_calls_sequential(
+            from hermes_sentry import start_span as _sentry_span
+        except ImportError:
+            import contextlib as _ctxlib
+            @_ctxlib.contextmanager
+            def _sentry_span(**_kw):
+                yield None
+
+        _tool_names = ", ".join(tc.function.name for tc in tool_calls[:5])
+        if len(tool_calls) > 5:
+            _tool_names += f" (+{len(tool_calls) - 5} more)"
+
+        with _sentry_span(
+            op="hermes.tool_batch",
+            description=_tool_names,
+            tags={"tool_count": str(len(tool_calls)), "api_call": str(api_call_count)},
+        ):
+            # Allow _vprint during tool execution even with stream consumers
+            self._executing_tools = True
+            try:
+                if not _should_parallelize_tool_batch(tool_calls):
+                    return self._execute_tool_calls_sequential(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
+
+                return self._execute_tool_calls_concurrent(
                     assistant_message, messages, effective_task_id, api_call_count
                 )
-
-            return self._execute_tool_calls_concurrent(
-                assistant_message, messages, effective_task_id, api_call_count
-            )
-        finally:
-            self._executing_tools = False
+            finally:
+                self._executing_tools = False
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None) -> str:
@@ -7269,84 +7287,104 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
-        # Check plugin hooks for a block directive before executing anything.
-        block_message: Optional[str] = None
+        # Sentry span for individual tool execution (concurrent path)
         try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-            )
-        except Exception:
-            pass
-        if block_message is not None:
-            return json.dumps({"error": block_message}, ensure_ascii=False)
+            from hermes_sentry import start_span as _sentry_tool_span
+        except ImportError:
+            import contextlib as _ctxlib2
+            @_ctxlib2.contextmanager
+            def _sentry_tool_span(**_kw):
+                yield None
 
-        if function_name == "todo":
-            from tools.todo_tool import todo_tool as _todo_tool
-            return _todo_tool(
-                todos=function_args.get("todos"),
-                merge=function_args.get("merge", False),
-                store=self._todo_store,
-            )
-        elif function_name == "session_search":
-            if not self._session_db:
-                return json.dumps({"success": False, "error": "Session database not available."})
-            from tools.session_search_tool import session_search as _session_search
-            return _session_search(
-                query=function_args.get("query", ""),
-                role_filter=function_args.get("role_filter"),
-                limit=function_args.get("limit", 3),
-                db=self._session_db,
-                current_session_id=self.session_id,
-            )
-        elif function_name == "memory":
-            target = function_args.get("target", "memory")
-            from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
-                action=function_args.get("action"),
-                target=target,
-                content=function_args.get("content"),
-                old_text=function_args.get("old_text"),
-                store=self._memory_store,
-            )
-            # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in ("add", "replace"):
+        with _sentry_tool_span(
+            op="hermes.tool",
+            description=function_name,
+            tags={"tool_name": function_name},
+        ) as _tool_span:
+            if _tool_span is not None:
                 try:
-                    self._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
-                        target,
-                        function_args.get("content", ""),
-                    )
+                    from hermes_sentry import sanitize_observability_text as _sot
+                    _tool_span.set_data("input", _sot(function_args, limit=1000))
                 except Exception:
                     pass
-            return result
-        elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
-        elif function_name == "clarify":
-            from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _clarify_tool(
-                question=function_args.get("question", ""),
-                choices=function_args.get("choices"),
-                callback=self.clarify_callback,
-            )
-        elif function_name == "delegate_task":
-            from tools.delegate_tool import delegate_task as _delegate_task
-            return _delegate_task(
-                goal=function_args.get("goal"),
-                context=function_args.get("context"),
-                toolsets=function_args.get("toolsets"),
-                tasks=function_args.get("tasks"),
-                max_iterations=function_args.get("max_iterations"),
-                parent_agent=self,
-            )
-        else:
-            return handle_function_call(
-                function_name, function_args, effective_task_id,
-                tool_call_id=tool_call_id,
-                session_id=self.session_id or "",
-                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                skip_pre_tool_call_hook=True,
-            )
+            # Check plugin hooks for a block directive before executing anything.
+            block_message: Optional[str] = None
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                pass
+            if block_message is not None:
+                return json.dumps({"error": block_message}, ensure_ascii=False)
+
+            if function_name == "todo":
+                from tools.todo_tool import todo_tool as _todo_tool
+                return _todo_tool(
+                    todos=function_args.get("todos"),
+                    merge=function_args.get("merge", False),
+                    store=self._todo_store,
+                )
+            elif function_name == "session_search":
+                if not self._session_db:
+                    return json.dumps({"success": False, "error": "Session database not available."})
+                from tools.session_search_tool import session_search as _session_search
+                return _session_search(
+                    query=function_args.get("query", ""),
+                    role_filter=function_args.get("role_filter"),
+                    limit=function_args.get("limit", 3),
+                    db=self._session_db,
+                    current_session_id=self.session_id,
+                )
+            elif function_name == "memory":
+                target = function_args.get("target", "memory")
+                from tools.memory_tool import memory_tool as _memory_tool
+                result = _memory_tool(
+                    action=function_args.get("action"),
+                    target=target,
+                    content=function_args.get("content"),
+                    old_text=function_args.get("old_text"),
+                    store=self._memory_store,
+                )
+                # Bridge: notify external memory provider of built-in memory writes
+                if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                    try:
+                        self._memory_manager.on_memory_write(
+                            function_args.get("action", ""),
+                            target,
+                            function_args.get("content", ""),
+                        )
+                    except Exception:
+                        pass
+                return result
+            elif self._memory_manager and self._memory_manager.has_tool(function_name):
+                return self._memory_manager.handle_tool_call(function_name, function_args)
+            elif function_name == "clarify":
+                from tools.clarify_tool import clarify_tool as _clarify_tool
+                return _clarify_tool(
+                    question=function_args.get("question", ""),
+                    choices=function_args.get("choices"),
+                    callback=self.clarify_callback,
+                )
+            elif function_name == "delegate_task":
+                from tools.delegate_tool import delegate_task as _delegate_task
+                return _delegate_task(
+                    goal=function_args.get("goal"),
+                    context=function_args.get("context"),
+                    toolsets=function_args.get("toolsets"),
+                    tasks=function_args.get("tasks"),
+                    max_iterations=function_args.get("max_iterations"),
+                    parent_agent=self,
+                )
+            else:
+                return handle_function_call(
+                    function_name, function_args, effective_task_id,
+                    tool_call_id=tool_call_id,
+                    session_id=self.session_id or "",
+                    enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    skip_pre_tool_call_hook=True,
+                )
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
@@ -8880,12 +8918,37 @@ class AIAgent:
                         if isinstance(getattr(self, "client", None), Mock):
                             _use_streaming = False
 
-                    if _use_streaming:
-                        response = self._interruptible_streaming_api_call(
-                            api_kwargs, on_first_delta=_stop_spinner
-                        )
-                    else:
-                        response = self._interruptible_api_call(api_kwargs)
+                    # Sentry span for individual LLM API call
+                    try:
+                        from hermes_sentry import start_span as _sentry_api_span
+                    except ImportError:
+                        import contextlib as _ctxlib3
+                        @_ctxlib3.contextmanager
+                        def _sentry_api_span(**_kw):
+                            yield None
+
+                    with _sentry_api_span(
+                        op="hermes.llm_call",
+                        description=f"#{api_call_count} {self.model}",
+                        tags={"model": self.model or "", "api_call": str(api_call_count)},
+                    ) as _llm_span:
+                        if _llm_span is not None:
+                            _llm_span.set_data("message_count", len(api_kwargs.get("messages", [])))
+                        if _use_streaming:
+                            response = self._interruptible_streaming_api_call(
+                                api_kwargs, on_first_delta=_stop_spinner
+                            )
+                        else:
+                            response = self._interruptible_api_call(api_kwargs)
+                        if _llm_span is not None and response:
+                            try:
+                                _usage = getattr(response, "usage", None)
+                                if _usage:
+                                    _llm_span.set_data("prompt_tokens", getattr(_usage, "prompt_tokens", 0) or 0)
+                                    _llm_span.set_data("completion_tokens", getattr(_usage, "completion_tokens", 0) or 0)
+                                    _llm_span.set_data("total_tokens", getattr(_usage, "total_tokens", 0) or 0)
+                            except Exception:
+                                pass
                     
                     api_duration = time.time() - api_start_time
                     
@@ -11359,6 +11422,12 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    try:
+        from hermes_sentry import init_sentry
+        init_sentry("agent")
+    except Exception:
+        pass
+
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     

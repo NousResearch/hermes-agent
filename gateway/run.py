@@ -1086,12 +1086,15 @@ class GatewayRunner:
     def _duplicate_inbound_exact_key(source: SessionSource, event: MessageEvent) -> Optional[str]:
         if not getattr(event, "message_id", None):
             return None
-        parts = (
-            getattr(source.platform, "value", str(source.platform)),
-            source.chat_id or "",
-            source.user_id or source.user_id_alt or "",
-            source.thread_id or "",
-            str(event.message_id),
+        parts = tuple(
+            str(part or "")
+            for part in (
+                getattr(source.platform, "value", str(source.platform)),
+                source.chat_id,
+                source.user_id or source.user_id_alt,
+                source.thread_id,
+                event.message_id,
+            )
         )
         return "exact:" + "|".join(parts)
 
@@ -1103,16 +1106,16 @@ class GatewayRunner:
             timestamp_value = str(timestamp or "")
 
         message_type = getattr(event, "message_type", None)
-        message_type_value = getattr(message_type, "value", str(message_type or ""))
-        media_types = list(getattr(event, "media_types", []) or [])
-        media_urls = list(getattr(event, "media_urls", []) or [])
+        message_type_value = str(getattr(message_type, "value", message_type or "") or "")
+        media_types = [str(mt) for mt in (getattr(event, "media_types", []) or [])]
+        media_urls = [str(url) for url in (getattr(event, "media_urls", []) or [])]
         semantic_payload = {
-            "platform": getattr(source.platform, "value", str(source.platform)),
-            "chat_id": source.chat_id or "",
-            "user_id": source.user_id or source.user_id_alt or "",
-            "thread_id": source.thread_id or "",
+            "platform": str(getattr(source.platform, "value", str(source.platform)) or ""),
+            "chat_id": str(source.chat_id or ""),
+            "user_id": str(source.user_id or source.user_id_alt or ""),
+            "thread_id": str(source.thread_id or ""),
             "message_type": message_type_value,
-            "reply_to": getattr(event, "reply_to_message_id", None) or "",
+            "reply_to": str(getattr(event, "reply_to_message_id", None) or ""),
             "timestamp": timestamp_value,
             "text": self._normalize_duplicate_inbound_text(getattr(event, "text", "")),
             "media_types": media_types,

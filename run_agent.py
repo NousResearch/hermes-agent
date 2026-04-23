@@ -2855,6 +2855,8 @@ class AIAgent:
         intent of this hook for the Morph backend, see commit fbd3a2fd).
         """
         try:
+            from tools import terminal_tool as _terminal_tool
+
             if is_persistent_env(task_id):
                 if self.verbose_logging:
                     logging.debug(
@@ -2862,12 +2864,14 @@ class AIAgent:
                         f"idle reaper will handle it."
                     )
             else:
-                cleanup_vm(task_id)
+                _terminal_tool.cleanup_vm(task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
         try:
-            cleanup_browser(task_id)
+            from tools import browser_tool as _browser_tool
+
+            _browser_tool.cleanup_browser(task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
@@ -4011,13 +4015,17 @@ class AIAgent:
 
         # 2. Clean terminal sandbox environments
         try:
-            cleanup_vm(task_id)
+            from tools import terminal_tool as _terminal_tool
+
+            _terminal_tool.cleanup_vm(task_id)
         except Exception:
             pass
 
         # 3. Clean browser daemon sessions
         try:
-            cleanup_browser(task_id)
+            from tools import browser_tool as _browser_tool
+
+            _browser_tool.cleanup_browser(task_id)
         except Exception:
             pass
 
@@ -7576,11 +7584,20 @@ class AIAgent:
                         ) for tc in _flush_nr.tool_calls
                     ]
             elif hasattr(response, "choices") and response.choices:
-                # chat_completions / bedrock — normalize through transport
-                _flush_cc_nr = self._get_transport().normalize_response(response)
-                _flush_msg = self._nr_to_assistant_message(_flush_cc_nr)
-                if _flush_msg.tool_calls:
-                    tool_calls = _flush_msg.tool_calls
+                # chat_completions / bedrock — normalize through transport when
+                # possible, but fall back to the raw message shape used by unit
+                # tests if the synthetic response omits transport-only fields
+                # like finish_reason.
+                try:
+                    _flush_cc_nr = self._get_transport().normalize_response(response)
+                    _flush_msg = self._nr_to_assistant_message(_flush_cc_nr)
+                    if _flush_msg.tool_calls:
+                        tool_calls = _flush_msg.tool_calls
+                except Exception:
+                    _raw_msg = getattr(response.choices[0], "message", None)
+                    _raw_tool_calls = getattr(_raw_msg, "tool_calls", None)
+                    if _raw_tool_calls:
+                        tool_calls = _raw_tool_calls
 
             for tc in tool_calls:
                 if tc.function.name == "memory":

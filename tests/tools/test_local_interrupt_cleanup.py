@@ -80,7 +80,7 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
             except ImportError:
                 # Fall back to ps
                 ps = subprocess.run(
-                    ["ps", "-eo", "pid,ppid,pgid,cmd"], capture_output=True, text=True,
+                    ["ps", "-eo", "pid,ppid,pgid,command"], capture_output=True, text=True,
                 )
                 for line in ps.stdout.splitlines():
                     if "sleep 30" in line and "grep" not in line:

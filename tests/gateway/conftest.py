@@ -19,17 +19,19 @@ from unittest.mock import MagicMock
 
 
 def _ensure_telegram_mock() -> None:
-    """Install a comprehensive telegram mock in sys.modules.
+    """Install or upgrade a comprehensive telegram mock in ``sys.modules``.
 
-    Idempotent — skips when the real library is already imported.
-    Uses ``sys.modules[name] = mod`` (overwrite) instead of
-    ``setdefault`` so it wins even if a partial/broken import
-    already cached a module with ``ChatType = None``.
+    If another test suite already registered a mock telegram module and some
+    adapter imported against it, mutate that existing object in place so later
+    tests and already-imported production modules keep sharing the same module
+    identity. Replacing the object would leave stale imports pointing at the
+    old mock and reintroduce order-dependent failures.
     """
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
+    existing = sys.modules.get("telegram")
+    if existing is not None and hasattr(existing, "__file__"):
         return  # Real library is installed — nothing to mock
 
-    mod = MagicMock()
+    mod = existing if existing is not None else MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
     mod.constants.ParseMode.MARKDOWN = "Markdown"
     mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
@@ -63,24 +65,26 @@ def _ensure_telegram_mock() -> None:
 
 
 def _ensure_discord_mock() -> None:
-    """Install a comprehensive discord mock in sys.modules.
+    """Install or upgrade a comprehensive discord mock in ``sys.modules``.
 
-    Idempotent — skips when the real library is already imported.
-    Uses ``sys.modules[name] = mod`` (overwrite) instead of
-    ``setdefault`` so it wins even if a partial/broken import already
-    cached the module.
+    If another test suite already registered a mock discord module and some
+    adapter imported against it, mutate that existing object in place so later
+    tests and already-imported production modules keep sharing the same module
+    identity. Replacing the object would leave stale imports pointing at the
+    old mock and create order-dependent failures.
 
     This mock is comprehensive — it includes **all** attributes needed by
     every gateway discord test file.  Individual test files should call
     this function (it short-circuits when already present) rather than
     maintaining their own mock setup.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    if existing is not None and hasattr(existing, "__file__"):
         return  # Real library is installed — nothing to mock
 
     from types import SimpleNamespace
 
-    discord_mod = MagicMock()
+    discord_mod = existing if existing is not None else MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.Client = MagicMock
     discord_mod.File = MagicMock
@@ -131,13 +135,12 @@ def _ensure_discord_mock() -> None:
         Command=_FakeCommand,
     )
 
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
+    ext_mod = sys.modules.get("discord.ext") or MagicMock()
+    commands_mod = sys.modules.get("discord.ext.commands") or MagicMock()
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    for name in ("discord", "discord.ext", "discord.ext.commands"):
-        sys.modules[name] = discord_mod
+    sys.modules["discord"] = discord_mod
     sys.modules["discord.ext"] = ext_mod
     sys.modules["discord.ext.commands"] = commands_mod
 

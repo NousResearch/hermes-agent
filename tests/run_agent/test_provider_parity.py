@@ -672,7 +672,14 @@ class TestBuildAssistantMessage:
         )
         result = agent._build_assistant_message(msg, "stop")
         assert result["codex_reasoning_items"] == [
-            {"type": "reasoning", "id": "rs_1", "encrypted_content": "gAAAA_blob"},
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "gAAAA_blob",
+                "_origin_provider": "openai-codex",
+                "_origin_base_url": "https://chatgpt.com/backend-api/codex",
+                "_origin_api_mode": "codex_responses",
+            },
         ]
 
     def test_plain_message_no_codex_items(self, monkeypatch):

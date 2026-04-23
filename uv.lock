@@ -9,7 +9,8 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-21T00:00:00Z"
+exclude-newer = "2026-04-16T20:18:05.634677Z"
+exclude-newer-span = "P7D"
 
 [[package]]
 name = "agent-client-protocol"

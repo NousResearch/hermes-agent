@@ -465,14 +465,52 @@ class BaseEnvironment(ABC):
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _drain():
-            fd = proc.stdout.fileno()
+            stream = getattr(proc, "stdout", None)
+            if stream is None:
+                return
+
+            try:
+                fd = stream.fileno()
+                use_select = isinstance(fd, int)
+            except (AttributeError, OSError, TypeError, ValueError):
+                fd = None
+                use_select = False
+
+            if not use_select:
+                # Test doubles and threaded process handles may expose stdout as
+                # a plain iterator/StringIO-like object with no fileno(). Drain
+                # them directly instead of crashing a daemon thread.
+                try:
+                    for chunk in stream:
+                        if isinstance(chunk, bytes):
+                            output_chunks.append(decoder.decode(chunk))
+                        else:
+                            output_chunks.append(str(chunk))
+                except TypeError:
+                    reader = getattr(stream, "read", None)
+                    if callable(reader):
+                        data = reader()
+                        if data:
+                            if isinstance(data, bytes):
+                                output_chunks.append(decoder.decode(data))
+                            else:
+                                output_chunks.append(str(data))
+                finally:
+                    try:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            output_chunks.append(tail)
+                    except Exception:
+                        pass
+                return
+
             idle_after_exit = 0
             try:
                 while True:
                     try:
                         ready, _, _ = select.select([fd], [], [], 0.1)
-                    except (ValueError, OSError):
-                        break  # fd already closed
+                    except (ValueError, OSError, TypeError):
+                        break  # fd already closed or not selectable
                     if ready:
                         try:
                             chunk = os.read(fd, 4096)

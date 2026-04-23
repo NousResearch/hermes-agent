@@ -4,11 +4,12 @@ Everything runs through `npx hyperframes` (or the globally-installed `hyperframe
 
 ## Workflow
 
-1. **Scaffold** — `npx hyperframes init my-video`
+1. **Scaffold** — `npx hyperframes init my-video` (or `npx hyperframes capture <url>` if starting from a website)
 2. **Write** — author HTML composition (see `composition.md`)
 3. **Lint** — `npx hyperframes lint`
-4. **Preview** — `npx hyperframes preview`
-5. **Render** — `npx hyperframes render`
+4. **Validate** — `npx hyperframes validate` (WCAG contrast audit)
+5. **Preview** — `npx hyperframes preview`
+6. **Render** — `npx hyperframes render`
 
 Always lint before preview/render — catches missing `data-composition-id`, overlapping tracks, and unregistered timelines.
 
@@ -26,6 +27,19 @@ Templates: `blank`, `warm-grain`, `play-mode`, `swiss-grid`, `vignelli`, `decisi
 
 `init` creates the correct file structure, copies media, transcribes audio with Whisper, and installs authoring skills. Use it instead of creating files by hand.
 
+## capture — Website → Editable Components
+
+```bash
+npx hyperframes capture https://example.com                  # → captures/example.com/
+npx hyperframes capture https://stripe.com -o stripe-video   # custom output dir
+npx hyperframes capture https://example.com --json           # machine-readable output
+npx hyperframes capture https://example.com --skip-assets    # skip images/SVGs
+```
+
+Captures the site into `captures/<hostname>/capture/` by default, producing `capture/screenshots/`, `capture/assets/`, `capture/extracted/` (tokens.json, visible-text.txt, fonts.json), and a self-contained snapshot.
+
+All downstream steps (DESIGN.md, SCRIPT.md, STORYBOARD, composition) read from the `capture/` subfolder — see `website-to-video.md`.
+
 ## lint
 
 ```bash
@@ -36,6 +50,15 @@ npx hyperframes lint --json         # machine-readable output
 ```
 
 Lints `index.html` and all files in `compositions/`. Reports errors (must fix), warnings (should fix), and info (only with `--verbose`).
+
+## validate
+
+```bash
+npx hyperframes validate                 # WCAG contrast audit at 5 timestamps
+npx hyperframes validate --no-contrast   # skip while iterating
+```
+
+Seeks to 5 timestamps, screenshots the page, samples background pixels behind every text element, and warns on contrast ratios below 4.5:1 (normal text) or 3:1 (large text — 24px+, or 19px+ bold). Run before final render.
 
 ## preview
 
@@ -88,10 +111,12 @@ Produces word-level timings suitable for caption components. First run downloads
 ```bash
 npx hyperframes tts "Text here" --voice af_nova --output narration.wav
 npx hyperframes tts script.txt --voice bf_emma
+npx hyperframes tts "La reunión empieza a las nueve" --voice ef_dora --output es.wav
+npx hyperframes tts "Hello there" --voice af_heart --lang fr-fr --output accented.wav
 npx hyperframes tts --list                    # show all voices
 ```
 
-Uses Kokoro (local, no API key). Voice prefixes: `af_` (American female), `am_` (American male), `bf_` (British female), `bm_` (British male).
+Uses Kokoro (local, no API key). Voice ID first letter encodes language: `a` American English, `b` British English, `e` Spanish, `f` French, `h` Hindi, `i` Italian, `j` Japanese, `p` Brazilian Portuguese, `z` Mandarin. The CLI auto-infers the phonemizer locale from that prefix — pass `--lang` only to override (e.g. stylized accents). Valid `--lang` codes: `en-us`, `en-gb`, `es`, `fr-fr`, `hi`, `it`, `pt-br`, `ja`, `zh`. Non-English phonemization requires `espeak-ng` installed system-wide (`apt-get install espeak-ng` / `brew install espeak-ng`).
 
 ## doctor
 

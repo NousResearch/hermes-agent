@@ -75,7 +75,16 @@ Before touching code, articulate at a high level:
 - **Visual identity** — colors, fonts, motion character (explosive / cinematic / fluid / technical)
 - **Hero frame** — for each scene, the moment when the most elements are simultaneously visible. This is the static layout you'll build first.
 
-If the user hasn't specified a visual style, ask three questions before writing HTML: mood, light/dark, any brand colors/fonts/references. Write a short `DESIGN.md` at the project root capturing the answers.
+**Visual Identity Gate (HARD-GATE).** Before writing ANY composition HTML, a visual identity must be defined. Do NOT write compositions with default or generic colors (`#333`, `#3b82f6`, `Roboto` are tells that this step was skipped). Check in order:
+
+1. **`DESIGN.md` at project root?** → Use its exact colors, fonts, motion rules, and "What NOT to Do" constraints.
+2. **User named a style** (e.g. "Swiss Pulse", "dark and techy", "luxury brand")? → Generate a minimal `DESIGN.md` with `## Style Prompt`, `## Colors` (3-5 hex with roles), `## Typography` (1-2 families), `## What NOT to Do` (3-5 anti-patterns).
+3. **None of the above?** → Ask 3 questions before writing any HTML:
+   - Mood? (explosive / cinematic / fluid / technical / chaotic / warm)
+   - Light or dark canvas?
+   - Any brand colors, fonts, or visual references?
+
+   Then generate a `DESIGN.md` from the answers. Every composition must trace its palette and typography back to `DESIGN.md` or explicit user direction.
 
 ### 2. Scaffold
 
@@ -114,11 +123,14 @@ Multi-scene compositions require transitions. Rules:
 
 Use `npx hyperframes add <transition-name>` to install shader transitions (`flash-through-white`, `liquid-wipe`, etc.). Full list: `npx hyperframes add --list`.
 
-### 6. Audio, captions, TTS
+### 6. Audio, captions, TTS, audio-reactive, highlighting
 
 - **Audio:** always a separate `<audio>` element (video is `muted playsinline`).
-- **Captions:** run `npx hyperframes transcribe audio.mp3` to get word-level timings, then render with the captions component. See `references/composition.md` for the captions data attributes.
-- **TTS:** `npx hyperframes tts "Script text" --voice af_nova --output narration.wav`. List voices with `--list`.
+- **TTS:** `npx hyperframes tts "Script text" --voice af_nova --output narration.wav`. List voices with `--list`. Voice ID first letter encodes language (`a`/`b`=English, `e`=Spanish, `f`=French, `j`=Japanese, `z`=Mandarin, etc.) — the CLI auto-infers the phonemizer locale; pass `--lang` only to override. Non-English phonemization requires `espeak-ng` installed system-wide.
+- **Captions:** `npx hyperframes transcribe narration.wav` → word-level transcript. Pick style from the transcript tone (hype / corporate / tutorial / storytelling / social — see the table in `references/features.md`). **Language rule:** never use `.en` whisper models unless the audio is confirmed English — `.en` translates non-English audio instead of transcribing it. Every caption group MUST have a hard `tl.set(el, { opacity: 0, visibility: "hidden" }, group.end)` kill after its exit tween — otherwise groups leak visible into later ones.
+- **Audio-reactive visuals:** pre-extract audio bands (bass / mid / treble) and sample per-frame inside the timeline with a `for` loop of `tl.call(draw, [], f / fps)` — a single long tween does NOT react to audio. Map bass → `scale` (pulse), treble → `textShadow`/`boxShadow` (glow), overall amplitude → `opacity`/`y`/`backgroundColor`. Avoid equalizer-bar clichés — let content guide the visual, audio drive its behavior.
+- **Marker-style highlighting:** highlight, circle, burst, scribble, sketchout effects for text emphasis are deterministic CSS+GSAP — see `references/features.md#marker-highlighting`. Fully seekable, no animated SVG filters.
+- **Scene transitions:** every multi-scene composition MUST use transitions (no jump cuts). Pick from CSS primitives (push slide, blur crossfade, zoom through, staggered blocks) or shader transitions (`flash-through-white`, `liquid-wipe`, `cross-warp-morph`, `chromatic-split`, etc.) via `npx hyperframes add`. Mood and energy tables live in `references/features.md#transitions`. Do not mix CSS and shader transitions in the same composition.
 
 ### 7. Lint, preview, render
 
@@ -150,19 +162,27 @@ Use the 7-step capture-to-video workflow in [references/website-to-video.md](ref
 
 ## Verification
 
-After `render` completes, verify:
+Before and after rendering:
 
-1. `final.mp4` exists and has non-zero size: `ls -lh final.mp4`
-2. Duration matches the composition's `data-duration`: `ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 final.mp4`
-3. Visual check: open with a media player, or extract a mid-composition frame: `ffmpeg -i final.mp4 -ss 00:00:05 -vframes 1 preview.png`
-4. Audio present if expected: `ffprobe -v error -show_streams -select_streams a -of default=nw=1:nk=1 final.mp4 | head -1`
+1. **Lint + validate pass:** `npx hyperframes lint --strict && npx hyperframes validate` (WCAG contrast audit at 5 timestamps — see troubleshooting.md if warnings appear).
+2. **Animation choreography** — for new compositions or significant animation changes, run the animation map. `npx hyperframes init` copies the skill scripts into the project, so the path is project-local:
+   ```bash
+   node skills/hyperframes/scripts/animation-map.mjs <composition-dir> \
+     --out <composition-dir>/.hyperframes/anim-map
+   ```
+   Outputs a single `animation-map.json` with per-tween summaries, ASCII Gantt timeline, stagger detection, dead zones (>1s with no animation), element lifecycles, and flags (`offscreen`, `collision`, `invisible`, `paced-fast` <0.2s, `paced-slow` >2s). Scan summaries and flags — fix or justify each. Skip on small edits.
+3. **File exists + non-zero:** `ls -lh final.mp4`.
+4. **Duration matches `data-duration`:** `ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 final.mp4`.
+5. **Visual check:** extract a mid-composition frame: `ffmpeg -i final.mp4 -ss 00:00:05 -vframes 1 preview.png`.
+6. **Audio present if expected:** `ffprobe -v error -show_streams -select_streams a -of default=nw=1:nk=1 final.mp4 | head -1`.
 
 If `hyperframes render` fails, run `npx hyperframes doctor` and attach its output when reporting.
 
 ## References
 
 - [composition.md](references/composition.md) — data attributes, timeline contract, non-negotiable rules, typography/asset rules
-- [cli.md](references/cli.md) — every CLI command (init, lint, preview, render, transcribe, tts, doctor, browser, info, upgrade, benchmark)
+- [cli.md](references/cli.md) — every CLI command (init, capture, lint, validate, preview, render, transcribe, tts, doctor, browser, info, upgrade, benchmark)
 - [gsap.md](references/gsap.md) — GSAP core API for HyperFrames (tweens, eases, stagger, timelines, matchMedia)
+- [features.md](references/features.md) — captions, TTS, audio-reactive, marker highlighting, transitions (load on demand)
 - [website-to-video.md](references/website-to-video.md) — 7-step capture-to-video workflow
 - [troubleshooting.md](references/troubleshooting.md) — OpenClaw fix, env vars, common render errors

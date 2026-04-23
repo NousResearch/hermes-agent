@@ -925,6 +925,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            session_title=job_name,
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run

@@ -2019,14 +2019,37 @@ def _make_check_fn(server_name: str):
 # ---------------------------------------------------------------------------
 
 def _normalize_mcp_input_schema(schema: dict | None) -> dict:
-    """Normalize MCP input schemas for LLM tool-calling compatibility."""
+    """Normalize MCP input schemas for LLM tool-calling compatibility.
+
+    MCP servers can emit plain JSON Schema with ``definitions`` /
+    ``#/definitions/...`` references.  Kimi / Moonshot rejects that form and
+    requires local refs to point into ``#/$defs/...`` instead.  Normalize the
+    common draft-07 shape here so MCP tool schemas remain portable across
+    OpenAI-compatible providers.
+    """
     if not schema:
         return {"type": "object", "properties": {}}
 
-    if schema.get("type") == "object" and "properties" not in schema:
-        return {**schema, "properties": {}}
+    def _rewrite_local_refs(node):
+        if isinstance(node, dict):
+            normalized = {}
+            for key, value in node.items():
+                out_key = "$defs" if key == "definitions" else key
+                normalized[out_key] = _rewrite_local_refs(value)
+            ref = normalized.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/definitions/"):
+                normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
+            return normalized
+        if isinstance(node, list):
+            return [_rewrite_local_refs(item) for item in node]
+        return node
 
-    return schema
+    normalized = _rewrite_local_refs(schema)
+
+    if normalized.get("type") == "object" and "properties" not in normalized:
+        return {**normalized, "properties": {}}
+
+    return normalized
 
 
 def sanitize_mcp_name_component(value: str) -> str:

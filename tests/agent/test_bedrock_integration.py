@@ -376,17 +376,15 @@ class TestBedrockModelNameNormalization:
             "apac.anthropic.claude-haiku-4-5", preserve_dots=True
         ) == "apac.anthropic.claude-haiku-4-5"
 
-    def test_preserve_false_mangles_as_documented(self):
-        """Canary: with ``preserve_dots=False`` the function still
-        produces the broken all-hyphen form — this is the shape that
-        Bedrock rejected and that the fix avoids.  Keeping this test
-        locks in the existing behaviour of ``normalize_model_name`` so a
-        future refactor doesn't accidentally decouple the knob from its
-        effect."""
+    def test_bedrock_prefix_preserved_without_preserve_dots(self):
+        """Bedrock inference profile IDs are auto-detected by prefix and
+        always returned unmangled -- ``preserve_dots`` is irrelevant for
+        these IDs because the dots are namespace separators, not version
+        separators.  Regression for #12295."""
         from agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=False
-        ) == "global-anthropic-claude-opus-4-7"
+        ) == "global.anthropic.claude-opus-4-7"
 
     def test_bare_foundation_model_id_preserved(self):
         """Non-inference-profile Bedrock IDs
@@ -422,12 +420,11 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
             f"{kwargs['model']!r}"
         )
 
-    def test_bedrock_model_mangled_without_preserve_dots(self):
-        """Inverse canary: without the flag, ``build_anthropic_kwargs``
-        still produces the broken form — so the fix in
-        ``_anthropic_preserve_dots`` is the load-bearing piece that
-        wires ``preserve_dots=True`` through to this builder for the
-        Bedrock case."""
+    def test_bedrock_model_preserved_without_preserve_dots(self):
+        """Bedrock inference profile IDs survive ``build_anthropic_kwargs``
+        even without ``preserve_dots=True`` -- the prefix auto-detection
+        in ``normalize_model_name`` is the load-bearing piece.
+        Regression for #12295."""
         from agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="global.anthropic.claude-opus-4-7",
@@ -437,4 +434,62 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
             reasoning_config=None,
             preserve_dots=False,
         )
-        assert kwargs["model"] == "global-anthropic-claude-opus-4-7"
+        assert kwargs["model"] == "global.anthropic.claude-opus-4-7"
+
+
+class TestBedrockModelIdDetection:
+    """Tests for ``_is_bedrock_model_id`` and the auto-detection that
+    makes ``normalize_model_name`` preserve dots for Bedrock IDs
+    regardless of ``preserve_dots``.  Regression for #12295."""
+
+    def test_bare_bedrock_id_detected(self):
+        from agent.anthropic_adapter import _is_bedrock_model_id
+        assert _is_bedrock_model_id("anthropic.claude-opus-4-7") is True
+
+    def test_regional_us_prefix_detected(self):
+        from agent.anthropic_adapter import _is_bedrock_model_id
+        assert _is_bedrock_model_id("us.anthropic.claude-sonnet-4-5-v1:0") is True
+
+    def test_regional_global_prefix_detected(self):
+        from agent.anthropic_adapter import _is_bedrock_model_id
+        assert _is_bedrock_model_id("global.anthropic.claude-opus-4-7") is True
+
+    def test_regional_eu_prefix_detected(self):
+        from agent.anthropic_adapter import _is_bedrock_model_id
+        assert _is_bedrock_model_id("eu.anthropic.claude-sonnet-4-6") is True
+
+    def test_openrouter_format_not_detected(self):
+        from agent.anthropic_adapter import _is_bedrock_model_id
+        assert _is_bedrock_model_id("claude-opus-4.6") is False
+
+    def test_bare_claude_not_detected(self):
+        from agent.anthropic_adapter import _is_bedrock_model_id
+        assert _is_bedrock_model_id("claude-opus-4-7") is False
+
+    def test_bare_bedrock_id_preserved_without_flag(self):
+        """The primary bug from #12295: ``anthropic.claude-opus-4-7``
+        sent to bedrock-mantle via auxiliary clients that don't pass
+        ``preserve_dots=True``."""
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name(
+            "anthropic.claude-opus-4-7", preserve_dots=False
+        ) == "anthropic.claude-opus-4-7"
+
+    def test_openrouter_dots_still_converted(self):
+        """Non-Bedrock dotted model names must still be converted."""
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name("claude-opus-4.6") == "claude-opus-4-6"
+
+    def test_bare_bedrock_id_survives_build_kwargs(self):
+        """End-to-end: bare Bedrock ID through ``build_anthropic_kwargs``
+        without ``preserve_dots=True`` -- the auxiliary client path."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        kwargs = build_anthropic_kwargs(
+            model="anthropic.claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            preserve_dots=False,
+        )
+        assert kwargs["model"] == "anthropic.claude-opus-4-7"

@@ -361,6 +361,15 @@ DEFAULT_CONFIG = {
         # to finish, then interrupts any remaining runs after the timeout.
         # 0 = no drain, interrupt immediately.
         "restart_drain_timeout": 60,
+        # Max app-level retry attempts for API errors (connection drops,
+        # provider timeouts, 5xx, etc.) before the agent surfaces the
+        # failure.  The OpenAI SDK already does its own low-level retries
+        # (max_retries=2 default) for transient network errors; this is
+        # the Hermes-level retry loop that wraps the whole call.  Lower
+        # this to 1 if you use fallback providers and want fast failover
+        # on flaky primaries; raise it if you prefer to tolerate longer
+        # provider hiccups on a single provider.
+        "api_max_retries": 3,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.

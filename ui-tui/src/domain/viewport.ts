@@ -18,8 +18,8 @@ const upperBound = (offsets: ArrayLike<number>, target: number) => {
 export const stickyPromptFromViewport = (
   messages: readonly Msg[],
   offsets: ArrayLike<number>,
-  bottom: number,
   top: number,
+  bottom: number,
   sticky: boolean
 ) => {
   if (sticky || !messages.length) {

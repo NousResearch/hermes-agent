@@ -5,7 +5,6 @@ Exposes xAI's ``grok-imagine-image`` model as an
 
 Features:
 - Text-to-image generation
-- Image editing with reference images
 - Multiple aspect ratios (1:1, 16:9, 9:16, etc.)
 - Multiple resolutions (1K, 2K)
 - Base64 output saved to cache
@@ -46,7 +45,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
     "grok-imagine-image": {
         "display": "Grok Imagine Image",
         "speed": "~5-10s",
-        "strengths": "Fast, high-quality, supports editing",
+        "strengths": "Fast, high-quality",
     },
 }
 
@@ -180,22 +179,12 @@ class XAIImageGenProvider(ImageGenProvider):
         resolution = _resolve_resolution()
         xai_res = _XAI_RESOLUTIONS.get(resolution, "1024")
 
-        # Check for editing mode (reference images)
-        reference_images = kwargs.get("reference_images", [])
-        edit_image = kwargs.get("edit_image")
-
         payload: Dict[str, Any] = {
             "model": API_MODEL,
             "prompt": prompt,
             "aspect_ratio": xai_ar,
             "resolution": xai_res,
         }
-
-        # Add editing parameters if present
-        if reference_images:
-            payload["reference_images"] = reference_images[:5]
-        if edit_image:
-            payload["image_url"] = edit_image
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -300,9 +289,9 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        extra: Dict[str, Any] = {}
-        if reference_images:
-            extra["reference_images"] = len(reference_images)
+        extra: Dict[str, Any] = {
+            "resolution": xai_res,
+        }
 
         return success_response(
             image=image_ref,
@@ -310,7 +299,7 @@ class XAIImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="xai",
-            extra=extra if extra else None,
+            extra=extra,
         )
 
 

@@ -199,30 +199,6 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
 
-    def test_with_reference_images(self):
-        from plugins.image_gen.xai import XAIImageGenProvider
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "data": [{"url": "https://xai.image/edited.png"}],
-        }
-
-        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
-            provider = XAIImageGenProvider()
-            result = provider.generate(
-                prompt="Edit this image",
-                reference_images=["https://example.com/ref1.png", "https://example.com/ref2.png"],
-            )
-
-        assert result["success"] is True
-        # Check that reference_images was passed in payload
-        call_args = mock_post.call_args
-        payload = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert "reference_images" in payload
-        assert len(payload["reference_images"]) == 2
-
     def test_auth_header(self):
         from plugins.image_gen.xai import XAIImageGenProvider
 

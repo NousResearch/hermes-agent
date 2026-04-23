@@ -95,13 +95,31 @@ class TestEstimateMessagesTokensRough:
         assert result == (len(str(msg)) + 3) // 4
 
     def test_message_with_list_content(self):
-        """Vision messages with multimodal content arrays."""
+        """Vision messages with multimodal content arrays.
+
+        Image parts are counted at a flat ~1500-token rate per image
+        rather than counting the base64 char length, so a tiny stub
+        payload still registers as full image cost.
+        """
         msg = {"role": "user", "content": [
             {"type": "text", "text": "describe"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         ]}
         result = estimate_messages_tokens_rough([msg])
-        assert result == (len(str(msg)) + 3) // 4
+        # Flat cost = 1500 per image plus the small text overhead. Allow
+        # a small band so this isn't a change-detector for the exact
+        # string representation.
+        assert 1500 <= result < 2000
+
+    def test_message_with_huge_base64_image_stays_bounded(self):
+        """A 1MB base64 PNG must not explode to ~250K tokens."""
+        huge = "A" * (1024 * 1024)
+        msg = {"role": "tool", "tool_call_id": "c1", "content": [
+            {"type": "text", "text": "x"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{huge}"}},
+        ]}
+        result = estimate_messages_tokens_rough([msg])
+        assert result < 5000
 
 
 # =========================================================================

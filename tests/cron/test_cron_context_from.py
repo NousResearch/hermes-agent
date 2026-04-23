@@ -224,6 +224,34 @@ class TestBuildJobPromptContextFrom:
         # Job should not crash, prompt should still contain the base prompt
         assert "Process" in prompt
 
+    def test_graceful_when_permission_error(self, cron_env):
+        """Job should not crash if output directory is not readable."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+        from unittest.mock import patch
+
+        job_a = create_job(prompt="Find data", schedule="every 1h")
+        out_dir = OUTPUT_DIR / job_a["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-04-22_10-00-00.md").write_text("Some output", encoding="utf-8")
+
+        job_b = create_job(
+            prompt="Process", schedule="every 2h", context_from=job_a["id"]
+        )
+
+        # Simulate permission error on read
+        original_read = Path.read_text
+        def mock_read_text(self, *args, **kwargs):
+            if self.suffix == ".md":
+                raise PermissionError("permission denied")
+            return original_read(self, *args, **kwargs)
+
+        with patch.object(Path, "read_text", mock_read_text):
+            prompt = _build_job_prompt(job_b)
+
+        # Job should not crash, prompt should still contain the base prompt
+        assert "Process" in prompt
+
     def test_invalid_job_id_skipped(self, cron_env):
         """context_from with path traversal job_id should be skipped."""
         from cron.jobs import create_job

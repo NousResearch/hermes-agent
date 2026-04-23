@@ -463,33 +463,21 @@ export default class Ink {
       this.resetFramesForAltScreen()
       this.needsEraseBeforePaint = true
 
+      // xterm.js burst-drift healer: 160ms after the last resize, force one
+      // full reconcile so Yoga/React catch up to the final viewport. No flag
+      // dance — setTimeout already drained the burst coalescer; a concurrent
+      // render would be idempotent.
       if (isXtermJs()) {
         this.resizeSettleTimer = setTimeout(() => {
           this.resizeSettleTimer = null
 
-          if (
-            this.isUnmounted ||
-            this.isPaused ||
-            !this.altScreenActive ||
-            !this.options.stdout.isTTY ||
-            this.currentNode === null ||
-            this.pendingResizeRender
-          ) {
+          if (!this.canAltScreenRepaint()) {
             return
           }
 
-          this.pendingResizeRender = true
-          queueMicrotask(() => {
-            this.pendingResizeRender = false
-
-            if (this.isUnmounted || this.isPaused || !this.altScreenActive || !this.options.stdout.isTTY || this.currentNode === null) {
-              return
-            }
-
-            this.resetFramesForAltScreen()
-            this.needsEraseBeforePaint = true
-            this.render(this.currentNode)
-          })
+          this.resetFramesForAltScreen()
+          this.needsEraseBeforePaint = true
+          this.render(this.currentNode!)
         }, 160)
       }
     }
@@ -513,6 +501,17 @@ export default class Ink {
       this.render(this.currentNode)
     })
   }
+
+  private canAltScreenRepaint(): boolean {
+    return (
+      !this.isUnmounted &&
+      !this.isPaused &&
+      this.altScreenActive &&
+      !!this.options.stdout.isTTY &&
+      this.currentNode !== null
+    )
+  }
+
   resolveExitPromise: () => void = () => {}
   rejectExitPromise: (reason?: Error) => void = () => {}
   unsubscribeExit: () => void = () => {}
@@ -1970,6 +1969,7 @@ export default class Ink {
       clearTimeout(this.drainTimer)
       this.drainTimer = null
     }
+
     if (this.resizeSettleTimer !== null) {
       clearTimeout(this.resizeSettleTimer)
       this.resizeSettleTimer = null

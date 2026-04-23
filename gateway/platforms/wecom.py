@@ -1005,7 +1005,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
+        normalized_aes_key = aes_key + "=" * (-len(aes_key) % 4)
+        key = base64.b64decode(normalized_aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
 

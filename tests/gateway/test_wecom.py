@@ -297,6 +297,24 @@ class TestMediaHelpers:
 
         assert decrypted == plaintext
 
+    def test_decrypt_file_bytes_accepts_unpadded_base64_key(self):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from gateway.platforms.wecom import WeComAdapter
+
+        plaintext = b"wecom-secret"
+        key = os.urandom(32)
+        pad_len = 32 - (len(plaintext) % 32)
+        padded = plaintext + bytes([pad_len]) * pad_len
+        encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+        encrypted = encryptor.update(padded) + encryptor.finalize()
+
+        decrypted = WeComAdapter._decrypt_file_bytes(
+            encrypted,
+            base64.b64encode(key).decode("ascii").rstrip("="),
+        )
+
+        assert decrypted == plaintext
+
     @pytest.mark.asyncio
     async def test_load_outbound_media_rejects_placeholder_path(self):
         from gateway.platforms.wecom import WeComAdapter
@@ -783,4 +801,3 @@ class TestWeComZombieSessionFix:
         adapter._send_request.assert_awaited_once()
         cmd = adapter._send_request.await_args.args[0]
         assert cmd == APP_CMD_SEND
-

@@ -656,10 +656,12 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["provider"], "custom")
 
     def test_direct_endpoint_does_not_fall_back_to_openrouter_api_key_env(self):
+        """Remote endpoint without OPENAI_API_KEY should raise ValueError,
+        even if OPENROUTER_API_KEY is set (only OPENAI_API_KEY is checked)."""
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
-            "base_url": "http://localhost:1234/v1",
+            "base_url": "https://api.example.com/v1",  # remote, not localhost
         }
         with patch.dict(
             os.environ,

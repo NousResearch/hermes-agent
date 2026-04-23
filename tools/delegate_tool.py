@@ -2105,6 +2105,37 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
+def _is_local_base_url(base_url: Optional[str]) -> bool:
+    """Return True if base_url points to a local/private network address.
+
+    Local providers (Ollama, LM Studio, llama.cpp server, etc.) typically
+    don't require authentication. This check covers:
+      - localhost / loopback (127.0.0.1, ::1)
+      - .local mDNS hostnames (e.g. studio.local)
+      - RFC 1918 private networks (10/8, 172.16/12, 192.168/16)
+    """
+    if not base_url:
+        return False
+    hostname = base_url_hostname(base_url)
+    if not hostname:
+        return False
+    # localhost variants
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return True
+    # mDNS .local hostnames
+    if hostname.endswith(".local"):
+        return True
+    # RFC 1918 private subnets
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+        return ip.is_private or ip.is_loopback
+    except ValueError:
+        pass  # not an IP address, that's fine
+    return False
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -2118,6 +2149,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
 
+    Local endpoints (localhost, 127.0.0.1, .local, RFC 1918 private nets)
+    don't require API keys — a placeholder "ollama" key is used when none
+    is provided, since these servers accept any or no authentication.
+
     Raises ValueError with a user-friendly message on credential failure.
     """
     configured_model = str(cfg.get("model") or "").strip() or None
@@ -2127,6 +2162,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     if configured_base_url:
         api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
+        # Local endpoints (Ollama, LM Studio, etc.) don't require auth.
+        # Use a dummy key so the OpenAI client doesn't reject the request.
+        if not api_key and _is_local_base_url(configured_base_url):
+            api_key = "ollama"
         if not api_key:
             raise ValueError(
                 "Delegation base_url is configured but no API key was found. "
@@ -2182,10 +2221,15 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     api_key = runtime.get("api_key", "")
     if not api_key:
-        raise ValueError(
-            f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
-        )
+        # Local providers don't require real API keys.
+        resolved_base = runtime.get("base_url", "")
+        if _is_local_base_url(resolved_base):
+            api_key = "ollama"
+        else:
+            raise ValueError(
+                f"Delegation provider '{configured_provider}' resolved but has no API key. "
+                f"Set the appropriate environment variable or run 'hermes auth'."
+            )
 
     return {
         "model": configured_model,

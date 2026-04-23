@@ -2,6 +2,8 @@
 
 Expose Hermes' `AIAgent` as an [A2A](https://a2aproject.github.io/A2A/) microservice so **other agents** can call it — with a cryptographic DID identity, OAuth2 auth, and optional x402 micropayments.
 
+> **[Bindu](https://github.com/GetBindu/Bindu)** — _the identity, communication & payments layer for AI agents._
+
 `hermes gateway` → talk to Hermes from **messaging platforms** (humans).
 `hermes-bindu`   → talk to Hermes from **other agents** (A2A JSON-RPC).
 
@@ -121,6 +123,7 @@ One long-lived `AIAgent` per process so provider prompt caches stay valid across
 
 ## Links
 
-- Bindu: <https://github.com/GetBindu/Bindu>
-- A2A protocol: <https://a2aproject.github.io/A2A/>
-- x402: <https://www.x402.org/>
+- Bindu (source): <https://github.com/GetBindu/Bindu>
+- Bindu (docs):   <https://docs.getbindu.com>
+- A2A protocol:   <https://a2aproject.github.io/A2A/>
+- x402:           <https://www.x402.org/>

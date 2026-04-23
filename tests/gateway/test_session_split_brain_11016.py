@@ -353,3 +353,47 @@ class TestRunnerSessionGenerationGuard:
         gen2 = runner._begin_session_run_generation(sk)
         assert gen2 > gen1
         assert runner._is_session_run_current(sk, gen2) is True
+
+
+# ===========================================================================
+# Layer 1 (regression): old task's finally must NOT delete a newer guard
+# ===========================================================================
+
+
+class TestOldTaskCannotClobberNewerGuard:
+    """Direct regression for the unconditional-delete bug.
+
+    Before the guard-match fix, a task in its finally would delete
+    ``_active_sessions[session_key]`` unconditionally — even if a
+    /stop/ /new command had already swapped in its own command_guard
+    (which then gets clobbered, opening a race for follow-up messages).
+    """
+
+    def test_release_session_guard_matches_on_event_identity(self):
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        old_guard = asyncio.Event()
+        new_guard = asyncio.Event()
+        # Command swapped in a newer guard.
+        adapter._active_sessions[sk] = new_guard
+
+        # Old task tries to release using its captured (stale) guard.
+        adapter._release_session_guard(sk, guard=old_guard)
+
+        # The newer guard survives.
+        assert adapter._active_sessions.get(sk) is new_guard
+
+        # Now the command itself releases using the matching guard.
+        adapter._release_session_guard(sk, guard=new_guard)
+        assert sk not in adapter._active_sessions
+
+    def test_release_session_guard_without_guard_releases_unconditionally(self):
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+        # Callers that don't know the guard (e.g. cancel_session_processing's
+        # default path) still work.
+        adapter._release_session_guard(sk)
+        assert sk not in adapter._active_sessions
+

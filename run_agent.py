@@ -262,6 +262,7 @@ _MAX_TOOL_WORKERS = 8
 _DESTRUCTIVE_PATTERNS = re.compile(
     r"""(?:^|\s|&&|\|\||;|`)(?:
         rm\s|rmdir\s|
+        cp\s|install\s|
         mv\s|
         sed\s+-i|
         truncate\s|
@@ -1547,6 +1548,17 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+
+        # App-level API retry count (wraps each model API call).  Default 3,
+        # overridable via agent.api_max_retries in config.yaml.  See #11616.
+        try:
+            _raw_api_retries = _agent_section.get("api_max_retries", 3)
+            _api_retries = int(_raw_api_retries)
+            if _api_retries < 1:
+                _api_retries = 1  # 1 = no retry (single attempt)
+        except (TypeError, ValueError):
+            _api_retries = 3
+        self._api_max_retries = _api_retries
 
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -9259,7 +9271,7 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = self._api_max_retries
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
@@ -10563,9 +10575,30 @@ class AIAgent:
                         # Error is about the INPUT being too large — reduce context_length.
                         # Try to parse the actual limit from the error message
                         parsed_limit = parse_context_limit_from_error(error_msg)
+                        _provider_lower = (getattr(self, "provider", "") or "").lower()
+                        _base_lower = (getattr(self, "base_url", "") or "").rstrip("/").lower()
+                        is_minimax_provider = (
+                            _provider_lower in {"minimax", "minimax-cn"}
+                            or _base_lower.startswith((
+                                "https://api.minimax.io/anthropic",
+                                "https://api.minimaxi.com/anthropic",
+                            ))
+                        )
+                        minimax_delta_only_overflow = (
+                            is_minimax_provider
+                            and parsed_limit is None
+                            and "context window exceeds limit (" in error_msg
+                        )
                         if parsed_limit and parsed_limit < old_ctx:
                             new_ctx = parsed_limit
-                            self._vprint(f"{self.log_prefix}⚠️  Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
+                            self._vprint(f"{self.log_prefix}Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
+                        elif minimax_delta_only_overflow:
+                            new_ctx = old_ctx
+                            self._vprint(
+                                f"{self.log_prefix}Provider reported overflow amount only; "
+                                f"keeping context_length at {old_ctx:,} tokens and compressing.",
+                                force=True,
+                            )
                         else:
                             # Step down to the next probe tier
                             new_ctx = get_next_probe_tier(old_ctx)

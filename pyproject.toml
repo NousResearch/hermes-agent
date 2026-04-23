@@ -39,7 +39,7 @@ dependencies = [
 [project.optional-dependencies]
 modal = ["modal>=1.0.0,<2"]
 daytona = ["daytona>=0.148.0,<1"]
-dev = ["debugpy>=1.8.0,<2", "pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "pytest-xdist>=3.0,<4", "mcp>=1.2.0,<2"]
+dev = ["debugpy>=1.8.0,<2", "pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "pytest-xdist>=3.0,<4", "mcp>=1.2.0,<2", "ty>=0.0.1a29,<0.0.22", "ruff"]
 messaging = ["python-telegram-bot[webhooks]>=22.6,<23", "discord.py[voice]>=2.7.1,<3", "aiohttp>=3.13.3,<4", "slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4", "qrcode>=7.0,<8"]
 cron = ["croniter>=6.0.0,<7"]
 slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
@@ -134,6 +134,28 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration' -n auto"
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.rules]
+unknown-argument = "warn"
+redundant-cast = "ignore"
+
+[tool.ty.src]
+exclude = ["**"]
+
+[[tool.ty.overrides]]
+include = ["**"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+invalid-method-override = "ignore"
+invalid-assignment = "ignore"
+not-iterable = "ignore"
+
+[tool.ruff]
+exclude = ["*"]
 
 [tool.uv]
 exclude-newer = "7 days"

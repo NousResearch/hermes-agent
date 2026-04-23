@@ -37,6 +37,30 @@ class ToolCall:
     arguments: str  # JSON string
     provider_data: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
+    # ── Backward compatibility ──────────────────────────────────
+    # The agent loop reads tc.function.name / tc.function.arguments
+    # throughout run_agent.py (45+ sites).  These properties let
+    # NormalizedResponse pass through without the _nr_to_assistant_message
+    # shim, while keeping ToolCall's canonical fields flat.
+    @property
+    def type(self) -> str:
+        return "function"
+
+    @property
+    def function(self) -> "ToolCall":
+        """Return self so tc.function.name / tc.function.arguments work."""
+        return self
+
+    @property
+    def call_id(self) -> Optional[str]:
+        """Codex call_id from provider_data, accessed via getattr by _build_assistant_message."""
+        return (self.provider_data or {}).get("call_id")
+
+    @property
+    def response_item_id(self) -> Optional[str]:
+        """Codex response_item_id from provider_data."""
+        return (self.provider_data or {}).get("response_item_id")
+
 
 @dataclass
 class Usage:
@@ -69,6 +93,24 @@ class NormalizedResponse:
     reasoning: Optional[str] = None
     usage: Optional[Usage] = None
     provider_data: Optional[Dict[str, Any]] = field(default=None, repr=False)
+
+    # ── Backward compatibility ──────────────────────────────────
+    # The shim _nr_to_assistant_message() mapped these from provider_data.
+    # These properties let NormalizedResponse pass through directly.
+    @property
+    def reasoning_content(self) -> Optional[str]:
+        pd = self.provider_data or {}
+        return pd.get("reasoning_content")
+
+    @property
+    def reasoning_details(self):
+        pd = self.provider_data or {}
+        return pd.get("reasoning_details")
+
+    @property
+    def codex_reasoning_items(self):
+        pd = self.provider_data or {}
+        return pd.get("codex_reasoning_items")
 
 
 # ---------------------------------------------------------------------------

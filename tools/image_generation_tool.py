@@ -928,6 +928,16 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         return None
 
     if provider is None:
+        try:
+            # Long-lived sessions may have discovered plugins before a bundled
+            # backend was patched in or before config changed. Retry once with
+            # a forced refresh before surfacing a missing-provider error.
+            _ensure_plugins_discovered(force=True)
+            provider = get_provider(configured)
+        except Exception as exc:
+            logger.debug("image_gen plugin force-refresh skipped: %s", exc)
+
+    if provider is None:
         return json.dumps({
             "success": False,
             "image": None,

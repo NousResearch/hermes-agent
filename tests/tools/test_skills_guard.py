@@ -174,27 +174,24 @@ class TestShouldAllowInstall:
         assert allowed is True
         assert "agent-created" in reason
 
-    def test_dangerous_agent_created_allowed(self):
-        """Agent-created skills bypass verdict gating — agent can already
-        execute the same code via terminal(), so skill_manage allows all
-        verdicts. This prevents friction when the agent writes skills that
-        mention risky keywords in prose (e.g. describing cache-busting or
-        persistence semantics in a PR-review skill)."""
+    def test_dangerous_agent_created_asks(self):
+        """Agent-created skills with dangerous verdict return None (ask for confirmation)
+        when the scan runs. The caller (_security_scan_skill) surfaces this as an error
+        to the agent, who can retry without the flagged content.
+
+        This gate only runs when skills.guard_agent_created is enabled (off by default)."""
         f = [Finding("env_exfil_curl", "critical", "exfiltration", "SKILL.md", 1, "curl $TOKEN", "exfiltration")]
         allowed, reason = should_allow_install(self._result("agent-created", "dangerous", f))
-        assert allowed is True
-        assert "agent-created" in reason
+        assert allowed is None
+        assert "Requires confirmation" in reason
 
-    def test_force_noop_for_agent_created_dangerous(self):
-        """With agent-created dangerous mapped to 'allow', force becomes a
-        no-op — the allow branch returns first. Force still works for any
-        trust level that maps to block (community/trusted)."""
+    def test_force_overrides_dangerous_for_agent_created(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(
             self._result("agent-created", "dangerous", f), force=True
         )
         assert allowed is True
-        assert "agent-created" in reason
+        assert "Force-installed" in reason
 
 
 # ---------------------------------------------------------------------------

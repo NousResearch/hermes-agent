@@ -61,6 +61,20 @@ class ToolCall:
         """Codex response_item_id from provider_data."""
         return (self.provider_data or {}).get("response_item_id")
 
+    @property
+    def extra_content(self) -> Optional[Dict[str, Any]]:
+        """Gemini extra_content (thought_signature) from provider_data.
+
+        Gemini 3 thinking models attach ``extra_content`` with a
+        ``thought_signature`` to each tool call.  This signature must be
+        replayed on subsequent API calls — without it the API rejects the
+        request with HTTP 400.  The chat_completions transport stores this
+        in ``provider_data["extra_content"]``; this property exposes it so
+        ``_build_assistant_message`` can ``getattr(tc, "extra_content")``
+        uniformly.
+        """
+        return (self.provider_data or {}).get("extra_content")
+
 
 @dataclass
 class Usage:

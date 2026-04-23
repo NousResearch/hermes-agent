@@ -36,6 +36,29 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _loopback_hostname(host: str) -> bool:
+    h = (host or "").lower().rstrip(".")
+    return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider: str) -> bool:
+    """Decide whether ``model.base_url`` may back bare ``custom`` runtime resolution.
+
+    GitHub #14676: the model picker can select Custom while ``model.provider`` still reflects a
+    previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``,
+    so a stale OpenRouter/Z.ai base_url cannot hijack local ``custom`` sessions.
+    """
+    cfg_provider_norm = (cfg_provider or "").strip().lower()
+    bu = (cfg_base_url or "").strip()
+    if not bu:
+        return False
+    if cfg_provider_norm == "custom":
+        return True
+    if base_url_host_matches(bu, "openrouter.ai"):
+        return False
+    return _loopback_hostname(base_url_hostname(bu))
+
+
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """Auto-detect api_mode from the resolved base URL.
 
@@ -472,6 +495,7 @@ def _resolve_openrouter_runtime(
     cfg_provider = cfg_provider.strip().lower()
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
+    env_custom_base_url = os.getenv("CUSTOM_BASE_URL", "").strip()
 
     # Use config base_url when available and the provider context matches.
     # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
@@ -481,11 +505,14 @@ def _resolve_openrouter_runtime(
         if requested_norm == "auto":
             if not cfg_provider or cfg_provider == "auto":
                 use_config_base_url = True
-        elif requested_norm == "custom" and cfg_provider == "custom":
+        elif requested_norm == "custom" and _config_base_url_trustworthy_for_bare_custom(
+            cfg_base_url, cfg_provider
+        ):
             use_config_base_url = True
 
     base_url = (
         (explicit_base_url or "").strip()
+        or env_custom_base_url
         or (cfg_base_url.strip() if use_config_base_url else "")
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL

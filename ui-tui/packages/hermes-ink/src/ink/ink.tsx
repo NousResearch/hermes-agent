@@ -70,7 +70,7 @@ import {
   startSelection,
   updateSelection
 } from './selection.js'
-import { supportsExtendedKeys, SYNC_OUTPUT_SUPPORTED, type Terminal, writeDiffToTerminal } from './terminal.js'
+import { isXtermJs, supportsExtendedKeys, SYNC_OUTPUT_SUPPORTED, type Terminal, writeDiffToTerminal } from './terminal.js'
 import {
   CURSOR_HOME,
   cursorMove,
@@ -728,12 +728,17 @@ export default class Ink {
       }
     }
 
+    // xterm.js occasionally leaves stale glyphs behind during incremental
+    // alt-screen updates. Force full repaint there; native terminals keep
+    // the cheaper diff path unless layout/overlay state says otherwise.
+    const forceFullAltScreenRepaint = this.altScreenActive && isXtermJs()
+
     // Full-damage backstop: applies on BOTH alt-screen and main-screen.
     // Layout shifts (spinner appears, status line resizes) can leave stale
     // cells at sibling boundaries that per-node damage tracking misses.
     // Selection/highlight overlays write via setCellStyleId which doesn't
     // track damage. prevFrameContaminated covers the cleanup frame.
-    if (didLayoutShift() || selActive || hlActive || this.prevFrameContaminated) {
+    if (didLayoutShift() || selActive || hlActive || this.prevFrameContaminated || forceFullAltScreenRepaint) {
       frame.screen.damage = {
         x: 0,
         y: 0,
@@ -771,7 +776,7 @@ export default class Ink {
       // renders the scrolled-but-not-yet-repainted intermediate state.
       // tmux is the main case (re-emits DECSTBM with its own timing and
       // doesn't implement DEC 2026, so SYNC_OUTPUT_SUPPORTED is false).
-      SYNC_OUTPUT_SUPPORTED
+      SYNC_OUTPUT_SUPPORTED && !forceFullAltScreenRepaint
     )
 
     const diffMs = performance.now() - tDiff
@@ -824,7 +829,9 @@ export default class Ink {
       // erase+paint lands, then swaps in one go. Writing ERASE_SCREEN
       // synchronously in handleResize would blank the screen for the ~80ms
       // render() takes.
-      if (this.needsEraseBeforePaint) {
+      const eraseBeforePaint = this.needsEraseBeforePaint || forceFullAltScreenRepaint
+
+      if (eraseBeforePaint) {
         this.needsEraseBeforePaint = false
         optimized.unshift(ERASE_THEN_HOME_PATCH)
       } else {

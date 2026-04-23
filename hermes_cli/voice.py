@@ -44,9 +44,18 @@ def _debug(msg: str) -> None:
     which createGatewayEventHandler shows as an Activity line — exactly
     what we need to diagnose "why didn't the loop auto-restart?" in the
     user's real terminal without shipping a separate debug RPC.
+
+    Any OSError / BrokenPipeError is swallowed because this fires from
+    background threads (silence callback, TTS daemon, beep) where a
+    broken stderr pipe must not kill the whole gateway — the main
+    command pipe (stdin+stdout) is what actually matters.
     """
-    if os.environ.get("HERMES_VOICE_DEBUG", "").strip() == "1":
+    if os.environ.get("HERMES_VOICE_DEBUG", "").strip() != "1":
+        return
+    try:
         print(f"[voice] {msg}", file=sys.stderr, flush=True)
+    except (BrokenPipeError, OSError):
+        pass
 
 
 def _beeps_enabled() -> bool:

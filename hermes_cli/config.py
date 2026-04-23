@@ -891,7 +891,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 22,
+    "_config_version": 23,
 }
 
 # =============================================================================
@@ -908,8 +908,8 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
     12: ["BRAVE_SEARCH_API_KEY"],
-    23: ["BRAVE_FREE_API_KEY"],
     22: ["BRAVE_ANSWERS_API_KEY", "BRAVE_AUTOSUGGEST_API_KEY"],
+    23: ["BRAVE_FREE_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.

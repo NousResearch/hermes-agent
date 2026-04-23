@@ -1969,12 +1969,24 @@ def check_firecrawl_api_key() -> bool:
     return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
 
 
-def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
+def _check_web_backend_available(capability: str = "search") -> bool:
+    """Check whether a backend for the requested web capability is available."""
+    capability = (capability or "search").strip().lower()
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in _SEARCH_BACKENDS + _CONTENT_BACKENDS:
+    backends = _SEARCH_BACKENDS if capability == "search" else _CONTENT_BACKENDS
+    if configured in backends:
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in _SEARCH_BACKENDS)
+    return any(_is_backend_available(backend) for backend in backends)
+
+
+def check_web_api_key() -> bool:
+    """Check whether a search-capable web backend is available."""
+    return _check_web_backend_available("search")
+
+
+def check_web_content_api_key() -> bool:
+    """Check whether an extract/crawl-capable web backend is available."""
+    return _check_web_backend_available("content")
 
 
 def check_auxiliary_model() -> bool:
@@ -2145,7 +2157,7 @@ registry.register(
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
-    check_fn=check_web_api_key,
+    check_fn=check_web_content_api_key,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",

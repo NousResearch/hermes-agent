@@ -364,6 +364,14 @@ class TestBackendSelection:
              patch.dict(os.environ, {"PARALLEL_API_KEY": "par-test"}, clear=False):
             assert _get_backend() == "parallel"
 
+    def test_config_brave_keeps_content_backend_on_firecrawl(self):
+        """Configured brave only affects search; content should still resolve to a content backend."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "brave"}), \
+             patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}):
+            assert _get_backend("search") == "brave"
+            assert _get_backend("content") == "firecrawl"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -538,7 +546,7 @@ class TestWebSearchErrorHandling:
 
 
 class TestCheckWebApiKey:
-    """Test suite for check_web_api_key() unified availability check."""
+    """Test suite for check_web_api_key() search availability check."""
 
     _ENV_KEYS = (
         "EXA_API_KEY",
@@ -607,6 +615,19 @@ class TestCheckWebApiKey:
         with patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
+
+    def test_brave_free_key_only_does_not_enable_content_check(self):
+        with patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}):
+            from tools.web_tools import check_web_content_api_key
+            assert check_web_content_api_key() is False
+
+    def test_web_extract_registry_stays_unavailable_with_brave_free_key_only(self):
+        with patch.dict(os.environ, {"BRAVE_FREE_API_KEY": "brave-free-test"}):
+            from tools.registry import registry
+
+            entry = registry.get_entry("web_extract")
+            assert entry is not None
+            assert entry.check_fn() is False
 
     def test_answers_key_only_is_not_enough_for_web_backend(self):
         with patch.dict(os.environ, {"BRAVE_ANSWERS_API_KEY": "answers-test"}):

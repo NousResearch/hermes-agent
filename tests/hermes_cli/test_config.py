@@ -445,6 +445,12 @@ class TestOptionalEnvVarsRegistry:
         assert "brave_answers" in info["tools"]
         assert "brave_search" in info["tools"]
 
+    def test_env_var_version_map_does_not_exceed_current_config_version(self):
+        """New env var version metadata must stay aligned with the active config schema."""
+        from hermes_cli.config import DEFAULT_CONFIG, ENV_VARS_BY_VERSION
+
+        assert max(ENV_VARS_BY_VERSION) <= DEFAULT_CONFIG["_config_version"]
+
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""
 

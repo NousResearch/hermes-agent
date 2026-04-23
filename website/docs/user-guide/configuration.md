@@ -195,6 +195,8 @@ terminal:
 
 **What it won't sandbox:** Commands that rely on privileged syscalls (`ptrace`, raw sockets, `unshare` under some kernel configs) may behave differently or fail. For those, use Docker.
 
+**Fork bombs:** The default profile does not set `rlimit_nproc` because that flag is enforced host-wide per real uid, which would interfere with the user's other processes outside the jail. Wall-clock `--time_limit` is the containment. If you need a per-jail process cap, supply an `nsjail.cfg` that uses cgroup v2 `pids.max` instead.
+
 ### SSH Backend
 
 Runs commands on a remote server over SSH. Uses ControlMaster for connection reuse (5-minute idle keepalive). Persistent shell is enabled by default — state (cwd, env vars) survives across commands.

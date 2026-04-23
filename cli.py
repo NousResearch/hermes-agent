@@ -6088,7 +6088,8 @@ class HermesCLI:
             print(f"  Reloaded .env ({count} var(s) updated)")
         elif canonical == "reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
-                self._reload_mcp()
+                if not self._reload_mcp():
+                    print("  ⚠️  MCP reload did not complete cleanly; see errors above.")
         elif canonical == "browser":
             self._handle_browser_command(cmd_original)
         elif canonical == "plugins":
@@ -7222,8 +7223,10 @@ class HermesCLI:
         if mtime == self._config_mtime:
             return  # File unchanged — fast path
 
-        # File changed — check whether mcp_servers section changed
-        self._config_mtime = mtime
+        # File changed — check whether mcp_servers section changed.
+        # Do not advance _config_mtime until we have parsed YAML and decided
+        # what to do; on MCP reload failure, leave mtime stale so the next
+        # poll retries (issue #14716).
         try:
             with open(cfg_path, encoding="utf-8") as f:
                 new_cfg = _yaml.safe_load(f) or {}
@@ -7232,27 +7235,43 @@ class HermesCLI:
 
         new_mcp = new_cfg.get("mcp_servers") or {}
         if new_mcp == self._config_mcp_servers:
+            # Another section changed — consume the mtime bump without reloading.
+            self._config_mtime = mtime
             return  # mcp_servers unchanged (some other section was edited)
 
-        self._config_mcp_servers = new_mcp
+        old_mtime = self._config_mtime
         # Notify user and reload.  Run in a separate thread with a hard
         # timeout so a hung MCP server cannot block the process_loop
         # indefinitely (which would freeze the entire TUI).
         print()
         print("🔄 MCP server config changed — reloading connections...")
-        _reload_thread = threading.Thread(
-            target=self._reload_mcp, daemon=True
-        )
+        outcome = [None]  # Optional[bool]: True/False from _reload_mcp
+
+        def _run_reload() -> None:
+            outcome[0] = self._reload_mcp()
+
+        _reload_thread = threading.Thread(target=_run_reload, daemon=True)
         _reload_thread.start()
         _reload_thread.join(timeout=30)
         if _reload_thread.is_alive():
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
+            self._config_mtime = old_mtime
+            return
+        if outcome[0]:
+            self._config_mcp_servers = new_mcp
+            self._config_mtime = mtime
+        else:
+            print("  ⚠️  MCP reload failed — will retry on the next config check.")
+            self._config_mtime = old_mtime
 
-    def _reload_mcp(self):
+    def _reload_mcp(self) -> bool:
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
 
         After reconnecting, refreshes the agent's tool list so the model
         sees the updated tools on the next turn.
+
+        Returns:
+            True if reload completed without error, False otherwise.
         """
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
@@ -7329,9 +7348,11 @@ class HermesCLI:
                     pass  # Best-effort
 
             print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
+            return True
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+            return False
 
     # ====================================================================
     # Tool-call generation indicator (shown during streaming)

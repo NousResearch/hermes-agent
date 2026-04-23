@@ -101,3 +101,36 @@ class TestMCPConfigWatch:
             obj._check_config_mcp_changes()  # should not raise
 
         obj._reload_mcp.assert_not_called()
+
+    def test_failed_reload_leaves_mcp_snapshot_and_retries_mtime(self, tmp_path):
+        """Failed _reload_mcp must not record new mcp_servers as applied (#14716)."""
+        import yaml
+        obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
+        cfg_file.write_text(yaml.dump({"mcp_servers": {"demo": {"command": "echo"}}}))
+        obj._config_mtime = 0.0
+        before_servers = dict(obj._config_mcp_servers)
+
+        obj._reload_mcp = MagicMock(return_value=False)
+
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+            obj._check_config_mcp_changes()
+
+        obj._reload_mcp.assert_called_once()
+        assert obj._config_mcp_servers == before_servers
+        assert obj._config_mtime == 0.0
+
+    def test_successful_reload_updates_mcp_snapshot(self, tmp_path):
+        """When reload returns True, applied mcp_servers matches config file."""
+        import yaml
+        obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
+        new_yaml = {"mcp_servers": {"demo": {"command": "echo"}}}
+        cfg_file.write_text(yaml.dump(new_yaml))
+        obj._config_mtime = 0.0
+
+        obj._reload_mcp = MagicMock(return_value=True)
+
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+            obj._check_config_mcp_changes()
+
+        assert obj._config_mcp_servers == new_yaml["mcp_servers"]
+        assert obj._config_mtime == cfg_file.stat().st_mtime

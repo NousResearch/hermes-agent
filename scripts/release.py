@@ -402,6 +402,7 @@ AUTHOR_MAP = {
     "curtis992250@gmail.com": "TaroballzChen",
     "92638503+Lind3ey@users.noreply.github.com": "Lind3ey",
     "1352808998@qq.com": "phpoh",
+    "caliberoviv@gmail.com": "vivganes",
 }
 
 

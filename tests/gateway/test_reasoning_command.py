@@ -33,6 +33,7 @@ def _make_runner():
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
+    runner._session_reasoning_overrides = {}
     runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -110,13 +111,35 @@ class TestReasoningCommand:
 
         runner = _make_runner()
         runner._reasoning_config = {"enabled": True, "effort": "medium"}
+        session_key = runner._session_key_for_source(_make_event().source)
 
         result = await runner._handle_reasoning_command(_make_event("/reasoning low"))
 
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["agent"]["reasoning_effort"] == "low"
+        assert saved["agent"]["reasoning_effort"] == "medium"
+        assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "low"}
         assert runner._reasoning_config == {"enabled": True, "effort": "low"}
-        assert "takes effect on next message" in result
+        assert "this session only" in result
+
+    @pytest.mark.asyncio
+    async def test_handle_reasoning_command_global_flag_persists(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        session_key = runner._session_key_for_source(_make_event().source)
+
+        result = await runner._handle_reasoning_command(_make_event("/reasoning low --global"))
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["reasoning_effort"] == "low"
+        assert session_key not in runner._session_reasoning_overrides
+        assert runner._reasoning_config == {"enabled": True, "effort": "low"}
+        assert "saved to config" in result
 
     def test_run_agent_reloads_reasoning_config_per_message(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

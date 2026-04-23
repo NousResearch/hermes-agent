@@ -420,6 +420,15 @@ def _load_reasoning_config() -> dict | None:
     return parse_reasoning_effort(effort)
 
 
+def _effective_reasoning_config(session: dict | None = None) -> dict | None:
+    override = None
+    if isinstance(session, dict):
+        override = session.get("reasoning_config_override")
+    if override is not None:
+        return dict(override)
+    return _load_reasoning_config()
+
+
 def _load_service_tier() -> str | None:
     raw = str(_load_cfg().get("agent", {}).get("service_tier", "") or "").strip().lower()
     if not raw or raw in {"normal", "default", "standard", "off", "none"}:
@@ -954,7 +963,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
-        new_agent = _make_agent(sid, session["session_key"], session_id=session["session_key"])
+        new_agent = _make_agent(sid, session["session_key"], session_id=session["session_key"], session=session)
     finally:
         _clear_session_context(tokens)
     session["agent"] = new_agent
@@ -974,8 +983,12 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
-def _make_agent(sid: str, key: str, session_id: str | None = None):
+def _make_agent(sid: str, key: str, session_id: str | None = None, session: dict | None = None):
     from run_agent import AIAgent
+
+    if session is None:
+        session = _sessions.get(sid)
+
     cfg = _load_cfg()
     system_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
     if not system_prompt:
@@ -984,7 +997,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         model=_resolve_model(),
         quiet_mode=True,
         verbose_logging=_load_tool_progress_mode() == "verbose",
-        reasoning_config=_load_reasoning_config(),
+        reasoning_config=_effective_reasoning_config(session),
         service_tier=_load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(),
         platform="tui",
@@ -1006,6 +1019,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "image_counter": 0,
         "cols": cols,
         "slash_worker": None,
+        "reasoning_config_override": None,
         "show_reasoning": _load_show_reasoning(),
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
@@ -1136,6 +1150,7 @@ def _(rid, params: dict) -> dict:
         "history_version": 0,
         "image_counter": 0,
         "running": False,
+        "reasoning_config_override": None,
         "session_key": key,
         "show_reasoning": _load_show_reasoning(),
         "slash_worker": None,
@@ -1931,9 +1946,12 @@ def _(rid, params: dict) -> dict:
 
     if key == "reasoning":
         try:
-            from hermes_constants import parse_reasoning_effort
+            from hermes_constants import parse_reasoning_command_args, parse_reasoning_effort
 
-            arg = str(value or "").strip().lower()
+            raw_args = str(value or "").strip()
+            arg, persist_global, parse_error = parse_reasoning_command_args(raw_args)
+            if parse_error:
+                return _err(rid, 4002, parse_error)
             if arg in ("show", "on"):
                 _write_config_key("display.show_reasoning", True)
                 if session:
@@ -1948,10 +1966,30 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            _write_config_key("agent.reasoning_effort", arg)
+
+            persist_error = None
+            persisted = False
+            if persist_global or not session:
+                try:
+                    _write_config_key("agent.reasoning_effort", arg)
+                    persisted = True
+                except Exception as exc:
+                    persist_error = exc
+
+            if session:
+                if persist_global and persisted:
+                    session["reasoning_config_override"] = None
+                else:
+                    session["reasoning_config_override"] = dict(parsed)
+            elif persist_error is not None:
+                raise persist_error
+
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
-            return _ok(rid, {"key": key, "value": arg})
+            resp = {"key": key, "value": arg}
+            if persist_error is not None and session:
+                resp["warning"] = f"config save failed; kept session-only override: {persist_error}"
+            return _ok(rid, resp)
         except Exception as e:
             return _err(rid, 5001, str(e))
 
@@ -2029,6 +2067,7 @@ def _(rid, params: dict) -> dict:
 @method("config.get")
 def _(rid, params: dict) -> dict:
     key = params.get("key", "")
+    session = _sessions.get(params.get("session_id", ""))
     if key == "provider":
         try:
             from hermes_cli.models import list_available_providers, normalize_provider
@@ -2051,8 +2090,15 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _load_cfg().get("display", {}).get("personality", "default")})
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str(cfg.get("agent", {}).get("reasoning_effort", "medium") or "medium")
-        display = "show" if bool(cfg.get("display", {}).get("show_reasoning", False)) else "hide"
+        reasoning_config = _effective_reasoning_config(session)
+        if reasoning_config is None:
+            effort = "medium"
+        elif reasoning_config.get("enabled") is False:
+            effort = "none"
+        else:
+            effort = str(reasoning_config.get("effort", "medium") or "medium")
+        display_on = bool(session.get("show_reasoning")) if session else bool(cfg.get("display", {}).get("show_reasoning", False))
+        display = "show" if display_on else "hide"
         return _ok(rid, {"value": effort, "display": display})
     if key == "details_mode":
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})

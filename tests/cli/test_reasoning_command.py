@@ -155,6 +155,33 @@ class TestHandleReasoningCommand(unittest.TestCase):
         level = rc.get("effort", "medium")
         self.assertEqual(level, "xhigh")
 
+    @patch("cli._cprint")
+    @patch("cli.save_config_value")
+    def test_handle_reasoning_command_accepts_global_flag(self, mock_save, _mock_print):
+        from cli import HermesCLI
+
+        stub = self._make_cli()
+        stub._current_reasoning_callback = lambda: None
+        mock_save.return_value = True
+
+        HermesCLI._handle_reasoning_command(stub, "/reasoning medium --global")
+
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "medium"})
+        mock_save.assert_called_once_with("agent.reasoning_effort", "medium")
+
+    @patch("cli._cprint")
+    @patch("cli.save_config_value")
+    def test_handle_reasoning_command_defaults_to_session_only(self, mock_save, _mock_print):
+        from cli import HermesCLI
+
+        stub = self._make_cli()
+        stub._current_reasoning_callback = lambda: None
+
+        HermesCLI._handle_reasoning_command(stub, "/reasoning high")
+
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        mock_save.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Reasoning extraction and result dict

@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import shlex
 from pathlib import Path
 
 
@@ -139,6 +140,36 @@ def get_subprocess_home() -> str | None:
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def parse_reasoning_command_args(raw_args: str) -> tuple[str, bool, str | None]:
+    """Parse `/reasoning` arguments into (value, persist_global, error).
+
+    Accepts one positional value plus an optional ``--global`` flag in any order.
+    Returns the normalized positional value (or "" when omitted), whether the
+    change should persist globally, and an error string for unsupported flags or
+    multiple positional arguments.
+    """
+    try:
+        tokens = shlex.split(str(raw_args or ""))
+    except ValueError as exc:
+        return ("", False, str(exc))
+
+    value = ""
+    persist_global = False
+    for token in tokens:
+        normalized = str(token or "").strip().lower()
+        if not normalized:
+            continue
+        if normalized == "--global":
+            persist_global = True
+            continue
+        if normalized.startswith("--"):
+            return ("", persist_global, f"Unknown flag: {normalized}")
+        if value:
+            return ("", persist_global, f"Unknown argument: {' '.join(tokens)}")
+        value = normalized
+    return (value, persist_global, None)
 
 
 def parse_reasoning_effort(effort: str) -> dict | None:

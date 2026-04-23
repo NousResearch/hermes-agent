@@ -172,6 +172,31 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["provider"] == "openrouter"
         assert updated["job"]["base_url"] is None
 
+    def test_reasoning_runtime_override_can_set_and_update(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                reasoning_effort="high",
+            )
+        )
+        job_id = created["job_id"]
+        assert created["job"]["reasoning_effort"] == "high"
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["reasoning_effort"] == "high"
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=job_id,
+                reasoning_effort="none",
+            )
+        )
+        assert updated["success"] is True
+        assert updated["job"]["reasoning_effort"] == "none"
+
     def test_create_skill_backed_job(self):
         result = json.loads(
             cronjob(

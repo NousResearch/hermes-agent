@@ -645,7 +645,7 @@ class TestRunJobSessionPersistence:
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
-                     "api_key": "test-key",
+                     "api_key": "***",
                      "base_url": "https://example.invalid/v1",
                      "provider": "openrouter",
                      "api_mode": "chat_completions",
@@ -672,6 +672,77 @@ class TestRunJobSessionPersistence:
         assert call_args[0][0].startswith("cron_test-job_")
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
+
+    def test_run_job_prefers_job_reasoning_effort_over_global_config(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+            "reasoning_effort": "high",
+        }
+        fake_db = MagicMock()
+        (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: low\n", encoding="utf-8")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
+
+    def test_run_job_falls_back_to_global_reasoning_effort_when_job_unset(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+        (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: low\n", encoding="utf-8")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "low"}
 
     def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
         """Empty final_response should stay empty for delivery logic (issue #2234).

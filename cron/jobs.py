@@ -15,7 +15,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, parse_reasoning_effort
 from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,19 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
         if text and text not in normalized:
             normalized.append(text)
     return normalized
+
+
+def _normalize_reasoning_effort(reasoning_effort: Optional[Any]) -> Optional[str]:
+    if reasoning_effort is None:
+        return None
+    text = str(reasoning_effort).strip().lower()
+    if not text:
+        return None
+    if parse_reasoning_effort(text) is None:
+        raise ValueError(
+            "Invalid reasoning_effort. Expected one of: none, minimal, low, medium, high, xhigh."
+        )
+    return text
 
 
 def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -383,6 +396,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     script: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -400,6 +414,7 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        reasoning_effort: Optional per-job reasoning override
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
@@ -428,6 +443,7 @@ def create_job(
     normalized_model = str(model).strip() if isinstance(model, str) else None
     normalized_provider = str(provider).strip() if isinstance(provider, str) else None
     normalized_base_url = str(base_url).strip().rstrip("/") if isinstance(base_url, str) else None
+    normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
@@ -444,6 +460,7 @@ def create_job(
         "model": normalized_model,
         "provider": normalized_provider,
         "base_url": normalized_base_url,
+        "reasoning_effort": normalized_reasoning_effort,
         "script": normalized_script,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
@@ -499,6 +516,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
+
+        if "reasoning_effort" in updates:
+            updated["reasoning_effort"] = _normalize_reasoning_effort(updated.get("reasoning_effort"))
 
         if "skills" in updates or "skill" in updates:
             normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))

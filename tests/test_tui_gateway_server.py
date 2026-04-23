@@ -95,6 +95,7 @@ def _session(agent=None, **extra):
         "image_counter": 0,
         "cols": 80,
         "slash_worker": None,
+        "reasoning_config_override": None,
         "show_reasoning": False,
         "tool_progress_mode": "all",
         **extra,
@@ -148,12 +149,90 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     )
     assert resp_effort["result"]["value"] == "low"
     assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+    assert server._sessions["sid"]["reasoning_config_override"] == {"enabled": True, "effort": "low"}
 
     resp_show = server.handle_request(
         {"id": "2", "method": "config.set", "params": {"session_id": "sid", "key": "reasoning", "value": "show"}}
     )
     assert resp_show["result"]["value"] == "show"
     assert server._sessions["sid"]["show_reasoning"] is True
+
+
+def test_config_set_reasoning_global_clears_session_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    agent = types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "low"})
+    server._sessions["sid"] = _session(
+        agent=agent,
+        reasoning_config_override={"enabled": True, "effort": "low"},
+    )
+
+    resp = server.handle_request(
+        {"id": "3", "method": "config.set", "params": {"session_id": "sid", "key": "reasoning", "value": "high --global"}}
+    )
+
+    assert resp["result"]["value"] == "high"
+    assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+    assert server._sessions["sid"]["reasoning_config_override"] is None
+    assert "reasoning_effort: high" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_config_set_reasoning_global_falls_back_to_session_override_on_save_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    agent = types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "low"})
+    server._sessions["sid"] = _session(
+        agent=agent,
+        reasoning_config_override={"enabled": True, "effort": "low"},
+    )
+    monkeypatch.setattr(server, "_write_config_key", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("disk full")))
+
+    resp = server.handle_request(
+        {"id": "3b", "method": "config.set", "params": {"session_id": "sid", "key": "reasoning", "value": "high --global"}}
+    )
+
+    assert resp["result"]["value"] == "high"
+    assert "warning" in resp["result"]
+    assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+    assert server._sessions["sid"]["reasoning_config_override"] == {"enabled": True, "effort": "high"}
+
+
+def test_config_get_reasoning_prefers_session_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort: medium\ndisplay:\n  show_reasoning: false\n",
+        encoding="utf-8",
+    )
+    server._sessions["sid"] = _session(
+        reasoning_config_override={"enabled": False},
+        show_reasoning=True,
+    )
+
+    resp = server.handle_request(
+        {"id": "4", "method": "config.get", "params": {"session_id": "sid", "key": "reasoning"}}
+    )
+
+    assert resp["result"] == {"value": "none", "display": "show"}
+
+
+def test_reset_session_agent_reapplies_reasoning_override(monkeypatch):
+    session = _session(reasoning_config_override={"enabled": True, "effort": "high"})
+    monkeypatch.setattr(server, "_set_session_context", lambda _key: None)
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"reasoning_config": agent.reasoning_config})
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda _session: None)
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda sid, key, session_id=None, session=None: types.SimpleNamespace(
+            reasoning_config=server._effective_reasoning_config(session)
+        ),
+    )
+
+    info = server._reset_session_agent("sid", session)
+
+    assert session["agent"].reasoning_config == {"enabled": True, "effort": "high"}
+    assert info == {"reasoning_config": {"enabled": True, "effort": "high"}}
 
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
@@ -290,7 +369,7 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
 
     server._sessions["sid"] = session
     monkeypatch.setattr(server, "_available_personalities", lambda cfg=None: {"helpful": "You are helpful."})
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: new_agent)
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session=None: new_agent)
     monkeypatch.setattr(server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")})
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))

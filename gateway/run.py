@@ -615,6 +615,7 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -678,6 +679,9 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Per-session reasoning overrides from /reasoning command.
+        # Key: session_key, Value: dict like {"enabled": bool, "effort": str?}
+        self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -1343,6 +1347,30 @@ class GatewayRunner:
         if effort and effort.strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
         return result
+
+    def _get_reasoning_config_for_session(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+    ) -> dict | None:
+        """Return the effective reasoning config for a session.
+
+        Session-scoped `/reasoning` overrides win over config.yaml. When no
+        override exists, fall back to the persisted global config.
+        """
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
+        override = overrides.get(resolved_session_key) if resolved_session_key else None
+        if override is not None:
+            return dict(override)
+        return self._load_reasoning_config()
 
     @staticmethod
     def _load_service_tier() -> str | None:
@@ -4613,6 +4641,7 @@ class GatewayRunner:
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
+                self._session_reasoning_overrides.pop(session_key, None)
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -4900,6 +4929,7 @@ class GatewayRunner:
         # Clear any session-scoped model override so the next agent picks up
         # the configured default instead of the previously switched model.
         self._session_model_overrides.pop(session_key, None)
+        self._session_reasoning_overrides.pop(session_key, None)
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:
@@ -6431,7 +6461,7 @@ class GatewayRunner:
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._get_reasoning_config_for_session(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
@@ -6599,7 +6629,7 @@ class GatewayRunner:
                 return
 
             platform_key = _platform_config_key(source.platform)
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._get_reasoning_config_for_session(session_key=session_key)
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
             pr = self._provider_routing
@@ -6711,10 +6741,12 @@ class GatewayRunner:
             /reasoning hide|off     Hide model reasoning from responses
         """
         import yaml
+        from hermes_constants import parse_reasoning_command_args, parse_reasoning_effort
 
-        args = event.get_command_args().strip().lower()
+        raw_args = event.get_command_args().strip()
         config_path = _hermes_home / "config.yaml"
-        self._reasoning_config = self._load_reasoning_config()
+        session_key = self._session_key_for_source(event.source)
+        self._reasoning_config = self._get_reasoning_config_for_session(session_key=session_key)
         self._show_reasoning = self._load_show_reasoning()
 
         def _save_config_key(key_path: str, value):
@@ -6737,7 +6769,7 @@ class GatewayRunner:
                 logger.error("Failed to save config key %s: %s", key_path, e)
                 return False
 
-        if not args:
+        if not raw_args:
             # Show current state
             rc = self._reasoning_config
             if rc is None:
@@ -6751,7 +6783,16 @@ class GatewayRunner:
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"
                 f"**Display:** {display_state}\n\n"
-                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|show|hide>`"
+                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|show|hide> [--global]`"
+            )
+
+        args, persist_global, parse_error = parse_reasoning_command_args(raw_args)
+        if parse_error:
+            return (
+                f"⚠️ {parse_error}\n\n"
+                "**Valid levels:** none, minimal, low, medium, high, xhigh\n"
+                "**Display:** show, hide\n"
+                "**Flag:** --global"
             )
 
         # Display toggle (per-platform)
@@ -6771,22 +6812,29 @@ class GatewayRunner:
 
         # Effort level change
         effort = args.strip()
-        if effort == "none":
-            parsed = {"enabled": False}
-        elif effort in ("minimal", "low", "medium", "high", "xhigh"):
-            parsed = {"enabled": True, "effort": effort}
-        else:
+        parsed = parse_reasoning_effort(effort)
+        if parsed is None:
             return (
-                f"⚠️ Unknown argument: `{effort}`\n\n"
+                f"⚠️ Unknown argument: `{raw_args}`\n\n"
                 "**Valid levels:** none, minimal, low, medium, high, xhigh\n"
-                "**Display:** show, hide"
+                "**Display:** show, hide\n"
+                "**Flag:** --global"
             )
 
         self._reasoning_config = parsed
-        if _save_config_key("agent.reasoning_effort", effort):
-            return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
-        else:
-            return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+        session_overrides = getattr(self, "_session_reasoning_overrides", None)
+        if session_overrides is None:
+            session_overrides = self._session_reasoning_overrides = {}
+
+        if persist_global:
+            session_overrides.pop(session_key, None)
+            if _save_config_key("agent.reasoning_effort", effort):
+                return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
+            session_overrides[session_key] = parsed
+            return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only; config save failed)"
+
+        session_overrides[session_key] = parsed
+        return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only — use `--global` to persist)"
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
@@ -9551,7 +9599,7 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._get_reasoning_config_for_session(session_key=session_key)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             # Set up stream consumer for token streaming or interim commentary.

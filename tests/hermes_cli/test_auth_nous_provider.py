@@ -19,6 +19,12 @@ from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_run
 class TestResolveVerifyFallback:
     """Verify _resolve_verify falls back to True when CA bundle path doesn't exist."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_platform_to_linux(self, monkeypatch):
+        """Pin sys.platform so the macOS certifi fallback doesn't alter the
+        generic "default trust" return value asserted by these tests."""
+        monkeypatch.setattr("sys.platform", "linux")
+
     def test_missing_ca_bundle_in_auth_state_falls_back(self):
         from hermes_cli.auth import _resolve_verify
 

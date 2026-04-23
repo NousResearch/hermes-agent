@@ -1240,6 +1240,15 @@ def list_authenticated_providers(
                     if m and m not in models_list:
                         models_list.append(m)
 
+            # Official OpenAI API rows in providers: often have base_url but no
+            # explicit models: dict — avoid a misleading zero count in /model.
+            if not models_list:
+                url_lower = str(api_url).strip().lower()
+                if "api.openai.com" in url_lower:
+                    fb = curated.get("openai") or []
+                    if fb:
+                        models_list = list(fb)
+
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config
             results.append({

@@ -1272,6 +1272,7 @@ def _generate_openai_tts(
     model: Optional[str] = None,
     voice: Optional[str] = None,
     speed: Optional[float] = None,
+    instructions: Optional[str] = None,
 ) -> str:
     """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
 
@@ -1292,6 +1293,11 @@ def _generate_openai_tts(
         voice: Voice id. When None, reads ``tts.openai.voice``.
         speed: Playback speed. When None, reads ``tts.openai.speed`` /
             ``tts.speed``.
+        instructions: Optional voice-design guidance (tone, emotion, pacing,
+            accent, whispering). Forwarded to `audio.speech.create` when
+            truthy; omitted otherwise so ``tts-1``/``tts-1-hd`` and strict
+            OpenAI-compatible servers that reject unknown kwargs are
+            unaffected.
 
     Returns:
         Path to the saved audio file.
@@ -1355,6 +1361,8 @@ def _generate_openai_tts(
         }
         if speed != 1.0:
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
+        if instructions:
+            create_kwargs["instructions"] = instructions
         response = client.audio.speech.create(**create_kwargs)
 
         response.stream_to_file(output_path)
@@ -2568,6 +2576,7 @@ def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
     speed: Optional[float] = None,
+    instructions: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2583,6 +2592,10 @@ def text_to_speech_tool(
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
         speed: Optional playback speed multiplier (0.25-4.0). Overrides config.yaml.
+        instructions: Optional voice-design guidance (tone, emotion, pacing,
+            accent, whispering). Forwarded to the OpenAI backend
+            (gpt-4o-mini-tts and OpenAI-compatible servers). Silently
+            ignored by backends that don't support it.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2724,7 +2737,7 @@ def text_to_speech_tool(
                     "error": "OpenAI provider selected but 'openai' package not installed."
                 }, ensure_ascii=False)
             logger.info("Generating speech with OpenAI TTS...")
-            _generate_openai_tts(text, file_str, tts_config)
+            _generate_openai_tts(text, file_str, tts_config, instructions=instructions)
 
         elif provider == "deepinfra":
             try:
@@ -3333,6 +3346,15 @@ TTS_SCHEMA = {
             "speed": {
                 "type": "number",
                 "description": "Playback speed multiplier. 1.0 = normal, 0.5 = very slow (language learning), 2.0 = fast. Range: 0.25-4.0. Overrides the speed configured in config.yaml."
+            },
+            "instructions": {
+                "type": "string",
+                "description": (
+                    "Optional voice-design guidance: tone, emotion, pacing, accent, "
+                    "whispering, impressions (e.g. 'Speak in a cheerful, excited whisper'). "
+                    "Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible "
+                    "voice-design servers). Silently ignored by backends that don't support it."
+                )
             }
         },
         "required": ["text"]
@@ -3346,7 +3368,8 @@ registry.register(
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
         output_path=args.get("output_path"),
-        speed=args.get("speed")),
+        speed=args.get("speed"),
+        instructions=args.get("instructions")),
     check_fn=check_tts_requirements,
     emoji="🔊",
 )

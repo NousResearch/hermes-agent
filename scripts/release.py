@@ -44,6 +44,7 @@ AUTHOR_MAP = {
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "343873859@qq.com": "DrStrangerUJN",
+    "jefferson@heimdallstrategy.com": "Mind-Dragon",
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",

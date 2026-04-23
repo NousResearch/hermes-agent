@@ -192,7 +192,7 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
-          ctx.transcript.sys(`voice: ${r.enabled ? 'on' : 'off'}`)
+          ctx.transcript.sys(`voice: ${r.enabled ? 'on — press Ctrl+B to record' : 'off'}`)
         })
       )
     }

@@ -8,7 +8,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isMac } from '../lib/platform.js'
+import { isAction, isMac, isVoiceToggleKey } from '../lib/platform.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
@@ -370,7 +370,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.newSession()
     }
 
-    if (isAction(key, ch, 'b')) {
+    if (isVoiceToggleKey(key, ch)) {
       return voice.recording ? voiceStop() : voiceStart()
     }
 

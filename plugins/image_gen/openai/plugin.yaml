@@ -1,7 +1,0 @@
-name: openai
-version: 1.0.0
-description: "OpenAI image generation backend (gpt-image-2). Saves generated images to $HERMES_HOME/cache/images/."
-author: NousResearch
-kind: backend
-requires_env:
-  - OPENAI_API_KEY

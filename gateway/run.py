@@ -10954,6 +10954,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.status import (
         acquire_gateway_runtime_lock,
         get_running_pid,
+        get_process_start_time,
         release_gateway_runtime_lock,
         remove_pid_file,
         terminate_pid,
@@ -10961,6 +10962,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
+            existing_start_time = get_process_start_time(existing_pid)
             logger.info(
                 "Replacing existing gateway instance (PID %d) with --replace.",
                 existing_pid,
@@ -11029,7 +11031,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             # leaving stale lock files that block the new gateway from starting.
             try:
                 from gateway.status import release_all_scoped_locks
-                _released = release_all_scoped_locks()
+                _released = release_all_scoped_locks(
+                    owner_pid=existing_pid,
+                    owner_start_time=existing_start_time,
+                )
                 if _released:
                     logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
             except Exception:

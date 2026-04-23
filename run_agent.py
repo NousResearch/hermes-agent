@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
+import ssl
 import sys
 import tempfile
 import time
@@ -10680,7 +10681,7 @@ class AIAgent:
                     # errors (ValueError, TypeError) are programming bugs.
                     is_local_validation_error = (
                         isinstance(api_error, (ValueError, TypeError))
-                        and not isinstance(api_error, UnicodeEncodeError)
+                        and not isinstance(api_error, (UnicodeEncodeError, ssl.SSLError))  # ssl.SSLError subclasses ValueError via OSError — transport error, not a programming bug
                     )
                     is_client_error = (
                         is_local_validation_error

@@ -1999,12 +1999,18 @@ def _normalize_custom_provider_entry(
         )
 
     from urllib.parse import urlparse
+    import re as _re
 
     base_url = ""
     for url_key in ("base_url", "url", "api"):
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
             candidate = raw_url.strip()
+            # Accept unresolved ${VAR} env-ref placeholders without URL
+            # validation — they will be expanded at runtime.
+            if _re.search(r"\${[^}]+}", candidate):
+                base_url = candidate
+                break
             parsed = urlparse(candidate)
             if parsed.scheme and parsed.netloc:
                 base_url = candidate

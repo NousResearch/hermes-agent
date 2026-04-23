@@ -486,13 +486,20 @@ def _platform_config_key(platform: "Platform") -> str:
 
 
 def _load_gateway_config() -> dict:
-    """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
+    """Load and parse ~/.hermes/config.yaml, returning {} on any error.
+
+    Expands ``${ENV_VAR}`` placeholders so that callers always receive
+    runtime-ready values (matching the behaviour of
+    ``hermes_cli.config.load_config()``).
+    """
     try:
         config_path = _hermes_home / 'config.yaml'
         if config_path.exists():
             import yaml
             with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
+                raw = yaml.safe_load(f) or {}
+            from hermes_cli.config import _expand_env_vars
+            return _expand_env_vars(raw)
     except Exception:
         logger.debug("Could not load gateway config from %s", _hermes_home / 'config.yaml')
     return {}
@@ -4192,6 +4199,8 @@ class GatewayRunner:
                     import yaml as _hyg_yaml
                     with open(_hyg_cfg_path, encoding="utf-8") as _hyg_f:
                         _hyg_data = _hyg_yaml.safe_load(_hyg_f) or {}
+                    from hermes_cli.config import _expand_env_vars
+                    _hyg_data = _expand_env_vars(_hyg_data)
 
                     # Resolve model name (same logic as run_sync)
                     _model_cfg = _hyg_data.get("model", {})
@@ -5447,6 +5456,8 @@ class GatewayRunner:
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
+                from hermes_cli.config import _expand_env_vars
+                cfg = _expand_env_vars(cfg)
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, dict):
                     current_model = model_cfg.get("default", "")

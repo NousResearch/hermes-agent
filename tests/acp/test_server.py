@@ -656,6 +656,35 @@ class TestPrompt:
         assert result_event["tool"]["aggregator_influence_log"]["influence_summary"] == "mimo used both references but weighted overlap most"
 
     @pytest.mark.asyncio
+    async def test_prompt_force_spar_forensics_marks_completed_review_successfully(self, agent, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-spar"
+        state.agent.run_conversation = MagicMock()
+
+        with patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(
+                return_value='{"approved": true, "summary": "ok", "issues": [], "final_response": "spar answer", "disagreement": false, "judge_verdict": {"approved": true, "summary": "judge ok"}}'
+            ),
+        ):
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="review this answer")],
+                session_id=new_resp.session_id,
+            )
+
+        forensic_path = tmp_path / ".hermes" / "logs" / "route_forensics.jsonl"
+        events = [json.loads(line) for line in forensic_path.read_text().splitlines()]
+        result_event = next(event for event in events if event["event"] == "route_result")
+        assert result_event["session_id"] == new_resp.session_id
+        assert result_event["route"] == "force-spar"
+        assert result_event["tool"]["success"] is True
+        assert result_event["tool"]["approved"] is True
+        assert result_event["tool"]["disagreement"] is False
+        assert result_event["tool"]["judge_verdict"] == {"approved": True, "summary": "judge ok"}
+
+    @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
         """After a prompt, session history should be updated."""
         new_resp = await agent.new_session(cwd=".")

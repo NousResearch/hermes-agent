@@ -248,6 +248,8 @@ def _summarize_routed_payload(prompt_route: str, raw_output: str) -> dict[str, A
     if error:
         summary["error"] = error[:500]
     if prompt_route == "force-spar":
+        # route_result means Spar executed; approval is tracked separately.
+        summary["success"] = bool(payload.get("success", True))
         summary["approved"] = bool(payload.get("approved"))
         summary["disagreement"] = bool(payload.get("disagreement"))
         judge_verdict = payload.get("judge_verdict")

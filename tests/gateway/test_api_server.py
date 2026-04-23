@@ -1755,6 +1755,127 @@ class TestUsageCounting:
             assert data["usage"]["total_tokens"] == 280
 
 
+class TestCacheAwareUsage:
+    """Prompt-cache tokens and model are surfaced on every usage block."""
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_exposes_cache_breakdown(self, adapter):
+        mock_result = {"final_response": "Hi", "messages": [], "api_calls": 1}
+        usage = {
+            "input_tokens": 25000,
+            "output_tokens": 5,
+            "total_tokens": 25005,
+            "cache_read_tokens": 22000,
+            "cache_write_tokens": 2500,
+            "model": "claude-opus-4-7",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, usage)
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["usage"]["prompt_tokens_details"]["cached_tokens"] == 22000
+            assert data["usage"]["cache_read_tokens"] == 22000
+            assert data["usage"]["cache_write_tokens"] == 2500
+            assert data["usage"]["model"] == "claude-opus-4-7"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_defaults_when_cache_fields_absent(self, adapter):
+        """Missing cache fields default to 0 / empty — no KeyError."""
+        mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
+        usage = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, usage)
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["usage"]["prompt_tokens_details"]["cached_tokens"] == 0
+            assert data["usage"]["cache_read_tokens"] == 0
+            assert data["usage"]["cache_write_tokens"] == 0
+            assert data["usage"]["model"] == ""
+
+    @pytest.mark.asyncio
+    async def test_responses_exposes_cache_breakdown(self, adapter):
+        """/v1/responses uses input_tokens_details (OpenAI Responses convention)."""
+        mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
+        usage = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "cache_read_tokens": 60,
+            "cache_write_tokens": 30,
+            "model": "claude-sonnet-4",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, usage)
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Hi"},
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["usage"]["input_tokens_details"]["cached_tokens"] == 60
+            assert data["usage"]["cache_read_tokens"] == 60
+            assert data["usage"]["cache_write_tokens"] == 30
+            assert data["usage"]["model"] == "claude-sonnet-4"
+
+    @pytest.mark.asyncio
+    async def test_openai_fields_still_match_sum(self, adapter):
+        """Cache tokens are sub-totals of prompt_tokens, not additions."""
+        mock_result = {"final_response": "Hi", "messages": [], "api_calls": 1}
+        usage = {
+            "input_tokens": 24700,
+            "output_tokens": 9,
+            "total_tokens": 24709,
+            "cache_read_tokens": 22000,
+            "cache_write_tokens": 2600,
+            "model": "claude-opus-4-7",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, usage)
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+
+            data = await resp.json()
+            assert data["usage"]["total_tokens"] == (
+                data["usage"]["prompt_tokens"] + data["usage"]["completion_tokens"]
+            )
+            cached = data["usage"]["prompt_tokens_details"]["cached_tokens"]
+            assert cached <= data["usage"]["prompt_tokens"]
+
+
 # ---------------------------------------------------------------------------
 # Truncation
 # ---------------------------------------------------------------------------

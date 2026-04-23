@@ -120,6 +120,17 @@ class TestExtractErrorBody:
         e = MockAPIError("fail", body={"error": {"message": "bad"}})
         assert _extract_error_body(e) == {"error": {"message": "bad"}}
 
+    def test_from_cause_chain(self):
+        inner = MockAPIError(
+            "inner",
+            body={"error": {"message": "Usage limit reached, try again in 5 minutes"}},
+        )
+        outer = Exception("outer")
+        outer.__cause__ = inner
+        assert _extract_error_body(outer) == {
+            "error": {"message": "Usage limit reached, try again in 5 minutes"}
+        }
+
     def test_empty_when_no_body(self):
         assert _extract_error_body(Exception("generic")) == {}
 
@@ -238,6 +249,20 @@ class TestClassifyApiError:
     def test_402_transient_usage_limit(self):
         e = MockAPIError("usage limit exceeded, try again later", status_code=402)
         result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_wrapped_402_uses_nested_body_message(self):
+        inner = MockAPIError(
+            "inner",
+            status_code=402,
+            body={"error": {"message": "Usage limit reached, try again in 5 minutes"}},
+        )
+        outer = Exception("outer")
+        outer.__cause__ = inner
+
+        result = classify_api_error(outer)
+
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 

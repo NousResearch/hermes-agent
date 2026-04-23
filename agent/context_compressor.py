@@ -600,7 +600,16 @@ class ContextCompressor(ContextEngine):
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
+            raw_content = msg.get("content") or ""
+            if isinstance(raw_content, list):
+                # Multimodal content: redact only text parts; image data is not secret text
+                content = " ".join(
+                    redact_sensitive_text(p.get("text", ""))
+                    for p in raw_content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            else:
+                content = redact_sensitive_text(raw_content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -1067,8 +1076,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            content = msg.get("content") or ""
-            msg_tokens = len(content) // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
+            raw_content = msg.get("content") or ""
+            content_len = (
+                sum(len(p.get("text", "")) if isinstance(p, dict) else len(str(p)) for p in raw_content)
+                if isinstance(raw_content, list)
+                else len(raw_content)
+            )
+            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
             # Include tool call arguments in estimate
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):

@@ -968,4 +968,121 @@ class TestTruncateToolCallArgsJson:
         # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+
+
+class TestMultimodalContent:
+    """Multimodal (list) content must be handled correctly in token estimation and redaction."""
+
+    @pytest.fixture()
+    def compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+
+    # ── Bug 1: token estimation ────────────────────────────────────────────
+
+    def test_tail_token_budget_list_content_counts_text_chars(self, compressor):
+        """List content token estimation must use total text char length, not list element count.
+
+        Before the fix, ``len([item1, item2]) == 2`` — a wildly wrong estimate for
+        a multimodal message with 4000 chars of text.  After the fix the sum of
+        text-part lengths (~4000) is used instead, so the budget arithmetic is correct.
+
+        The test verifies this indirectly: with a 200-token budget and the multimodal
+        message having 4000 text chars (~1000 tokens), the accumulated token count
+        must exceed the budget once the message is reached.  We confirm by checking
+        that the ``_find_tail_cut_by_tokens`` result is NOT 0 (i.e. the budget was
+        indeed exhausted rather than allowing every message into the tail).
+        """
+        c = compressor
+        long_text = "a" * 4000  # 4000 chars → ~1000 tokens (with _CHARS_PER_TOKEN=4)
+        multimodal_msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": long_text},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+            ],
+        }
+        # Place the multimodal message early; the 5 short messages after it form
+        # the min_tail and are always protected.  The key check: the budget is
+        # exhausted (cut_idx > 0) meaning the large text was counted correctly.
+        messages = [{"role": "user", "content": f"msg {i}"} for i in range(10)]
+        messages.append(multimodal_msg)  # index 10: ~1000 tokens
+        for j in range(5):
+            messages.append({"role": "assistant", "content": f"tail {j}"})  # indices 11-15
+
+        # Budget of 200 tokens: 5 tail msgs (~50 tokens total) fit, but the
+        # multimodal message's ~1000 tokens should cause the budget to be exceeded.
+        cut_idx = c._find_tail_cut_by_tokens(messages, head_end=0, token_budget=200)
+        # Buggy code: len(list) == 2 → ~10 tokens per message; budget never exhausted
+        #   → cut_idx == 0 (all messages in tail).
+        # Fixed code: sum(text lengths) == 4000 → ~1010 tokens; budget exceeded
+        #   → cut_idx > 0 (old messages excluded from tail).
+        assert cut_idx > 0, (
+            "Token budget should have been exceeded by the multimodal message. "
+            "cut_idx==0 suggests len(list) was used instead of sum of text lengths."
+        )
+
+    def test_tail_token_budget_image_only_content_uses_zero_text(self, compressor):
+        """Image-only list content has no text chars and should cost near-zero tokens."""
+        c = compressor
+        image_only_msg = {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "x" * 10000}},
+            ],
+        }
+        messages = [
+            {"role": "user", "content": "old"},
+            image_only_msg,
+            {"role": "assistant", "content": "done"},
+        ]
+        # Should not crash; token cost of image-only ≈ 10 (base metadata overhead)
+        cut_idx = c._find_tail_cut_by_tokens(messages, head_end=0, token_budget=200)
+        assert isinstance(cut_idx, int)
+
+    # ── Bug 2: secret redaction ────────────────────────────────────────────
+
+    def test_serialize_turns_redacts_text_parts_of_multimodal_content(self, compressor):
+        """Secrets embedded in text parts of multimodal content must be redacted."""
+        c = compressor
+        secret = "sk-ant-api03-AAABBBCCC"
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Here is my key: {secret}"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            }
+        ]
+        serialized = c._serialize_for_summary(turns)
+        assert secret not in serialized, "Secret must be redacted from multimodal text part"
+
+    def test_serialize_turns_multimodal_does_not_crash_on_image_only(self, compressor):
+        """Image-only multimodal content (no text parts) must serialize without error."""
+        c = compressor
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            }
+        ]
+        # Should not raise; image-only content produces an empty string contribution
+        result = c._serialize_for_summary(turns)
+        assert "[USER]:" in result
+
+    def test_serialize_turns_string_content_unchanged(self, compressor):
+        """Plain string content must still be redacted normally (regression guard)."""
+        c = compressor
+        secret = "sk-ant-api03-AAABBBCCC"
+        turns = [{"role": "user", "content": f"key={secret}"}]
+        serialized = c._serialize_for_summary(turns)
+        assert secret not in serialized

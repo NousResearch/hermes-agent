@@ -118,13 +118,23 @@ _SENSITIVE_PATH_PREFIXES = (
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
+def _normalize_sensitive_path(path: str) -> str:
+    """Normalize a path for host-OS-agnostic sensitive-path comparisons."""
+    normalized = os.path.normpath(os.path.expanduser(path))
+    normalized = normalized.replace("\\", "/")
+    if normalized != "/":
+        normalized = normalized.rstrip("/")
+    return normalized
+
+
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
         resolved = str(_resolve_path(filepath))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    resolved = _normalize_sensitive_path(resolved)
+    normalized = _normalize_sensitive_path(filepath)
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."

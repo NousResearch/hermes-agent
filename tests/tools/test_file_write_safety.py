@@ -107,5 +107,37 @@ class TestCheckSensitivePathMacOSBypass:
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
+class TestCheckSensitivePathWindowsHostSemantics:
+    """Sensitive POSIX targets should stay blocked even on Windows hosts."""
+
+    @staticmethod
+    def _windowsize(path: str) -> str:
+        return path.replace("/", "\\")
+
+    def test_exact_sensitive_path_blocked_with_windows_normalization(self, monkeypatch):
+        from tools import file_tools as mod
+
+        monkeypatch.setattr(mod.os.path, "realpath", self._windowsize)
+        monkeypatch.setattr(mod.os.path, "normpath", self._windowsize)
+
+        assert mod._check_sensitive_path("/var/run/docker.sock") is not None
+
+    def test_prefix_sensitive_path_blocked_with_windows_normalization(self, monkeypatch):
+        from tools import file_tools as mod
+
+        monkeypatch.setattr(mod.os.path, "realpath", self._windowsize)
+        monkeypatch.setattr(mod.os.path, "normpath", self._windowsize)
+
+        assert mod._check_sensitive_path("/private/etc/hosts") is not None
+
+    def test_safe_path_still_allowed_with_windows_normalization(self, monkeypatch):
+        from tools import file_tools as mod
+
+        monkeypatch.setattr(mod.os.path, "realpath", self._windowsize)
+        monkeypatch.setattr(mod.os.path, "normpath", self._windowsize)
+
+        assert mod._check_sensitive_path("/tmp/safe_file.txt") is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

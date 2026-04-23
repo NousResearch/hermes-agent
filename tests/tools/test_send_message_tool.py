@@ -786,8 +786,11 @@ class TestParseTargetRefE164:
         assert is_explicit is True
 
     def test_whatsapp_e164_is_explicit(self):
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
-        assert chat_id == "+15551234567"
+        """WhatsApp E.164 resolves to @s.whatsapp.net JID when no mapping exists."""
+        with patch("tools.send_message_tool._resolve_whatsapp_phone_to_jid",
+                    return_value="15551234567@s.whatsapp.net"):
+            chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
+        assert chat_id == "15551234567@s.whatsapp.net"
         assert is_explicit is True
 
     def test_signal_bare_digits_still_work(self):
@@ -808,6 +811,107 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("telegram", "+15551234567")[2] is False
         assert _parse_target_ref("discord", "+15551234567")[2] is False
         assert _parse_target_ref("matrix", "+15551234567")[2] is False
+
+
+class TestWhatsAppPhoneToLidResolution:
+    """Tests for WhatsApp phone→LID resolution in _parse_target_ref and helpers."""
+
+    def test_phone_resolves_to_lid_via_mapping_file(self, tmp_path, monkeypatch):
+        """Phone number is resolved to LID@lid when a mapping file exists."""
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "lid-mapping-351912345678.json").write_text(
+            '"77214955630717"', encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+351912345678")
+        assert chat_id == "77214955630717@lid"
+        assert is_explicit is True
+
+    def test_phone_falls_back_to_legacy_jid(self, tmp_path, monkeypatch):
+        """Phone number falls back to @s.whatsapp.net when no mapping exists."""
+        # Ensure session dir exists but has no mapping for this phone
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
+        assert chat_id == "15551234567@s.whatsapp.net"
+        assert is_explicit is True
+
+    def test_lid_jid_is_explicit_target(self):
+        """A @lid JID is recognized as an explicit WhatsApp target."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "77214955630717@lid")
+        assert chat_id == "77214955630717@lid"
+        assert is_explicit is True
+
+    def test_legacy_jid_is_explicit_target(self):
+        """A @s.whatsapp.net JID is recognized as an explicit WhatsApp target."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "351912345678@s.whatsapp.net")
+        assert chat_id == "351912345678@s.whatsapp.net"
+        assert is_explicit is True
+
+    def test_group_jid_is_explicit_target(self):
+        """A @g.us group JID is recognized as an explicit WhatsApp target."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "120363123456789@g.us")
+        assert chat_id == "120363123456789@g.us"
+        assert is_explicit is True
+
+    def test_device_lid_is_explicit_target(self):
+        """A device-qualified LID (with :device suffix) passes through."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "77214955630717:15@lid")
+        assert chat_id == "77214955630717:15@lid"
+        assert is_explicit is True
+
+    def test_signal_e164_still_preserves_plus(self):
+        """Signal E.164 behavior is unchanged (no JID resolution)."""
+        chat_id, _, is_explicit = _parse_target_ref("signal", "+41791234567")
+        assert chat_id == "+41791234567"
+        assert is_explicit is True
+
+    def test_sms_e164_still_preserves_plus(self):
+        """SMS E.164 behavior is unchanged (no JID resolution)."""
+        chat_id, _, is_explicit = _parse_target_ref("sms", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+
+class TestEnsureWhatsAppJid:
+    """Tests for _ensure_whatsapp_jid helper."""
+
+    def test_lid_jid_passes_through(self):
+        from tools.send_message_tool import _ensure_whatsapp_jid
+        assert _ensure_whatsapp_jid("77214955630717@lid") == "77214955630717@lid"
+
+    def test_legacy_jid_passes_through(self):
+        from tools.send_message_tool import _ensure_whatsapp_jid
+        assert _ensure_whatsapp_jid("351912345678@s.whatsapp.net") == "351912345678@s.whatsapp.net"
+
+    def test_group_jid_passes_through(self):
+        from tools.send_message_tool import _ensure_whatsapp_jid
+        assert _ensure_whatsapp_jid("120363123456789@g.us") == "120363123456789@g.us"
+
+    def test_bare_number_gets_resolved(self, tmp_path, monkeypatch):
+        from tools.send_message_tool import _ensure_whatsapp_jid
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "lid-mapping-351912345678.json").write_text(
+            '"77214955630717"', encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert _ensure_whatsapp_jid("351912345678") == "77214955630717@lid"
+
+    def test_bare_number_fallback(self, tmp_path, monkeypatch):
+        from tools.send_message_tool import _ensure_whatsapp_jid
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert _ensure_whatsapp_jid("15551234567") == "15551234567@s.whatsapp.net"
+
+    def test_empty_passes_through(self):
+        from tools.send_message_tool import _ensure_whatsapp_jid
+        assert _ensure_whatsapp_jid("") == ""
 
 
 class TestSendDiscordThreadId:

@@ -355,6 +355,7 @@ AUTHOR_MAP = {
     "wujianxu91@gmail.com": "wujhsu",
     "zhrh120@gmail.com": "niyoh120",
     "vrinek@hey.com": "vrinek",
+    "268198004+xandersbell@users.noreply.github.com": "xandersbell",
 }
 
 

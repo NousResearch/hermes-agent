@@ -7,6 +7,7 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 
 import json
 import logging
+import os
 import re
 import subprocess
 from datetime import datetime
@@ -126,6 +127,44 @@ def _expand_inline_shell(
         return _run_inline_shell(cmd, skill_dir, timeout)
 
     return _INLINE_SHELL_RE.sub(_replace, content)
+
+
+def _get_skill_activation_context() -> tuple[set[str] | None, set[str] | None]:
+    """Return the current tool/toolset availability for conditional skill gating."""
+    try:
+        from gateway.session_context import get_session_env
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        from model_tools import get_tool_definitions, get_toolset_for_tool
+
+        platform = (
+            os.getenv("HERMES_PLATFORM")
+            or get_session_env("HERMES_SESSION_PLATFORM")
+            or "cli"
+        )
+        config = load_config()
+        enabled_toolsets = sorted(_get_platform_tools(config, platform))
+        tool_defs = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            quiet_mode=True,
+        )
+        available_tools = {
+            tool["function"]["name"]
+            for tool in tool_defs
+            if isinstance(tool, dict)
+            and isinstance(tool.get("function"), dict)
+            and tool["function"].get("name")
+        }
+        available_toolsets = {
+            toolset
+            for toolset in (
+                get_toolset_for_tool(tool_name) for tool_name in available_tools
+            )
+            if toolset
+        }
+        return available_tools, available_toolsets
+    except Exception:
+        return None, None
 
 
 def build_plan_path(
@@ -344,11 +383,21 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global _skill_commands
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.prompt_builder import _skill_should_show
+        from agent.skill_utils import (
+            extract_skill_conditions,
+            get_external_skills_dirs,
+        )
+        from tools.skills_tool import (
+            SKILLS_DIR,
+            _get_disabled_skill_names,
+            _parse_frontmatter,
+            skill_matches_platform,
+        )
+
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
-
+        available_tools, available_toolsets = _get_skill_activation_context()
         # Scan local dir first, then external dirs
         dirs_to_scan = []
         if SKILLS_DIR.exists():
@@ -364,6 +413,12 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     frontmatter, body = _parse_frontmatter(content)
                     # Skip skills incompatible with the current OS platform
                     if not skill_matches_platform(frontmatter):
+                        continue
+                    if not _skill_should_show(
+                        extract_skill_conditions(frontmatter),
+                        available_tools,
+                        available_toolsets,
+                    ):
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
                     if name in seen_names:

@@ -101,6 +101,48 @@ class TestScanSkillCommands:
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
 
+    def test_excludes_fallback_skills_when_primary_toolset_available(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._get_skill_activation_context",
+                return_value=(set(), {"web"}),
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "duckduckgo",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    fallback_for_toolsets: [web]\n"
+                ),
+            )
+            _make_skill(tmp_path, "always-on")
+            result = scan_skill_commands()
+        assert "/always-on" in result
+        assert "/duckduckgo" not in result
+
+    def test_excludes_requires_skills_when_required_toolset_missing(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._get_skill_activation_context",
+                return_value=(set(), set()),
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "openhue",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    requires_toolsets: [terminal]\n"
+                ),
+            )
+            result = scan_skill_commands()
+        assert "/openhue" not in result
+
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):
         """Skill names with +, /, or other special chars produce clean cmd keys."""

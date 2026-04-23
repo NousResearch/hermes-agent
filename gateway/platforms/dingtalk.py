@@ -30,11 +30,13 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 try:
     import dingtalk_stream
@@ -56,6 +58,19 @@ except ImportError:
         },
     )  # type: ignore[assignment]
 
+# Capture pristine ``websockets.connect`` at our import time so dingtalk-stream
+# always uses the original even if another module (e.g. the Feishu adapter)
+# later monkey-patches the global ``websockets.connect`` with an ``async def``
+# wrapper — that turns the return value into a coroutine and breaks the SDK's
+# ``async with websockets.connect(uri)`` at dingtalk_stream/stream.py:74.
+try:
+    import websockets as _pristine_ws_module
+
+    _PRISTINE_WEBSOCKETS_CONNECT = _pristine_ws_module.connect
+except ImportError:
+    _pristine_ws_module = None  # type: ignore[assignment]
+    _PRISTINE_WEBSOCKETS_CONNECT = None  # type: ignore[assignment]
+
 try:
     import httpx
 
@@ -63,6 +78,37 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
+
+
+_WS_PROXY_INSTALLED = False
+
+
+def _install_dingtalk_websockets_proxy() -> None:
+    """Point dingtalk_stream.stream.websockets at a namespace holding the
+    pristine ``connect`` captured at our import time.
+
+    Idempotent. Safe no-op when dingtalk-stream or websockets is unavailable.
+    """
+    global _WS_PROXY_INSTALLED
+    if _WS_PROXY_INSTALLED:
+        return
+    if _PRISTINE_WEBSOCKETS_CONNECT is None or dingtalk_stream is None:
+        return
+    try:
+        import types
+
+        from dingtalk_stream import stream as _dts_stream
+
+        _dts_stream.websockets = types.SimpleNamespace(
+            connect=_PRISTINE_WEBSOCKETS_CONNECT,
+            exceptions=_pristine_ws_module.exceptions,
+        )
+        _WS_PROXY_INSTALLED = True
+    except Exception:  # pragma: no cover - defensive
+        logger.debug(
+            "[DingTalk] failed to install websockets proxy on dingtalk_stream.stream",
+            exc_info=True,
+        )
 
 # Card SDK for AI Cards (following QwenPaw pattern)
 try:
@@ -102,6 +148,81 @@ MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
+
+# AI Card streaming_update QPS guard.  The DingTalk gateway returns HTTP 403
+# "concurrent update" when multiple edit_message calls hit the same card
+# within ~500ms.  Reference (openclaw-connector reply-dispatcher.ts:103) uses
+# 800ms as the per-card minimum interval between non-finalize edits.  We
+# match that to avoid the same 403 storm.  Finalize edits are NEVER
+# throttled — dropping them would leave the card stuck in streaming state.
+_CARD_EDIT_THROTTLE_MS = 800
+# Error-send cooldown so repeated failures don't spam users
+# (reply-dispatcher.ts:108 uses 60s — same pattern, same reason).
+_ERROR_COOLDOWN_MS = 60_000
+
+# Global token-bucket rate for AI Card streaming_update across ALL chats.
+# DingTalk's official cap is ~40 QPS per tenant; reference connector
+# (messaging/card.ts:18) uses 20 as a safety margin.  Matching that, so
+# concurrent sessions never bust the tenant-wide ceiling.
+_CARD_API_MAX_QPS = 20
+_CARD_API_QPS_BACKOFF_MS = 2_000
+
+# Inbound-message queue TTL.  queueKey entries that haven't received a new
+# message for this long are eligible for sweep (reference
+# core/message-handler.ts:92 uses 5 min).
+_INBOUND_QUEUE_TTL_SEC = 300
+# Busy-ACK phrases when inbound queue already has a pending task.  Picked
+# randomly so repeats don't feel scripted (reference utils/constants.ts
+# QUEUE_BUSY_ACK_PHRASES).
+_QUEUE_BUSY_ACK_PHRASES = (
+    "收到，让我先把前一条处理完 🙏",
+    "稍等，排队中……",
+    "收到～手头这条完事就来",
+    "别急，按顺序处理中",
+)
+
+
+class _CardTokenBucket:
+    """Global async token bucket for DingTalk card streaming_update.
+
+    Mirrors messaging/card.ts:23-95.  All streamAICard/edit_message calls
+    across every chat + account share one bucket so concurrent sessions
+    don't blow past the tenant-wide QPS limit and trigger 403 storms.
+    Refills at ``rate`` tokens/second with capacity = rate.  On an
+    upstream 403 limit, callers call ``trigger_backoff`` and subsequent
+    acquirers wait out the backoff window.
+    """
+
+    def __init__(self, rate: float) -> None:
+        self._rate = float(rate)
+        self._tokens = float(rate)
+        self._last_refill = time.monotonic()
+        self._backoff_until = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = time.monotonic()
+            if now < self._backoff_until:
+                await asyncio.sleep(self._backoff_until - now)
+                now = time.monotonic()
+            elapsed = now - self._last_refill
+            self._tokens = min(self._rate, self._tokens + elapsed * self._rate)
+            self._last_refill = now
+            if self._tokens < 1.0:
+                wait_s = (1.0 - self._tokens) / self._rate
+                await asyncio.sleep(wait_s)
+                self._tokens = 0.0
+                self._last_refill = time.monotonic()
+            else:
+                self._tokens -= 1.0
+
+    def trigger_backoff(self) -> None:
+        self._backoff_until = time.monotonic() + _CARD_API_QPS_BACKOFF_MS / 1000.0
+
+
+# Process-wide card-API rate limiter (shared across adapters).
+_CARD_BUCKET = _CardTokenBucket(_CARD_API_MAX_QPS)
 
 # DingTalk message type → runtime content type
 DINGTALK_TYPE_MAPPING = {
@@ -202,9 +323,18 @@ class DingTalkAdapter(BasePlatformAdapter):
         # auto-close them as siblings — otherwise tool-progress cards get
         # stuck in streaming state forever.
         self._streaming_cards: Dict[str, Dict[str, str]] = {}
+        # Per-card last-edit timestamp (ms)
+        self._card_last_edit_ms: Dict[str, int] = {}
+        # Per-chat error-send cooldown
+        self._error_last_sent_ms: Dict[str, int] = {}
         # Track fire-and-forget emoji/reaction coroutines so Python's GC
         # doesn't drop them mid-flight, and we can cancel them on disconnect.
         self._bg_tasks: Set[asyncio.Task] = set()
+
+        # Per-session inbound message queue
+        self._session_queues: Dict[str, asyncio.Task] = {}
+        self._session_last_activity: Dict[str, float] = {}
+        self._session_queue_sweeper: Optional[asyncio.Task] = None
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -229,6 +359,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         try:
             self._http_client = httpx.AsyncClient(timeout=30.0)
+
+            _install_dingtalk_websockets_proxy()
 
             credential = dingtalk_stream.Credential(
                 self._client_id, self._client_secret
@@ -263,6 +395,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
 
             self._stream_task = asyncio.create_task(self._run_stream())
+            self._session_queue_sweeper = asyncio.create_task(
+                self._sweep_session_queues()
+            )
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
             return True
@@ -323,6 +458,26 @@ class DingTalkAdapter(BasePlatformAdapter):
                 logger.debug("[%s] stream task did not exit cleanly during disconnect", self.name)
             self._stream_task = None
 
+        # Stop the session-queue sweeper.
+        if self._session_queue_sweeper:
+            self._session_queue_sweeper.cancel()
+            try:
+                await self._session_queue_sweeper
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._session_queue_sweeper = None
+
+        # Cancel any still-pending inbound-queue tasks.
+        if self._session_queues:
+            for task in list(self._session_queues.values()):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *self._session_queues.values(), return_exceptions=True,
+            )
+            self._session_queues.clear()
+        self._session_last_activity.clear()
+
         # Cancel any in-flight background tasks (emoji reactions, etc.)
         if self._bg_tasks:
             for task in list(self._bg_tasks):
@@ -338,6 +493,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._session_webhooks.clear()
         self._message_contexts.clear()
         self._streaming_cards.clear()
+        self._card_last_edit_ms.clear()
+        self._error_last_sent_ms.clear()
         self._done_emoji_fired.clear()
         self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
@@ -459,6 +616,78 @@ class DingTalkAdapter(BasePlatformAdapter):
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
+
+    # -- Inbound serialization queue ---------------------------------------
+
+    def _inbound_queue_key(self, chatbot_msg: "ChatbotMessage") -> str:
+        conv_id = getattr(chatbot_msg, "conversation_id", "") or ""
+        sender_id = getattr(chatbot_msg, "sender_id", "") or ""
+        return conv_id or sender_id
+
+    async def _send_busy_ack(self, chatbot_msg: "ChatbotMessage") -> None:
+        if not self._http_client:
+            return
+        webhook = getattr(chatbot_msg, "session_webhook", "") or ""
+        if not webhook or not _DINGTALK_WEBHOOK_RE.match(webhook):
+            return
+        phrase = random.choice(_QUEUE_BUSY_ACK_PHRASES)
+        try:
+            await self._http_client.post(
+                webhook,
+                json={"msgtype": "text", "text": {"content": phrase}},
+                timeout=5.0,
+            )
+        except Exception as e:
+            logger.debug("[%s] busy ACK send failed: %s", self.name, e)
+
+    async def _enqueue_inbound(self, chatbot_msg: "ChatbotMessage") -> None:
+        queue_key = self._inbound_queue_key(chatbot_msg)
+        if not queue_key:
+            await self._on_message(chatbot_msg)
+            return
+
+        self._session_last_activity[queue_key] = time.monotonic()
+        prev_task = self._session_queues.get(queue_key)
+        is_busy = prev_task is not None and not prev_task.done()
+
+        if is_busy:
+            self._spawn_bg(self._send_busy_ack(chatbot_msg))
+
+        async def _chained() -> None:
+            if prev_task is not None:
+                try:
+                    await prev_task
+                except Exception:
+                    pass
+            await self._on_message(chatbot_msg)
+
+        task = asyncio.create_task(_chained())
+        self._session_queues[queue_key] = task
+
+        def _cleanup(t: asyncio.Task) -> None:
+            if self._session_queues.get(queue_key) is t:
+                self._session_queues.pop(queue_key, None)
+
+        task.add_done_callback(_cleanup)
+
+    async def _sweep_session_queues(self) -> None:
+        try:
+            while self._running:
+                await asyncio.sleep(60)
+                now = time.monotonic()
+                stale = [
+                    k for k, ts in self._session_last_activity.items()
+                    if now - ts > _INBOUND_QUEUE_TTL_SEC
+                ]
+                for k in stale:
+                    self._session_last_activity.pop(k, None)
+                    task = self._session_queues.get(k)
+                    if task is not None and task.done():
+                        self._session_queues.pop(k, None)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("[%s] session-queue sweep error: %s", self.name, e)
 
     # -- AI Card lifecycle helpers ------------------------------------------
 
@@ -1020,6 +1249,19 @@ class DingTalkAdapter(BasePlatformAdapter):
         """
         if not message_id:
             return SendResult(success=False, error="message_id required")
+
+        # Throttle non-finalize edits per out_track_id.
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        if not finalize:
+            last_ms = self._card_last_edit_ms.get(message_id, 0)
+            if now_ms - last_ms < _CARD_EDIT_THROTTLE_MS:
+                logger.debug(
+                    "[%s] edit_message throttled (%dms since last) for %s",
+                    self.name, now_ms - last_ms, message_id,
+                )
+                return SendResult(success=True, message_id=message_id)
+        self._card_last_edit_ms[message_id] = now_ms
+
         token = await self._get_access_token()
         if not token:
             return SendResult(success=False, error="No access token")
@@ -1035,6 +1277,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 self._streaming_cards.get(chat_id, {}).pop(message_id, None)
                 if not self._streaming_cards.get(chat_id):
                     self._streaming_cards.pop(chat_id, None)
+                self._card_last_edit_ms.pop(message_id, None)
                 logger.debug(
                     "[%s] AI Card finalized (edit): %s",
                     self.name, message_id,
@@ -1057,7 +1300,13 @@ class DingTalkAdapter(BasePlatformAdapter):
         content: str,
         finalize: bool = False,
     ) -> None:
-        """Stream content to an existing AI Card."""
+        """Stream content to an existing AI Card.
+
+        Per-card 800ms throttle happens at the ``edit_message`` layer; this
+        function additionally goes through the **global** token bucket so
+        that many parallel chats can't collectively overrun the tenant-wide
+        DingTalk card-API QPS cap (~40/s).
+        """
         stream_request = dingtalk_card_models.StreamingUpdateRequest(
             out_track_id=out_track_id,
             guid=str(uuid.uuid4()),
@@ -1073,9 +1322,20 @@ class DingTalkAdapter(BasePlatformAdapter):
         )
 
         runtime = tea_util_models.RuntimeOptions()
-        await self._card_sdk.streaming_update_with_options_async(
-            stream_request, stream_headers, runtime
-        )
+        await _CARD_BUCKET.acquire()
+        try:
+            await self._card_sdk.streaming_update_with_options_async(
+                stream_request, stream_headers, runtime
+            )
+        except Exception as e:
+            err_msg = str(e)
+            if "QpsLimit" in err_msg or "403" in err_msg or "qps" in err_msg.lower():
+                logger.warning(
+                    "[%s] Card QPS limit hit, backing off %dms: %s",
+                    self.name, _CARD_API_QPS_BACKOFF_MS, err_msg[:160],
+                )
+                _CARD_BUCKET.trigger_backoff()
+            raise
 
     async def _get_access_token(self) -> Optional[str]:
         """Get access token using SDK's cached token."""
@@ -1353,9 +1613,13 @@ class _IncomingHandler(
         return AckMessage.STATUS_OK, "OK"
 
     async def _safe_on_message(self, chatbot_msg: "ChatbotMessage") -> None:
-        """Wrapper that catches exceptions from _on_message."""
+        """Wrapper that catches exceptions from _on_message.
+
+        Dispatches through ``_enqueue_inbound`` so same-chat messages are
+        serialized (with a busy-ACK on the tail).
+        """
         try:
-            await self._adapter._on_message(chatbot_msg)
+            await self._adapter._enqueue_inbound(chatbot_msg)
         except Exception:
             logger.exception(
                 "[%s] Error processing incoming message", self._adapter.name

@@ -58,3 +58,46 @@ async def test_retry_no_previous_message(gateway):
     )
     result = await gateway._handle_retry_command(event)
     assert result == "No previous message to retry."
+
+
+@pytest.mark.asyncio
+async def test_retry_preserves_current_message_routing_context(gateway):
+    """Synthetic /retry events must keep reply/thread routing from the command message."""
+    source = MagicMock()
+    source.thread_id = "topic-42"
+    gateway.session_store.get_or_create_session.return_value = MagicMock(
+        session_id="test-session"
+    )
+    gateway.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "Hello again"},
+        {"role": "assistant", "content": "Old answer"},
+    ]
+    gateway.session_store.rewrite_transcript = MagicMock()
+
+    captured = {}
+
+    async def fake_handle_message(event):
+        captured["message_id"] = event.message_id
+        captured["platform_update_id"] = event.platform_update_id
+        captured["thread_id"] = event.source.thread_id
+        return "retried"
+
+    gateway._handle_message = AsyncMock(side_effect=fake_handle_message)
+
+    event = MessageEvent(
+        text="/retry",
+        message_type=MessageType.TEXT,
+        source=source,
+        raw_message=MagicMock(),
+        message_id="msg-123",
+        platform_update_id=987,
+    )
+
+    result = await gateway._handle_retry_command(event)
+
+    assert result == "retried"
+    assert captured == {
+        "message_id": "msg-123",
+        "platform_update_id": 987,
+        "thread_id": "topic-42",
+    }

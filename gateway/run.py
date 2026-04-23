@@ -5941,6 +5941,8 @@ class GatewayRunner:
             message_type=MessageType.TEXT,
             source=source,
             raw_message=event.raw_message,
+            message_id=event.message_id,
+            platform_update_id=event.platform_update_id,
             channel_prompt=event.channel_prompt,
         )
         

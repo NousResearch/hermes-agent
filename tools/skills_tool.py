@@ -554,7 +554,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs
+    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
     skills = []
     seen_names: set = set()
@@ -569,7 +569,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
-        for skill_md in scan_dir.rglob("SKILL.md"):
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
@@ -618,6 +618,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
 
     return skills
+
+
+def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep every skill listing path ordered the same way."""
+    return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
 def _load_category_description(category_dir: Path) -> Optional[str]:
@@ -709,7 +714,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
         # Sort by category then name
-        all_skills.sort(key=lambda s: (s.get("category") or "", s["name"]))
+        all_skills = _sort_skills(all_skills)
 
         # Extract unique categories
         categories = sorted(
@@ -926,7 +931,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         # Search by directory name across all dirs
         if not skill_md:
             for search_dir in all_dirs:
-                for found_skill_md in search_dir.rglob("SKILL.md"):
+                from agent.skill_utils import iter_skill_index_files
+
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                     if found_skill_md.parent.name == name:
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md
@@ -945,7 +952,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     break
 
         if not skill_md or not skill_md.exists():
-            available = [s["name"] for s in _find_all_skills()[:20]]
+            available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
             return json.dumps(
                 {
                     "success": False,

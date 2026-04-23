@@ -64,6 +64,11 @@ honcho = ["honcho-ai>=2.0.1,<3"]
 mcp = ["mcp>=1.2.0,<2"]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
+# Computer use — macOS background desktop control via cua-driver (MCP stdio).
+# The cua-driver binary itself is installed via `hermes tools` post-setup
+# (curl install script); this extra just pins the MCP client used to talk
+# to it, which is already provided by the `mcp` extra.
+computer-use = ["mcp>=1.2.0,<2"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
 mistral = ["mistralai>=2.3.0,<3"]
 bedrock = ["boto3>=1.35.0,<2"]

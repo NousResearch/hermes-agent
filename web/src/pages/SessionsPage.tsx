@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { Link } from "react-router-dom";
 import {
   ChevronDown,
   ChevronLeft,
@@ -329,6 +330,13 @@ function SessionRow({
           <Badge variant="outline" className="text-[10px]">
             {session.source ?? "local"}
           </Badge>
+          <Link
+            to={`/chat?resume=${encodeURIComponent(session.id)}`}
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-mondwest text-[0.6rem] tracking-[0.1em] uppercase transition-colors cursor-pointer h-7 px-2 border border-border bg-transparent hover:bg-foreground/10 hover:text-foreground"
+          >
+            Open in chat
+          </Link>
           <Button
             variant="ghost"
             size="icon"

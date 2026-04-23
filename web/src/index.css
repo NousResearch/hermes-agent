@@ -173,3 +173,16 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* Mobile Safari / in-app browsers can add aggressive tap highlights to code
+   blocks and preformatted regions. Keep code readable and selection-driven
+   instead of flashing a filled overlay on tap. */
+pre,
+code {
+  -webkit-tap-highlight-color: transparent;
+}
+
+pre {
+  user-select: text;
+  -webkit-user-select: text;
+}
+

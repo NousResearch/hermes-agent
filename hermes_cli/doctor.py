@@ -29,6 +29,7 @@ if _env_path.exists():
 load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -957,7 +958,10 @@ def run_doctor(args):
                 if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
                     _base = _base.rstrip("/") + "/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
-                _headers = {"Authorization": f"Bearer {_key}"}
+                _headers = {
+                    "Authorization": f"Bearer {_key}",
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
                 if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "claude-code/0.1.0"
                 _resp = httpx.get(

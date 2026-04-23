@@ -395,6 +395,7 @@ AUTHOR_MAP = {
     "git@yzx9.xyz": "yzx9",
     "nilesh@cloudgeni.us": "lvnilesh",
     "63502660+azhengbot@users.noreply.github.com": "azhengbot",
+    "sharvil.saxena@gmail.com": "sharziki",
 }
 
 

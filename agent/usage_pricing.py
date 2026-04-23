@@ -76,7 +76,8 @@ class CostResult:
     notes: tuple[str, ...] = ()
 
 
-_UTC_NOW = lambda: datetime.now(timezone.utc)
+def _UTC_NOW():
+    return datetime.now(timezone.utc)
 
 
 # Official docs snapshot entries. Models whose published pricing and cache

@@ -1414,6 +1414,56 @@ def test_named_custom_runtime_no_model_when_absent(monkeypatch):
     assert "model" not in resolved
 
 
+def test_plain_custom_runtime_propagates_config_model(monkeypatch):
+    """Plain provider=custom should carry model.default to gateway callers."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "default": "qwen3-coder:latest",
+            "base_url": "http://192.168.1.13:11434/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp._resolve_openrouter_runtime(requested_provider="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://192.168.1.13:11434/v1"
+    assert resolved["api_key"] == "no-key-required"
+    assert resolved["model"] == "qwen3-coder:latest"
+
+
+def test_plain_custom_runtime_propagates_config_model_pool_path(monkeypatch):
+    """Credential-pool custom runtimes still need the configured model name."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "default": "qwen3-coder:latest",
+            "base_url": "http://192.168.1.13:11434/v1",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://192.168.1.13:11434/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:ollama-lan",
+        },
+    )
+
+    resolved = rp._resolve_openrouter_runtime(requested_provider="custom")
+
+    assert resolved["api_key"] == "pool-key"
+    assert resolved["model"] == "qwen3-coder:latest"
+
+
 # ---------------------------------------------------------------------------
 # GHSA-76xc-57q6-vm5m — Ollama URL substring leak
 #

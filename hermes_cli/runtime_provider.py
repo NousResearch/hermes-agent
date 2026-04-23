@@ -523,6 +523,9 @@ def _resolve_openrouter_runtime(
     # Also provide a placeholder API key for local servers that don't require
     # authentication — the OpenAI SDK requires a non-empty api_key string.
     effective_provider = "custom" if requested_norm == "custom" else "openrouter"
+    configured_model = str(
+        model_cfg.get("default") or model_cfg.get("model") or ""
+    ).strip()
 
     # For custom endpoints, check if a credential pool exists
     if effective_provider == "custom" and base_url:
@@ -530,12 +533,14 @@ def _resolve_openrouter_runtime(
             base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
         )
         if pool_result:
+            if configured_model:
+                pool_result["model"] = configured_model
             return pool_result
 
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
-    return {
+    runtime = {
         "provider": effective_provider,
         "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
@@ -544,6 +549,9 @@ def _resolve_openrouter_runtime(
         "api_key": api_key,
         "source": source,
     }
+    if effective_provider == "custom" and configured_model:
+        runtime["model"] = configured_model
+    return runtime
 
 
 def _resolve_explicit_runtime(

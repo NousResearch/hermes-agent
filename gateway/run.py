@@ -367,6 +367,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "model": runtime.get("model"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
@@ -1102,6 +1103,12 @@ class GatewayRunner:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
+
+        runtime_model = str(runtime_kwargs.get("model") or "").strip()
+        if not model and runtime_model:
+            model = runtime_model
+        runtime_kwargs = dict(runtime_kwargs)
+        runtime_kwargs.pop("model", None)
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),

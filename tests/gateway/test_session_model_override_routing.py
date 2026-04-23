@@ -81,6 +81,52 @@ def _explode_runtime_resolution():
     )
 
 
+def test_runtime_agent_kwargs_preserves_runtime_model(monkeypatch):
+    """The gateway runtime bridge should keep model names from runtime resolution."""
+    from hermes_cli import runtime_provider
+
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "custom",
+            "api_key": "no-key-required",
+            "base_url": "http://192.168.1.13:11434/v1",
+            "api_mode": "chat_completions",
+            "model": "qwen3-coder:latest",
+        },
+    )
+
+    runtime = gateway_run._resolve_runtime_agent_kwargs()
+
+    assert runtime["model"] == "qwen3-coder:latest"
+
+
+def test_session_runtime_inherits_custom_model_from_runtime(monkeypatch):
+    """Gateway-created agents should not drop custom runtime model names."""
+    runner = _make_runner()
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "custom",
+            "api_key": "no-key-required",
+            "base_url": "http://192.168.1.13:11434/v1",
+            "api_mode": "chat_completions",
+            "model": "qwen3-coder:latest",
+        },
+    )
+
+    model, runtime = runner._resolve_session_agent_runtime(
+        session_key="agent:main:telegram:dm"
+    )
+
+    assert model == "qwen3-coder:latest"
+    assert runtime["provider"] == "custom"
+    assert "model" not in runtime
+
+
 def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)

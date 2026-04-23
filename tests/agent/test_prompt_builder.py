@@ -823,6 +823,7 @@ class TestPromptBuilderConstants:
         hint = PLATFORM_HINTS["feishu"]
         assert "Feishu" in hint
         assert "MEDIA:" in hint
+        assert "Markdown" in hint
 
 
 # =========================================================================

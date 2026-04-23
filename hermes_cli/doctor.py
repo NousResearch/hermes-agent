@@ -185,8 +185,8 @@ def check_warn(text: str, detail: str = ""):
 def check_fail(text: str, detail: str = ""):
     print(f"  {color('✗', Colors.RED)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
-def check_info(text: str):
-    print(f"    {color('→', Colors.CYAN)} {text}")
+def check_info(text: str, detail: str = ""):
+    print(f"    {color('→', Colors.CYAN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
 
 def _section(title: str) -> None:
@@ -508,6 +508,240 @@ def managed_scope_check() -> None:
     )
     if os.environ.get("HERMES_MANAGED_DIR", "").strip():
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
+
+
+_PLATFORM_ALERT_STATES = frozenset({"retrying", "fatal", "disconnected"})
+
+
+def _count_active_cron_jobs() -> int:
+    """Return enabled jobs that depend on the gateway's built-in ticker."""
+    try:
+        # External scheduler providers fire through webhooks rather than the
+        # gateway ticker, so gateway liveness says nothing about those jobs.
+        from hermes_cli.cron import _active_cron_provider_name
+
+        if _active_cron_provider_name() != "builtin":
+            return 0
+
+        from cron.jobs import list_jobs
+
+        return len(list_jobs(include_disabled=False))
+    except Exception:
+        return 0
+
+
+def _append_runtime_issue(
+    issues: list[str],
+    warning: str,
+    issue: str,
+    detail: str = "",
+) -> None:
+    check_warn(warning, detail)
+    issues.append(issue)
+
+
+def _platform_state_detail(platform_state: dict) -> str:
+    message = platform_state.get("error_message") or platform_state.get("error_code")
+    return f"({message})" if message else ""
+
+
+def _check_systemd_runtime_state(health, issues: list[str]) -> None:
+    # Lazy import avoids loading gateway restart machinery unless systemd state is rendered.
+    from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+    props = health.systemd_unit or {}
+    active_state = props.get("ActiveState")
+    sub_state = props.get("SubState")
+    result = props.get("Result")
+    exec_status = props.get("ExecMainStatus")
+
+    if active_state == "activating" and sub_state == "auto-restart":
+        _append_runtime_issue(
+            issues,
+            "Gateway service is auto-restarting",
+            "Gateway service is auto-restarting — inspect logs with 'hermes gateway status --deep'",
+        )
+    elif active_state == "failed" and exec_status == str(GATEWAY_SERVICE_RESTART_EXIT_CODE):
+        _append_runtime_issue(
+            issues,
+            "Gateway service failed during planned restart",
+            "Gateway service is stuck after a planned restart — run 'hermes gateway status --deep'",
+            f"(ExecMainStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE})",
+        )
+    elif active_state == "failed":
+        detail = f"(Result={result})" if result else ""
+        _append_runtime_issue(
+            issues,
+            "Gateway service failed",
+            "Gateway service failed — inspect logs with 'hermes gateway status --deep'",
+            detail,
+        )
+
+
+def _runtime_updated_detail(updated_at: str | None) -> str:
+    return f"(updated {updated_at})" if updated_at else ""
+
+
+def _paren_list(parts: list[str]) -> str:
+    return f"({'; '.join(parts)})" if parts else ""
+
+
+def _check_runtime_health(issues: list[str]) -> None:
+    """Check live gateway and delivery-surface runtime health."""
+    print()
+    print(color("◆ Runtime Health", Colors.CYAN, Colors.BOLD))
+
+    try:
+        # Lazy import keeps doctor usable if gateway helpers fail to import.
+        from hermes_cli.gateway import _format_gateway_pids, get_gateway_runtime_health
+
+        health = get_gateway_runtime_health()
+    except Exception as e:
+        check_warn("Runtime health unavailable", f"({e})")
+        return
+
+    snapshot = health.snapshot
+    configured_platforms = health.configured_platforms
+    active_cron_jobs = _count_active_cron_jobs()
+    gateway_needed = bool(configured_platforms or active_cron_jobs)
+
+    if not gateway_needed and not snapshot.running and not snapshot.service_installed:
+        check_info("No long-lived gateway-managed runtime configured")
+        return
+
+    if snapshot.running:
+        detail_parts = []
+        if snapshot.gateway_pids:
+            detail_parts.append(f"PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
+        if snapshot.manager:
+            detail_parts.append(snapshot.manager)
+        check_ok("Gateway process running", _paren_list(detail_parts))
+    else:
+        if configured_platforms:
+            detail_parts = [f"configured: {', '.join(configured_platforms)}"]
+            issue = "Start the gateway so configured platforms can receive messages"
+            if health.gateway_state == "startup_failed" and health.exit_reason:
+                detail_parts.append(f"last startup issue: {health.exit_reason}")
+                issue = f"{issue}; last startup issue: {health.exit_reason}"
+            _append_runtime_issue(
+                issues,
+                "Gateway is not running",
+                issue,
+                _paren_list(detail_parts),
+            )
+        if active_cron_jobs:
+            _append_runtime_issue(
+                issues,
+                "Gateway is not running — scheduled jobs will not fire automatically",
+                "Start the gateway so scheduled jobs can fire automatically",
+                f"({active_cron_jobs} active job(s))",
+            )
+
+    if (
+        snapshot.service_installed
+        and not snapshot.service_running
+        and not snapshot.has_process_service_mismatch
+    ):
+        if gateway_needed:
+            _append_runtime_issue(
+                issues,
+                "Gateway service installed but stopped",
+                "Start the installed gateway service with 'hermes gateway start'",
+            )
+        else:
+            check_info(
+                "Gateway service installed but stopped",
+                "(no configured delivery surfaces or scheduled jobs)",
+            )
+
+    if snapshot.has_process_service_mismatch:
+        pid_detail = _format_gateway_pids(snapshot.gateway_pids, limit=None)
+        _append_runtime_issue(
+            issues,
+            "Gateway process is running but the installed service is not active",
+            "Gateway process is not service-managed — stop the manual process or start the service",
+            f"(PID(s): {pid_detail})",
+        )
+
+    _check_systemd_runtime_state(health, issues)
+
+    if not snapshot.running:
+        return
+
+    if not configured_platforms and not active_cron_jobs:
+        check_info("No configured delivery surfaces or scheduled jobs to check")
+
+    if active_cron_jobs:
+        check_ok(
+            "Scheduled jobs can fire automatically",
+            f"({active_cron_jobs} active job(s))",
+        )
+
+    if not health.runtime_status_available:
+        detail = f"({_DHH}/gateway_state.json missing or unreadable)"
+        if configured_platforms:
+            _append_runtime_issue(
+                issues,
+                "Gateway runtime status unavailable",
+                "Restore gateway runtime status so configured platform health can be verified",
+                detail,
+            )
+        else:
+            check_warn("Gateway runtime status unavailable", detail)
+    else:
+        gateway_state = health.gateway_state
+        updated_detail = _runtime_updated_detail(health.updated_at)
+        if gateway_state == "running":
+            check_ok("Gateway runtime state running", updated_detail)
+        elif gateway_state == "draining":
+            check_info("Gateway runtime state draining", updated_detail)
+        elif gateway_state == "startup_failed":
+            reason = health.exit_reason or "unknown startup issue"
+            detail_parts = [reason]
+            if health.updated_at:
+                detail_parts.append(f"updated {health.updated_at}")
+            _append_runtime_issue(
+                issues,
+                "Gateway startup failed",
+                f"Gateway startup failed: {reason}",
+                _paren_list(detail_parts),
+            )
+        elif gateway_state:
+            check_info(f"Gateway runtime state {gateway_state}", updated_detail)
+        else:
+            check_warn("Gateway runtime state unknown")
+
+    if configured_platforms and health.runtime_status_available:
+        for platform in configured_platforms:
+            platform_state = health.platforms.get(platform)
+            if not platform_state:
+                _append_runtime_issue(
+                    issues,
+                    f"{platform} runtime health unknown",
+                    f"{platform} is configured but missing from gateway runtime status",
+                )
+                continue
+
+            state = platform_state.get("state")
+            if state == "connected":
+                check_ok(f"{platform} connected")
+            elif state == "connecting":
+                check_info(f"{platform} connecting")
+            elif state in _PLATFORM_ALERT_STATES:
+                _append_runtime_issue(
+                    issues,
+                    f"{platform} {state}",
+                    f"{platform} runtime state is {state}",
+                    _platform_state_detail(platform_state),
+                )
+            elif state:
+                check_info(f"{platform} {state}")
+            else:
+                _append_runtime_issue(
+                    issues,
+                    f"{platform} runtime health unknown",
+                    f"{platform} runtime state is missing",
+                )
 
 
 def run_doctor(args):
@@ -1356,6 +1590,7 @@ def run_doctor(args):
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
+    _check_runtime_health(issues)
 
     if sys.platform != "win32":
         _section("Command Installation")

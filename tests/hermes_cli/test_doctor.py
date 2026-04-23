@@ -14,6 +14,9 @@ import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.gateway import GatewayRuntimeHealth, GatewayRuntimeSnapshot
+
+_DEFAULT_RUNTIME_UPDATED_AT = "2026-04-23T00:00:00+00:00"
 
 
 class TestDoctorPlatformHints:
@@ -275,6 +278,384 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     out = capsys.readouterr().out
     assert out == ""
     assert issues == []
+
+
+def _gateway_health(
+    *,
+    snapshot=None,
+    configured=(),
+    runtime_status_available=True,
+    gateway_state="running",
+    exit_reason=None,
+    platforms=None,
+    systemd_unit=None,
+    updated_at=_DEFAULT_RUNTIME_UPDATED_AT,
+):
+    if not runtime_status_available and updated_at == _DEFAULT_RUNTIME_UPDATED_AT:
+        updated_at = None
+    return GatewayRuntimeHealth(
+        snapshot=snapshot or GatewayRuntimeSnapshot(
+            manager="manual process",
+            gateway_pids=(1234,),
+        ),
+        configured_platforms=tuple(configured),
+        runtime_status_available=runtime_status_available,
+        gateway_state=gateway_state,
+        exit_reason=exit_reason,
+        platforms=platforms or {},
+        updated_at=updated_at,
+        systemd_unit=systemd_unit or {},
+    )
+
+
+def _run_runtime_check(monkeypatch, capsys, health, *, active_cron_jobs=0):
+    monkeypatch.setattr(gateway_cli, "get_gateway_runtime_health", lambda: health)
+    monkeypatch.setattr(doctor, "_count_active_cron_jobs", lambda: active_cron_jobs)
+    issues = []
+    doctor._check_runtime_health(issues)
+    return capsys.readouterr().out, issues
+
+
+def test_count_active_cron_jobs_ignores_external_scheduler(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.cron._active_cron_provider_name",
+        lambda: "chronos",
+    )
+
+    def unexpected_list_jobs(*, include_disabled):
+        pytest.fail("external schedulers must not inspect gateway-ticker jobs")
+
+    monkeypatch.setattr("cron.jobs.list_jobs", unexpected_list_jobs)
+
+    assert doctor._count_active_cron_jobs() == 0
+
+
+def test_count_active_cron_jobs_uses_builtin_scheduler(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.cron._active_cron_provider_name",
+        lambda: "builtin",
+    )
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs",
+        lambda *, include_disabled: [{"id": "job-1"}, {"id": "job-2"}],
+    )
+
+    assert doctor._count_active_cron_jobs() == 2
+
+
+def test_runtime_health_no_gateway_configured_is_info_only(monkeypatch, capsys):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(manager="manual process"),
+        configured=(),
+        runtime_status_available=False,
+        gateway_state=None,
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "No long-lived gateway-managed runtime configured" in out
+    assert issues == []
+
+
+def test_runtime_health_gateway_not_running_adds_one_liveness_issue(monkeypatch, capsys):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(manager="manual process"),
+        configured=("telegram",),
+        gateway_state="stopped",
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway is not running" in out
+    assert len(issues) == 1
+    assert issues[0] == "Start the gateway so configured platforms can receive messages"
+
+
+def test_runtime_health_gateway_not_running_includes_startup_failure(monkeypatch, capsys):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(manager="manual process"),
+        configured=("telegram",),
+        gateway_state="startup_failed",
+        exit_reason="telegram conflict",
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "last startup issue: telegram conflict" in out
+    assert issues == [
+        "Start the gateway so configured platforms can receive messages; last startup issue: telegram conflict"
+    ]
+
+
+def test_runtime_health_missing_status_file_blocks_platform_all_clear(monkeypatch, capsys):
+    health = _gateway_health(
+        configured=("telegram", "discord", "slack"),
+        runtime_status_available=False,
+        gateway_state=None,
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway runtime status unavailable" in out
+    assert "runtime health unknown" not in out
+    assert issues == [
+        "Restore gateway runtime status so configured platform health can be verified"
+    ]
+
+
+def test_runtime_health_startup_failed_adds_issue(monkeypatch, capsys):
+    health = _gateway_health(
+        configured=("telegram",),
+        gateway_state="startup_failed",
+        exit_reason="telegram conflict",
+        platforms={"telegram": {"state": "connected"}},
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway startup failed" in out
+    assert "telegram conflict" in out
+    assert issues == ["Gateway startup failed: telegram conflict"]
+
+
+def test_runtime_health_platform_retrying_adds_issue(monkeypatch, capsys):
+    health = _gateway_health(
+        configured=("telegram",),
+        platforms={
+            "telegram": {
+                "state": "retrying",
+                "error_message": "another poller is active",
+            }
+        },
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "telegram retrying" in out
+    assert "another poller is active" in out
+    assert issues == ["telegram runtime state is retrying"]
+
+
+def test_runtime_health_unknown_non_alert_platform_state_is_info_only(monkeypatch, capsys):
+    health = _gateway_health(
+        configured=("telegram",),
+        platforms={"telegram": {"state": "idle"}},
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "telegram idle" in out
+    assert issues == []
+
+
+def test_runtime_health_missing_configured_platform_entry_adds_issue(monkeypatch, capsys):
+    health = _gateway_health(configured=("telegram",), platforms={})
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "telegram runtime health unknown" in out
+    assert issues == ["telegram is configured but missing from gateway runtime status"]
+
+
+def test_runtime_health_transient_states_are_info_only(monkeypatch, capsys):
+    health = _gateway_health(
+        configured=("telegram",),
+        gateway_state="draining",
+        platforms={"telegram": {"state": "connecting"}},
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway runtime state draining" in out
+    assert "telegram connecting" in out
+    assert issues == []
+
+
+def test_runtime_health_cron_jobs_without_gateway_adds_issue(monkeypatch, capsys):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(manager="manual process"),
+        configured=(),
+        runtime_status_available=False,
+        gateway_state=None,
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health, active_cron_jobs=2)
+
+    assert "scheduled jobs will not fire automatically" in out
+    assert issues == ["Start the gateway so scheduled jobs can fire automatically"]
+
+
+def test_runtime_health_cron_jobs_with_gateway_are_ok(monkeypatch, capsys):
+    health = _gateway_health(configured=(), platforms={})
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health, active_cron_jobs=2)
+
+    assert "Scheduled jobs can fire automatically" in out
+    assert "scheduled jobs will not fire automatically" not in out
+    assert issues == []
+
+
+def test_runtime_health_renders_updated_at_for_running_state(monkeypatch, capsys):
+    health = _gateway_health(
+        configured=("telegram",),
+        platforms={"telegram": {"state": "connected"}},
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "updated 2026-04-23T00:00:00+00:00" in out
+    assert issues == []
+
+
+def test_runtime_health_running_state_without_updated_at_has_no_empty_detail(monkeypatch, capsys):
+    health = _gateway_health(
+        configured=("telegram",),
+        platforms={"telegram": {"state": "connected"}},
+        updated_at=None,
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway runtime state running" in out
+    assert "updated " not in out
+    assert issues == []
+
+
+def test_runtime_health_running_gateway_with_no_surfaces_is_info_only(monkeypatch, capsys):
+    health = _gateway_health(configured=(), platforms={})
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway process running" in out
+    assert "No configured delivery surfaces or scheduled jobs to check" in out
+    assert issues == []
+
+
+def test_runtime_health_unknown_runtime_state_is_warn_only(monkeypatch, capsys):
+    health = _gateway_health(
+        configured=(),
+        runtime_status_available=True,
+        gateway_state=None,
+        platforms={},
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway runtime state unknown" in out
+    assert issues == []
+
+
+def test_runtime_health_stopped_service_without_consumers_is_info_only(monkeypatch, capsys):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(
+            manager="systemd (user)",
+            service_installed=True,
+            service_running=False,
+        ),
+        configured=(),
+        runtime_status_available=False,
+        gateway_state=None,
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway service installed but stopped" in out
+    assert issues == []
+
+
+def test_runtime_health_stopped_service_with_configured_platform_adds_issue(monkeypatch, capsys):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(
+            manager="systemd (user)",
+            service_installed=True,
+            service_running=False,
+        ),
+        configured=("telegram",),
+        gateway_state="stopped",
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway service installed but stopped" in out
+    assert "Start the installed gateway service with 'hermes gateway start'" in issues
+
+
+def test_runtime_health_service_process_mismatch_adds_issue(monkeypatch, capsys):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(
+            manager="systemd (user)",
+            service_installed=True,
+            service_running=False,
+            gateway_pids=(1234,),
+        ),
+        configured=(),
+        platforms={},
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "installed service is not active" in out
+    assert issues == [
+        "Gateway process is not service-managed — stop the manual process or start the service"
+    ]
+
+
+def test_runtime_health_service_process_mismatch_suppresses_stopped_service_issue(monkeypatch, capsys):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(
+            manager="systemd (user)",
+            service_installed=True,
+            service_running=False,
+            gateway_pids=(1234,),
+        ),
+        configured=("telegram",),
+        platforms={"telegram": {"state": "connected"}},
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert "Gateway process is running but the installed service is not active" in out
+    assert "Gateway service installed but stopped" not in out
+    assert issues == [
+        "Gateway process is not service-managed — stop the manual process or start the service"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("systemd_unit", "expected"),
+    [
+        (
+            {"ActiveState": "activating", "SubState": "auto-restart"},
+            "Gateway service is auto-restarting",
+        ),
+        (
+            {"ActiveState": "failed", "Result": "exit-code", "ExecMainStatus": "1"},
+            "Gateway service failed",
+        ),
+    ],
+)
+def test_runtime_health_systemd_failure_states_add_issue(
+    monkeypatch,
+    capsys,
+    systemd_unit,
+    expected,
+):
+    health = _gateway_health(
+        snapshot=GatewayRuntimeSnapshot(
+            manager="systemd (user)",
+            service_installed=True,
+            service_running=False,
+        ),
+        configured=(),
+        gateway_state="stopped",
+        systemd_unit=systemd_unit,
+    )
+
+    out, issues = _run_runtime_check(monkeypatch, capsys, health)
+
+    assert expected in out
+    assert len(issues) == 1
+    assert expected in issues[0]
 
 
 # ── Memory provider section (doctor should only check the *active* provider) ──

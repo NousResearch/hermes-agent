@@ -17,6 +17,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
 # when running under UV's bundled Python which ships a minimal PATH (#3849).
@@ -81,6 +82,18 @@ class GatewayRuntimeSnapshot:
     @property
     def has_process_service_mismatch(self) -> bool:
         return self.service_installed and self.running and not self.service_running
+
+
+@dataclass(frozen=True)
+class GatewayRuntimeHealth:
+    snapshot: GatewayRuntimeSnapshot
+    configured_platforms: tuple[str, ...]
+    runtime_status_available: bool
+    gateway_state: str | None
+    exit_reason: str | None
+    platforms: dict[str, dict[str, Any]]
+    updated_at: str | None
+    systemd_unit: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -1349,6 +1362,65 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
     return GatewayRuntimeSnapshot(
         manager="manual process",
         gateway_pids=gateway_pids,
+    )
+
+
+def get_gateway_runtime_health(system: bool = False) -> GatewayRuntimeHealth:
+    """Return normalized gateway runtime health for diagnostics surfaces."""
+    snapshot = get_gateway_runtime_snapshot(system=system)
+
+    try:
+        from gateway.config import load_gateway_config
+
+        configured_platforms = tuple(
+            platform.value for platform in load_gateway_config().get_connected_platforms()
+        )
+    except Exception:
+        configured_platforms = ()
+
+    try:
+        from gateway.status import read_runtime_status
+
+        runtime_status = read_runtime_status()
+    except Exception:
+        runtime_status = None
+
+    runtime_status_available = isinstance(runtime_status, dict)
+    gateway_state = runtime_status.get("gateway_state") if runtime_status_available else None
+    exit_reason = runtime_status.get("exit_reason") if runtime_status_available else None
+    updated_at = runtime_status.get("updated_at") if runtime_status_available else None
+    raw_platforms = runtime_status.get("platforms", {}) if runtime_status_available else {}
+    if not isinstance(raw_platforms, dict):
+        raw_platforms = {}
+
+    configured_set = set(configured_platforms)
+    platforms: dict[str, dict[str, Any]] = {}
+    for platform, payload in raw_platforms.items():
+        slug = str(platform)
+        if slug not in configured_set or not isinstance(payload, dict):
+            continue
+        platforms[slug] = dict(payload)
+
+    if not snapshot.running:
+        platforms = {}
+        if gateway_state == "running":
+            gateway_state = "stopped"
+
+    systemd_unit = (
+        _read_systemd_unit_properties(system=system)
+        if supports_systemd_services() and snapshot.service_installed
+        else {}
+    )
+
+    return GatewayRuntimeHealth(
+        snapshot=snapshot,
+        configured_platforms=configured_platforms,
+        runtime_status_available=runtime_status_available,
+        gateway_state=gateway_state,
+        exit_reason=exit_reason,
+        platforms=platforms,
+        updated_at=updated_at,
+        systemd_unit=systemd_unit,
     )
 
 

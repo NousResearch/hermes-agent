@@ -11183,8 +11183,18 @@ class AIAgent:
                             self._vprint(f"{self.log_prefix}⚠️  Injecting recovery tool results for invalid JSON...")
                             self._invalid_json_retries = 0  # Reset for next attempt
                             
-                            # Append the assistant message with its (broken) tool_calls
+                            # Append the assistant message, sanitizing broken tool_call arguments
+                            # so they don't poison the message history with invalid JSON.
+                            # (strict APIs like Copilot validate all historical tool_calls)
                             recovery_assistant = self._build_assistant_message(assistant_message, finish_reason)
+                            for tc_dict in recovery_assistant.get("tool_calls") or []:
+                                raw = tc_dict.get("function", {}).get("arguments", "")
+                                try:
+                                    json.loads(raw)
+                                except (json.JSONDecodeError, TypeError):
+                                    tc_dict["function"]["arguments"] = _repair_tool_call_arguments(
+                                        raw, tc_dict.get("function", {}).get("name", "?"),
+                                    )
                             messages.append(recovery_assistant)
                             
                             # Respond with tool error results for each tool call

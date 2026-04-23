@@ -335,13 +335,11 @@ If the Feishu API rejects the post payload (e.g., due to unsupported markdown co
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
-## ACK Emoji Reactions
+## Processing Status Reactions
 
-When the adapter receives an inbound message, it immediately adds an ✅ (OK) emoji reaction to signal that the message was received and is being processed. This provides visual feedback before the agent completes its response.
+While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
 
-The reaction is persistent — it remains on the message after the response is sent, serving as a receipt marker.
-
-User reactions on bot messages are also tracked. If a user adds or removes an emoji reaction on a message sent by the bot, it is routed as a synthetic text event (`reaction:added:EMOJI_TYPE` or `reaction:removed:EMOJI_TYPE`) so the agent can respond to feedback.
+Set `FEISHU_REACTIONS=false` to turn it off.
 
 ## Burst Protection and Batching
 

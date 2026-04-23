@@ -260,6 +260,26 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
 )
 
 
+def is_gateway_known_command(name: str | None) -> bool:
+    """Return True if ``name`` resolves to a gateway-dispatchable slash command.
+
+    This covers both built-in commands (``GATEWAY_KNOWN_COMMANDS`` derived
+    from ``COMMAND_REGISTRY``) and plugin-registered commands, which are
+    looked up lazily so importing this module never forces plugin
+    discovery. Gateway code uses this to decide whether to emit
+    ``command:<name>`` hooks — plugin commands get the same lifecycle
+    events as built-ins.
+    """
+    if not name:
+        return False
+    if name in GATEWAY_KNOWN_COMMANDS:
+        return True
+    for plugin_name, _description, _args_hint in _iter_plugin_command_entries():
+        if plugin_name == name:
+            return True
+    return False
+
+
 # Commands with explicit Level-2 running-agent handlers in gateway/run.py.
 # Listed here for introspection / tests; semantically a subset of
 # "all resolvable commands" — which is the real bypass set (see
@@ -371,12 +391,47 @@ def gateway_help_lines() -> list[str]:
     return lines
 
 
+def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
+    """Yield (name, description, args_hint) tuples for all plugin slash commands.
+
+    Plugin commands are registered via
+    :func:`hermes_cli.plugins.PluginContext.register_command`. They behave
+    like ``CommandDef`` entries for gateway surfacing: they appear in the
+    Telegram command menu, in Slack's ``/hermes`` subcommand mapping, and
+    (via :func:`gateway.platforms.discord._register_slash_commands`) in
+    Discord's native slash command picker.
+
+    Lookup is lazy so importing this module never forces plugin discovery
+    (which can trigger filesystem scans and environment-dependent
+    behavior).
+    """
+    try:
+        from hermes_cli.plugins import get_plugin_commands
+    except Exception:
+        return []
+    try:
+        commands = get_plugin_commands() or {}
+    except Exception:
+        return []
+    entries: list[tuple[str, str, str]] = []
+    for name, meta in commands.items():
+        if not isinstance(name, str) or not isinstance(meta, dict):
+            continue
+        description = str(meta.get("description") or f"Run /{name}")
+        args_hint = str(meta.get("args_hint") or "").strip()
+        entries.append((name, description, args_hint))
+    return entries
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
+
+    Plugin-registered slash commands are included so plugins get native
+    autocomplete in Telegram without touching core code.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
@@ -386,6 +441,10 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
+    for name, description, _args_hint in _iter_plugin_command_entries():
+        tg_name = _sanitize_telegram_name(name)
+        if tg_name:
+            result.append((tg_name, description))
     return result
 
 
@@ -497,9 +556,8 @@ def _collect_gateway_skill_entries(
     # --- Tier 1: Plugin slash commands (never trimmed) ---------------------
     plugin_pairs: list[tuple[str, str]] = []
     try:
-        from hermes_cli.plugins import get_plugin_manager
-        pm = get_plugin_manager()
-        plugin_cmds = getattr(pm, "_plugin_commands", {})
+        from hermes_cli.plugins import get_plugin_commands
+        plugin_cmds = get_plugin_commands()
         for cmd_name in sorted(plugin_cmds):
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
@@ -751,6 +809,9 @@ def slack_subcommand_map() -> dict[str, str]:
 
     Maps both canonical names and aliases so /hermes bg do stuff works
     the same as /hermes background do stuff.
+
+    Plugin-registered slash commands are included so ``/hermes <plugin-cmd>``
+    routes through the plugin handler.
     """
     overrides = _resolve_config_gates()
     mapping: dict[str, str] = {}
@@ -760,6 +821,9 @@ def slack_subcommand_map() -> dict[str, str]:
         mapping[cmd.name] = f"/{cmd.name}"
         for alias in cmd.aliases:
             mapping[alias] = f"/{alias}"
+    for name, _description, _args_hint in _iter_plugin_command_entries():
+        if name not in mapping:
+            mapping[name] = f"/{name}"
     return mapping
 
 
@@ -925,12 +989,22 @@ class SlashCommandCompleter(Completer):
                     display_meta=meta,
                 )
 
-        # If the user typed @file: or @folder:, delegate to path completions
+        # If the user typed @file: / @folder: (or just @file / @folder with
+        # no colon yet), delegate to path completions.  Accepting the bare
+        # form lets the picker surface directories as soon as the user has
+        # typed `@folder`, without requiring them to first accept the static
+        # `@folder:` hint and re-trigger completion.
         for prefix in ("@file:", "@folder:"):
-            if word.startswith(prefix):
-                path_part = word[len(prefix):] or "."
+            bare = prefix[:-1]
+
+            if word == bare or word.startswith(prefix):
+                want_dir = prefix == "@folder:"
+                path_part = '' if word == bare else word[len(prefix):]
                 expanded = os.path.expanduser(path_part)
-                if expanded.endswith("/"):
+
+                if not expanded or expanded == ".":
+                    search_dir, match_prefix = ".", ""
+                elif expanded.endswith("/"):
                     search_dir, match_prefix = expanded, ""
                 else:
                     search_dir = os.path.dirname(expanded) or "."
@@ -946,15 +1020,21 @@ class SlashCommandCompleter(Completer):
                 for entry in sorted(entries):
                     if match_prefix and not entry.lower().startswith(prefix_lower):
                         continue
-                    if count >= limit:
-                        break
                     full_path = os.path.join(search_dir, entry)
                     is_dir = os.path.isdir(full_path)
+                    # `@folder:` must only surface directories; `@file:` only
+                    # regular files.  Without this filter `@folder:` listed
+                    # every .env / .gitignore in the cwd, defeating the
+                    # explicit prefix and confusing users expecting a
+                    # directory picker.
+                    if want_dir != is_dir:
+                        continue
+                    if count >= limit:
+                        break
                     display_path = os.path.relpath(full_path)
                     suffix = "/" if is_dir else ""
-                    kind = "folder" if is_dir else "file"
                     meta = "dir" if is_dir else _file_size_label(full_path)
-                    completion = f"@{kind}:{display_path}{suffix}"
+                    completion = f"{prefix}{display_path}{suffix}"
                     yield Completion(
                         completion,
                         start_position=-len(word),

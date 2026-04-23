@@ -58,6 +58,13 @@ if [ ! -f "$HERMES_HOME/config.yaml" ]; then
     cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
 fi
 
+# Ensure the main config file remains accessible to the hermes runtime user
+# even if it was edited on the host after initial ownership setup.
+if [ -f "$HERMES_HOME/config.yaml" ]; then
+    chown hermes:hermes "$HERMES_HOME/config.yaml"
+    chmod 640 "$HERMES_HOME/config.yaml"
+fi
+
 # SOUL.md
 if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
     cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
@@ -68,4 +75,19 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Final exec: two supported invocation patterns.
+#
+#   docker run <image>                 -> exec `hermes` with no args (legacy default)
+#   docker run <image> chat -q "..."   -> exec `hermes chat -q "..."` (legacy wrap)
+#   docker run <image> sleep infinity  -> exec `sleep infinity` directly
+#   docker run <image> bash            -> exec `bash` directly
+#
+# If the first positional arg resolves to an executable on PATH, we assume the
+# caller wants to run it directly (needed by the launcher which runs long-lived
+# `sleep infinity` sandbox containers — see tools/environments/docker.py).
+# Otherwise we treat the args as a hermes subcommand and wrap with `hermes`,
+# preserving the documented `docker run <image> <subcommand>` behavior.
+if [ $# -gt 0 ] && command -v "$1" >/dev/null 2>&1; then
+    exec "$@"
+fi
 exec hermes "$@"

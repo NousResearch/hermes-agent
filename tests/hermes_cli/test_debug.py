@@ -137,50 +137,105 @@ class TestUploadToPastebin:
 # Log reading
 # ---------------------------------------------------------------------------
 
-class TestReadFullLog:
-    """Test _read_full_log for standalone log uploads."""
+class TestCaptureLogSnapshot:
+    """Test _capture_log_snapshot for log reading and truncation."""
 
     def test_reads_small_file(self, hermes_home):
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
-        content = _read_full_log("agent")
-        assert content is not None
-        assert "session started" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is not None
+        assert "session started" in snap.full_text
+        assert "session started" in snap.tail_text
 
     def test_returns_none_for_missing(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
 
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("agent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is None
+        assert snap.tail_text == "(file not found)"
 
-    def test_returns_none_for_empty(self, hermes_home):
-        # Truncate agent.log to empty
+    def test_empty_primary_reports_file_empty(self, hermes_home):
+        """Empty primary (no .1 fallback) surfaces as '(file empty)', not missing."""
         (hermes_home / "logs" / "agent.log").write_text("")
 
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("agent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is None
+        assert snap.tail_text == "(file empty)"
+
+    def test_race_truncate_after_resolve_reports_empty(self, hermes_home, monkeypatch):
+        """If the log is truncated between resolve and stat, say 'empty', not 'missing'."""
+        log_path = hermes_home / "logs" / "agent.log"
+        from hermes_cli import debug
+
+        monkeypatch.setattr(debug, "_resolve_log_path", lambda _name: log_path)
+        log_path.write_text("")
+
+        snap = debug._capture_log_snapshot("agent", tail_lines=10)
+        assert snap.path == log_path
+        assert snap.full_text is None
+        assert snap.tail_text == "(file empty)"
 
     def test_truncates_large_file(self, hermes_home):
         """Files larger than max_bytes get tail-truncated."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         # Write a file larger than 1KB
         big_content = "x" * 100 + "\n"
         (hermes_home / "logs" / "agent.log").write_text(big_content * 200)
 
-        content = _read_full_log("agent", max_bytes=1024)
-        assert content is not None
-        assert "truncated" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10, max_bytes=1024)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+
+    def test_keeps_first_line_when_truncation_on_boundary(self, hermes_home):
+        """When truncation lands on a line boundary, keep the first full line."""
+        from hermes_cli.debug import _capture_log_snapshot
+
+        # File must exceed the initial chunk_size (8192) used by the
+        # backward-reading loop so the truncation path actually fires.
+        line = "A" * 99 + "\n"  # 100 bytes per line
+        num_lines = 200  # 20000 bytes
+        (hermes_home / "logs" / "agent.log").write_text(line * num_lines)
+
+        # max_bytes = 1000 = 100 * 10 → cut at byte 20000 - 1000 = 19000,
+        # and byte 19000 - 1 is '\n'.  Boundary hit → keep all 10 lines.
+        snap = _capture_log_snapshot("agent", tail_lines=5, max_bytes=1000)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+        raw = snap.full_text.split("\n", 1)[1]
+        kept = [l for l in raw.strip().splitlines() if l.startswith("A")]
+        assert len(kept) == 10
+
+    def test_drops_partial_when_truncation_mid_line(self, hermes_home):
+        """When truncation lands mid-line, drop the partial fragment."""
+        from hermes_cli.debug import _capture_log_snapshot
+
+        line = "A" * 99 + "\n"  # 100 bytes per line
+        num_lines = 200  # 20000 bytes
+        (hermes_home / "logs" / "agent.log").write_text(line * num_lines)
+
+        # max_bytes = 950 doesn't divide evenly into 100 → mid-line cut.
+        snap = _capture_log_snapshot("agent", tail_lines=5, max_bytes=950)
+        assert snap.full_text is not None
+        assert "truncated" in snap.full_text
+        raw = snap.full_text.split("\n", 1)[1]
+        kept = [l for l in raw.strip().splitlines() if l.startswith("A")]
+        # 950 / 100 = 9.5 → 9 complete lines after dropping partial
+        assert len(kept) == 9
 
     def test_unknown_log_returns_none(self, hermes_home):
-        from hermes_cli.debug import _read_full_log
-        assert _read_full_log("nonexistent") is None
+        from hermes_cli.debug import _capture_log_snapshot
+        snap = _capture_log_snapshot("nonexistent", tail_lines=10)
+        assert snap.full_text is None
 
     def test_falls_back_to_rotated_file(self, hermes_home):
         """When gateway.log doesn't exist, falls back to gateway.log.1."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         # Remove the primary (if any) and create a .1 rotation
@@ -189,33 +244,33 @@ class TestReadFullLog:
             "2026-04-12 10:00:00 INFO gateway.run: rotated content\n"
         )
 
-        content = _read_full_log("gateway")
-        assert content is not None
-        assert "rotated content" in content
+        snap = _capture_log_snapshot("gateway", tail_lines=10)
+        assert snap.full_text is not None
+        assert "rotated content" in snap.full_text
 
     def test_prefers_primary_over_rotated(self, hermes_home):
         """Primary log is used when it exists, even if .1 also exists."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         (logs_dir / "gateway.log").write_text("primary content\n")
         (logs_dir / "gateway.log.1").write_text("rotated content\n")
 
-        content = _read_full_log("gateway")
-        assert "primary content" in content
-        assert "rotated" not in content
+        snap = _capture_log_snapshot("gateway", tail_lines=10)
+        assert "primary content" in snap.full_text
+        assert "rotated" not in snap.full_text
 
     def test_falls_back_when_primary_empty(self, hermes_home):
         """Empty primary log falls back to .1 rotation."""
-        from hermes_cli.debug import _read_full_log
+        from hermes_cli.debug import _capture_log_snapshot
 
         logs_dir = hermes_home / "logs"
         (logs_dir / "agent.log").write_text("")
         (logs_dir / "agent.log.1").write_text("rotated agent data\n")
 
-        content = _read_full_log("agent")
-        assert content is not None
-        assert "rotated agent data" in content
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+        assert snap.full_text is not None
+        assert "rotated agent data" in snap.full_text
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +338,44 @@ class TestCollectDebugReport:
 class TestRunDebugShare:
     """Test the run_debug_share CLI handler."""
 
+    def test_share_sweeps_expired_pastes(self, hermes_home, capsys):
+        """Slash-command path should sweep old pending deletes before uploading."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)) as mock_sweep, \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"):
+            run_debug_share(args)
+
+        mock_sweep.assert_called_once()
+        assert "Debug report uploaded" in capsys.readouterr().out
+
+    def test_share_survives_sweep_failure(self, hermes_home, capsys):
+        """Expired-paste cleanup is best-effort and must not block sharing."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch(
+                 "hermes_cli.debug._sweep_expired_pastes",
+                 side_effect=RuntimeError("offline"),
+             ), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"):
+            run_debug_share(args)
+
+        assert "https://paste.rs/test" in capsys.readouterr().out
+
     def test_local_flag_prints_full_logs(self, hermes_home, capsys):
         """--local prints the report plus full log contents."""
         from hermes_cli.debug import run_debug_share
@@ -339,6 +432,55 @@ class TestRunDebugShare:
         gateway_paste = uploaded_content[2]
         assert "--- hermes dump ---" in gateway_paste
         assert "--- full gateway.log ---" in gateway_paste
+
+    def test_share_keeps_report_and_full_log_on_same_snapshot(self, hermes_home, capsys):
+        """A mid-run rotation must not make full agent.log older than the report."""
+        from hermes_cli.debug import run_debug_share, collect_debug_report as real_collect_debug_report
+
+        logs_dir = hermes_home / "logs"
+        (logs_dir / "agent.log").write_text(
+            "2026-04-22 12:00:00 INFO agent: newest line\n"
+        )
+        (logs_dir / "agent.log.1").write_text(
+            "2026-04-10 12:00:00 INFO agent: old rotated line\n"
+        )
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        uploaded_content = []
+
+        def _mock_upload(content, expiry_days=7):
+            uploaded_content.append(content)
+            return f"https://paste.rs/paste{len(uploaded_content)}"
+
+        def _wrapped_collect_debug_report(*, log_lines=200, dump_text="", log_snapshots=None):
+            report = real_collect_debug_report(
+                log_lines=log_lines,
+                dump_text=dump_text,
+                log_snapshots=log_snapshots,
+            )
+            # Simulate the live log rotating after the report is built but
+            # before the old implementation would have re-read agent.log for
+            # standalone upload.
+            (logs_dir / "agent.log").write_text("")
+            (logs_dir / "agent.log.1").write_text(
+                "2026-04-10 12:00:00 INFO agent: old rotated line\n"
+            )
+            return report
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.collect_debug_report", side_effect=_wrapped_collect_debug_report), \
+             patch("hermes_cli.debug.upload_to_pastebin", side_effect=_mock_upload):
+            run_debug_share(args)
+
+        report_paste = uploaded_content[0]
+        agent_paste = uploaded_content[1]
+        assert "2026-04-22 12:00:00 INFO agent: newest line" in report_paste
+        assert "2026-04-22 12:00:00 INFO agent: newest line" in agent_paste
+        assert "old rotated line" not in agent_paste
 
     def test_share_skips_missing_logs(self, tmp_path, monkeypatch, capsys):
         """Only uploads logs that exist."""

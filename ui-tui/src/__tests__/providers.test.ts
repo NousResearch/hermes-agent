@@ -4,9 +4,12 @@ import { providerDisplayNames } from '../domain/providers.js'
 
 describe('providerDisplayNames', () => {
   it('returns bare names when all are unique', () => {
-    expect(providerDisplayNames([{ name: 'Anthropic', slug: 'anthropic' }, { name: 'OpenAI', slug: 'openai' }])).toEqual(
-      ['Anthropic', 'OpenAI']
-    )
+    expect(
+      providerDisplayNames([
+        { name: 'Anthropic', slug: 'anthropic' },
+        { name: 'OpenAI', slug: 'openai' }
+      ])
+    ).toEqual(['Anthropic', 'OpenAI'])
   })
 
   it('appends slug to every collision so the disambiguation is symmetric', () => {

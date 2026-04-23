@@ -183,22 +183,46 @@ export const api = {
     );
   },
 
-  // Dashboard themes
-  getThemes: () =>
-    fetchJSON<ThemeListResponse>("/api/dashboard/themes"),
-  setTheme: (name: string) =>
-    fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    }),
+  // Gateway / update actions
+  restartGateway: () =>
+    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  updateHermes: () =>
+    fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
+  getActionStatus: (name: string, lines = 200) =>
+    fetchJSON<ActionStatusResponse>(
+      `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
+    ),
 
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
+
+  // Dashboard themes
+  getThemes: () =>
+    fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
+  setTheme: (name: string) =>
+    fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
 };
+
+export interface ActionResponse {
+  name: string;
+  ok: boolean;
+  pid: number;
+}
+
+export interface ActionStatusResponse {
+  exit_code: number | null;
+  lines: string[];
+  name: string;
+  pid: number | null;
+  running: boolean;
+}
 
 export interface PlatformStatus {
   error_code?: string;
@@ -290,6 +314,7 @@ export interface AnalyticsDailyEntry {
   estimated_cost: number;
   actual_cost: number;
   sessions: number;
+  api_calls: number;
 }
 
 export interface AnalyticsModelEntry {
@@ -298,6 +323,23 @@ export interface AnalyticsModelEntry {
   output_tokens: number;
   estimated_cost: number;
   sessions: number;
+  api_calls: number;
+}
+
+export interface AnalyticsSkillEntry {
+  skill: string;
+  view_count: number;
+  manage_count: number;
+  total_count: number;
+  percentage: number;
+  last_used_at: number | null;
+}
+
+export interface AnalyticsSkillsSummary {
+  total_skill_loads: number;
+  total_skill_edits: number;
+  total_skill_actions: number;
+  distinct_skills_used: number;
 }
 
 export interface AnalyticsResponse {
@@ -311,6 +353,11 @@ export interface AnalyticsResponse {
     total_estimated_cost: number;
     total_actual_cost: number;
     total_sessions: number;
+    total_api_calls: number;
+  };
+  skills: {
+    summary: AnalyticsSkillsSummary;
+    top_skills: AnalyticsSkillEntry[];
   };
 }
 
@@ -435,9 +482,15 @@ export interface OAuthPollResponse {
 
 // ── Dashboard theme types ──────────────────────────────────────────────
 
-export interface ThemeListResponse {
-  themes: Array<{ name: string; label: string; description: string }>;
+export interface DashboardThemeSummary {
+  description: string;
+  label: string;
+  name: string;
+}
+
+export interface DashboardThemesResponse {
   active: string;
+  themes: DashboardThemeSummary[];
 }
 
 // ── Dashboard plugin types ─────────────────────────────────────────────

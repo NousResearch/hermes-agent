@@ -9,7 +9,9 @@ import type {
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
+import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
+import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -224,9 +226,44 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'paste clipboard image',
+    help: 'attach clipboard image',
     name: 'paste',
     run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+  },
+
+  {
+    help: 'configure IDE terminal keybindings for multiline + undo/redo',
+    name: 'terminal-setup',
+    run: (arg, ctx) => {
+      const target = arg.trim().toLowerCase()
+
+      if (target && !['auto', 'cursor', 'vscode', 'windsurf'].includes(target)) {
+        return ctx.transcript.sys('usage: /terminal-setup [auto|vscode|cursor|windsurf]')
+      }
+
+      const runner =
+        !target || target === 'auto'
+          ? configureDetectedTerminalKeybindings()
+          : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
+
+      void runner
+        .then(result => {
+          if (ctx.stale()) {
+            return
+          }
+
+          ctx.transcript.sys(result.message)
+
+          if (result.success && result.requiresRestart) {
+            ctx.transcript.sys('restart the IDE terminal for the new keybindings to take effect')
+          }
+        })
+        .catch(error => {
+          if (!ctx.stale()) {
+            ctx.transcript.sys(`terminal setup failed: ${String(error)}`)
+          }
+        })
+    }
   },
 
   {
@@ -240,20 +277,58 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'view current transcript (user + assistant messages)',
+    name: 'history',
+    run: (arg, ctx) => {
+      // The CLI-side `/history` runs in a detached slash-worker subprocess
+      // that never sees the TUI's turns — it only surfaces whatever was
+      // persisted before this process started.  Render the TUI's own
+      // transcript so `/history` actually reflects what the user just did.
+      const items = ctx.local.getHistoryItems().filter(m => m.role === 'user' || m.role === 'assistant')
+
+      if (!items.length) {
+        return ctx.transcript.sys('no conversation yet')
+      }
+
+      const preview = Math.max(80, parseInt(arg, 10) || 400)
+
+      const lines = items.map((m, i) => {
+        const tag = m.role === 'user' ? `You #${i + 1}` : `Hermes #${i + 1}`
+        const body = m.text.trim() || (m.tools?.length ? `(${m.tools.length} tool calls)` : '(empty)')
+        const clipped = body.length > preview ? `${body.slice(0, preview).trimEnd()}…` : body
+
+        return `[${tag}]\n${clipped}`
+      })
+
+      ctx.transcript.page(lines.join('\n\n'), 'History')
+    }
+  },
+
+  {
     aliases: ['sb'],
-    help: 'toggle status bar',
+    help: 'status bar position (on|off|top|bottom)',
     name: 'statusbar',
     run: (arg, ctx) => {
-      const next = flagFromArg(arg, ctx.ui.statusBar)
+      const mode = arg.trim().toLowerCase()
+      const toggle: StatusBarMode = ctx.ui.statusBar === 'off' ? 'top' : 'off'
 
-      if (next === null) {
-        return ctx.transcript.sys('usage: /statusbar [on|off|toggle]')
+      const next: null | StatusBarMode =
+        !mode || mode === 'toggle'
+          ? toggle
+          : mode === 'on' || mode === 'top'
+            ? 'top'
+            : mode === 'off' || mode === 'bottom'
+              ? mode
+              : null
+
+      if (!next) {
+        return ctx.transcript.sys('usage: /statusbar [on|off|top|bottom|toggle]')
       }
 
       patchUiState({ statusBar: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`status bar ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
     }
   },
 

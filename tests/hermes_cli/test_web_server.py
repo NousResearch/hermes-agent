@@ -101,14 +101,19 @@ class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self):
-        """Create a TestClient — import is deferred to avoid requiring fastapi."""
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        """Create a TestClient and isolate the state DB under the test HERMES_HOME."""
         try:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
+        import hermes_state
+        from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+
         self.client = TestClient(app)
         self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
@@ -511,12 +516,18 @@ class TestNewEndpoints:
     """Tests for session detail, logs, cron, skills, tools, raw config, analytics."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self):
+    def _setup(self, monkeypatch, _isolate_hermes_home):
         try:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+
         self.client = TestClient(app)
         self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
@@ -692,8 +703,75 @@ class TestNewEndpoints:
         assert "daily" in data
         assert "by_model" in data
         assert "totals" in data
+        assert "skills" in data
         assert isinstance(data["daily"], list)
         assert "total_sessions" in data["totals"]
+        assert "total_api_calls" in data["totals"]
+        assert data["skills"] == {
+            "summary": {
+                "total_skill_loads": 0,
+                "total_skill_edits": 0,
+                "total_skill_actions": 0,
+                "distinct_skills_used": 0,
+            },
+            "top_skills": [],
+        }
+
+    def test_analytics_usage_includes_skill_breakdown(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="skills-analytics-test",
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "skills-analytics-test",
+                input_tokens=120,
+                output_tokens=45,
+            )
+            db.append_message(
+                "skills-analytics-test",
+                role="assistant",
+                content="Loading and updating skills.",
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": '{"name":"github-pr-workflow"}',
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "skill_manage",
+                            "arguments": '{"name":"github-code-review"}',
+                        }
+                    },
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+
+        data = resp.json()
+        assert data["skills"]["summary"] == {
+            "total_skill_loads": 1,
+            "total_skill_edits": 1,
+            "total_skill_actions": 2,
+            "distinct_skills_used": 2,
+        }
+        assert len(data["skills"]["top_skills"]) == 2
+
+        top_skill = data["skills"]["top_skills"][0]
+        assert top_skill["skill"] == "github-pr-workflow"
+        assert top_skill["view_count"] == 1
+        assert top_skill["manage_count"] == 0
+        assert top_skill["total_count"] == 1
+        assert top_skill["last_used_at"] is not None
 
     def test_session_token_endpoint_removed(self):
         """GET /api/auth/session-token no longer exists."""

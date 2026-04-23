@@ -28,7 +28,7 @@
 
   let
     cfg = config.services.hermes-agent;
-    hermes-agent = inputs.self.packages.${pkgs.system}.default;
+    hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
     deepConfigType = lib.types.mkOptionType {
@@ -777,7 +777,10 @@ HERMES_NIX_ENV_EOF
             NoNewPrivileges = true;
             ProtectSystem = "strict";
             ProtectHome = false;
-            ReadWritePaths = [ cfg.stateDir ];
+            ReadWritePaths = [
+              cfg.stateDir
+              cfg.workingDirectory
+            ];
             PrivateTmp = true;
           };
 

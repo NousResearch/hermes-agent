@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import inspect
 import ipaddress
 import logging
 import os
@@ -17,6 +18,8 @@ import sys
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
+
+from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -158,13 +161,13 @@ def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
         if value:
-            return value
+            return normalize_proxy_url(value)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
         if value:
-            return value
-    return _detect_macos_system_proxy()
+            return normalize_proxy_url(value)
+    return normalize_proxy_url(_detect_macos_system_proxy())
 
 
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
@@ -390,12 +393,9 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
-    import asyncio
     import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    _log = logging.getLogger(__name__)
 
-    last_exc = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -413,7 +413,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                 response.raise_for_status()
                 return cache_image_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
                 if attempt < retries:
@@ -429,7 +428,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -509,12 +507,9 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
-    import asyncio
     import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    _log = logging.getLogger(__name__)
 
-    last_exc = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -532,7 +527,6 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                 response.raise_for_status()
                 return cache_audio_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
                 if attempt < retries:
@@ -548,7 +542,39 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
+
+
+# ---------------------------------------------------------------------------
+# Video cache utilities
+#
+# Same pattern as image/audio cache -- videos from platforms are downloaded
+# here so the agent can reference them by local file path.
+# ---------------------------------------------------------------------------
+
+VIDEO_CACHE_DIR = get_hermes_dir("cache/videos", "video_cache")
+
+SUPPORTED_VIDEO_TYPES = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+}
+
+
+def get_video_cache_dir() -> Path:
+    """Return the video cache directory, creating it if it doesn't exist."""
+    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return VIDEO_CACHE_DIR
+
+
+def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
+    """Save raw video bytes to the cache and return the absolute file path."""
+    cache_dir = get_video_cache_dir()
+    filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = cache_dir / filename
+    filepath.write_bytes(data)
+    return str(filepath)
 
 
 # ---------------------------------------------------------------------------
@@ -726,7 +752,10 @@ class MessageEvent:
         if not self.is_command():
             return self.text
         parts = self.text.split(maxsplit=1)
-        return parts[1] if len(parts) > 1 else ""
+        args = parts[1] if len(parts) > 1 else ""
+        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
+        args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        return args
 
 
 @dataclass 
@@ -871,19 +900,26 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
         
-        # Track active message handlers per session for interrupt support
-        # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
+        # Track active message handlers per session for interrupt support.
+        # _active_sessions stores the per-session interrupt Event; _session_tasks
+        # maps session → the specific Task currently processing it so that
+        # session-terminating commands (/stop, /new, /reset) can cancel the
+        # right task and release the adapter-level guard deterministically.
+        # Without the owner-task map, an old task's finally block could delete
+        # a newer task's guard, leaving stale busy state.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        self._session_tasks: Dict[str, asyncio.Task] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
         self._background_tasks: set[asyncio.Task] = set()
         # One-shot callbacks to fire after the main response is delivered.
-        # Keyed by session_key.  GatewayRunner uses this to defer
-        # background-review notifications ("💾 Skill created") until the
-        # primary reply has been sent.
-        self._post_delivery_callbacks: Dict[str, Callable] = {}
+        # Keyed by session_key. Values are either a bare callback (legacy) or
+        # a ``(generation, callback)`` tuple so GatewayRunner can make deferred
+        # deliveries generation-aware and avoid stale runs clearing callbacks
+        # registered by a fresher run for the same session.
+        self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
@@ -1316,7 +1352,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -1401,7 +1437,13 @@ class BasePlatformAdapter(ABC):
 
         return paths, cleaned
 
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata=None,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
         """
         Continuously send typing indicator until cancelled.
         
@@ -1415,9 +1457,18 @@ class BasePlatformAdapter(ABC):
         """
         try:
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    return
                 if chat_id not in self._typing_paused:
                     await self.send_typing(chat_id, metadata=metadata)
-                await asyncio.sleep(interval)
+                if stop_event is None:
+                    await asyncio.sleep(interval)
+                    continue
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+                return
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
@@ -1443,6 +1494,59 @@ class BasePlatformAdapter(ABC):
     def resume_typing_for_chat(self, chat_id: str) -> None:
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
+
+    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
+        """Signal the active session loop to stop and clear typing immediately."""
+        if session_key:
+            interrupt_event = self._active_sessions.get(session_key)
+            if interrupt_event is not None:
+                interrupt_event.set()
+        try:
+            await self.stop_typing(chat_id)
+        except Exception:
+            pass
+
+    def register_post_delivery_callback(
+        self,
+        session_key: str,
+        callback: Callable,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        """Register a deferred callback to fire after the main response.
+
+        ``generation`` lets callers tie the callback to a specific gateway run
+        generation so stale runs cannot clear callbacks owned by a fresher run.
+        """
+        if not session_key or not callable(callback):
+            return
+        if generation is None:
+            self._post_delivery_callbacks[session_key] = callback
+        else:
+            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+
+    def pop_post_delivery_callback(
+        self,
+        session_key: str,
+        *,
+        generation: int | None = None,
+    ) -> Callable | None:
+        """Pop a deferred callback, optionally requiring generation ownership."""
+        if not session_key:
+            return None
+        entry = self._post_delivery_callbacks.get(session_key)
+        if entry is None:
+            return None
+        if isinstance(entry, tuple) and len(entry) == 2:
+            entry_generation, callback = entry
+            if generation is not None and int(entry_generation) != int(generation):
+                return None
+            self._post_delivery_callbacks.pop(session_key, None)
+            return callback if callable(callback) else None
+        if generation is not None:
+            return None
+        self._post_delivery_callbacks.pop(session_key, None)
+        return entry if callable(entry) else None
 
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
@@ -1582,6 +1686,222 @@ class BasePlatformAdapter(ABC):
             return f"{existing_text}\n\n{new_text}".strip()
         return existing_text
 
+    # ------------------------------------------------------------------
+    # Session task + guard ownership helpers
+    # ------------------------------------------------------------------
+    # These were introduced together with the _session_tasks owner map to
+    # make session lifecycle reconciliation deterministic across (a) the
+    # normal completion path, (b) /stop/ /new/ /reset bypass commands,
+    # and (c) stale-lock self-heal on the next inbound message.
+
+    def _release_session_guard(
+        self,
+        session_key: str,
+        *,
+        guard: Optional[asyncio.Event] = None,
+    ) -> None:
+        """Release the adapter-level guard for a session.
+
+        When ``guard`` is provided, only release the entry if it still points
+        at that exact Event.  This lets reset-like commands swap in a temporary
+        guard while the old processing task unwinds, without having the old
+        task's cleanup accidentally clear the replacement guard.
+        """
+        current_guard = self._active_sessions.get(session_key)
+        if current_guard is None:
+            return
+        if guard is not None and current_guard is not guard:
+            return
+        del self._active_sessions[session_key]
+
+    def _session_task_is_stale(self, session_key: str) -> bool:
+        """Return True if the owner task for ``session_key`` is done/cancelled.
+
+        A lock is "stale" when the adapter still has ``_active_sessions[key]``
+        AND a known owner task in ``_session_tasks`` that has already exited.
+        When there is no owner task at all, that usually means the guard was
+        installed by some path other than handle_message() (tests sometimes
+        install guards directly) — don't treat that as stale.  The on-entry
+        self-heal only needs to handle the production split-brain case where
+        an owner task was recorded, then exited without clearing its guard.
+        """
+        task = self._session_tasks.get(session_key)
+        if task is None:
+            return False
+        done = getattr(task, "done", None)
+        return bool(done and done())
+
+    def _heal_stale_session_lock(self, session_key: str) -> bool:
+        """Clear a stale session lock if the owner task is already gone.
+
+        Returns True if a stale lock was healed.  Returns False if there is
+        no lock, or the owner task is still alive (the normal busy case).
+
+        This is the on-entry safety net sidbin's issue #11016 analysis calls
+        for: without it, a split-brain — adapter still thinks the session is
+        active, but nothing is actually processing — traps the chat in
+        infinite "Interrupting current task..." until the gateway is
+        restarted.
+        """
+        if session_key not in self._active_sessions:
+            return False
+        if not self._session_task_is_stale(session_key):
+            return False
+        logger.warning(
+            "[%s] Healing stale session lock for %s (owner task is done/absent)",
+            self.name,
+            session_key,
+        )
+        self._active_sessions.pop(session_key, None)
+        self._pending_messages.pop(session_key, None)
+        self._session_tasks.pop(session_key, None)
+        return True
+
+    def _start_session_processing(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        interrupt_event: Optional[asyncio.Event] = None,
+    ) -> bool:
+        """Spawn a background processing task under the given session guard.
+
+        Returns True on success.  If the runtime stubs ``create_task`` with a
+        non-Task sentinel (some tests do this), the guard is rolled back and
+        False is returned so the caller isn't left holding a half-installed
+        session lock.
+        """
+        guard = interrupt_event or asyncio.Event()
+        self._active_sessions[session_key] = guard
+
+        task = asyncio.create_task(self._process_message_background(event, session_key))
+        self._session_tasks[session_key] = task
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            # Tests stub create_task() with lightweight sentinels that are not
+            # hashable and do not support lifecycle callbacks.
+            self._session_tasks.pop(session_key, None)
+            self._release_session_guard(session_key, guard=guard)
+            return False
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(self._expected_cancelled_tasks.discard)
+        return True
+
+    async def cancel_session_processing(
+        self,
+        session_key: str,
+        *,
+        release_guard: bool = True,
+        discard_pending: bool = True,
+    ) -> None:
+        """Cancel in-flight processing for a single session.
+
+        ``release_guard=False`` keeps the adapter-level session guard in place
+        so reset-like commands can finish atomically before follow-up messages
+        are allowed to start a fresh background task.
+        """
+        task = self._session_tasks.pop(session_key, None)
+        if task is not None and not task.done():
+            logger.debug(
+                "[%s] Cancelling active processing for session %s",
+                self.name,
+                session_key,
+            )
+            self._expected_cancelled_tasks.add(task)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(
+                    "[%s] Session cancellation raised while unwinding %s",
+                    self.name,
+                    session_key,
+                    exc_info=True,
+                )
+        if discard_pending:
+            self._pending_messages.pop(session_key, None)
+        if release_guard:
+            self._release_session_guard(session_key)
+
+    async def _drain_pending_after_session_command(
+        self,
+        session_key: str,
+        command_guard: asyncio.Event,
+    ) -> None:
+        """Resume the latest queued follow-up once a session command completes.
+
+        Called at the tail of /stop, /new, and /reset dispatch.  Releases the
+        command-scoped guard, then — if a follow-up message landed while the
+        command was running — spawns a fresh processing task for it.
+        """
+        pending_event = self._pending_messages.pop(session_key, None)
+        self._release_session_guard(session_key, guard=command_guard)
+        if pending_event is None:
+            return
+        self._start_session_processing(pending_event, session_key)
+
+    async def _dispatch_active_session_command(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        cmd: str,
+    ) -> None:
+        """Dispatch a reset-like bypass command while preserving guard ordering.
+
+        /stop, /new, and /reset must:
+          1. Keep the session guard installed while the runner processes the
+             command (so a racing follow-up message stays queued, not
+             dispatched as a second parallel run).
+          2. Cancel the old in-flight adapter task only AFTER the runner has
+             finished handling the command (so the runner sees consistent
+             state and its response is sent in order).
+          3. Release the command-scoped guard and drain the latest queued
+             follow-up exactly once, after 1 and 2 complete.
+        """
+        logger.debug(
+            "[%s] Command '/%s' bypassing active-session guard for %s",
+            self.name,
+            cmd,
+            session_key,
+        )
+
+        current_guard = self._active_sessions.get(session_key)
+        command_guard = asyncio.Event()
+        self._active_sessions[session_key] = command_guard
+        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+
+        try:
+            response = await self._message_handler(event)
+            # Old adapter task (if any) is cancelled AFTER the runner has
+            # fully handled the command — keeps ordering deterministic.
+            await self.cancel_session_processing(
+                session_key,
+                release_guard=False,
+                discard_pending=False,
+            )
+            if response:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=response,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+        except Exception:
+            # On failure, restore the original guard if one still exists so
+            # we don't leave the session in a half-reset state.
+            if self._active_sessions.get(session_key) is command_guard:
+                if session_key in self._session_tasks and current_guard is not None:
+                    self._active_sessions[session_key] = current_guard
+                else:
+                    self._release_session_guard(session_key, guard=command_guard)
+            raise
+
+        await self._drain_pending_after_session_command(session_key, command_guard)
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -1598,7 +1918,15 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
-        
+
+        # On-entry self-heal: if the adapter still has an _active_sessions
+        # entry for this key but the owner task has already exited (done or
+        # cancelled), the lock is stale.  Clear it and fall through to
+        # normal dispatch so the user isn't trapped behind a dead guard —
+        # this is the split-brain tail described in issue #11016.
+        if session_key in self._active_sessions:
+            self._heal_stale_session_lock(session_key)
+
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
             # Certain commands must bypass the active-session guard and be
@@ -1615,6 +1943,23 @@ class BasePlatformAdapter(ABC):
             from hermes_cli.commands import should_bypass_active_session
 
             if should_bypass_active_session(cmd):
+                # /stop, /new, /reset must cancel the in-flight adapter task
+                # and preserve ordering of queued follow-ups.  Route those
+                # through the dedicated handoff path that serializes
+                # cancellation + runner response + pending drain.
+                if cmd in ("stop", "new", "reset"):
+                    try:
+                        await self._dispatch_active_session_command(event, session_key, cmd)
+                    except Exception as e:
+                        logger.error(
+                            "[%s] Command '/%s' dispatch failed: %s",
+                            self.name, cmd, e, exc_info=True,
+                        )
+                    return
+
+                # Other bypass commands (/approve, /deny, /status,
+                # /background, /restart) just need direct dispatch — they
+                # don't cancel the running task.
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
@@ -1660,19 +2005,9 @@ class BasePlatformAdapter(ABC):
         # starts would also pass the _active_sessions check and spawn a
         # duplicate task.  (grammY sequentialize / aiogram EventIsolation
         # pattern — set the guard synchronously, not inside the task.)
-        self._active_sessions[session_key] = asyncio.Event()
-
-        # Spawn background task to process this message
-        task = asyncio.create_task(self._process_message_background(event, session_key))
-        try:
-            self._background_tasks.add(task)
-        except TypeError:
-            # Some tests stub create_task() with lightweight sentinels that are not
-            # hashable and do not support lifecycle callbacks.
-            return
-        if hasattr(task, "add_done_callback"):
-            task.add_done_callback(self._background_tasks.discard)
-            task.add_done_callback(self._expected_cancelled_tasks.discard)
+        # _start_session_processing installs the guard AND the owner-task
+        # mapping atomically so stale-lock detection works.
+        self._start_session_processing(event, session_key)
     
     @staticmethod
     def _get_human_delay() -> float:
@@ -1684,8 +2019,6 @@ class BasePlatformAdapter(ABC):
           HERMES_HUMAN_DELAY_MIN_MS: minimum delay in ms (default 800, custom mode)
           HERMES_HUMAN_DELAY_MAX_MS: maximum delay in ms (default 2500, custom mode)
         """
-        import random
-
         mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
         if mode == "off":
             return 0.0
@@ -1714,10 +2047,23 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
+        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        try:
+            _keep_typing_sig = inspect.signature(self._keep_typing)
+        except (TypeError, ValueError):
+            _keep_typing_sig = None
+        if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+            _keep_typing_kwargs["stop_event"] = interrupt_event
+        typing_task = asyncio.create_task(
+            self._keep_typing(
+                event.source.chat_id,
+                **_keep_typing_kwargs,
+            )
+        )
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -1976,7 +2322,14 @@ class BasePlatformAdapter(ABC):
         finally:
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
-            _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
+            _callback_generation = callback_generation
+            if hasattr(self, "pop_post_delivery_callback"):
+                _post_cb = self.pop_post_delivery_callback(
+                    session_key,
+                    generation=_callback_generation,
+                )
+            else:
+                _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
             if callable(_post_cb):
                 try:
                     _post_cb()
@@ -2014,6 +2367,9 @@ class BasePlatformAdapter(ABC):
                 drain_task = asyncio.create_task(
                     self._process_message_background(late_pending, session_key)
                 )
+                # Hand ownership of the session to the drain task so stale-lock
+                # detection keeps working while it runs.
+                self._session_tasks[session_key] = drain_task
                 try:
                     self._background_tasks.add(drain_task)
                     drain_task.add_done_callback(self._background_tasks.discard)
@@ -2022,10 +2378,15 @@ class BasePlatformAdapter(ABC):
                     pass
                 # Leave _active_sessions[session_key] populated — the drain
                 # task's own lifecycle will clean it up.
-                return
-            # Clean up session tracking
-            if session_key in self._active_sessions:
-                del self._active_sessions[session_key]
+            else:
+                # Clean up session tracking.  Guard-match both deletes so a
+                # reset-like command that already swapped in its own
+                # command_guard (and cancelled us) can't be accidentally
+                # cleared by our unwind.  The command owns the session now.
+                current_task = asyncio.current_task()
+                if current_task is not None and self._session_tasks.get(session_key) is current_task:
+                    del self._session_tasks[session_key]
+                self._release_session_guard(session_key, guard=interrupt_event)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
@@ -2033,14 +2394,29 @@ class BasePlatformAdapter(ABC):
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
         """
-        tasks = [task for task in self._background_tasks if not task.done()]
-        for task in tasks:
-            self._expected_cancelled_tasks.add(task)
-            task.cancel()
-        if tasks:
+        # Loop until no new tasks appear.  Without this, a message
+        # arriving during the `await asyncio.gather` below would spawn
+        # a fresh _process_message_background task (added to
+        # self._background_tasks at line ~1668 via handle_message),
+        # and the _background_tasks.clear() at the end of this method
+        # would drop the reference — the task runs untracked against a
+        # disconnecting adapter, logs send-failures, and may linger
+        # until it completes on its own.  Retrying the drain until the
+        # task set stabilizes closes the window.
+        MAX_DRAIN_ROUNDS = 5
+        for _ in range(MAX_DRAIN_ROUNDS):
+            tasks = [task for task in self._background_tasks if not task.done()]
+            if not tasks:
+                break
+            for task in tasks:
+                self._expected_cancelled_tasks.add(task)
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Loop: late-arrival tasks spawned during the gather above
+            # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
+        self._session_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
 

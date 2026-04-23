@@ -43,7 +43,11 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    "agent-created": ("allow",  "allow",   "ask"),
+    # Agent-created skills run in the same process as the agent that
+    # wrote them — the agent could already execute the same code via
+    # terminal(), so a dangerous-pattern gate on skill_manage adds
+    # friction without meaningful security. Allow all verdicts.
+    "agent-created": ("allow",  "allow",   "allow"),
 }
 
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}

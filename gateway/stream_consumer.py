@@ -430,6 +430,21 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
+                    # If the segment-break edit failed to deliver the
+                    # accumulated content (flood control that has not yet
+                    # promoted to fallback mode, or fallback mode itself),
+                    # _accumulated still holds pre-boundary text the user
+                    # never saw. Flush that tail as a continuation message
+                    # before the reset below wipes _accumulated — otherwise
+                    # text generated before the tool boundary is silently
+                    # dropped (issue #8124).
+                    if (
+                        self._accumulated
+                        and not current_update_visible
+                        and self._message_id
+                        and self._message_id != "__no_edit__"
+                    ):
+                        await self._flush_segment_tail_on_edit_failure()
                     self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
@@ -556,6 +571,30 @@ class GatewayStreamConsumer:
             if final_text.strip() and final_text != self._visible_prefix():
                 continuation = final_text
             else:
+                # Defence-in-depth for #7183: the last edit may still show the
+                # cursor character because fallback mode was entered after an
+                # edit failure left it stuck.  Try one final edit to strip it
+                # so the message doesn't freeze with a visible ▉.  Best-effort
+                # — if this edit also fails (flood control still active),
+                # _try_strip_cursor has already been called on fallback entry
+                # and the adaptive-backoff retries will have had their shot.
+                if (
+                    self._message_id
+                    and self._last_sent_text
+                    and self.cfg.cursor
+                    and self._last_sent_text.endswith(self.cfg.cursor)
+                ):
+                    clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
+                    try:
+                        result = await self.adapter.edit_message(
+                            chat_id=self.chat_id,
+                            message_id=self._message_id,
+                            content=clean_text,
+                        )
+                        if result.success:
+                            self._last_sent_text = clean_text
+                    except Exception:
+                        pass
                 self._already_sent = True
                 self._final_response_sent = True
                 return
@@ -619,6 +658,39 @@ class GatewayStreamConsumer:
         err = getattr(result, "error", "") or ""
         err_lower = err.lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
+
+    async def _flush_segment_tail_on_edit_failure(self) -> None:
+        """Deliver un-sent tail content before a segment-break reset.
+
+        When an edit fails (flood control, transport error) and a tool
+        boundary arrives before the next retry, ``_accumulated`` holds text
+        that was generated but never shown to the user. Without this flush,
+        the segment reset would discard that tail and leave a frozen cursor
+        in the partial message.
+
+        Sends the tail that sits after the last successfully-delivered
+        prefix as a new message, and best-effort strips the stuck cursor
+        from the previous partial message.
+        """
+        if not self._fallback_final_send:
+            await self._try_strip_cursor()
+        visible = self._fallback_prefix or self._visible_prefix()
+        tail = self._accumulated
+        if visible and tail.startswith(visible):
+            tail = tail[len(visible):].lstrip()
+        tail = self._clean_for_display(tail)
+        if not tail.strip():
+            return
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=tail,
+                metadata=self.metadata,
+            )
+            if result.success:
+                self._already_sent = True
+        except Exception as e:
+            logger.error("Segment-break tail flush error: %s", e)
 
     async def _try_strip_cursor(self) -> None:
         """Best-effort edit to remove the cursor from the last visible message.

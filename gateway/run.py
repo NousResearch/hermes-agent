@@ -3030,6 +3030,9 @@ class GatewayRunner:
         if canonical == "profile":
             return await self._handle_profile_command(event)
 
+        if canonical == "list":
+            return await self._handle_list_command(event)
+
         if canonical == "status":
             return await self._handle_status_command(event)
 
@@ -4483,7 +4486,101 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
-    
+
+    async def _handle_list_command(self, event: MessageEvent) -> str:
+        """Handle /list command — list recent sessions."""
+        from datetime import datetime
+
+        raw_args = event.get_command_args().strip()
+        show_all = "-a" in raw_args
+        raw_args = raw_args.replace("-a", "").strip()
+        try:
+            limit = int(raw_args) if raw_args else 10
+        except ValueError:
+            return "Usage: `/list [limit]` or `/list -a`"
+
+        limit = max(1, min(limit, 50))
+
+        # Get current session id
+        source = event.source
+        current_session_id = None
+        try:
+            current_session_id = self.session_store.get_or_create_session(source).session_id
+        except Exception:
+            pass
+
+        sessions = []
+        if self._session_db:
+            try:
+                sessions = self._session_db.list_sessions_rich(limit=limit)
+            except Exception as e:
+                logger.warning("Failed to list sessions: %s", e)
+
+        if not sessions:
+            return "No sessions found."
+
+        def _format_time(ts):
+            if not ts:
+                return ""
+            if isinstance(ts, (int, float)):
+                dt = datetime.fromtimestamp(ts)
+            else:
+                dt = ts
+            return dt.strftime("%Y-%m-%d  %H:%M")
+
+        def _format_tokens(n):
+            if not n:
+                return ""
+            if n >= 1_000_000:
+                return f"{n / 1_000_000:.1f}M"
+            if n >= 1_000:
+                return f"{n / 1_000:.0f}K"
+            return str(n)
+
+        if show_all:
+            titled = sessions
+            section_label = "All Sessions"
+        else:
+            titled = [s for s in sessions if s.get("title")]
+            section_label = "Sessions"
+
+        titled.sort(key=lambda s: s.get("last_active", 0) or 0, reverse=True)
+
+        lines = [section_label, ""]
+
+        if not titled:
+            if show_all:
+                lines.append("No sessions found.")
+            else:
+                lines.append("No named sessions yet.")
+                lines.append("Use /title <name> to name your current session.")
+            return "\n".join(lines)
+
+        for s in titled:
+            sid = s.get("id", "")
+            is_current = sid == (current_session_id or "")
+            name = s["title"] if s.get("title") else sid[:12]
+
+            t = _format_time(s.get("last_active"))
+            tok = _format_tokens((s.get("input_tokens", 0) or 0) + (s.get("output_tokens", 0) or 0))
+
+            meta_parts = [p for p in [t, tok] if p]
+            meta = "  \u2014  ".join(meta_parts) if meta_parts else ""
+
+            if is_current:
+                lines.append(f"**{name}**")
+                if meta:
+                    lines.append(f"  {meta}  \u00b7  current")
+            else:
+                lines.append(f"{name}")
+                if meta:
+                    lines.append(f"  {meta}")
+            lines.append("")
+
+        lines.append("/resume <name>  \u00b7  /list <n>  \u00b7  /list -a")
+
+        return "\n".join(lines)
+
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.
 

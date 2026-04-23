@@ -318,6 +318,179 @@ class TestSlackThreadContext:
 
 
 # ===========================================================================
+# Slack permalink context fetching
+# ===========================================================================
+
+class TestSlackPermalinkContext:
+    """Test Slack permalink parsing and linked-context injection."""
+
+    def test_parse_slack_permalink_decodes_message_and_thread_ts(self):
+        adapter = _make_adapter()
+
+        parsed = adapter._parse_slack_permalink(
+            "https://workspace.slack.com/archives/C0ASPQAE6HL/"
+            "p1776913222573359?thread_ts=1776864367.902269&cid=C0ASPQAE6HL"
+        )
+
+        assert parsed == {
+            "host": "workspace.slack.com",
+            "channel_id": "C0ASPQAE6HL",
+            "message_ts": "1776913222.573359",
+            "thread_ts": "1776864367.902269",
+        }
+
+    def test_parse_slack_permalink_rejects_non_slack_host(self):
+        adapter = _make_adapter()
+
+        parsed = adapter._parse_slack_permalink(
+            "https://evil.example.com/archives/C0ASPQAE6HL/"
+            "p1776913222573359?thread_ts=1776864367.902269&cid=C0ASPQAE6HL"
+        )
+
+        assert parsed is None
+
+    @pytest.mark.asyncio
+    async def test_fetches_and_formats_permalink_context_including_target_message(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1776864367.902269", "user": "U1", "text": "Root issue summary"},
+                {"ts": "1776900000.000001", "bot_id": "B1", "text": "Bot note to skip"},
+                {"ts": "1776913222.573359", "user": "U2", "text": "Target deployment comment"},
+                {"ts": "1776914000.000001", "user": "U3", "text": "Later reply after target"},
+            ]
+        })
+        adapter._resolve_user_name = AsyncMock(
+            side_effect=lambda user_id, chat_id="": {
+                "U1": "Alice",
+                "U2": "Bob",
+                "U3": "Carol",
+            }.get(user_id, user_id)
+        )
+
+        context = await adapter._fetch_permalink_context(
+            "https://workspace.slack.com/archives/C0ASPQAE6HL/"
+            "p1776913222573359?thread_ts=1776864367.902269&cid=C0ASPQAE6HL",
+            team_id="T1",
+        )
+
+        assert "[Linked Slack permalink context" in context
+        assert "[linked thread parent] Alice: Root issue summary" in context
+        assert "[linked target] Bob: Target deployment comment" in context
+        assert "Bot note to skip" not in context
+        assert "Later reply after target" not in context
+        mock_client.conversations_replies.assert_called_once_with(
+            channel="C0ASPQAE6HL",
+            ts="1776864367.902269",
+            limit=16,
+            inclusive=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_permalink_context_paginates_until_target_reply_is_found(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(side_effect=[
+            {
+                "messages": [
+                    {"ts": "1776864367.902269", "user": "U1", "text": "Root issue summary"},
+                    {"ts": "1776900000.000001", "user": "U2", "text": "Earlier reply 1"},
+                    {"ts": "1776900000.000002", "user": "U2", "text": "Earlier reply 2"},
+                ],
+                "response_metadata": {"next_cursor": "cursor-2"},
+            },
+            {
+                "messages": [
+                    {"ts": "1776913222.573359", "user": "U3", "text": "Target deployment comment"},
+                ],
+                "response_metadata": {"next_cursor": ""},
+            },
+        ])
+        adapter._resolve_user_name = AsyncMock(
+            side_effect=lambda user_id, chat_id="": {
+                "U1": "Alice",
+                "U2": "Bob",
+                "U3": "Carol",
+            }.get(user_id, user_id)
+        )
+
+        context = await adapter._fetch_permalink_context(
+            "https://workspace.slack.com/archives/C0ASPQAE6HL/"
+            "p1776913222573359?thread_ts=1776864367.902269&cid=C0ASPQAE6HL",
+            team_id="T1",
+            limit=2,
+        )
+
+        assert "[linked thread parent] Alice: Root issue summary" in context
+        assert "[linked target] Carol: Target deployment comment" in context
+        assert mock_client.conversations_replies.await_count == 2
+        second_call = mock_client.conversations_replies.await_args_list[1].kwargs
+        assert second_call["cursor"] == "cursor-2"
+
+    @pytest.mark.asyncio
+    async def test_handle_slack_message_injects_permalink_context_into_dm_message(self):
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1776864367.902269", "user": "U1", "text": "Root issue summary"},
+                {"ts": "1776913222.573359", "user": "U2", "text": "Target deployment comment"},
+            ]
+        })
+        adapter._resolve_user_name = AsyncMock(
+            side_effect=lambda user_id, chat_id="": {
+                "U_REQUESTER": "Requester",
+                "U1": "Alice",
+                "U2": "Bob",
+            }.get(user_id, user_id)
+        )
+
+        await adapter._handle_slack_message({
+            "text": (
+                "Please summarize this: "
+                "https://workspace.slack.com/archives/C0ASPQAE6HL/"
+                "p1776913222573359?thread_ts=1776864367.902269&cid=C0ASPQAE6HL"
+            ),
+            "user": "U_REQUESTER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "2000.000001",
+            "team": "T1",
+        })
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Linked Slack permalink context" in msg_event.text
+        assert "[linked target] Bob: Target deployment comment" in msg_event.text
+        assert "Please summarize this:" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_channel_message_does_not_expand_cross_channel_permalink(self):
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        adapter._resolve_user_name = AsyncMock(return_value="Requester")
+        adapter._fetch_permalink_context = AsyncMock(return_value="should-not-appear")
+
+        await adapter._handle_slack_message({
+            "text": (
+                "Check this link "
+                "https://workspace.slack.com/archives/COTHER1234/"
+                "p1776913222573359?thread_ts=1776864367.902269&cid=COTHER1234 <@U_BOT>"
+            ),
+            "user": "U_REQUESTER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "2000.000001",
+            "team": "T1",
+        })
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "should-not-appear" not in msg_event.text
+        adapter._fetch_permalink_context.assert_not_awaited()
+
+
+# ===========================================================================
 # _has_active_session_for_thread — session key fix (#5833)
 # ===========================================================================
 

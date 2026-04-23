@@ -16,6 +16,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple
+from urllib.parse import parse_qs, urlparse
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -47,6 +48,15 @@ from gateway.platforms.base import (
 
 
 logger = logging.getLogger(__name__)
+
+SLACK_PERMALINK_RE = re.compile(
+    r"https://[^\s>|]+/archives/[A-Z0-9]+/p\d+(?:\?[^\s>|]+)?"
+)
+SLACK_PERMALINK_HOST_SUFFIXES = (
+    "slack.com",
+    ".slack.com",
+    ".slack-gov.com",
+)
 
 
 @dataclass
@@ -1234,6 +1244,16 @@ class SlackAdapter(BasePlatformAdapter):
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[Slack] Failed to cache document from %s: %s", url, e, exc_info=True)
 
+        # Inject linked Slack permalink context after attachment expansion so the
+        # agent can answer based on referenced messages without asking the user
+        # to paste them manually.
+        text = await self._inject_permalink_context(
+            text,
+            team_id=team_id,
+            current_channel_id=channel_id,
+            is_dm=is_dm,
+        )
+
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
@@ -1450,6 +1470,209 @@ class SlackAdapter(BasePlatformAdapter):
         # (approval state already consumed by atomic pop above)
 
     # ----- Thread context fetching -----
+
+    def _decode_slack_message_ts(self, encoded_ts: str) -> Optional[str]:
+        """Decode a Slack permalink ``p<digits>`` value into ``ts`` format."""
+        digits = re.sub(r"\D", "", str(encoded_ts or ""))
+        if len(digits) <= 6:
+            return None
+        return f"{digits[:-6]}.{digits[-6:]}"
+
+    def _parse_slack_permalink(self, permalink: str) -> Optional[Dict[str, str]]:
+        """Parse a standard Slack message permalink into channel + ts fields."""
+        clean = str(permalink or "").strip().strip("<>")
+        if "|" in clean:
+            clean = clean.split("|", 1)[0]
+
+        parsed = urlparse(clean)
+        host = (parsed.netloc or "").lower()
+        if not host or not any(
+            host == suffix.lstrip(".") or host.endswith(suffix)
+            for suffix in SLACK_PERMALINK_HOST_SUFFIXES
+        ):
+            return None
+
+        match = re.search(r"/archives/([A-Z0-9]+)/p(\d+)$", parsed.path)
+        if not match:
+            return None
+
+        message_ts = self._decode_slack_message_ts(match.group(2))
+        if not message_ts:
+            return None
+
+        query = parse_qs(parsed.query)
+        thread_ts = (query.get("thread_ts") or [message_ts])[0] or message_ts
+        return {
+            "host": host,
+            "channel_id": match.group(1),
+            "message_ts": message_ts,
+            "thread_ts": thread_ts,
+        }
+
+    async def _fetch_permalink_context(
+        self,
+        permalink: str,
+        team_id: str = "",
+        limit: int = 15,
+        max_pages: int = 5,
+    ) -> str:
+        """Fetch concise context for a linked Slack permalink."""
+        parsed = self._parse_slack_permalink(permalink)
+        if not parsed:
+            return ""
+
+        channel_id = parsed["channel_id"]
+        target_ts = parsed["message_ts"]
+        thread_ts = parsed["thread_ts"]
+
+        if team_id and channel_id:
+            self._channel_team[channel_id] = team_id
+
+        cache_key = f"permalink:{channel_id}:{thread_ts}:{target_ts}"
+        now = time.monotonic()
+        cached = self._thread_context_cache.get(cache_key)
+        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.content
+
+        try:
+            client = self._get_client(channel_id)
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            thread_parent_line = ""
+            recent_lines = []
+            target_found = False
+            cursor = ""
+
+            for _ in range(max_pages):
+                result = None
+                for attempt in range(3):
+                    try:
+                        kwargs = {
+                            "channel": channel_id,
+                            "ts": thread_ts,
+                            "limit": limit + 1,
+                            "inclusive": True,
+                        }
+                        if cursor:
+                            kwargs["cursor"] = cursor
+                        result = await client.conversations_replies(**kwargs)
+                        break
+                    except Exception as exc:
+                        err_str = str(exc).lower()
+                        is_rate_limit = (
+                            "ratelimited" in err_str
+                            or "429" in err_str
+                            or "rate_limited" in err_str
+                        )
+                        if is_rate_limit and attempt < 2:
+                            retry_after = 1.0 * (2 ** attempt)
+                            logger.warning(
+                                "[Slack] permalink conversations.replies rate limited; retrying in %.1fs (attempt %d/3)",
+                                retry_after, attempt + 1,
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
+                        raise
+
+                if result is None:
+                    return ""
+
+                messages = result.get("messages", [])
+                if not messages:
+                    break
+
+                for msg in messages:
+                    if msg.get("bot_id") or msg.get("subtype") == "bot_message":
+                        continue
+
+                    msg_text = msg.get("text", "").strip()
+                    if not msg_text:
+                        continue
+                    if bot_uid:
+                        msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+                        if not msg_text:
+                            continue
+
+                    msg_ts = msg.get("ts", "")
+                    name = await self._resolve_user_name(msg.get("user", "unknown"), chat_id=channel_id)
+                    if msg_ts == thread_ts:
+                        thread_parent_line = f"[linked thread parent] {name}: {msg_text}"
+                    else:
+                        prefix = "[linked target] " if msg_ts == target_ts else ""
+                        recent_lines.append(f"{prefix}{name}: {msg_text}")
+                        if len(recent_lines) > limit:
+                            recent_lines = recent_lines[-limit:]
+
+                    if msg_ts == target_ts:
+                        target_found = True
+                        break
+
+                if target_found:
+                    break
+
+                cursor = ((result.get("response_metadata") or {}).get("next_cursor") or "").strip()
+                if not cursor:
+                    break
+
+            if not target_found:
+                return ""
+
+            context_parts = []
+            if thread_parent_line:
+                context_parts.append(thread_parent_line)
+            if target_ts == thread_ts:
+                if not context_parts:
+                    return ""
+            else:
+                context_parts.extend(recent_lines)
+
+            content = (
+                "[Linked Slack permalink context — referenced conversation excerpt:]\n"
+                + "\n".join(context_parts)
+                + "\n[End linked Slack permalink context]\n\n"
+            )
+            self._thread_context_cache[cache_key] = _ThreadContextCache(
+                content=content,
+                fetched_at=now,
+                message_count=len(context_parts),
+            )
+            return content
+        except Exception as e:
+            logger.warning("[Slack] Failed to fetch permalink context: %s", e)
+            return ""
+
+    async def _inject_permalink_context(
+        self,
+        text: str,
+        team_id: str = "",
+        current_channel_id: str = "",
+        is_dm: bool = False,
+    ) -> str:
+        """Prepend fetched context for safe Slack permalinks mentioned in text."""
+        permalinks = []
+        seen = set()
+        for match in SLACK_PERMALINK_RE.finditer(text or ""):
+            permalink = match.group(0)
+            if permalink not in seen:
+                seen.add(permalink)
+                permalinks.append(permalink)
+
+        if not permalinks:
+            return text
+
+        context_parts = []
+        for permalink in permalinks:
+            parsed = self._parse_slack_permalink(permalink)
+            if not parsed:
+                continue
+            if not is_dm and current_channel_id and parsed["channel_id"] != current_channel_id:
+                continue
+            context = await self._fetch_permalink_context(permalink, team_id=team_id)
+            if context:
+                context_parts.append(context)
+
+        if not context_parts:
+            return text
+        return "".join(context_parts) + text
 
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str,

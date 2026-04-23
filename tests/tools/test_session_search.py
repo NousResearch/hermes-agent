@@ -37,6 +37,11 @@ class TestSessionSearchSchema:
         assert "past conversations" in description
         assert "recent turns of the current session" not in description
 
+    def test_schema_exposes_source_filter(self):
+        source_schema = SESSION_SEARCH_SCHEMA["parameters"]["properties"]["source"]
+        assert source_schema["type"] == "string"
+        assert "cli" in source_schema["description"]
+
 
 # =========================================================================
 # _format_timestamp
@@ -262,6 +267,57 @@ class TestSessionSearch:
         mock_db = object()
         result = json.loads(session_search(query="   ", db=mock_db))
         assert result["success"] is False
+
+    def test_recent_sessions_passes_source_filter(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = [{
+            "id": "feishu-session",
+            "title": "Feishu work",
+            "source": "feishu",
+            "started_at": 1709500000,
+            "last_active": 1709500100,
+            "message_count": 4,
+            "preview": "recent feishu work",
+        }]
+
+        result = json.loads(session_search(
+            query="",
+            source="Feishu",
+            db=mock_db,
+            limit=2,
+        ))
+
+        assert result["success"] is True
+        assert result["mode"] == "recent"
+        assert result["source"] == "feishu"
+        assert result["count"] == 1
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source="feishu",
+            limit=7,
+            exclude_sources=None,
+        )
+
+    def test_keyword_search_passes_source_filter(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = []
+
+        result = json.loads(session_search(
+            query="roadmap",
+            source="telegram",
+            db=mock_db,
+        ))
+
+        assert result["success"] is True
+        assert result["source"] == "telegram"
+        assert result["count"] == 0
+        assert mock_db.search_messages.call_args.kwargs["source_filter"] == ["telegram"]
+        assert mock_db.search_messages.call_args.kwargs["exclude_sources"] is None
 
     def test_current_session_excluded(self):
         """session_search should never return the current session."""

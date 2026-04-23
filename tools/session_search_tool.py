@@ -263,10 +263,29 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _normalize_source_filter(source: Any) -> Optional[str]:
+    """Normalize an optional session source filter from tool-call arguments."""
+    if source is None:
+        return None
+    normalized = str(source).strip().lower()
+    return normalized or None
+
+
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    source: str = None,
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
+        sessions = db.list_sessions_rich(
+            source=source,
+            limit=limit + 5,
+            # Explicit source filters should be exact; otherwise hide
+            # third-party/tool-origin sessions from broad recent browsing.
+            exclude_sources=None if source else list(_HIDDEN_SESSION_SOURCES),
+        )  # fetch extra to skip current
 
         # Resolve current session lineage to exclude it
         current_root = None
@@ -306,9 +325,14 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         return json.dumps({
             "success": True,
             "mode": "recent",
+            "source": source,
             "results": results,
             "count": len(results),
-            "message": f"Showing {len(results)} most recent sessions. Use a keyword query to search specific topics.",
+            "message": (
+                f"Showing {len(results)} most recent "
+                f"{source + ' ' if source else ''}sessions. "
+                "Use a keyword query to search specific topics."
+            ),
         }, ensure_ascii=False)
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
@@ -318,6 +342,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
 def session_search(
     query: str,
     role_filter: str = None,
+    source: str = None,
     limit: int = 3,
     db=None,
     current_session_id: str = None,
@@ -340,11 +365,12 @@ def session_search(
         except (TypeError, ValueError):
             limit = 3
     limit = max(1, min(limit, 5))  # Clamp to [1, 5]
+    source = _normalize_source_filter(source)
 
     # Recent sessions mode: when query is empty, return metadata for recent sessions.
     # No LLM calls — just DB queries for titles, previews, timestamps.
     if not query or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(db, limit, current_session_id, source=source)
 
     query = query.strip()
 
@@ -357,8 +383,9 @@ def session_search(
         # FTS5 search -- get matches ranked by relevance
         raw_results = db.search_messages(
             query=query,
+            source_filter=[source] if source else None,
             role_filter=role_list,
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            exclude_sources=None if source else list(_HIDDEN_SESSION_SOURCES),
             limit=50,  # Get more matches to find unique sessions
             offset=0,
         )
@@ -367,6 +394,7 @@ def session_search(
             return json.dumps({
                 "success": True,
                 "query": query,
+                "source": source,
                 "results": [],
                 "count": 0,
                 "message": "No matching sessions found.",
@@ -506,6 +534,7 @@ def session_search(
         return json.dumps({
             "success": True,
             "query": query,
+            "source": source,
             "results": summaries,
             "count": len(summaries),
             "sessions_searched": len(seen_sessions),
@@ -561,6 +590,10 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "Optional: only search messages from specific roles (comma-separated). E.g. 'user,assistant' to skip tool outputs.",
             },
+            "source": {
+                "type": "string",
+                "description": "Optional: only search sessions from one source/platform, e.g. 'cli', 'telegram', 'feishu', or 'slack'. Omit to search across all sources.",
+            },
             "limit": {
                 "type": "integer",
                 "description": "Max sessions to summarize (default: 3, max: 5).",
@@ -582,6 +615,7 @@ registry.register(
     handler=lambda args, **kw: session_search(
         query=args.get("query") or "",
         role_filter=args.get("role_filter"),
+        source=args.get("source"),
         limit=args.get("limit", 3),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id")),

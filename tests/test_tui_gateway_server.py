@@ -1446,6 +1446,75 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     server._sessions.pop(sid, None)
 
 
+def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
+    fake_mod = types.ModuleType("hermes_state")
+
+    class _BrokenSessionDB:
+        def __init__(self):
+            raise RuntimeError("locking protocol")
+
+    fake_mod.SessionDB = _BrokenSessionDB
+    monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+
+    assert server._get_db() is None
+    assert server._db_error == "locking protocol"
+
+
+def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "x"
+            self.provider = "openrouter"
+            self.base_url = ""
+            self.api_key = ""
+
+    emits = []
+
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emits.append(a))
+
+    import tools.approval as _approval
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+    session["agent_ready"].wait(timeout=2.0)
+
+    assert session["agent_error"] is None
+    assert session["agent"] is not None
+    assert not any(args and args[0] == "error" for args in emits)
+
+    server._sessions.pop(sid, None)
+
+
+def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypatch):
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_db_error", "locking protocol")
+
+    resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
+
+    assert "error" in resp
+    assert "state.db unavailable: locking protocol" in resp["error"]["message"]
+
+
 # --------------------------------------------------------------------------
 # model.options — curated-list parity with `hermes model` and classic /model
 # --------------------------------------------------------------------------

@@ -3576,21 +3576,20 @@ def _voice_emit(event: str, payload: dict | None = None) -> None:
 
 
 def _voice_mode_enabled() -> bool:
-    """Current voice-mode flag. HERMES_VOICE env var wins over config so
-    the gateway and CLI agree when one of them was launched with an
-    explicit override."""
-    env = os.environ.get("HERMES_VOICE", "").strip()
-    if env in {"0", "1"}:
-        return env == "1"
-    return bool(_load_cfg().get("display", {}).get("voice_enabled", False))
+    """Current voice-mode flag (runtime-only, CLI parity).
+
+    cli.py initialises ``_voice_mode = False`` at startup and only flips
+    it via ``/voice on``; it never reads a persisted enable bit from
+    config.yaml.  We match that: no config lookup, env var only.  This
+    avoids the TUI auto-starting in REC the next time the user opens it
+    just because they happened to enable voice in a prior session.
+    """
+    return os.environ.get("HERMES_VOICE", "").strip() == "1"
 
 
 def _voice_tts_enabled() -> bool:
-    """Whether agent replies should be spoken back via TTS."""
-    env = os.environ.get("HERMES_VOICE_TTS", "").strip()
-    if env in {"0", "1"}:
-        return env == "1"
-    return bool(_load_cfg().get("display", {}).get("voice_tts", False))
+    """Whether agent replies should be spoken back via TTS (runtime only)."""
+    return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
 @method("voice.toggle")
@@ -3634,8 +3633,10 @@ def _(rid, params: dict) -> dict:
 
     if action in ("on", "off"):
         enabled = action == "on"
+        # Runtime-only flag (CLI parity) — no _write_config_key, so the
+        # next TUI launch starts with voice OFF instead of auto-REC from a
+        # persisted stale toggle.
         os.environ["HERMES_VOICE"] = "1" if enabled else "0"
-        _write_config_key("display.voice_enabled", enabled)
 
         if not enabled:
             # Disabling the mode must tear the continuous loop down; the
@@ -3655,8 +3656,8 @@ def _(rid, params: dict) -> dict:
         if not _voice_mode_enabled():
             return _err(rid, 4014, "enable voice mode first: /voice on")
         new_value = not _voice_tts_enabled()
+        # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
         os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
-        _write_config_key("display.voice_tts", new_value)
         return _ok(rid, {"enabled": True, "tts": new_value})
 
     return _err(rid, 4013, f"unknown voice action: {action}")

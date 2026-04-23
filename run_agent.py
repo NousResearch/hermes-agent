@@ -5597,10 +5597,16 @@ class AIAgent:
                         "Local provider detected (%s) — stream read timeout raised to %.0fs",
                         self.base_url, _stream_read_timeout,
                     )
+            # stream_options (include_usage) is OpenAI-specific — Gemini rejects it
+            # with TypeError. Guard against explicit provider names and direct
+            # googleapis URLs (covers provider="" + base_url cases).
+            _skip_stream_options = (
+                self.provider in ("gemini", "google-gemini-cli")
+                or "generativelanguage.googleapis.com" in self._base_url_lower
+            )
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
-                "stream_options": {"include_usage": True},
                 "timeout": _httpx.Timeout(
                     connect=30.0,
                     read=_stream_read_timeout,
@@ -5608,6 +5614,8 @@ class AIAgent:
                     pool=30.0,
                 ),
             }
+            if not _skip_stream_options:
+                stream_kwargs["stream_options"] = {"include_usage": True}
             request_client_holder["client"] = self._create_request_openai_client(
                 reason="chat_completion_stream_request"
             )

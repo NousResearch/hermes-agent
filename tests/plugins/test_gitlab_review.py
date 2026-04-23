@@ -8,7 +8,6 @@ pipeline tools, and context tools — all with mocked HTTP responses.
 import importlib
 import json
 import os
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,15 +18,6 @@ import sys
 _repo_root = str(Path(__file__).resolve().parents[2])
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
-
-# The plugin directory uses a hyphen (gitlab-review) but Python modules
-# need underscores.  We register a namespace package so imports work.
-_pkg_name = "plugins.gitlab_review"
-if _pkg_name not in sys.modules:
-    _mod = types.ModuleType(_pkg_name)
-    _mod.__path__ = [str(Path(__file__).resolve().parents[2] / "plugins" / "gitlab_review")]
-    _mod.__package__ = _pkg_name
-    sys.modules[_pkg_name] = _mod
 
 from plugins.gitlab_review.gitlab_client import (
     GitLabAPIError,

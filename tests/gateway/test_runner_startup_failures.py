@@ -184,8 +184,15 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
         async def stop(self):
             return None
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    # get_running_pid returns 42 before we kill the old gateway, then None
+    # after remove_pid_file() clears the record (reflects real behavior).
+    _pid_state = {"alive": True}
+    def _mock_get_running_pid():
+        return 42 if _pid_state["alive"] else None
+    def _mock_remove_pid_file():
+        _pid_state["alive"] = False
+    monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
+    monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
     monkeypatch.setattr("gateway.status.release_all_scoped_locks", lambda: 0)
     monkeypatch.setattr("gateway.status.terminate_pid", lambda pid, force=False: calls.append((pid, force)))
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
@@ -253,8 +260,13 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         async def stop(self):
             return None
 
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
-    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    _pid_state = {"alive": True}
+    def _mock_get_running_pid():
+        return 42 if _pid_state["alive"] else None
+    def _mock_remove_pid_file():
+        _pid_state["alive"] = False
+    monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
+    monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
     monkeypatch.setattr("gateway.status.release_all_scoped_locks", lambda: 0)
     monkeypatch.setattr("gateway.status.write_takeover_marker", record_write_marker)
     monkeypatch.setattr("gateway.status.terminate_pid", record_terminate)

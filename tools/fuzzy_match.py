@@ -93,12 +93,67 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                     f"Provide more context to make it unique, or use replace_all=True."
                 )
 
+            # Escape-drift guard: when the matched strategy is NOT `exact`,
+            # we matched via some form of normalization. If new_string
+            # contains shell/JSON-style escape sequences (\' or \") that
+            # would be written literally into the file but the matched
+            # region of the file has no such sequences, this is almost
+            # certainly tool-call serialization drift — the model typed
+            # an apostrophe/quote and the transport added a stray
+            # backslash. Writing new_string as-is would corrupt the file.
+            # Block with a helpful error so the model re-reads and retries
+            # instead of the caller silently persisting garbage (or not).
+            if strategy_name != "exact":
+                drift_err = _detect_escape_drift(content, matches, old_string, new_string)
+                if drift_err:
+                    return content, 0, None, drift_err
+
             # Perform replacement
             new_content = _apply_replacements(content, matches, new_string)
             return new_content, len(matches), strategy_name, None
 
     # No strategy found a match
     return content, 0, None, "Could not find a match for old_string in the file"
+
+
+def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
+                         old_string: str, new_string: str) -> Optional[str]:
+    """Detect tool-call escape-drift artifacts in new_string.
+
+    Looks for ``\\'`` or ``\\"`` sequences that are present in both
+    old_string and new_string (i.e. the model copy-pasted them as "context"
+    it intended to preserve) but don't exist in the matched region of the
+    file. That pattern indicates the transport layer inserted spurious
+    shell-style escapes around apostrophes or quotes — writing new_string
+    verbatim would literally insert ``\\'`` into source code.
+
+    Returns an error string if drift is detected, None otherwise.
+    """
+    # Cheap pre-check: bail out unless new_string actually contains a
+    # suspect escape sequence. This keeps the guard free for all the
+    # common, correct cases.
+    if "\\'" not in new_string and '\\"' not in new_string:
+        return None
+
+    # Aggregate matched regions of the file — that's what new_string will
+    # replace. If the suspect escapes are present there already, the
+    # model is genuinely preserving them (valid for some languages /
+    # escaped strings); accept the patch.
+    matched_regions = "".join(content[start:end] for start, end in matches)
+
+    for suspect in ("\\'", '\\"'):
+        if suspect in new_string and suspect in old_string and suspect not in matched_regions:
+            plain = suspect[1]  # "'" or '"'
+            return (
+                f"Escape-drift detected: old_string and new_string contain "
+                f"the literal sequence {suspect!r} but the matched region of "
+                f"the file does not. This is almost always a tool-call "
+                f"serialization artifact where an apostrophe or quote got "
+                f"prefixed with a spurious backslash. Re-read the file with "
+                f"read_file and pass old_string/new_string without "
+                f"backslash-escaping {plain!r} characters."
+            )
+    return None
 
 
 def _apply_replacements(content: str, matches: List[Tuple[int, int]], new_string: str) -> str:
@@ -564,3 +619,86 @@ def _map_normalized_positions(original: str, normalized: str,
         original_matches.append((orig_start, min(orig_end, len(original))))
     
     return original_matches
+
+
+def find_closest_lines(old_string: str, content: str, context_lines: int = 2, max_results: int = 3) -> str:
+    """Find lines in content most similar to old_string for "did you mean?" feedback.
+
+    Returns a formatted string showing the closest matching lines with context,
+    or empty string if no useful match is found.
+    """
+    if not old_string or not content:
+        return ""
+
+    old_lines = old_string.splitlines()
+    content_lines = content.splitlines()
+
+    if not old_lines or not content_lines:
+        return ""
+
+    # Use first line of old_string as anchor for search
+    anchor = old_lines[0].strip()
+    if not anchor:
+        # Try second line if first is blank
+        candidates = [l.strip() for l in old_lines if l.strip()]
+        if not candidates:
+            return ""
+        anchor = candidates[0]
+
+    # Score each line in content by similarity to anchor
+    scored = []
+    for i, line in enumerate(content_lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        ratio = SequenceMatcher(None, anchor, stripped).ratio()
+        if ratio > 0.3:
+            scored.append((ratio, i))
+
+    if not scored:
+        return ""
+
+    # Take top matches
+    scored.sort(key=lambda x: -x[0])
+    top = scored[:max_results]
+
+    parts = []
+    seen_ranges = set()
+    for _, line_idx in top:
+        start = max(0, line_idx - context_lines)
+        end = min(len(content_lines), line_idx + len(old_lines) + context_lines)
+        key = (start, end)
+        if key in seen_ranges:
+            continue
+        seen_ranges.add(key)
+        snippet = "\n".join(
+            f"{start + j + 1:4d}| {content_lines[start + j]}"
+            for j in range(end - start)
+        )
+        parts.append(snippet)
+
+    if not parts:
+        return ""
+
+    return "\n---\n".join(parts)
+
+
+def format_no_match_hint(error: Optional[str], match_count: int,
+                         old_string: str, content: str) -> str:
+    """Return a '\\n\\nDid you mean...' snippet for plain no-match errors.
+
+    Gated so the hint only fires for actual "old_string not found" failures.
+    Ambiguous-match ("Found N matches"), escape-drift, and identical-strings
+    errors all have ``match_count == 0`` but a "did you mean?" snippet would
+    be misleading — those failed for unrelated reasons.
+
+    Returns an empty string when there's nothing useful to append.
+    """
+    if match_count != 0:
+        return ""
+    if not error or not error.startswith("Could not find"):
+        return ""
+    hint = find_closest_lines(old_string, content)
+    if not hint:
+        return ""
+    return "\n\nDid you mean one of these sections?\n" + hint

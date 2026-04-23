@@ -22,17 +22,32 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
 
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
+_GATEWAY_LOCK_FILENAME = "gateway.lock"
+_gateway_lock_handle = None
 
 
 def _get_pid_path() -> Path:
     """Return the path to the gateway PID file, respecting HERMES_HOME."""
     home = get_hermes_home()
     return home / "gateway.pid"
+
+
+def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
+    """Return the path to the runtime gateway lock file."""
+    if pid_path is not None:
+        return pid_path.with_name(_GATEWAY_LOCK_FILENAME)
+    home = get_hermes_home()
+    return home / _GATEWAY_LOCK_FILENAME
 
 
 def _get_runtime_status_path() -> Path:
@@ -121,6 +136,7 @@ def _looks_like_gateway_process(pid: int) -> bool:
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",
         "hermes gateway",
+        "hermes-gateway",
         "gateway/run.py",
     )
     return any(pattern in cmdline for pattern in patterns)
@@ -212,21 +228,160 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
     return None
 
 
+def _read_gateway_lock_record(lock_path: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    return _read_pid_record(lock_path or _get_gateway_lock_path())
+
+
+def _pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
+    if not record:
+        return None
+    try:
+        return int(record["pid"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
+    """Delete a stale gateway PID file (and its sibling lock metadata).
+
+    Called from ``get_running_pid()`` after the runtime lock has already been
+    confirmed inactive, so the on-disk metadata is known to belong to a dead
+    process.  Unlike ``remove_pid_file()`` (which defensively refuses to delete
+    a PID file whose ``pid`` field differs from ``os.getpid()`` to protect
+    ``--replace`` handoffs), this path force-unlinks both files so the next
+    startup sees a clean slate.
+    """
     if not cleanup_stale:
         return
     try:
-        if pid_path == _get_pid_path():
-            remove_pid_file()
-        else:
-            pid_path.unlink(missing_ok=True)
+        pid_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        _get_gateway_lock_path(pid_path).unlink(missing_ok=True)
     except Exception:
         pass
 
 
+def _write_gateway_lock_record(handle) -> None:
+    handle.seek(0)
+    handle.truncate()
+    json.dump(_build_pid_record(), handle)
+    handle.flush()
+    try:
+        os.fsync(handle.fileno())
+    except OSError:
+        pass
+
+
+def _try_acquire_file_lock(handle) -> bool:
+    try:
+        if _IS_WINDOWS:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write("\n")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except (BlockingIOError, OSError):
+        return False
+
+
+def _release_file_lock(handle) -> None:
+    try:
+        if _IS_WINDOWS:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def acquire_gateway_runtime_lock() -> bool:
+    """Claim the cross-process runtime lock for the gateway.
+
+    Unlike the PID file, the lock is owned by the live process itself. If the
+    process dies abruptly, the OS releases the lock automatically.
+    """
+    global _gateway_lock_handle
+    if _gateway_lock_handle is not None:
+        return True
+
+    path = _get_gateway_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+", encoding="utf-8")
+    if not _try_acquire_file_lock(handle):
+        handle.close()
+        return False
+    _write_gateway_lock_record(handle)
+    _gateway_lock_handle = handle
+    return True
+
+
+def release_gateway_runtime_lock() -> None:
+    """Release the gateway runtime lock when owned by this process."""
+    global _gateway_lock_handle
+    handle = _gateway_lock_handle
+    if handle is None:
+        return
+    _gateway_lock_handle = None
+    _release_file_lock(handle)
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
+def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
+    """Return True when some process currently owns the gateway runtime lock."""
+    global _gateway_lock_handle
+    resolved_lock_path = lock_path or _get_gateway_lock_path()
+    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+        return True
+
+    if not resolved_lock_path.exists():
+        return False
+
+    handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    try:
+        if _try_acquire_file_lock(handle):
+            _release_file_lock(handle)
+            return False
+        return True
+    finally:
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+
 def write_pid_file() -> None:
-    """Write the current process PID and metadata to the gateway PID file."""
-    _write_json_file(_get_pid_path(), _build_pid_record())
+    """Write the current process PID and metadata to the gateway PID file.
+
+    Uses atomic O_CREAT | O_EXCL creation so that concurrent --replace
+    invocations race: exactly one process wins and the rest get
+    FileExistsError.
+    """
+    path = _get_pid_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = json.dumps(_build_pid_record())
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise  # Let caller decide: another gateway is racing us
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(record)
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def write_runtime_status(
@@ -563,35 +718,42 @@ def get_running_pid(
     Cleans up stale PID files automatically.
     """
     resolved_pid_path = pid_path or _get_pid_path()
-    record = _read_pid_record(resolved_pid_path)
-    if not record:
+    resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
+    lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
+    if not lock_active:
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
-    try:
-        pid = int(record["pid"])
-    except (KeyError, TypeError, ValueError):
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
-        return None
+    primary_record = _read_pid_record(resolved_pid_path)
+    fallback_record = _read_gateway_lock_record(resolved_lock_path)
 
-    try:
-        os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-    except (ProcessLookupError, PermissionError):
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
-        return None
+    for record in (primary_record, fallback_record):
+        pid = _pid_from_record(record)
+        if pid is None:
+            continue
 
-    recorded_start = record.get("start_time")
-    current_start = _get_process_start_time(pid)
-    if recorded_start is not None and current_start is not None and current_start != recorded_start:
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
-        return None
+        try:
+            os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            # The process exists but belongs to another user/service scope.
+            # With the runtime lock still held, prefer keeping it visible
+            # rather than deleting the PID file as "stale".
+            if _record_looks_like_gateway(record):
+                return pid
+            continue
 
-    if not _looks_like_gateway_process(pid):
-        if not _record_looks_like_gateway(record):
-            _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
-            return None
+        recorded_start = record.get("start_time")
+        current_start = _get_process_start_time(pid)
+        if recorded_start is not None and current_start is not None and current_start != recorded_start:
+            continue
 
-    return pid
+        if _looks_like_gateway_process(pid) or _record_looks_like_gateway(record):
+            return pid
+
+    _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+    return None
 
 
 def is_gateway_running(

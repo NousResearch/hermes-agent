@@ -33,7 +33,11 @@ import fal_client
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
+from tools.tool_backend_helpers import (
+    fal_key_is_configured,
+    managed_nous_tools_enabled,
+    prefers_gateway,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +188,38 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    "fal-ai/gpt-image-2": {
+        "display": "GPT Image 2",
+        "speed": "~20s",
+        "strengths": "SOTA text rendering + CJK, world-aware photorealism",
+        "price": "$0.04–0.06/image",
+        # GPT Image 2 uses FAL's standard preset enum (unlike 1.5's literal
+        # dimensions). We map to the 4:3 variants — the 16:9 presets
+        # (1024x576) fall below GPT-Image-2's 655,360 min-pixel requirement
+        # and would be rejected. 4:3 keeps us above the minimum on all
+        # three aspect ratios.
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_4_3",   # 1024x768
+            "square": "square_hd",            # 1024x1024
+            "portrait": "portrait_4_3",       # 768x1024
+        },
+        "defaults": {
+            # Same quality pinning as gpt-image-1.5: medium keeps Nous
+            # Portal billing predictable. "high" is 3-4x the per-image
+            # cost at the same size; "low" is too rough for production use.
+            "quality": "medium",
+            "num_images": 1,
+            "output_format": "png",
+        },
+        "supports": {
+            "prompt", "image_size", "quality", "num_images", "output_format",
+            "sync_mode",
+            # openai_api_key (BYOK) intentionally omitted — all users go
+            # through the shared FAL billing path.
+        },
+        "upscale": False,
+    },
     "fal-ai/ideogram/v3": {
         "display": "Ideogram V3",
         "speed": "~5s",
@@ -286,7 +322,7 @@ _managed_fal_client_lock = threading.Lock()
 def _resolve_managed_fal_gateway():
     """Return managed fal-queue gateway config when the user prefers the gateway
     or direct FAL credentials are absent."""
-    if os.getenv("FAL_KEY") and not prefers_gateway("image_gen"):
+    if fal_key_is_configured() and not prefers_gateway("image_gen"):
         return None
     return resolve_managed_tool_gateway("fal-queue")
 
@@ -623,7 +659,7 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
+        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             message = "FAL_KEY environment variable not set"
             if managed_nous_tools_enabled():
                 message += " and managed FAL gateway is unavailable"
@@ -734,18 +770,45 @@ def image_generate_tool(
 
 def check_fal_api_key() -> bool:
     """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
+    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
 
 
 def check_image_generation_requirements() -> bool:
-    """True if FAL credentials and fal_client SDK are both available."""
+    """True if any image gen backend is available.
+
+    Providers are considered in this order:
+
+    1. The in-tree FAL backend (FAL_KEY or managed gateway).
+    2. Any plugin-registered provider whose ``is_available()`` returns True.
+
+    Plugins win only when the in-tree FAL path is NOT ready, which matches
+    the historical behavior: shipping hermes with a FAL key configured
+    should still expose the tool. The active selection among ready
+    providers is resolved per-call by ``image_gen.provider``.
+    """
     try:
-        if not check_fal_api_key():
-            return False
-        import fal_client  # noqa: F401 — SDK presence check
-        return True
+        if check_fal_api_key():
+            fal_client  # noqa: F401 — SDK presence check
+            return True
     except ImportError:
-        return False
+        pass
+
+    # Probe plugin providers. Discovery is idempotent and cheap.
+    try:
+        from agent.image_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        for provider in list_providers():
+            try:
+                if provider.is_available():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -791,10 +854,11 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts using FAL.ai. "
-        "The underlying model is user-configured (default: FLUX 2 Klein 9B, "
-        "sub-1s generation) and is not selectable by the agent. Returns a "
-        "single image URL. Display it using markdown: ![description](URL)"
+        "Generate high-quality images from text prompts. The underlying "
+        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
+        "selectable by the agent. Returns either a URL or an absolute file "
+        "path in the `image` field; display it with markdown "
+        "![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
@@ -815,13 +879,104 @@ IMAGE_GENERATE_SCHEMA = {
 }
 
 
+def _read_configured_image_provider():
+    """Return the value of ``image_gen.provider`` from config.yaml, or None.
+
+    We only consult the plugin registry when this is explicitly set — an
+    unset value keeps users on the legacy in-tree FAL path even when other
+    providers happen to be registered (e.g. a user has OPENAI_API_KEY set
+    for other features but never asked for OpenAI image gen).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            value = section.get("provider")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    except Exception as exc:
+        logger.debug("Could not read image_gen.provider: %s", exc)
+    return None
+
+
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+    """Route the call to a plugin-registered provider when one is selected.
+
+    Returns a JSON string on dispatch, or ``None`` to fall through to the
+    built-in FAL path.
+
+    Dispatch only fires when ``image_gen.provider`` is explicitly set AND
+    it does not point to ``fal`` (FAL still lives in-tree in this PR;
+    a later PR ports it into ``plugins/image_gen/fal/``). Any other value
+    that matches a registered plugin provider wins.
+    """
+    configured = _read_configured_image_provider()
+    if not configured or configured == "fal":
+        return None
+
+    try:
+        # Import locally so plugin discovery isn't triggered just by
+        # importing this module (tests rely on that).
+        from agent.image_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        provider = get_provider(configured)
+    except Exception as exc:
+        logger.debug("image_gen plugin dispatch skipped: %s", exc)
+        return None
+
+    if provider is None:
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": (
+                f"image_gen.provider='{configured}' is set but no plugin "
+                f"registered that name. Run `hermes plugins list` to see "
+                f"available image gen backends."
+            ),
+            "error_type": "provider_not_registered",
+        })
+
+    try:
+        result = provider.generate(prompt=prompt, aspect_ratio=aspect_ratio)
+    except Exception as exc:
+        logger.warning(
+            "Image gen provider '%s' raised: %s",
+            getattr(provider, "name", "?"), exc,
+        )
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Provider '{getattr(provider, 'name', '?')}' error: {exc}",
+            "error_type": "provider_exception",
+        })
+    if not isinstance(result, dict):
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": "Provider returned a non-dict result",
+            "error_type": "provider_contract",
+        })
+    return json.dumps(result)
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
+    aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+
+    # Route to a plugin-registered provider if one is active (and it's
+    # not the in-tree FAL path).
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    if dispatched is not None:
+        return dispatched
+
     return image_generate_tool(
         prompt=prompt,
-        aspect_ratio=args.get("aspect_ratio", DEFAULT_ASPECT_RATIO),
+        aspect_ratio=aspect_ratio,
     )
 
 

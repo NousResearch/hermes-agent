@@ -108,9 +108,15 @@ def _run_async(coro):
     if loop and loop.is_running():
         # Inside an async context (gateway, RL env) — run in a fresh thread.
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(asyncio.run, coro)
+        try:
             return future.result(timeout=300)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
@@ -281,6 +287,31 @@ def get_tool_definitions(
             if td.get("function", {}).get("name") == "execute_code":
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
+
+    # Rebuild discord_server schema based on the bot's privileged intents
+    # (detected from GET /applications/@me) and the user's action allowlist
+    # in config.  Hides actions the bot's intents don't support so the
+    # model never attempts them, and annotates fetch_messages when the
+    # MESSAGE_CONTENT intent is missing.
+    if "discord_server" in available_tool_names:
+        try:
+            from tools.discord_tool import get_dynamic_schema
+            dynamic = get_dynamic_schema()
+        except Exception:  # pragma: no cover — defensive, fall back to static
+            dynamic = None
+        if dynamic is None:
+            # Tool filtered out entirely (empty allowlist or detection disabled
+            # the only remaining actions).  Drop it from the schema list.
+            filtered_tools = [
+                t for t in filtered_tools
+                if t.get("function", {}).get("name") != "discord_server"
+            ]
+            available_tool_names.discard("discord_server")
+        else:
+            for i, td in enumerate(filtered_tools):
+                if td.get("function", {}).get("name") == "discord_server":
+                    filtered_tools[i] = {"type": "function", "function": dynamic}
+                    break
 
     # Strip web tool cross-references from browser_navigate description when
     # web_search / web_extract are not available.  The static schema says
@@ -522,6 +553,30 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
             )
+        except Exception:
+            pass
+
+        # Generic tool-result canonicalization seam: plugins receive the
+        # final result string (JSON, usually) and may replace it by
+        # returning a string from transform_tool_result. Runs after
+        # post_tool_call (which stays observational) and before the result
+        # is appended back into conversation context. Fail-open; the first
+        # valid string return wins; non-string returns are ignored.
+        try:
+            from hermes_cli.plugins import invoke_hook
+            hook_results = invoke_hook(
+                "transform_tool_result",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    result = hook_result
+                    break
         except Exception:
             pass
 

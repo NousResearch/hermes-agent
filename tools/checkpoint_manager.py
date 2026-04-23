@@ -389,7 +389,6 @@ class CheckpointManager:
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
         """Parse git --shortstat output into entry dict."""
-        import re
         m = re.search(r'(\d+) file', stat_line)
         if m:
             entry["files_changed"] = int(m.group(1))

@@ -252,7 +252,11 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
                 coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
 
             future = asyncio.run_coroutine_threadsafe(coro, loop)
-            result = future.result(timeout=30)
+            try:
+                result = future.result(timeout=30)
+            except TimeoutError:
+                future.cancel()
+                raise
             if result and not getattr(result, "success", True):
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
@@ -382,7 +386,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,
                     )
-                    send_result = future.result(timeout=60)
+                    try:
+                        send_result = future.result(timeout=60)
+                    except TimeoutError:
+                        future.cancel()
+                        raise
                     if send_result and not getattr(send_result, "success", True):
                         err = getattr(send_result, "error", "unknown")
                         logger.warning(
@@ -422,7 +430,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
                 # fresh thread that has no running loop.
                 coro.close()
-                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
                     result = future.result(timeout=30)
@@ -747,14 +754,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # scheduler process — every job this process runs is a cron job.
     os.environ["HERMES_CRON_SESSION"] = "1"
 
+    # Use ContextVars for per-job session/delivery state so parallel jobs
+    # don't clobber each other's targets (os.environ is process-global).
+    from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
+
+    _ctx_tokens = set_session_vars(
+        platform=origin["platform"] if origin else "",
+        chat_id=str(origin["chat_id"]) if origin else "",
+        chat_name=origin.get("chat_name", "") if origin else "",
+    )
+
     try:
-        # Inject origin context so the agent's send_message tool knows the chat.
-        # Must be INSIDE the try block so the finally cleanup always runs.
-        if origin:
-            os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-            os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-            if origin.get("chat_name"):
-                os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -765,10 +775,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
-            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
             if delivery_target.get("thread_id") is not None:
-                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -807,14 +817,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         prefill_messages = None
         prefill_file = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "") or _cfg.get("prefill_messages_file", "")
         if prefill_file:
-            import json as _json
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():
                 pfpath = _hermes_home / pfpath
             if pfpath.exists():
                 try:
                     with open(pfpath, "r", encoding="utf-8") as _pf:
-                        prefill_messages = _json.load(_pf)
+                        prefill_messages = json.load(_pf)
                     if not isinstance(prefill_messages, list):
                         prefill_messages = None
                 except Exception as e:
@@ -826,7 +835,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
-        smart_routing = _cfg.get("smart_model_routing", {}) or {}
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
@@ -843,24 +851,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        from agent.smart_model_routing import resolve_turn_route
-        turn_route = resolve_turn_route(
-            prompt,
-            smart_routing,
-            {
-                "model": model,
-                "api_key": runtime.get("api_key"),
-                "base_url": runtime.get("base_url"),
-                "provider": runtime.get("provider"),
-                "api_mode": runtime.get("api_mode"),
-                "command": runtime.get("command"),
-                "args": list(runtime.get("args") or []),
-            },
-        )
-
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
-        runtime_provider = str(turn_route["runtime"].get("provider") or "").strip().lower()
+        runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
             try:
                 from agent.credential_pool import load_pool
@@ -877,13 +870,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
         agent = AIAgent(
-            model=turn_route["model"],
-            api_key=turn_route["runtime"].get("api_key"),
-            base_url=turn_route["runtime"].get("base_url"),
-            provider=turn_route["runtime"].get("provider"),
-            api_mode=turn_route["runtime"].get("api_mode"),
-            acp_command=turn_route["runtime"].get("command"),
-            acp_args=turn_route["runtime"].get("args"),
+            model=model,
+            api_key=runtime.get("api_key"),
+            base_url=runtime.get("base_url"),
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
+            acp_command=runtime.get("command"),
+            acp_args=runtime.get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
@@ -1028,16 +1021,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
-        # Clean up injected env vars so they don't leak to other jobs
-        for key in (
-            "HERMES_SESSION_PLATFORM",
-            "HERMES_SESSION_CHAT_ID",
-            "HERMES_SESSION_CHAT_NAME",
-            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
-        ):
-            os.environ.pop(key, None)
+        # Clean up ContextVar session/delivery state for this job.
+        clear_session_vars(_ctx_tokens)
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
@@ -1090,15 +1075,41 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        executed = 0
+        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
+        # before any execution begins.  This preserves at-most-once semantics.
         for job in due_jobs:
-            try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
+            advance_next_run(job["id"])
 
+        # Resolve max parallel workers: env var > config.yaml > unbounded.
+        # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
+        _max_workers: Optional[int] = None
+        try:
+            _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
+            if _env_par:
+                _max_workers = int(_env_par) or None
+        except (ValueError, TypeError):
+            logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
+        if _max_workers is None:
+            try:
+                _ucfg = load_config() or {}
+                _cfg_par = (
+                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+                ).get("max_parallel_jobs")
+                if _cfg_par is not None:
+                    _max_workers = int(_cfg_par) or None
+            except Exception:
+                pass
+
+        if verbose:
+            logger.info(
+                "Running %d job(s) in parallel (max_workers=%s)",
+                len(due_jobs),
+                _max_workers if _max_workers else "unbounded",
+            )
+
+        def _process_job(job: dict) -> bool:
+            """Run one due job end-to-end: execute, save, deliver, mark."""
+            try:
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)
@@ -1130,13 +1141,23 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                executed += 1
+                return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+                return False
 
-        return executed
+        # Run all due jobs concurrently, each in its own ContextVar copy
+        # so session/delivery state stays isolated per-thread.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
+            _futures = []
+            for job in due_jobs:
+                _ctx = contextvars.copy_context()
+                _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
+            _results = [f.result() for f in _futures]
+
+        return sum(_results)
     finally:
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)

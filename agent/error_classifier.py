@@ -220,12 +220,25 @@ _TRANSPORT_ERROR_TYPES = frozenset({
     "ConnectionAbortedError", "BrokenPipeError",
     "TimeoutError", "ReadError",
     "ServerDisconnectedError",
+    # SSL/TLS transport errors — transient mid-stream handshake/record
+    # failures that should retry rather than surface as a stalled session.
+    # ssl.SSLError subclasses OSError (caught by isinstance) but we list
+    # the type names here so provider-wrapped SSL errors (e.g. when the
+    # SDK re-raises without preserving the exception chain) still classify
+    # as transport rather than falling through to the unknown bucket.
+    "SSLError", "SSLZeroReturnError", "SSLWantReadError",
+    "SSLWantWriteError", "SSLEOFError", "SSLSyscallError",
     # OpenAI SDK errors (not subclasses of Python builtins)
     "APIConnectionError",
     "APITimeoutError",
 })
 
-# Server disconnect patterns (no status code, but transport-level)
+# Server disconnect patterns (no status code, but transport-level).
+# These are the "ambiguous" patterns — a plain connection close could be
+# transient transport hiccup OR server-side context overflow rejection
+# (common when the API gateway disconnects instead of returning an HTTP
+# error for oversized requests).  A large session + one of these patterns
+# triggers the context-overflow-with-compression recovery path.
 _SERVER_DISCONNECT_PATTERNS = [
     "server disconnected",
     "peer closed connection",
@@ -234,6 +247,40 @@ _SERVER_DISCONNECT_PATTERNS = [
     "network connection lost",
     "unexpected eof",
     "incomplete chunked read",
+]
+
+# SSL/TLS transient failure patterns — intentionally distinct from
+# _SERVER_DISCONNECT_PATTERNS above.
+#
+# An SSL alert mid-stream is almost always a transport-layer hiccup
+# (flaky network, mid-session TLS renegotiation failure, load balancer
+# dropping the connection) — NOT a server-side context overflow signal.
+# So we want the retry path but NOT the compression path; lumping these
+# into _SERVER_DISCONNECT_PATTERNS would trigger unnecessary (and
+# expensive) context compression on any large-session SSL hiccup.
+#
+# The OpenSSL library constructs error codes by prepending a format string
+# to the uppercased alert reason; OpenSSL 3.x changed the separator
+# (e.g. `SSLV3_ALERT_BAD_RECORD_MAC` → `SSL/TLS_ALERT_BAD_RECORD_MAC`),
+# which silently stopped matching anything explicit.  Matching on the
+# stable substrings (`bad record mac`, `ssl alert`, `tls alert`, etc.)
+# survives future OpenSSL format churn without code changes.
+_SSL_TRANSIENT_PATTERNS = [
+    # Space-separated (human-readable form, Python ssl module, most SDKs)
+    "bad record mac",
+    "ssl alert",
+    "tls alert",
+    "ssl handshake failure",
+    "tlsv1 alert",
+    "sslv3 alert",
+    # Underscore-separated (OpenSSL error code tokens, e.g.
+    # `ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC`, `SSLV3_ALERT_BAD_RECORD_MAC`)
+    "bad_record_mac",
+    "ssl_alert",
+    "tls_alert",
+    "tls_alert_internal_error",
+    # Python ssl module prefix, e.g. "[SSL: BAD_RECORD_MAC]"
+    "[ssl:",
 ]
 
 
@@ -255,9 +302,10 @@ def classify_api_error(
       2. HTTP status code + message-aware refinement
       3. Error code classification (from body)
       4. Message pattern matching (billing vs rate_limit vs context vs auth)
-      5. Transport error heuristics
+      5. SSL/TLS transient alert patterns → retry as timeout
       6. Server disconnect + large session → context overflow
-      7. Fallback: unknown (retryable with backoff)
+      7. Transport error heuristics
+      8. Fallback: unknown (retryable with backoff)
 
     Args:
         error: The exception from the API call.
@@ -290,7 +338,7 @@ def classify_api_error(
     if isinstance(body, dict):
         _err_obj = body.get("error", {})
         if isinstance(_err_obj, dict):
-            _body_msg = (_err_obj.get("message") or "").lower()
+            _body_msg = str(_err_obj.get("message") or "").lower()
             # Parse metadata.raw for wrapped provider errors
             _metadata = _err_obj.get("metadata", {})
             if isinstance(_metadata, dict):
@@ -302,11 +350,11 @@ def classify_api_error(
                         if isinstance(_inner, dict):
                             _inner_err = _inner.get("error", {})
                             if isinstance(_inner_err, dict):
-                                _metadata_msg = (_inner_err.get("message") or "").lower()
+                                _metadata_msg = str(_inner_err.get("message") or "").lower()
                     except (json.JSONDecodeError, TypeError):
                         pass
         if not _body_msg:
-            _body_msg = (body.get("message") or "").lower()
+            _body_msg = str(body.get("message") or "").lower()
     # Combine all message sources for pattern matching
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
@@ -388,7 +436,18 @@ def classify_api_error(
     if classified is not None:
         return classified
 
-    # ── 5. Server disconnect + large session → context overflow ─────
+    # ── 5. SSL/TLS transient errors → retry as timeout (not compression) ──
+    # SSL alerts mid-stream are transport hiccups, not server-side context
+    # overflow signals.  Classify before the disconnect check so a large
+    # session doesn't incorrectly trigger context compression when the real
+    # cause is a flaky TLS handshake.  Also matches when the error is
+    # wrapped in a generic exception whose message string carries the SSL
+    # alert text but the type isn't ssl.SSLError (happens with some SDKs
+    # that re-raise without chaining).
+    if any(p in error_msg for p in _SSL_TRANSIENT_PATTERNS):
+        return _result(FailoverReason.timeout, retryable=True)
+
+    # ── 6. Server disconnect + large session → context overflow ─────
     # Must come BEFORE generic transport error catch — a disconnect on
     # a large session is more likely context overflow than a transient
     # transport hiccup.  Without this ordering, RemoteProtocolError
@@ -405,12 +464,12 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 6. Transport / timeout heuristics ───────────────────────────
+    # ── 7. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 7. Fallback: unknown ────────────────────────────────────────
+    # ── 8. Fallback: unknown ────────────────────────────────────────
 
     return _result(FailoverReason.unknown, retryable=True)
 
@@ -470,11 +529,16 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
-        # Generic 404 — could be model or endpoint
+        # Generic 404 with no "model not found" signal — could be a wrong
+        # endpoint path (common with local llama.cpp / Ollama / vLLM when
+        # the URL is slightly misconfigured), a proxy routing glitch, or
+        # a transient backend issue.  Classifying these as model_not_found
+        # silently falls back to a different provider and tells the model
+        # the model is missing, which is wrong and wastes a turn.  Treat
+        # as unknown so the retry loop surfaces the real error instead.
         return result_fn(
-            FailoverReason.model_not_found,
-            retryable=False,
-            should_fallback=True,
+            FailoverReason.unknown,
+            retryable=True,
         )
 
     if status_code == 413:
@@ -606,10 +670,10 @@ def _classify_400(
     if isinstance(body, dict):
         err_obj = body.get("error", {})
         if isinstance(err_obj, dict):
-            err_body_msg = (err_obj.get("message") or "").strip().lower()
+            err_body_msg = str(err_obj.get("message") or "").strip().lower()
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
-            err_body_msg = (body.get("message") or "").strip().lower()
+            err_body_msg = str(body.get("message") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
     is_large = approx_tokens > context_length * 0.4 or approx_tokens > 80000 or num_messages > 80
 

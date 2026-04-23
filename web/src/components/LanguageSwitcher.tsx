@@ -1,3 +1,4 @@
+import { Typography } from "@nous-research/ui";
 import { useI18n } from "@/i18n/context";
 
 /**
@@ -18,10 +19,15 @@ export function LanguageSwitcher() {
       aria-label={t.language.switchTo}
     >
       {/* Show the *current* language's flag — tooltip advertises the click action */}
-      <span className="text-base leading-none">{locale === "en" ? "🇬🇧" : "🇨🇳"}</span>
-      <span className="hidden sm:inline font-display tracking-wide uppercase text-[0.65rem]">
-        {locale === "en" ? "EN" : "中文"}
+      <span className="text-base leading-none">
+        {locale === "en" ? "🇬🇧" : "🇨🇳"}
       </span>
+      <Typography
+        mondwest
+        className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
+      >
+        {locale === "en" ? "EN" : "中文"}
+      </Typography>
     </button>
   );
 }

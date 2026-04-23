@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, StreamingConfig
+from gateway.platforms.base import resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -131,6 +132,15 @@ class TestGetProxyUrl:
         runner = _make_runner()
         with patch("gateway.run._load_gateway_config", return_value={}):
             assert runner._get_proxy_url() is None
+
+
+class TestResolveProxyUrl:
+    def test_normalizes_socks_alias_from_all_proxy(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080/")
+        assert resolve_proxy_url() == "socks5://127.0.0.1:1080/"
 
 
 class TestRunAgentProxyDispatch:

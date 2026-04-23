@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { FileText, RefreshCw, ChevronRight } from "lucide-react";
+import { H2 } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,12 @@ const LINE_COUNTS = [50, 100, 200, 500] as const;
 
 function classifyLine(line: string): "error" | "warning" | "info" | "debug" {
   const upper = line.toUpperCase();
-  if (upper.includes("ERROR") || upper.includes("CRITICAL") || upper.includes("FATAL")) return "error";
+  if (
+    upper.includes("ERROR") ||
+    upper.includes("CRITICAL") ||
+    upper.includes("FATAL")
+  )
+    return "error";
   if (upper.includes("WARNING") || upper.includes("WARN")) return "warning";
   if (upper.includes("DEBUG")) return "debug";
   return "info";
@@ -54,7 +60,9 @@ function SidebarItem<T extends string>({
       }`}
     >
       <span className="flex-1 truncate">{label}</span>
-      {isActive && <ChevronRight className="h-3 w-3 text-primary/50 shrink-0" />}
+      {isActive && (
+        <ChevronRight className="h-3 w-3 text-primary/50 shrink-0" />
+      )}
     </button>
   );
 }
@@ -62,7 +70,8 @@ function SidebarItem<T extends string>({
 export default function LogsPage() {
   const [file, setFile] = useState<(typeof FILES)[number]>("agent");
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
-  const [component, setComponent] = useState<(typeof COMPONENTS)[number]>("all");
+  const [component, setComponent] =
+    useState<(typeof COMPONENTS)[number]>("all");
   const [lineCount, setLineCount] = useState<(typeof LINE_COUNTS)[number]>(100);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
@@ -104,7 +113,7 @@ export default function LogsPage() {
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <FileText className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-base font-semibold">{t.logs.title}</h1>
+          <H2 variant="sm">{t.logs.title}</H2>
           {loading && (
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           )}
@@ -123,7 +132,12 @@ export default function LogsPage() {
               </Badge>
             )}
           </div>
-          <Button variant="outline" size="sm" onClick={fetchLogs} className="text-xs h-7">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={fetchLogs}
+            className="text-xs h-7"
+          >
             <RefreshCw className="h-3 w-3 mr-1" />
             {t.common.refresh}
           </Button>
@@ -131,23 +145,44 @@ export default function LogsPage() {
       </div>
 
       {/* ═══════════════ Sidebar + Content ═══════════════ */}
-      <div className="flex flex-col sm:flex-row gap-4" style={{ minHeight: "calc(100vh - 180px)" }}>
+      <div
+        className="flex flex-col sm:flex-row gap-4"
+        style={{ minHeight: "calc(100vh - 180px)" }}
+      >
         {/* ---- Sidebar ---- */}
         <div className="sm:w-44 sm:shrink-0">
           <div className="sm:sticky sm:top-[72px] flex flex-col gap-0.5">
             <SidebarHeading>{t.logs.file}</SidebarHeading>
             {FILES.map((f) => (
-              <SidebarItem key={f} label={f} value={f} current={file} onChange={setFile} />
+              <SidebarItem
+                key={f}
+                label={f}
+                value={f}
+                current={file}
+                onChange={setFile}
+              />
             ))}
 
             <SidebarHeading>{t.logs.level}</SidebarHeading>
             {LEVELS.map((l) => (
-              <SidebarItem key={l} label={l} value={l} current={level} onChange={setLevel} />
+              <SidebarItem
+                key={l}
+                label={l}
+                value={l}
+                current={level}
+                onChange={setLevel}
+              />
             ))}
 
             <SidebarHeading>{t.logs.component}</SidebarHeading>
             {COMPONENTS.map((c) => (
-              <SidebarItem key={c} label={c} value={c} current={component} onChange={setComponent} />
+              <SidebarItem
+                key={c}
+                label={c}
+                value={c}
+                current={component}
+                onChange={setComponent}
+              />
             ))}
 
             <SidebarHeading>{t.logs.lines}</SidebarHeading>
@@ -157,7 +192,9 @@ export default function LogsPage() {
                 label={String(n)}
                 value={String(n)}
                 current={String(lineCount)}
-                onChange={(v) => setLineCount(Number(v) as (typeof LINE_COUNTS)[number])}
+                onChange={(v) =>
+                  setLineCount(Number(v) as (typeof LINE_COUNTS)[number])
+                }
               />
             ))}
           </div>
@@ -184,12 +221,17 @@ export default function LogsPage() {
                 className="p-4 font-mono-ui text-xs leading-5 overflow-auto max-h-[600px] min-h-[200px]"
               >
                 {lines.length === 0 && !loading && (
-                  <p className="text-muted-foreground text-center py-8">{t.logs.noLogLines}</p>
+                  <p className="text-muted-foreground text-center py-8">
+                    {t.logs.noLogLines}
+                  </p>
                 )}
                 {lines.map((line, i) => {
                   const cls = classifyLine(line);
                   return (
-                    <div key={i} className={`${LINE_COLORS[cls]} hover:bg-secondary/20 px-1 -mx-1`}>
+                    <div
+                      key={i}
+                      className={`${LINE_COLORS[cls]} hover:bg-secondary/20 px-1 -mx-1`}
+                    >
                       {line}
                     </div>
                   );

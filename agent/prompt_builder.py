@@ -176,6 +176,20 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+CHECKPOINT_GUIDANCE = (
+    "When a CHECKPOINT block appears at session start, read it and resume from "
+    "where the previous session left off. Do not start over — pick up at the "
+    "first in_progress step.\n"
+    "Write a checkpoint (action=\"write\") at these moments:\n"
+    "- Before a risky command that could break state\n"
+    "- After completing a major step in a multi-step task (then action=\"update\" "
+    "for subsequent steps)\n"
+    "- When you have important \"why\" decisions that won't be obvious later\n"
+    "Clear the checkpoint (action=\"clear\") when the task is fully done.\n"
+    "Pre-compression checkpoints are auto-written — you do not need to worry "
+    "about losing progress when the context window fills."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

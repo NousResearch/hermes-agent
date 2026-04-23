@@ -359,6 +359,7 @@ AUTHOR_MAP = {
     "somme4096@gmail.com": "Somme4096",
     "brian@tiuxo.com": "brianclemens",
     "25944632+yudaiyan@users.noreply.github.com": "yudaiyan",
+    "chayton@sina.com": "ycbai",
 }
 
 

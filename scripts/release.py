@@ -350,6 +350,7 @@ AUTHOR_MAP = {
     "cliff@cigii.com": "cgarwood82",
     "anna@oa.ke": "anna-oake",
     "jaffarkeikei@gmail.com": "jaffarkeikei",
+    "hxp@hxp.plus": "hxp-plus",
 }
 
 

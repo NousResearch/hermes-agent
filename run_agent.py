@@ -6788,7 +6788,7 @@ class AIAgent:
                     function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
                 )
                 if tc.provider_data:
-                    for key in ("call_id", "response_item_id"):
+                    for key in ("call_id", "response_item_id", "extra_content"):
                         if tc.provider_data.get(key):
                             setattr(tc_ns, key, tc.provider_data[key])
                 tc_list.append(tc_ns)

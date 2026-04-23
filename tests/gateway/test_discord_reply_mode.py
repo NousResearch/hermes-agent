@@ -4,9 +4,12 @@ Covers the threading behavior control for multi-chunk replies:
 - "off": Never reply-reference to original message
 - "first": Only first chunk uses reply reference (default)
 - "all": All chunks reply-reference the original message
+
+Also covers reply_to_text extraction from incoming messages.
 """
 import os
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -102,9 +105,14 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     config = PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
     adapter = DiscordAdapter(config)
 
-    # Mock the Discord client and channel
+    # Mock the Discord client and channel.
+    # ref_message.to_reference() → a distinct sentinel: the adapter now wraps
+    # the fetched Message via to_reference(fail_if_not_exists=False) so a
+    # deleted target degrades to "send without reply chip" instead of a 400.
     mock_channel = AsyncMock()
     ref_message = MagicMock()
+    ref_reference = MagicMock(name="MessageReference")
+    ref_message.to_reference = MagicMock(return_value=ref_reference)
     mock_channel.fetch_message = AsyncMock(return_value=ref_message)
 
     sent_msg = MagicMock()
@@ -115,7 +123,9 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     mock_client.get_channel = MagicMock(return_value=mock_channel)
 
     adapter._client = mock_client
-    return adapter, mock_channel, ref_message
+    # Return the reference sentinel alongside so tests can assert identity.
+    adapter._test_expected_reference = ref_reference
+    return adapter, mock_channel, ref_reference
 
 
 class TestSendWithReplyToMode:
@@ -124,7 +134,7 @@ class TestSendWithReplyToMode:
     @pytest.mark.asyncio
     async def test_off_mode_no_reply_reference(self):
         adapter, channel, ref_msg = _make_discord_adapter("off")
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2", "chunk3"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
 
         await adapter.send("12345", "test content", reply_to="999")
 
@@ -137,7 +147,7 @@ class TestSendWithReplyToMode:
     @pytest.mark.asyncio
     async def test_first_mode_only_first_chunk_references(self):
         adapter, channel, ref_msg = _make_discord_adapter("first")
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2", "chunk3"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
 
         await adapter.send("12345", "test content", reply_to="999")
 
@@ -152,7 +162,7 @@ class TestSendWithReplyToMode:
     @pytest.mark.asyncio
     async def test_all_mode_all_chunks_reference(self):
         adapter, channel, ref_msg = _make_discord_adapter("all")
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2", "chunk3"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
 
         await adapter.send("12345", "test content", reply_to="999")
 
@@ -165,7 +175,7 @@ class TestSendWithReplyToMode:
     @pytest.mark.asyncio
     async def test_no_reply_to_param_no_reference(self):
         adapter, channel, ref_msg = _make_discord_adapter("all")
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
 
         await adapter.send("12345", "test content", reply_to=None)
 
@@ -176,7 +186,7 @@ class TestSendWithReplyToMode:
     @pytest.mark.asyncio
     async def test_single_chunk_respects_first_mode(self):
         adapter, channel, ref_msg = _make_discord_adapter("first")
-        adapter.truncate_message = lambda content, max_len: ["single chunk"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["single chunk"]
 
         await adapter.send("12345", "test", reply_to="999")
 
@@ -187,7 +197,7 @@ class TestSendWithReplyToMode:
     @pytest.mark.asyncio
     async def test_single_chunk_off_mode(self):
         adapter, channel, ref_msg = _make_discord_adapter("off")
-        adapter.truncate_message = lambda content, max_len: ["single chunk"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["single chunk"]
 
         await adapter.send("12345", "test", reply_to="999")
 
@@ -200,7 +210,7 @@ class TestSendWithReplyToMode:
     async def test_invalid_mode_falls_back_to_first_behavior(self):
         """Invalid mode behaves like 'first' — only first chunk gets reference."""
         adapter, channel, ref_msg = _make_discord_adapter("banana")
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
 
         await adapter.send("12345", "test", reply_to="999")
 
@@ -275,3 +285,114 @@ class TestEnvVarOverride:
             _apply_env_overrides(config)
         assert Platform.DISCORD in config.platforms
         assert config.platforms[Platform.DISCORD].reply_to_mode == "off"
+
+
+# ------------------------------------------------------------------
+# Tests for reply_to_text extraction in _handle_message
+# ------------------------------------------------------------------
+
+# Build FakeDMChannel as a subclass of the real discord.DMChannel when the
+# library is installed — this guarantees isinstance() checks pass in
+# production code regardless of test ordering or monkeypatch state.
+try:
+    import discord as _discord_lib
+    _DMChannelBase = _discord_lib.DMChannel
+except (ImportError, AttributeError):
+    _DMChannelBase = object
+
+
+class FakeDMChannel(_DMChannelBase):
+    """Minimal DM channel stub (skips mention / channel-allow checks)."""
+    def __init__(self, channel_id: int = 100, name: str = "dm"):
+        # Do NOT call super().__init__() — real DMChannel requires State
+        self.id = channel_id
+        self.name = name
+
+
+def _make_message(*, content: str = "hi", reference=None):
+    """Build a mock Discord message for _handle_message tests."""
+    author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
+    return SimpleNamespace(
+        id=999,
+        content=content,
+        mentions=[],
+        attachments=[],
+        reference=reference,
+        created_at=datetime.now(timezone.utc),
+        channel=FakeDMChannel(),
+        author=author,
+    )
+
+
+@pytest.fixture
+def reply_text_adapter(monkeypatch):
+    """DiscordAdapter wired for _handle_message → handle_message capture."""
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._text_batch_delay_seconds = 0
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+class TestReplyToText:
+    """Tests for reply_to_text populated by _handle_message."""
+
+    @pytest.mark.asyncio
+    async def test_no_reference_both_none(self, reply_text_adapter):
+        message = _make_message(reference=None)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_reference_without_resolved(self, reply_text_adapter):
+        ref = SimpleNamespace(message_id=555, resolved=None)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_reference_with_resolved_content(self, reply_text_adapter):
+        resolved_msg = SimpleNamespace(content="original message text")
+        ref = SimpleNamespace(message_id=555, resolved=resolved_msg)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text == "original message text"
+
+    @pytest.mark.asyncio
+    async def test_reference_with_empty_resolved_content(self, reply_text_adapter):
+        """Empty string content should become None, not leak as empty string."""
+        resolved_msg = SimpleNamespace(content="")
+        ref = SimpleNamespace(message_id=555, resolved=resolved_msg)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_reference_with_deleted_message(self, reply_text_adapter):
+        """Deleted messages lack .content — getattr guard should return None."""
+        resolved_deleted = SimpleNamespace(id=555)
+        ref = SimpleNamespace(message_id=555, resolved=resolved_deleted)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text is None

@@ -8,8 +8,9 @@ Different LLM providers expect model identifiers in different formats:
   hyphens: ``claude-sonnet-4-6``.
 - **Copilot** expects bare names *with* dots preserved:
   ``claude-sonnet-4.6``.
-- **OpenCode Zen** follows the same dot-to-hyphen convention as
-  Anthropic: ``claude-sonnet-4-6``.
+- **OpenCode Zen** preserves dots for GPT/GLM/Gemini/Kimi/MiniMax-style
+  model IDs, but Claude still uses hyphenated native names like
+  ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
 - **DeepSeek** only accepts two model identifiers:
   ``deepseek-chat`` and ``deepseek-reasoner``.
@@ -50,6 +51,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
     "grok": "x-ai",
     "qwen": "qwen",
     "mimo": "xiaomi",
+    "trinity": "arcee-ai",
     "nemotron": "nvidia",
     "llama": "meta-llama",
     "step": "stepfun",
@@ -67,7 +69,6 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
 # Providers that want bare names with dots replaced by hyphens.
 _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
     "anthropic",
-    "opencode-zen",
 })
 
 # Providers that want bare names with dots preserved.
@@ -88,11 +89,14 @@ _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
 _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
     "kimi-coding",
+    "kimi-coding-cn",
     "minimax",
     "minimax-cn",
     "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "arcee",
+    "ollama-cloud",
     "custom",
 })
 
@@ -329,6 +333,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         >>> normalize_model_for_provider("claude-sonnet-4.6", "opencode-zen")
         'claude-sonnet-4-6'
 
+        >>> normalize_model_for_provider("minimax-m2.5-free", "opencode-zen")
+        'minimax-m2.5-free'
+
         >>> normalize_model_for_provider("deepseek-v3", "deepseek")
         'deepseek-chat'
 
@@ -351,14 +358,42 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- Anthropic / OpenCode: strip matching provider prefix, dots -> hyphens ---
+    # --- OpenCode Zen: Claude stays hyphenated; other models keep dots ---
+    if provider == "opencode-zen":
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        if bare.lower().startswith("claude-"):
+            return _dots_to_hyphens(bare)
+        return bare
+
+    # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
         bare = _strip_matching_provider_prefix(name, provider)
         if "/" in bare:
             return bare
         return _dots_to_hyphens(bare)
 
-    # --- Copilot: strip matching provider prefix, keep dots ---
+    # --- Copilot / Copilot ACP: delegate to the Copilot-specific
+    #     normalizer.  It knows about the alias table (vendor-prefix
+    #     stripping for Anthropic/OpenAI, dash-to-dot repair for Claude)
+    #     and live-catalog lookups.  Without this, vendor-prefixed or
+    #     dash-notation Claude IDs survive to the Copilot API and hit
+    #     HTTP 400 "model_not_supported".  See issue #6879.
+    if provider in {"copilot", "copilot-acp"}:
+        try:
+            from hermes_cli.models import normalize_copilot_model_id
+
+            normalized = normalize_copilot_model_id(name)
+            if normalized:
+                return normalized
+        except Exception:
+            # Fall through to the generic strip-vendor behaviour below
+            # if the Copilot-specific path is unavailable for any reason.
+            pass
+
+    # --- Copilot / Copilot ACP / openai-codex fallback:
+    #     strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)
         if stripped == name and name.startswith("openai/"):

@@ -21,6 +21,7 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
@@ -40,7 +41,6 @@ from agent.models_dev import (
     get_model_capabilities,
     get_model_info,
     list_provider_models,
-    search_models_dev,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,10 +57,36 @@ _HERMES_MODEL_WARNING = (
     "(Claude, GPT, Gemini, DeepSeek, etc.)."
 )
 
+# Match only the real Nous Research Hermes 3 / Hermes 4 chat families.
+# The previous substring check (`"hermes" in name.lower()`) false-positived on
+# unrelated local Modelfiles like ``hermes-brain:qwen3-14b-ctx16k`` that just
+# happen to carry "hermes" in their tag but are fully tool-capable.
+#
+# Positive examples the regex must match:
+#   NousResearch/Hermes-3-Llama-3.1-70B, hermes-4-405b, openrouter/hermes3:70b
+# Negative examples it must NOT match:
+#   hermes-brain:qwen3-14b-ctx16k, qwen3:14b, claude-opus-4-6
+_NOUS_HERMES_NON_AGENTIC_RE = re.compile(
+    r"(?:^|[/:])hermes[-_ ]?[34](?:[-_.:]|$)",
+    re.IGNORECASE,
+)
+
+
+def is_nous_hermes_non_agentic(model_name: str) -> bool:
+    """Return True if *model_name* is a real Nous Hermes 3/4 chat model.
+
+    Used to decide whether to surface the non-agentic warning at startup.
+    Callers in :mod:`cli.py` and here should go through this single helper
+    so the two sites don't drift.
+    """
+    if not model_name:
+        return False
+    return bool(_NOUS_HERMES_NON_AGENTIC_RE.search(model_name))
+
 
 def _check_hermes_model_warning(model_name: str) -> str:
-    """Return a warning string if *model_name* looks like a Hermes LLM model."""
-    if "hermes" in model_name.lower():
+    """Return a warning string if *model_name* is a Nous Hermes 3/4 chat model."""
+    if is_nous_hermes_non_agentic(model_name):
         return _HERMES_MODEL_WARNING
     return ""
 
@@ -117,7 +143,7 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
     # Z.AI / GLM
     "glm":       ModelIdentity("z-ai", "glm"),
 
-    # StepFun
+    # Step Plan (StepFun)
     "step":      ModelIdentity("stepfun", "step"),
 
     # Xiaomi
@@ -247,6 +273,11 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     """
     is_global = False
     explicit_provider = ""
+
+    # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+    # A single Unicode dash before a flag keyword becomes "--"
+    import re as _re
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global)', r'--\1', raw_args)
 
     # Extract --global
     if "--global" in raw_args:
@@ -426,6 +457,7 @@ def switch_model(
         ModelSwitchResult with all information the caller needs.
     """
     from hermes_cli.models import (
+        copilot_model_api_mode,
         detect_provider_for_model,
         validate_requested_model,
         opencode_model_api_mode,
@@ -646,6 +678,7 @@ def switch_model(
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
             base_url = _da.base_url
+            api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:
                 api_key = "no-key-required"
 
@@ -660,12 +693,12 @@ def switch_model(
             api_key=api_key,
             base_url=base_url,
         )
-    except Exception:
+    except Exception as e:
         validation = {
-            "accepted": True,
-            "persist": True,
+            "accepted": False,
+            "persist": False,
             "recognized": False,
-            "message": None,
+            "message": f"Could not validate `{new_model}`: {e}",
         }
 
     if not validation.get("accepted"):
@@ -679,13 +712,37 @@ def switch_model(
             error_message=msg,
         )
 
+    # Apply auto-correction if validation found a closer match
+    if validation.get("corrected_model"):
+        new_model = validation["corrected_model"]
+
+    # --- Copilot api_mode override ---
+    if target_provider in {"copilot", "github-copilot"}:
+        api_mode = copilot_model_api_mode(new_model, api_key=api_key)
+
     # --- OpenCode api_mode override ---
-    if target_provider in {"opencode-zen", "opencode-go", "opencode", "opencode-go"}:
+    if target_provider in {"opencode-zen", "opencode-go", "opencode"}:
         api_mode = opencode_model_api_mode(target_provider, new_model)
 
     # --- Determine api_mode if not already set ---
     if not api_mode:
         api_mode = determine_api_mode(target_provider, base_url)
+
+    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
+    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
+    # trailing /v1 so the SDK constructs the correct path (e.g.
+    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
+    # Mirrors the same logic in hermes_cli.runtime_provider.resolve_runtime_provider;
+    # without it, /model switches into an anthropic_messages-routed OpenCode
+    # model (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
+    # on opencode-zen) hit a double /v1 and returned OpenCode's website 404 page.
+    if (
+        api_mode == "anthropic_messages"
+        and target_provider in {"opencode-zen", "opencode-go"}
+        and isinstance(base_url, str)
+        and base_url
+    ):
+        base_url = re.sub(r"/v1/?$", "", base_url)
 
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model)
@@ -725,6 +782,7 @@ def switch_model(
 
 def list_authenticated_providers(
     current_provider: str = "",
+    current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
@@ -753,10 +811,14 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from hermes_cli.models import (
+        OPENROUTER_MODELS, _PROVIDER_MODELS,
+        _MODELS_DEV_PREFERRED, _merge_with_models_dev,
+    )
 
     results: List[dict] = []
-    seen_slugs: set = set()
+    seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
+    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
 
     data = fetch_models_dev()
 
@@ -766,9 +828,18 @@ def list_authenticated_providers(
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
+    # Ollama Cloud uses dynamic discovery (no static curated list)
+    if "ollama-cloud" not in curated:
+        from hermes_cli.models import fetch_ollama_cloud_models
+        curated["ollama-cloud"] = fetch_ollama_cloud_models()
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        # Skip aliases that map to the same models.dev provider (e.g.
+        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
+        # The first one with valid credentials wins (#10526).
+        if mdev_id in seen_mdev_ids:
+            continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
@@ -777,6 +848,10 @@ def list_authenticated_providers(
         # source of truth.  models.dev can have wrong mappings (e.g.
         # minimax-cn → MINIMAX_API_KEY instead of MINIMAX_CN_API_KEY).
         pconfig = PROVIDER_REGISTRY.get(hermes_id)
+        # Skip non-API-key auth providers here — they are handled in
+        # section 2 (HERMES_OVERLAYS) with proper auth store checking.
+        if pconfig and pconfig.auth_type != "api_key":
+            continue
         if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
@@ -789,8 +864,13 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list, falling back to models.dev if no curated list
+        # Use curated list, falling back to models.dev if no curated list.
+        # For preferred providers, merge models.dev entries into the curated
+        # catalog so newly released models (e.g. mimo-v2.5-pro on opencode-go)
+        # show up in the picker without requiring a Hermes release.
         model_ids = curated.get(hermes_id, [])
+        if hermes_id in _MODELS_DEV_PREFERRED:
+            model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -807,7 +887,8 @@ def list_authenticated_providers(
             "total_models": total,
             "source": "built-in",
         })
-        seen_slugs.add(slug)
+        seen_slugs.add(slug.lower())
+        seen_mdev_ids.add(mdev_id)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
@@ -819,12 +900,12 @@ def list_authenticated_providers(
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in HERMES_OVERLAYS.items():
-        if pid in seen_slugs:
+        if pid.lower() in seen_slugs:
             continue
 
         # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
-        if hermes_slug in seen_slugs:
+        if hermes_slug.lower() in seen_slugs:
             continue
 
         # Check if credentials exist
@@ -893,6 +974,9 @@ def list_authenticated_providers(
 
         # Use curated list — look up by Hermes slug, fall back to overlay key
         model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+        # Merge with models.dev for preferred providers (same rationale as above).
+        if hermes_slug in _MODELS_DEV_PREFERRED:
+            model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -905,21 +989,115 @@ def list_authenticated_providers(
             "total_models": total,
             "source": "hermes",
         })
-        seen_slugs.add(pid)
-        seen_slugs.add(hermes_slug)
+        seen_slugs.add(pid.lower())
+        seen_slugs.add(hermes_slug.lower())
+
+    # --- 2b. Cross-check canonical provider list ---
+    # Catches providers that are in CANONICAL_PROVIDERS but weren't found
+    # in PROVIDER_TO_MODELS_DEV or HERMES_OVERLAYS (keeps /model in sync
+    # with `hermes model`).
+    try:
+        from hermes_cli.models import CANONICAL_PROVIDERS as _canon_provs
+    except ImportError:
+        _canon_provs = []
+
+    for _cp in _canon_provs:
+        if _cp.slug.lower() in seen_slugs:
+            continue
+
+        # Check credentials via PROVIDER_REGISTRY (auth.py)
+        _cp_config = _auth_registry.get(_cp.slug)
+        _cp_has_creds = False
+        if _cp_config and _cp_config.api_key_env_vars:
+            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+        # Also check auth store and credential pool
+        if not _cp_has_creds:
+            try:
+                from hermes_cli.auth import _load_auth_store
+                _cp_store = _load_auth_store()
+                _cp_providers_store = _cp_store.get("providers", {})
+                _cp_pool_store = _cp_store.get("credential_pool", {})
+                if _cp_store and (
+                    _cp.slug in _cp_providers_store
+                    or _cp.slug in _cp_pool_store
+                ):
+                    _cp_has_creds = True
+            except Exception:
+                pass
+        if not _cp_has_creds:
+            try:
+                from agent.credential_pool import load_pool
+                _cp_pool = load_pool(_cp.slug)
+                if _cp_pool.has_credentials():
+                    _cp_has_creds = True
+            except Exception:
+                pass
+
+        if not _cp_has_creds:
+            continue
+
+        _cp_model_ids = curated.get(_cp.slug, [])
+        _cp_total = len(_cp_model_ids)
+        _cp_top = _cp_model_ids[:max_models]
+
+        results.append({
+            "slug": _cp.slug,
+            "name": _cp.label,
+            "is_current": _cp.slug == current_provider,
+            "is_user_defined": False,
+            "models": _cp_top,
+            "total_models": _cp_total,
+            "source": "canonical",
+        })
+        seen_slugs.add(_cp.slug.lower())
 
     # --- 3. User-defined endpoints from config ---
+    # Track (name, base_url) of what section 3 emits so section 4 can skip
+    # any overlapping ``custom_providers:`` entries.  Callers typically pass
+    # both (gateway/CLI invoke ``get_compatible_custom_providers()`` which
+    # merges ``providers:`` into the list) — without this, the same endpoint
+    # produces two picker rows: one bare-slug ("openrouter") from section 3
+    # and one "custom:openrouter" from section 4, both labelled identically.
+    _section3_emitted_pairs: set = set()
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
+            # Skip if this slug was already emitted (e.g. canonical provider
+            # with the same name) or will be picked up by section 4.
+            if ep_name.lower() in seen_slugs:
+                continue
             display_name = ep_cfg.get("name", "") or ep_name
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
-            default_model = ep_cfg.get("default_model", "")
+            # ``base_url`` is Hermes's canonical write key (matches
+            # custom_providers and _save_custom_provider); ``api`` / ``url``
+            # remain as fallbacks for hand-edited / legacy configs.
+            api_url = (
+                ep_cfg.get("base_url", "")
+                or ep_cfg.get("api", "")
+                or ep_cfg.get("url", "")
+                or ""
+            )
+            # ``default_model`` is the legacy key; ``model`` matches what
+            # custom_providers entries use, so accept either.
+            default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
+            # Build models list from both default_model and full models array
             models_list = []
             if default_model:
                 models_list.append(default_model)
+            # Also include the full models list from config.
+            # Hermes writes ``models:`` as a dict keyed by model id
+            # (see hermes_cli/main.py::_save_custom_provider); older
+            # configs or hand-edited files may still use a list.
+            cfg_models = ep_cfg.get("models", [])
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
+            elif isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
 
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config
@@ -933,47 +1111,144 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(ep_name.lower())
+            seen_slugs.add(custom_provider_slug(display_name).lower())
+            _pair = (
+                str(display_name).strip().lower(),
+                str(api_url).strip().rstrip("/").lower(),
+            )
+            if _pair[0] and _pair[1]:
+                _section3_emitted_pairs.add(_pair)
 
     # --- 4. Saved custom providers from config ---
+    # Each ``custom_providers`` entry represents one model under a named
+    # provider. Entries sharing the same endpoint (``base_url`` + ``api_key``)
+    # are grouped into a single picker row, so e.g. four Ollama entries
+    # pointing at ``http://localhost:11434/v1`` with per-model display names
+    # ("Ollama — GLM 5.1", "Ollama — Qwen3-coder", ...) appear as one
+    # "Ollama" row with four models inside instead of four near-duplicates
+    # that differ only by suffix. Entries with distinct endpoints still
+    # produce separate rows.
+    #
+    # When the grouped endpoint matches ``current_base_url`` the group's
+    # slug becomes ``current_provider`` so that selecting a model from the
+    # picker flows back through the runtime provider that already holds
+    # valid credentials — no re-resolution needed.
     if custom_providers and isinstance(custom_providers, list):
+        from collections import OrderedDict
+
+        # Key by (base_url, api_key) instead of slug: names frequently
+        # differ per model ("Ollama — X") while the endpoint stays the
+        # same. Slug-based grouping left them as separate rows.
+        groups: "OrderedDict[tuple, dict]" = OrderedDict()
         for entry in custom_providers:
             if not isinstance(entry, dict):
                 continue
 
-            display_name = (entry.get("name") or "").strip()
+            raw_name = (entry.get("name") or "").strip()
             api_url = (
                 entry.get("base_url", "")
                 or entry.get("url", "")
                 or entry.get("api", "")
                 or ""
-            ).strip()
-            if not display_name or not api_url:
+            ).strip().rstrip("/")
+            if not raw_name or not api_url:
                 continue
+            api_key = (entry.get("api_key") or "").strip()
 
-            slug = custom_provider_slug(display_name)
-            if slug in seen_slugs:
-                continue
+            group_key = (api_url, api_key)
+            if group_key not in groups:
+                # Strip per-model suffix so "Ollama — GLM 5.1" becomes
+                # "Ollama" for the grouped row. Em dash is the convention
+                # Hermes's own writer uses; a hyphen variant is accepted
+                # for hand-edited configs.
+                display_name = raw_name
+                for sep in ("—", " - "):
+                    if sep in display_name:
+                        display_name = display_name.split(sep)[0].strip()
+                        break
+                if not display_name:
+                    display_name = raw_name
+                # If this endpoint matches the currently active one, use
+                # ``current_provider`` as the slug so picker-driven switches
+                # route through the live credential pipeline.
+                if (
+                    current_base_url
+                    and api_url == current_base_url.strip().rstrip("/")
+                ):
+                    slug = current_provider or custom_provider_slug(display_name)
+                else:
+                    slug = custom_provider_slug(display_name)
+                groups[group_key] = {
+                    "slug": slug,
+                    "name": display_name,
+                    "api_url": api_url,
+                    "models": [],
+                }
 
-            models_list = []
+            # The singular ``model:`` field only holds the currently
+            # active model. Hermes's own writer (main.py::_save_custom_provider)
+            # stores every configured model as a dict under ``models:``;
+            # downstream readers (agent/models_dev.py, gateway/run.py,
+            # run_agent.py, hermes_cli/config.py) already consume that dict.
             default_model = (entry.get("model") or "").strip()
-            if default_model:
-                models_list.append(default_model)
+            if default_model and default_model not in groups[group_key]["models"]:
+                groups[group_key]["models"].append(default_model)
 
+            cfg_models = entry.get("models", {})
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(m)
+            elif isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if m and m not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(m)
+
+        _section4_emitted_slugs: set = set()
+        for grp in groups.values():
+            slug = grp["slug"]
+            # If the slug is already claimed by a built-in / overlay /
+            # user-provider row (sections 1-3), skip this custom group
+            # to avoid shadowing a real provider.
+            if slug.lower() in seen_slugs and slug.lower() not in _section4_emitted_slugs:
+                continue
+            # If a prior section-4 group already used this slug (two custom
+            # endpoints with the same cleaned name — e.g. two OpenAI-
+            # compatible gateways named identically with different keys),
+            # append a counter so both rows stay visible in the picker.
+            if slug.lower() in _section4_emitted_slugs:
+                base_slug = slug
+                n = 2
+                while f"{base_slug}-{n}".lower() in seen_slugs:
+                    n += 1
+                slug = f"{base_slug}-{n}"
+                grp["slug"] = slug
+            # Skip if section 3 already emitted this endpoint under its
+            # ``providers:`` dict key — matches on (display_name, base_url).
+            # Prevents two picker rows labelled identically when callers
+            # pass both ``user_providers`` and a compatibility-merged
+            # ``custom_providers`` list.
+            _pair_key = (
+                str(grp["name"]).strip().lower(),
+                str(grp["api_url"]).strip().rstrip("/").lower(),
+            )
+            if _pair_key[0] and _pair_key[1] and _pair_key in _section3_emitted_pairs:
+                continue
             results.append({
                 "slug": slug,
-                "name": display_name,
+                "name": grp["name"],
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": models_list,
-                "total_models": len(models_list),
+                "models": grp["models"],
+                "total_models": len(grp["models"]),
                 "source": "user-config",
-                "api_url": api_url,
+                "api_url": grp["api_url"],
             })
-            seen_slugs.add(slug)
+            seen_slugs.add(slug.lower())
+            _section4_emitted_slugs.add(slug.lower())
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

@@ -1,6 +1,8 @@
 """Tests for hermes backup and import commands."""
 
+import json
 import os
+import sqlite3
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -230,6 +232,44 @@ class TestBackup:
         # Should exist in home dir
         zips = list(tmp_path.glob("hermes-backup-*.zip"))
         assert len(zips) == 1
+
+
+# ---------------------------------------------------------------------------
+# _validate_backup_zip tests
+# ---------------------------------------------------------------------------
+
+class TestValidateBackupZip:
+    def _make_zip(self, zip_path: Path, filenames: list[str]) -> None:
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for name in filenames:
+                zf.writestr(name, "dummy")
+
+    def test_state_db_passes(self, tmp_path):
+        """A zip containing state.db is accepted as a valid Hermes backup."""
+        from hermes_cli.backup import _validate_backup_zip
+        zip_path = tmp_path / "backup.zip"
+        self._make_zip(zip_path, ["state.db", "sessions/abc.json"])
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            ok, reason = _validate_backup_zip(zf)
+        assert ok, reason
+
+    def test_old_wrong_db_name_fails(self, tmp_path):
+        """A zip with only hermes_state.db (old wrong name) is rejected."""
+        from hermes_cli.backup import _validate_backup_zip
+        zip_path = tmp_path / "old.zip"
+        self._make_zip(zip_path, ["hermes_state.db", "memory_store.db"])
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            ok, reason = _validate_backup_zip(zf)
+        assert not ok
+
+    def test_config_yaml_passes(self, tmp_path):
+        """A zip containing config.yaml is accepted (existing behaviour preserved)."""
+        from hermes_cli.backup import _validate_backup_zip
+        zip_path = tmp_path / "backup.zip"
+        self._make_zip(zip_path, ["config.yaml", "skills/x/SKILL.md"])
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            ok, reason = _validate_backup_zip(zf)
+        assert ok, reason
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +702,34 @@ class TestBackupEdgeCases:
         # Zip should still be created with the readable files
         assert out_zip.exists()
 
+    def test_pre1980_timestamp_skipped(self, tmp_path, monkeypatch):
+        """Backup skips files with pre-1980 timestamps (ZIP limitation)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        # Create a file with epoch timestamp (1970-01-01)
+        old_file = hermes_home / "ancient.txt"
+        old_file.write_text("old data")
+        os.utime(old_file, (0, 0))
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "out.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        # Zip should still be created with the valid files
+        assert out_zip.exists()
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "config.yaml" in names
+            # The pre-1980 file should be skipped, not crash the backup
+            assert "ancient.txt" not in names
+
     def test_skips_output_zip_inside_hermes(self, tmp_path, monkeypatch):
         """Backup skips its own output zip if it's inside hermes root."""
         hermes_home = tmp_path / ".hermes"
@@ -895,3 +963,181 @@ class TestProfileRestoration:
 
         # Files should still be restored even if wrappers can't be created
         assert (hermes_home / "profiles" / "coder" / "config.yaml").exists()
+
+
+# ---------------------------------------------------------------------------
+# SQLite safe copy tests
+# ---------------------------------------------------------------------------
+
+class TestSafeCopyDb:
+    def test_copies_valid_database(self, tmp_path):
+        from hermes_cli.backup import _safe_copy_db
+        src = tmp_path / "test.db"
+        dst = tmp_path / "copy.db"
+
+        conn = sqlite3.connect(str(src))
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.execute("INSERT INTO t VALUES (42)")
+        conn.commit()
+        conn.close()
+
+        result = _safe_copy_db(src, dst)
+        assert result is True
+
+        conn = sqlite3.connect(str(dst))
+        rows = conn.execute("SELECT x FROM t").fetchall()
+        conn.close()
+        assert rows == [(42,)]
+
+    def test_copies_wal_mode_database(self, tmp_path):
+        from hermes_cli.backup import _safe_copy_db
+        src = tmp_path / "wal.db"
+        dst = tmp_path / "copy.db"
+
+        conn = sqlite3.connect(str(src))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (x TEXT)")
+        conn.execute("INSERT INTO t VALUES ('wal-test')")
+        conn.commit()
+        conn.close()
+
+        result = _safe_copy_db(src, dst)
+        assert result is True
+
+        conn = sqlite3.connect(str(dst))
+        rows = conn.execute("SELECT x FROM t").fetchall()
+        conn.close()
+        assert rows == [("wal-test",)]
+
+
+# ---------------------------------------------------------------------------
+# Quick state snapshot tests
+# ---------------------------------------------------------------------------
+
+class TestQuickSnapshot:
+    @pytest.fixture
+    def hermes_home(self, tmp_path):
+        """Create a fake HERMES_HOME with critical state files."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+        (home / ".env").write_text("OPENROUTER_API_KEY=test-key-123\n")
+        (home / "auth.json").write_text('{"providers": {}}\n')
+        (home / "cron").mkdir()
+        (home / "cron" / "jobs.json").write_text('{"jobs": []}\n')
+
+        # Real SQLite database
+        db_path = home / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, data TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('s1', 'hello world')")
+        conn.commit()
+        conn.close()
+        return home
+
+    def test_creates_snapshot(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        assert snap_dir.is_dir()
+        assert (snap_dir / "manifest.json").exists()
+
+    def test_label_in_id(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(label="before-upgrade", hermes_home=hermes_home)
+        assert "before-upgrade" in snap_id
+
+    def test_state_db_safely_copied(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        db_copy = hermes_home / "state-snapshots" / snap_id / "state.db"
+        assert db_copy.exists()
+
+        conn = sqlite3.connect(str(db_copy))
+        rows = conn.execute("SELECT * FROM sessions").fetchall()
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0] == ("s1", "hello world")
+
+    def test_copies_nested_files(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert (hermes_home / "state-snapshots" / snap_id / "cron" / "jobs.json").exists()
+
+    def test_missing_files_skipped(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        with open(hermes_home / "state-snapshots" / snap_id / "manifest.json") as f:
+            meta = json.load(f)
+        # gateway_state.json etc. don't exist in fixture
+        assert "gateway_state.json" not in meta["files"]
+
+    def test_empty_home_returns_none(self, tmp_path):
+        from hermes_cli.backup import create_quick_snapshot
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert create_quick_snapshot(hermes_home=empty) is None
+
+    def test_list_snapshots(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+        id1 = create_quick_snapshot(label="first", hermes_home=hermes_home)
+        id2 = create_quick_snapshot(label="second", hermes_home=hermes_home)
+
+        snaps = list_quick_snapshots(hermes_home=hermes_home)
+        assert len(snaps) == 2
+        assert snaps[0]["id"] == id2  # most recent first
+        assert snaps[1]["id"] == id1
+
+    def test_list_limit(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+        for i in range(5):
+            create_quick_snapshot(label=f"s{i}", hermes_home=hermes_home)
+        snaps = list_quick_snapshots(limit=3, hermes_home=hermes_home)
+        assert len(snaps) == 3
+
+    def test_restore_config(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        (hermes_home / "config.yaml").write_text("model:\n  provider: anthropic\n")
+        assert "anthropic" in (hermes_home / "config.yaml").read_text()
+
+        result = restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert result is True
+        assert "openrouter" in (hermes_home / "config.yaml").read_text()
+
+    def test_restore_state_db(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        conn = sqlite3.connect(str(hermes_home / "state.db"))
+        conn.execute("INSERT INTO sessions VALUES ('s2', 'new')")
+        conn.commit()
+        conn.close()
+
+        restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        conn = sqlite3.connect(str(hermes_home / "state.db"))
+        rows = conn.execute("SELECT * FROM sessions").fetchall()
+        conn.close()
+        assert len(rows) == 1
+
+    def test_restore_nonexistent(self, hermes_home):
+        from hermes_cli.backup import restore_quick_snapshot
+        assert restore_quick_snapshot("nonexistent", hermes_home=hermes_home) is False
+
+    def test_auto_prune(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots, _QUICK_DEFAULT_KEEP
+        for i in range(_QUICK_DEFAULT_KEEP + 5):
+            create_quick_snapshot(label=f"snap-{i:03d}", hermes_home=hermes_home)
+        snaps = list_quick_snapshots(limit=100, hermes_home=hermes_home)
+        assert len(snaps) <= _QUICK_DEFAULT_KEEP
+
+    def test_manual_prune(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, prune_quick_snapshots, list_quick_snapshots
+        for i in range(10):
+            create_quick_snapshot(label=f"s{i}", hermes_home=hermes_home)
+        deleted = prune_quick_snapshots(keep=3, hermes_home=hermes_home)
+        assert deleted == 7
+        assert len(list_quick_snapshots(hermes_home=hermes_home)) == 3

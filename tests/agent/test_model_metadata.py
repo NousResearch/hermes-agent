@@ -113,8 +113,10 @@ class TestDefaultContextLengths:
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             if "claude" not in key:
                 continue
-            # Claude 4.6 models have 1M context
-            if "4.6" in key or "4-6" in key:
+            # Claude 4.6+ models (4.6 and 4.7) have 1M context at standard
+            # API pricing (no long-context premium).  Older Claude 4.x and
+            # 3.x models cap at 200k.
+            if any(tag in key for tag in ("4.6", "4-6", "4.7", "4-7")):
                 assert value == 1000000, f"{key} should be 1000000"
             else:
                 assert value == 200000, f"{key} should be 200000"
@@ -383,6 +385,7 @@ class TestStripProviderPrefix:
         assert _strip_provider_prefix("local:my-model") == "my-model"
         assert _strip_provider_prefix("openrouter:anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
         assert _strip_provider_prefix("anthropic:claude-sonnet-4") == "claude-sonnet-4"
+        assert _strip_provider_prefix("stepfun:step-3.5-flash") == "step-3.5-flash"
 
     def test_ollama_model_tag_preserved(self):
         """Ollama model:tag format must NOT be stripped."""

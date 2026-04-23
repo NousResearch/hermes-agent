@@ -183,27 +183,10 @@ class TestFastModeRouting(unittest.TestCase):
             acp_command=None,
             acp_args=[],
             _credential_pool=None,
-            _smart_model_routing={},
             service_tier="priority",
         )
 
-        original_runtime = {
-            "api_key": "***",
-            "base_url": "https://openrouter.ai/api/v1",
-            "provider": "openrouter",
-            "api_mode": "chat_completions",
-            "command": None,
-            "args": [],
-            "credential_pool": None,
-        }
-
-        with patch("agent.smart_model_routing.resolve_turn_route", return_value={
-            "model": "gpt-5.4",
-            "runtime": dict(original_runtime),
-            "label": None,
-            "signature": ("gpt-5.4", "openrouter", "https://openrouter.ai/api/v1", "chat_completions", None, ()),
-        }):
-            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         # Provider should NOT have changed
         assert route["runtime"]["provider"] == "openrouter"
@@ -222,26 +205,10 @@ class TestFastModeRouting(unittest.TestCase):
             acp_command=None,
             acp_args=[],
             _credential_pool=None,
-            _smart_model_routing={},
             service_tier="priority",
         )
 
-        primary_route = {
-            "model": "gpt-5.3-codex",
-            "runtime": {
-                "api_key": "***",
-                "base_url": "https://openrouter.ai/api/v1",
-                "provider": "openrouter",
-                "api_mode": "chat_completions",
-                "command": None,
-                "args": [],
-                "credential_pool": None,
-            },
-            "label": None,
-            "signature": ("gpt-5.3-codex", "openrouter", "https://openrouter.ai/api/v1", "chat_completions", None, ()),
-        }
-        with patch("agent.smart_model_routing.resolve_turn_route", return_value=primary_route):
-            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "openrouter"
         assert route.get("request_overrides") is None
@@ -329,27 +296,10 @@ class TestAnthropicFastMode(unittest.TestCase):
             acp_command=None,
             acp_args=[],
             _credential_pool=None,
-            _smart_model_routing={},
             service_tier="priority",
         )
 
-        original_runtime = {
-            "api_key": "***",
-            "base_url": "https://api.anthropic.com",
-            "provider": "anthropic",
-            "api_mode": "anthropic_messages",
-            "command": None,
-            "args": [],
-            "credential_pool": None,
-        }
-
-        with patch("agent.smart_model_routing.resolve_turn_route", return_value={
-            "model": "claude-opus-4-6",
-            "runtime": dict(original_runtime),
-            "label": None,
-            "signature": ("claude-opus-4-6", "anthropic", "https://api.anthropic.com", "anthropic_messages", None, ()),
-        }):
-            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "anthropic"
         assert route["request_overrides"] == {"speed": "fast"}
@@ -369,7 +319,8 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             reasoning_config=None,
             fast_mode=True,
         )
-        assert kwargs.get("speed") == "fast"
+        assert kwargs.get("extra_body", {}).get("speed") == "fast"
+        assert "speed" not in kwargs
         assert "extra_headers" in kwargs
         assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
 
@@ -384,6 +335,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             reasoning_config=None,
             fast_mode=False,
         )
+        assert kwargs.get("extra_body", {}).get("speed") is None
         assert "speed" not in kwargs
         assert "extra_headers" not in kwargs
 
@@ -400,8 +352,23 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             base_url="https://api.minimax.io/anthropic/v1",
         )
         # Third-party endpoints should NOT get speed or fast-mode beta
+        assert kwargs.get("extra_body", {}).get("speed") is None
         assert "speed" not in kwargs
         assert "extra_headers" not in kwargs
+
+    def test_fast_mode_kwargs_are_safe_for_sdk_unpacking(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+        assert "speed" not in kwargs
+        assert kwargs.get("extra_body", {}).get("speed") == "fast"
 
 
 class TestConfigDefault(unittest.TestCase):

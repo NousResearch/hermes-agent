@@ -10,7 +10,6 @@ import pytest
 
 from gateway.config import PlatformConfig
 
-
 # The matrix adapter module is importable without mautrix installed
 # (module-level imports use try/except with stubs).  No need for
 # module-level mock installation — tests that call adapter methods
@@ -48,6 +47,7 @@ def _make_event(
     room_id="!room1:example.org",
     formatted_body=None,
     thread_id=None,
+    mention_user_ids=None,
 ):
     """Create a fake room message event.
 
@@ -59,6 +59,9 @@ def _make_event(
     if formatted_body:
         content["formatted_body"] = formatted_body
         content["format"] = "org.matrix.custom.html"
+
+    if mention_user_ids is not None:
+        content["m.mentions"] = {"user_ids": mention_user_ids}
 
     relates_to = {}
     if thread_id:
@@ -108,6 +111,44 @@ class TestIsBotMentioned:
         # "hermesbot" should not match word-boundary check for "hermes"
         assert not self.adapter._is_bot_mentioned("hermesbot is here")
 
+    # m.mentions.user_ids — MSC3952 / Matrix v1.7 authoritative mentions
+    # Ported from openclaw/openclaw#64796
+
+    def test_m_mentions_user_ids_authoritative(self):
+        """m.mentions.user_ids alone is sufficient — no body text needed."""
+        assert self.adapter._is_bot_mentioned(
+            "please reply",  # no @hermes anywhere in body
+            mention_user_ids=["@hermes:example.org"],
+        )
+
+    def test_m_mentions_user_ids_with_body_mention(self):
+        """Both m.mentions and body mention — should still be True."""
+        assert self.adapter._is_bot_mentioned(
+            "hey @hermes:example.org help",
+            mention_user_ids=["@hermes:example.org"],
+        )
+
+    def test_m_mentions_user_ids_other_user_only(self):
+        """m.mentions with a different user — bot is NOT mentioned."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello",
+            mention_user_ids=["@alice:example.org"],
+        )
+
+    def test_m_mentions_user_ids_empty_list(self):
+        """Empty user_ids list — falls through to text detection."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello everyone",
+            mention_user_ids=[],
+        )
+
+    def test_m_mentions_user_ids_none(self):
+        """None mention_user_ids — falls through to text detection."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello everyone",
+            mention_user_ids=None,
+        )
+
 
 class TestStripMention:
     def setup_method(self):
@@ -117,9 +158,15 @@ class TestStripMention:
         result = self.adapter._strip_mention("@hermes:example.org help me")
         assert result == "help me"
 
-    def test_strip_localpart(self):
+    def test_localpart_preserved(self):
+        """Localpart-only text is no longer stripped — avoids false positives in paths."""
         result = self.adapter._strip_mention("hermes help me")
-        assert result == "help me"
+        assert result == "hermes help me"
+
+    def test_localpart_in_path_preserved(self):
+        """Localpart inside a file path must not be damaged."""
+        result = self.adapter._strip_mention("read /home/hermes/config.yaml")
+        assert result == "read /home/hermes/config.yaml"
 
     def test_strip_returns_empty_for_mention_only(self):
         result = self.adapter._strip_mention("@hermes:example.org")
@@ -177,6 +224,44 @@ async def test_require_mention_html_pill(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_require_mention_m_mentions_user_ids(monkeypatch):
+    """m.mentions.user_ids is authoritative per MSC3952 — no body mention needed.
+
+    Ported from openclaw/openclaw#64796.
+    """
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    # Body has NO mention, but m.mentions.user_ids includes the bot.
+    event = _make_event(
+        "please reply",
+        mention_user_ids=["@hermes:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_require_mention_m_mentions_other_user_ignored(monkeypatch):
+    """m.mentions.user_ids mentioning another user should NOT activate the bot."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event(
+        "hey alice check this",
+        mention_user_ids=["@alice:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_require_mention_dm_always_responds(monkeypatch):
     """DMs always respond regardless of mention setting."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
@@ -193,8 +278,8 @@ async def test_require_mention_dm_always_responds(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dm_strips_mention(monkeypatch):
-    """DMs strip mention from body, matching Discord behavior."""
+async def test_dm_strips_full_mxid(monkeypatch):
+    """DMs strip the full MXID from body when require_mention is on (default)."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
@@ -207,6 +292,23 @@ async def test_dm_strips_mention(monkeypatch):
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.text == "help me"
+
+
+@pytest.mark.asyncio
+async def test_dm_preserves_localpart_in_body(monkeypatch):
+    """DMs no longer strip bare localpart — only the full MXID is removed."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+    event = _make_event("hermes help me")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "hermes help me"
 
 
 @pytest.mark.asyncio
@@ -229,7 +331,9 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
 async def test_require_mention_free_response_room(monkeypatch):
     """Free-response rooms bypass mention requirement."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
-    monkeypatch.setenv("MATRIX_FREE_RESPONSE_ROOMS", "!room1:example.org,!room2:example.org")
+    monkeypatch.setenv(
+        "MATRIX_FREE_RESPONSE_ROOMS", "!room1:example.org,!room2:example.org"
+    )
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
@@ -269,6 +373,22 @@ async def test_require_mention_disabled(monkeypatch):
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.text == "hello without mention"
+
+
+@pytest.mark.asyncio
+async def test_require_mention_disabled_skips_stripping(monkeypatch):
+    """MATRIX_REQUIRE_MENTION=false: mention text is NOT stripped from body."""
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("@hermes:example.org help me")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "@hermes:example.org help me"
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +482,10 @@ class TestThreadPersistence:
     def test_empty_state_file(self, tmp_path, monkeypatch):
         """No state file → empty set."""
         from gateway.platforms.helpers import ThreadParticipationTracker
+
         monkeypatch.setattr(
-            ThreadParticipationTracker, "_state_path",
+            ThreadParticipationTracker,
+            "_state_path",
             lambda self: tmp_path / "matrix_threads.json",
         )
         adapter = _make_adapter()
@@ -372,9 +494,11 @@ class TestThreadPersistence:
     def test_track_thread_persists(self, tmp_path, monkeypatch):
         """mark() writes to disk."""
         from gateway.platforms.helpers import ThreadParticipationTracker
+
         state_path = tmp_path / "matrix_threads.json"
         monkeypatch.setattr(
-            ThreadParticipationTracker, "_state_path",
+            ThreadParticipationTracker,
+            "_state_path",
             lambda self: state_path,
         )
         adapter = _make_adapter()
@@ -386,10 +510,12 @@ class TestThreadPersistence:
     def test_threads_survive_reload(self, tmp_path, monkeypatch):
         """Persisted threads are loaded by a new adapter instance."""
         from gateway.platforms.helpers import ThreadParticipationTracker
+
         state_path = tmp_path / "matrix_threads.json"
         state_path.write_text(json.dumps(["$t1", "$t2"]))
         monkeypatch.setattr(
-            ThreadParticipationTracker, "_state_path",
+            ThreadParticipationTracker,
+            "_state_path",
             lambda self: state_path,
         )
         adapter = _make_adapter()
@@ -399,9 +525,11 @@ class TestThreadPersistence:
     def test_cap_max_tracked_threads(self, tmp_path, monkeypatch):
         """Thread set is trimmed to max_tracked."""
         from gateway.platforms.helpers import ThreadParticipationTracker
+
         state_path = tmp_path / "matrix_threads.json"
         monkeypatch.setattr(
-            ThreadParticipationTracker, "_state_path",
+            ThreadParticipationTracker,
+            "_state_path",
             lambda self: state_path,
         )
         adapter = _make_adapter()
@@ -524,6 +652,7 @@ class TestMatrixConfigBridge:
         }
 
         import os
+
         import yaml
 
         config_file = tmp_path / "config.yaml"
@@ -533,18 +662,27 @@ class TestMatrixConfigBridge:
         yaml_cfg = yaml.safe_load(config_file.read_text())
         matrix_cfg = yaml_cfg.get("matrix", {})
         if isinstance(matrix_cfg, dict):
-            if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
-                monkeypatch.setenv("MATRIX_REQUIRE_MENTION", str(matrix_cfg["require_mention"]).lower())
+            if "require_mention" in matrix_cfg and not os.getenv(
+                "MATRIX_REQUIRE_MENTION"
+            ):
+                monkeypatch.setenv(
+                    "MATRIX_REQUIRE_MENTION", str(matrix_cfg["require_mention"]).lower()
+                )
             frc = matrix_cfg.get("free_response_rooms")
             if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
                 if isinstance(frc, list):
                     frc = ",".join(str(v) for v in frc)
                 monkeypatch.setenv("MATRIX_FREE_RESPONSE_ROOMS", str(frc))
             if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
-                monkeypatch.setenv("MATRIX_AUTO_THREAD", str(matrix_cfg["auto_thread"]).lower())
+                monkeypatch.setenv(
+                    "MATRIX_AUTO_THREAD", str(matrix_cfg["auto_thread"]).lower()
+                )
 
         assert os.getenv("MATRIX_REQUIRE_MENTION") == "false"
-        assert os.getenv("MATRIX_FREE_RESPONSE_ROOMS") == "!room1:example.org,!room2:example.org"
+        assert (
+            os.getenv("MATRIX_FREE_RESPONSE_ROOMS")
+            == "!room1:example.org,!room2:example.org"
+        )
         assert os.getenv("MATRIX_AUTO_THREAD") == "false"
 
     def test_yaml_bridge_sets_dm_mention_threads(self, monkeypatch, tmp_path):
@@ -552,6 +690,7 @@ class TestMatrixConfigBridge:
         monkeypatch.delenv("MATRIX_DM_MENTION_THREADS", raising=False)
 
         import os
+
         import yaml
 
         yaml_content = {"matrix": {"dm_mention_threads": True}}
@@ -561,8 +700,13 @@ class TestMatrixConfigBridge:
         yaml_cfg = yaml.safe_load(config_file.read_text())
         matrix_cfg = yaml_cfg.get("matrix", {})
         if isinstance(matrix_cfg, dict):
-            if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
-                monkeypatch.setenv("MATRIX_DM_MENTION_THREADS", str(matrix_cfg["dm_mention_threads"]).lower())
+            if "dm_mention_threads" in matrix_cfg and not os.getenv(
+                "MATRIX_DM_MENTION_THREADS"
+            ):
+                monkeypatch.setenv(
+                    "MATRIX_DM_MENTION_THREADS",
+                    str(matrix_cfg["dm_mention_threads"]).lower(),
+                )
 
         assert os.getenv("MATRIX_DM_MENTION_THREADS") == "true"
 
@@ -571,9 +715,12 @@ class TestMatrixConfigBridge:
         monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "true")
 
         import os
+
         yaml_cfg = {"matrix": {"require_mention": False}}
         matrix_cfg = yaml_cfg.get("matrix", {})
         if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
-            monkeypatch.setenv("MATRIX_REQUIRE_MENTION", str(matrix_cfg["require_mention"]).lower())
+            monkeypatch.setenv(
+                "MATRIX_REQUIRE_MENTION", str(matrix_cfg["require_mention"]).lower()
+            )
 
         assert os.getenv("MATRIX_REQUIRE_MENTION") == "true"

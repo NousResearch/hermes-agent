@@ -289,6 +289,7 @@ class GitHubSource(SkillSource):
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        {"repo": "MiniMax-AI/cli", "path": "skill/"},
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -296,9 +297,19 @@ class GitHubSource(SkillSource):
         self.taps = list(self.DEFAULT_TAPS)
         if extra_taps:
             self.taps.extend(extra_taps)
+        # Per-instance cache: repo -> (default_branch, tree_entries)
+        # Survives within a single search/install flow, avoiding redundant API calls.
+        self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        # Set when GitHub returns 403 with rate limit exhausted
+        self._rate_limited: bool = False
 
     def source_id(self) -> str:
         return "github"
+
+    @property
+    def is_rate_limited(self) -> bool:
+        """Whether GitHub API rate limit was hit during operations."""
+        return self._rate_limited
 
     def trust_level_for(self, identifier: str) -> str:
         # identifier format: "owner/repo/path/to/skill"
@@ -443,6 +454,69 @@ class GitHubSource(SkillSource):
         self._write_cache(cache_key, [self._meta_to_dict(s) for s in skills])
         return skills
 
+    # -- Repo tree cache (avoids redundant API calls) --
+
+    def _get_repo_tree(self, repo: str) -> Optional[Tuple[str, List[dict]]]:
+        """Get cached or fresh repo tree.
+
+        Returns ``(default_branch, tree_entries)`` or ``None``.
+        A single install can call ``_download_directory_via_tree`` and
+        ``_find_skill_in_repo_tree`` multiple times for the same repo — this
+        cache eliminates the redundant ``GET /repos/{repo}`` +
+        ``GET /repos/{repo}/git/trees/{branch}`` round-trips (previously up to
+        6 duplicated pairs per install, consuming ~12 of the 60/hr
+        unauthenticated rate limit for nothing).
+        """
+        if repo in self._tree_cache:
+            return self._tree_cache[repo]
+
+        headers = self.auth.get_headers()
+
+        # Resolve default branch
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}",
+                headers=headers, timeout=15, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                self._check_rate_limit_response(resp)
+                return None
+            default_branch = resp.json().get("default_branch", "main")
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        # Fetch recursive tree
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+                params={"recursive": "1"},
+                headers=headers, timeout=30, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                self._check_rate_limit_response(resp)
+                return None
+            tree_data = resp.json()
+            if tree_data.get("truncated"):
+                logger.debug("Git tree truncated for %s, cannot cache", repo)
+                return None
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        entries = tree_data.get("tree", [])
+        self._tree_cache[repo] = (default_branch, entries)
+        return (default_branch, entries)
+
+    def _check_rate_limit_response(self, resp: "httpx.Response") -> None:
+        """Flag the instance as rate-limited when GitHub returns 403 + exhausted quota."""
+        if resp.status_code == 403:
+            remaining = resp.headers.get("X-RateLimit-Remaining", "")
+            if remaining == "0":
+                self._rate_limited = True
+                logger.warning(
+                    "GitHub API rate limit exhausted (unauthenticated: 60 req/hr). "
+                    "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr."
+                )
+
     def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
         """Recursively download all text files from a GitHub directory.
 
@@ -458,40 +532,34 @@ class GitHubSource(SkillSource):
         return self._download_directory_recursive(repo, path)
 
     def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
-        """Download an entire directory using the Git Trees API (single request)."""
+        """Download an entire directory using the Git Trees API (single request).
+
+        Returns:
+            dict of files if the path exists and has content,
+            empty dict ``{}`` if the tree is cached but the path doesn't exist
+            (prevents unnecessary Contents API fallback),
+            ``None`` if the tree couldn't be fetched (triggers Contents API fallback).
+        """
         path = path.rstrip("/")
-        headers = self.auth.get_headers()
 
-        # Resolve the default branch via the repo endpoint
-        try:
-            repo_url = f"https://api.github.com/repos/{repo}"
-            resp = httpx.get(repo_url, headers=headers, timeout=15, follow_redirects=True)
-            if resp.status_code != 200:
-                return None
-            default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, ValueError):
+        cached = self._get_repo_tree(repo)
+        if cached is None:
             return None
+        _default_branch, tree_entries = cached
 
-        # Fetch the full recursive tree (branch name works as tree-ish)
-        try:
-            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{default_branch}"
-            resp = httpx.get(
-                tree_url, params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            tree_data = resp.json()
-            if tree_data.get("truncated"):
-                logger.debug("Git tree truncated for %s, falling back to Contents API", repo)
-                return None
-        except (httpx.HTTPError, ValueError):
-            return None
+        # Check if ANY entry lives under the target path
+        prefix = f"{path}/"
+        has_entries = any(
+            item.get("path", "").startswith(prefix) for item in tree_entries
+        )
+        if not has_entries:
+            # Path definitively doesn't exist in the repo — return empty
+            # instead of None to skip the Contents API fallback.
+            return {}
 
         # Filter to blobs under our target path and fetch content
-        prefix = f"{path}/"
         files: Dict[str, str] = {}
-        for item in tree_data.get("tree", []):
+        for item in tree_entries:
             if item.get("type") != "blob":
                 continue
             item_path = item.get("path", "")
@@ -548,38 +616,14 @@ class GitHubSource(SkillSource):
         handles deeply nested directory structures like
         ``cli-tool/components/skills/development/<skill>/SKILL.md``.
         """
-        # Get default branch
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}",
-                headers=self.auth.get_headers(),
-                timeout=15,
-                follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, json.JSONDecodeError):
+        cached = self._get_repo_tree(repo)
+        if cached is None:
             return None
-
-        # Get recursive tree (single API call for the entire repo)
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
-                params={"recursive": "1"},
-                headers=self.auth.get_headers(),
-                timeout=30,
-                follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            tree_data = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
-            return None
+        _default_branch, tree_entries = cached
 
         # Look for SKILL.md files inside directories named <skill_name>
         skill_md_suffix = f"/{skill_name}/SKILL.md"
-        for entry in tree_data.get("tree", []):
+        for entry in tree_entries:
             if entry.get("type") != "blob":
                 continue
             path = entry.get("path", "")
@@ -601,6 +645,7 @@ class GitHubSource(SkillSource):
             )
             if resp.status_code == 200:
                 return resp.text
+            self._check_rate_limit_response(resp)
         except httpx.HTTPError as e:
             logger.debug("GitHub contents API fetch failed: %s", e)
         return None
@@ -2654,6 +2699,222 @@ def check_for_skill_updates(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Hermes centralized index source
+# ---------------------------------------------------------------------------
+
+HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
+HERMES_INDEX_CACHE_FILE = INDEX_CACHE_DIR / "hermes-index.json"
+HERMES_INDEX_TTL = 6 * 3600  # 6 hours
+
+
+def _load_hermes_index() -> Optional[dict]:
+    """Fetch the centralized skills index, with local cache.
+
+    The index is a JSON file hosted on the docs site, rebuilt daily by CI.
+    We cache it locally for HERMES_INDEX_TTL seconds to avoid repeated
+    downloads within a session.
+    """
+    # Check local cache
+    if HERMES_INDEX_CACHE_FILE.exists():
+        try:
+            age = time.time() - HERMES_INDEX_CACHE_FILE.stat().st_mtime
+            if age < HERMES_INDEX_TTL:
+                return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Fetch from docs site
+    try:
+        resp = httpx.get(HERMES_INDEX_URL, timeout=15, follow_redirects=True)
+        if resp.status_code != 200:
+            logger.debug("Hermes index fetch returned %d", resp.status_code)
+            return _load_stale_index_cache()
+        data = resp.json()
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        logger.debug("Hermes index fetch failed: %s", e)
+        return _load_stale_index_cache()
+
+    # Validate structure
+    if not isinstance(data, dict) or "skills" not in data:
+        return _load_stale_index_cache()
+
+    # Cache locally
+    try:
+        HERMES_INDEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HERMES_INDEX_CACHE_FILE.write_text(json.dumps(data))
+    except OSError:
+        pass
+
+    return data
+
+
+def _load_stale_index_cache() -> Optional[dict]:
+    """Fall back to stale cache when the network fetch fails."""
+    if HERMES_INDEX_CACHE_FILE.exists():
+        try:
+            return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    return None
+
+
+class HermesIndexSource(SkillSource):
+    """Skill source backed by the centralized Hermes Skills Index.
+
+    The index is a JSON catalog published to the docs site and rebuilt
+    daily by CI.  It contains metadata + resolved GitHub paths for every
+    skill, eliminating the need for users to hit the GitHub API for
+    search or path discovery.
+
+    When the index is unavailable, all methods return empty / None so
+    downstream sources take over transparently.
+    """
+
+    def __init__(self, auth: GitHubAuth):
+        self._index: Optional[dict] = None
+        self._loaded = False
+        self.auth = auth
+        # Lazily create GitHubSource for fetch — only used when actually
+        # downloading files, which requires real GitHub API calls.
+        self._github: Optional[GitHubSource] = None
+
+    def _ensure_loaded(self) -> dict:
+        if not self._loaded:
+            self._index = _load_hermes_index()
+            self._loaded = True
+        return self._index or {}
+
+    def _get_github(self) -> GitHubSource:
+        if self._github is None:
+            self._github = GitHubSource(auth=self.auth)
+        return self._github
+
+    def source_id(self) -> str:
+        return "hermes-index"
+
+    @property
+    def is_available(self) -> bool:
+        """Whether the index is loaded and has skills."""
+        index = self._ensure_loaded()
+        return bool(index.get("skills"))
+
+    def trust_level_for(self, identifier: str) -> str:
+        index = self._ensure_loaded()
+        for skill in index.get("skills", []):
+            if skill.get("identifier") == identifier:
+                return skill.get("trust_level", "community")
+        return "community"
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        """Search the cached index.  Zero API calls."""
+        index = self._ensure_loaded()
+        skills = index.get("skills", [])
+        if not skills:
+            return []
+
+        if not query.strip():
+            # No query — return featured/popular
+            return [self._to_meta(s) for s in skills[:limit]]
+
+        query_lower = query.lower()
+        results: List[SkillMeta] = []
+        for s in skills:
+            searchable = f"{s.get('name', '')} {s.get('description', '')} {' '.join(s.get('tags', []))}".lower()
+            if query_lower in searchable:
+                results.append(self._to_meta(s))
+                if len(results) >= limit:
+                    break
+        return results
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        """Fetch a skill using the resolved path from the index.
+
+        If the index has a ``resolved_github_id`` for this skill, we skip
+        the entire candidate/discovery chain and go directly to GitHub
+        with the exact path.  This reduces install from ~31 API calls to
+        just the file content downloads (~5-22 depending on skill size).
+        """
+        index = self._ensure_loaded()
+        entry = self._find_entry(identifier, index)
+        if not entry:
+            return None
+
+        # Use resolved path if available
+        resolved = entry.get("resolved_github_id")
+        if resolved:
+            bundle = self._get_github().fetch(resolved)
+            if bundle:
+                bundle.source = entry.get("source", "hermes-index")
+                bundle.identifier = identifier
+                return bundle
+
+        # Fall back to identifier-based fetch via repo/path
+        repo = entry.get("repo", "")
+        path = entry.get("path", "")
+        if repo and path:
+            github_id = f"{repo}/{path}"
+            bundle = self._get_github().fetch(github_id)
+            if bundle:
+                bundle.source = entry.get("source", "hermes-index")
+                bundle.identifier = identifier
+                return bundle
+
+        return None
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        """Return metadata from the index.  Zero API calls."""
+        index = self._ensure_loaded()
+        entry = self._find_entry(identifier, index)
+        if entry:
+            return self._to_meta(entry)
+        return None
+
+    def _find_entry(self, identifier: str, index: dict) -> Optional[dict]:
+        """Look up a skill in the index by identifier or name."""
+        skills = index.get("skills", [])
+
+        # Exact identifier match
+        for s in skills:
+            if s.get("identifier") == identifier:
+                return s
+
+        # Try without source prefix (e.g. "skills-sh/" stripped)
+        normalized = identifier
+        for prefix in ("skills-sh/", "skills.sh/", "official/", "github/", "clawhub/"):
+            if identifier.startswith(prefix):
+                normalized = identifier[len(prefix):]
+                break
+
+        # Match on normalized identifier or name
+        for s in skills:
+            sid = s.get("identifier", "")
+            # Strip prefix from stored identifier too
+            stored_normalized = sid
+            for prefix in ("skills-sh/", "skills.sh/", "official/", "github/", "clawhub/"):
+                if sid.startswith(prefix):
+                    stored_normalized = sid[len(prefix):]
+                    break
+            if stored_normalized == normalized:
+                return s
+
+        return None
+
+    @staticmethod
+    def _to_meta(entry: dict) -> SkillMeta:
+        return SkillMeta(
+            name=entry.get("name", ""),
+            description=entry.get("description", ""),
+            source=entry.get("source", "hermes-index"),
+            identifier=entry.get("identifier", ""),
+            trust_level=entry.get("trust_level", "community"),
+            repo=entry.get("repo"),
+            path=entry.get("path"),
+            tags=entry.get("tags", []),
+            extra=entry.get("extra", {}),
+        )
+
+
 def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
     """
     Create all configured source adapters.
@@ -2667,6 +2928,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
 
     sources: List[SkillSource] = [
         OptionalSkillSource(),        # Official optional skills (highest priority)
+        HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
         GitHubSource(auth=auth, extra_taps=extra_taps),
@@ -2709,9 +2971,26 @@ def parallel_search_sources(
     per_source_limits = per_source_limits or {}
 
     active: List[SkillSource] = []
+    # When the centralized index is available and the user hasn't filtered
+    # to a specific source, skip external API sources (github, skills-sh,
+    # clawhub, etc.) — the index already has their data.  This avoids
+    # ~70 GitHub API calls per search for unauthenticated users.
+    _index_available = False
+    _api_source_ids = frozenset({"github", "skills-sh", "clawhub",
+                                  "claude-marketplace", "lobehub", "well-known"})
+    if source_filter == "all":
+        for src in sources:
+            if (src.source_id() == "hermes-index"
+                    and getattr(src, "is_available", False)):
+                _index_available = True
+                break
+
     for src in sources:
         sid = src.source_id()
         if source_filter != "all" and sid != source_filter and sid != "official":
+            continue
+        # Skip external API sources when the index covers them
+        if _index_available and sid in _api_source_ids:
             continue
         active.append(src)
 

@@ -119,6 +119,11 @@ def test_resolve_runtime_provider_falls_back_when_pool_empty(monkeypatch):
 
 
 def test_resolve_runtime_provider_codex(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
+    )
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
     monkeypatch.setattr(
         rp,
@@ -565,6 +570,87 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["api_key"] == "local-provider-key"
     assert resolved["requested_provider"] == "local"
     assert resolved["source"] == "custom_provider:Local"
+
+
+def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
+    """After v11→v12 migration deletes custom_providers, resolution should
+    still find entries in the providers dict via get_compatible_custom_providers."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "openai-direct-primary": {
+                    "api": "https://api.openai.com/v1",
+                    "api_key": "dir-key",
+                    "default_model": "gpt-5-mini",
+                    "name": "OpenAI Direct (Primary)",
+                    "transport": "codex_responses",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openai-direct-primary")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "dir-key"
+    assert resolved["requested_provider"] == "openai-direct-primary"
+    assert resolved["source"] == "custom_provider:OpenAI Direct (Primary)"
+    assert resolved["model"] == "gpt-5-mini"
+
+
+def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
+    """providers dict entries with key_env should resolve API key from env var."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MYCORP_API_KEY", "env-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "default_model": "acme-large",
+                    "key_env": "MYCORP_API_KEY",
+                    "name": "MyCorp Proxy",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["api_key"] == "env-secret"
+    assert resolved["requested_provider"] == "mycorp-proxy"
+    assert resolved["source"] == "custom_provider:MyCorp Proxy"
+    assert resolved["model"] == "acme-large"
 
 
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
@@ -1326,3 +1412,90 @@ def test_named_custom_runtime_no_model_when_absent(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="my-server")
     assert "model" not in resolved
+
+
+# ---------------------------------------------------------------------------
+# GHSA-76xc-57q6-vm5m — Ollama URL substring leak
+#
+# Same bug class as the previously-fixed GHSA-xf8p-v2cg-h7h5 (OpenRouter).
+# _resolve_openrouter_runtime's custom-endpoint branch selects OLLAMA_API_KEY
+# when the base_url "looks like" ollama.com. Previous implementation used
+# raw substring match; a custom base_url whose PATH or look-alike host
+# merely contained "ollama.com" leaked OLLAMA_API_KEY to that endpoint.
+# Fix: use base_url_host_matches (same helper as the OpenRouter sweep).
+# ---------------------------------------------------------------------------
+
+class TestOllamaUrlSubstringLeak:
+    """Call-site regression tests for the fix in _resolve_openrouter_runtime."""
+
+    def _make_cfg(self, base_url):
+        return {"base_url": base_url, "api_key": "", "provider": "custom"}
+
+    def test_ollama_key_not_leaked_to_path_injection(self, monkeypatch):
+        """http://127.0.0.1:9000/ollama.com/v1 — attacker endpoint with
+        ollama.com in PATH. Must resolve to OPENAI_API_KEY, not OLLAMA_API_KEY."""
+        monkeypatch.setenv("OPENAI_API_KEY", "oa-secret")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-secret")
+        monkeypatch.setenv("OLLAMA_API_KEY", "ol-SECRET-should-not-leak")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
+            "http://127.0.0.1:9000/ollama.com/v1"
+        ))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+        resolved = rp.resolve_runtime_provider(requested="custom")
+
+        assert "ol-SECRET" not in resolved["api_key"], (
+            "OLLAMA_API_KEY must not be sent to an endpoint whose "
+            "hostname is not ollama.com (GHSA-76xc-57q6-vm5m)"
+        )
+        assert resolved["api_key"] == "oa-secret"
+
+    def test_ollama_key_not_leaked_to_lookalike_host(self, monkeypatch):
+        """ollama.com.attacker.test — look-alike host. OLLAMA_API_KEY
+        must not be sent."""
+        monkeypatch.setenv("OPENAI_API_KEY", "oa-secret")
+        monkeypatch.setenv("OLLAMA_API_KEY", "ol-SECRET-should-not-leak")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
+            "http://ollama.com.attacker.test:9000/v1"
+        ))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+        resolved = rp.resolve_runtime_provider(requested="custom")
+
+        assert "ol-SECRET" not in resolved["api_key"]
+        assert resolved["api_key"] == "oa-secret"
+
+    def test_ollama_key_sent_to_genuine_ollama_com(self, monkeypatch):
+        """https://ollama.com/v1 — legit Ollama Cloud. OLLAMA_API_KEY
+        should be used."""
+        monkeypatch.setenv("OPENAI_API_KEY", "oa-secret")
+        monkeypatch.setenv("OLLAMA_API_KEY", "ol-legit-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
+            "https://ollama.com/v1"
+        ))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+        resolved = rp.resolve_runtime_provider(requested="custom")
+
+        assert resolved["api_key"] == "ol-legit-key"
+
+    def test_ollama_key_sent_to_ollama_subdomain(self, monkeypatch):
+        """https://api.ollama.com/v1 — legit subdomain."""
+        monkeypatch.setenv("OPENAI_API_KEY", "oa-secret")
+        monkeypatch.setenv("OLLAMA_API_KEY", "ol-legit-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
+            "https://api.ollama.com/v1"
+        ))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+        resolved = rp.resolve_runtime_provider(requested="custom")
+
+        assert resolved["api_key"] == "ol-legit-key"

@@ -177,7 +177,8 @@ class TestCreateProfile:
         # No error; optional files just not copied
         assert not (profile_dir / "config.yaml").exists()
         assert not (profile_dir / ".env").exists()
-        assert not (profile_dir / "SOUL.md").exists()
+        # SOUL.md is always seeded with the default even when clone source lacks it
+        assert (profile_dir / "SOUL.md").exists()
 
 
 # ===================================================================
@@ -453,6 +454,47 @@ class TestExportImport:
         # Importing to same existing name should fail
         with pytest.raises(FileExistsError):
             import_profile(str(archive_path), name="coder")
+
+    def test_import_with_explicit_name_does_not_mutate_existing_archive_root_profile(
+        self, profile_env, tmp_path
+    ):
+        create_profile("victim", no_alias=True)
+        victim_dir = get_profile_dir("victim")
+        (victim_dir / "marker.txt").write_text("original")
+
+        archive_path = tmp_path / "export" / "victim.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_path, "w:gz") as tf:
+            data = b"imported"
+            info = tarfile.TarInfo("victim/marker.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        imported = import_profile(str(archive_path), name="renamed")
+
+        assert imported == get_profile_dir("renamed")
+        assert (imported / "marker.txt").read_text() == "imported"
+        assert (victim_dir / "marker.txt").read_text() == "original"
+
+    def test_import_rejects_archive_with_multiple_top_level_directories(
+        self, profile_env, tmp_path
+    ):
+        archive_path = tmp_path / "export" / "multi-root.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for member_name, data in (
+                ("alpha/marker.txt", b"a"),
+                ("beta/marker.txt", b"b"),
+            ):
+                info = tarfile.TarInfo(member_name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="exactly one top-level directory"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
 
     def test_import_rejects_traversal_archive_member(self, profile_env, tmp_path):
         archive_path = tmp_path / "export" / "evil.tar.gz"
@@ -798,35 +840,30 @@ class TestEdgeCases:
         assert default.skill_count == 0
 
     def test_gateway_running_check_with_pid_file(self, profile_env):
-        """Verify _check_gateway_running reads pid file and probes os.kill."""
+        """Verify _check_gateway_running uses the shared gateway PID validator."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
 
-        # No pid file -> not running
-        assert _check_gateway_running(default_home) is False
-
-        # Write a PID file with a JSON payload
-        pid_file = default_home / "gateway.pid"
-        pid_file.write_text(json.dumps({"pid": 99999}))
-
-        # os.kill(99999, 0) should raise ProcessLookupError -> not running
-        assert _check_gateway_running(default_home) is False
-
-        # Mock os.kill to simulate a running process
-        with patch("os.kill", return_value=None):
+        with patch("gateway.status.get_running_pid", return_value=99999) as mock_get_running_pid:
             assert _check_gateway_running(default_home) is True
+        mock_get_running_pid.assert_called_once_with(
+            default_home / "gateway.pid",
+            cleanup_stale=False,
+        )
 
     def test_gateway_running_check_plain_pid(self, profile_env):
-        """Pid file containing just a number (legacy format)."""
+        """Shared PID validator returning None means the profile is not running."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
-        pid_file = default_home / "gateway.pid"
-        pid_file.write_text("99999")
 
-        with patch("os.kill", return_value=None):
-            assert _check_gateway_running(default_home) is True
+        with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid:
+            assert _check_gateway_running(default_home) is False
+        mock_get_running_pid.assert_called_once_with(
+            default_home / "gateway.pid",
+            cleanup_stale=False,
+        )
 
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""

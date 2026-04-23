@@ -180,32 +180,70 @@ class TestDisplayResumedHistory:
         assert 200 <= a_count <= 310  # roughly 300 chars (±panel padding)
 
     def test_long_assistant_message_truncated(self):
+        """Non-last assistant messages are still truncated."""
         cli = _make_cli()
         long_text = "B" * 400
         cli.conversation_history = [
             {"role": "user", "content": "Tell me a lot."},
             {"role": "assistant", "content": long_text},
+            {"role": "user", "content": "And more?"},
+            {"role": "assistant", "content": "Short final reply."},
         ]
         output = self._capture_display(cli)
 
-        assert "..." in output
+        # The non-last assistant message should be truncated
         assert "B" * 400 not in output
+        # The last assistant message shown in full
+        assert "Short final reply." in output
 
     def test_multiline_assistant_truncated(self):
+        """Non-last multiline assistant messages are truncated to 3 lines."""
         cli = _make_cli()
         multi = "\n".join([f"Line {i}" for i in range(20)])
         cli.conversation_history = [
             {"role": "user", "content": "Show me lines."},
             {"role": "assistant", "content": multi},
+            {"role": "user", "content": "What else?"},
+            {"role": "assistant", "content": "Done."},
         ]
         output = self._capture_display(cli)
 
-        # First 3 lines should be there
+        # First 3 lines of non-last assistant should be there
         assert "Line 0" in output
         assert "Line 1" in output
         assert "Line 2" in output
-        # Line 19 should NOT be there (truncated after 3 lines)
+        # Line 19 should NOT be in the truncated message
         assert "Line 19" not in output
+
+    def test_last_assistant_response_shown_in_full(self):
+        """The last assistant response is shown un-truncated so the user
+        knows where they left off without wasting tokens re-asking."""
+        cli = _make_cli()
+        long_text = "X" * 500
+        cli.conversation_history = [
+            {"role": "user", "content": "Tell me everything."},
+            {"role": "assistant", "content": long_text},
+        ]
+        output = self._capture_display(cli)
+
+        # Full 500-char text should be present (may be line-wrapped by Rich)
+        x_count = output.count("X")
+        assert x_count >= 490  # allow small Rich formatting variance
+
+    def test_last_assistant_multiline_shown_in_full(self):
+        """The last assistant response shows all lines, not just 3."""
+        cli = _make_cli()
+        multi = "\n".join([f"Line {i}" for i in range(20)])
+        cli.conversation_history = [
+            {"role": "user", "content": "Show me everything."},
+            {"role": "assistant", "content": multi},
+        ]
+        output = self._capture_display(cli)
+
+        # All 20 lines should be present since it's the last response
+        assert "Line 0" in output
+        assert "Line 10" in output
+        assert "Line 19" in output
 
     def test_large_history_shows_truncation_indicator(self):
         cli = _make_cli()
@@ -305,6 +343,127 @@ class TestDisplayResumedHistory:
 
         assert "Just thinking" not in output
         assert "Hi there!" in output
+
+    def test_think_tags_stripped(self):
+        """<think>...</think> blocks should be stripped from display (#11316)."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Solve this"},
+            {
+                "role": "assistant",
+                "content": "<think>\nI need to reason carefully here.\n</think>\n\nThe answer is 7.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<think>" not in output
+        assert "</think>" not in output
+        assert "I need to reason carefully here" not in output
+        assert "The answer is 7" in output
+
+    def test_thinking_tags_stripped(self):
+        """<thinking>...</thinking> blocks should be stripped from display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "What is 2+2?"},
+            {
+                "role": "assistant",
+                "content": "<thinking>\nLet me compute: 2 + 2 = 4\n</thinking>\n\nThe answer is 4.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<thinking>" not in output
+        assert "Let me compute" not in output
+        assert "The answer is 4" in output
+
+    def test_reasoning_tags_stripped(self):
+        """<reasoning>...</reasoning> blocks should be stripped from display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Explain gravity"},
+            {
+                "role": "assistant",
+                "content": (
+                    "<reasoning>\nGravity is a fundamental force...\n</reasoning>\n\n"
+                    "Gravity pulls objects together."
+                ),
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<reasoning>" not in output
+        assert "fundamental force" not in output
+        assert "Gravity pulls objects together" in output
+
+    def test_thought_tags_stripped(self):
+        """<thought>...</thought> blocks (Gemma 4) should be stripped."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Say hello"},
+            {
+                "role": "assistant",
+                "content": "<thought>\nInternal thought here.\n</thought>\n\nHello!",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<thought>" not in output
+        assert "Internal thought here" not in output
+        assert "Hello!" in output
+
+    def test_unclosed_think_tag_stripped(self):
+        """Unclosed <think> (truncated generation) should not leak reasoning."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Truncated response"},
+            {
+                "role": "assistant",
+                "content": "Some text before.\n<think>\nUnfinished reasoning...",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<think>" not in output
+        assert "Unfinished reasoning" not in output
+        assert "Some text before" in output
+
+    def test_multiple_reasoning_blocks_all_stripped(self):
+        """Multiple interleaved reasoning blocks are all stripped."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Complex question"},
+            {
+                "role": "assistant",
+                "content": (
+                    "<think>\nFirst thought.\n</think>\n"
+                    "Partial text.\n"
+                    "<reasoning>\nSecond thought.\n</reasoning>\n"
+                    "Final answer."
+                ),
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "First thought" not in output
+        assert "Second thought" not in output
+        assert "Partial text" in output
+        assert "Final answer" in output
+
+    def test_orphan_closing_think_tag_stripped(self):
+        """A stray </think> with no matching open should not render to user."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Broken output"},
+            {
+                "role": "assistant",
+                "content": "some leftover reasoning</think>Visible answer.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "</think>" not in output
+        assert "Visible answer" in output
 
     def test_assistant_with_text_and_tool_calls(self):
         """When an assistant message has both text content AND tool_calls."""

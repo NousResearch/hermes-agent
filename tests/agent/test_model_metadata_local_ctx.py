@@ -70,6 +70,44 @@ class TestQueryLocalContextLengthOllama:
 
         assert result == 32768
 
+    def test_ollama_num_ctx_wins_over_model_info(self):
+        """When both num_ctx (Modelfile) and model_info (GGUF) are present,
+        num_ctx wins because it's the *runtime* context Ollama actually
+        allocates KV cache for. The GGUF model_info.context_length is the
+        training max — using it would let Hermes grow conversations past
+        the runtime limit and Ollama would silently truncate.
+
+        Concrete example: hermes-brain:qwen3-14b-ctx32k is a Modelfile
+        derived from qwen3:14b with `num_ctx 32768`, but the underlying
+        GGUF reports `qwen3.context_length: 40960` (training max). If
+        Hermes used 40960 it would let the conversation grow past 32768
+        before compressing, and Ollama would truncate the prefix.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        show_resp = self._make_resp(200, {
+            "model_info": {"qwen3.context_length": 40960},
+            "parameters": "num_ctx                        32768\ntemperature                    0.6\n",
+        })
+        models_resp = self._make_resp(404, {})
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = show_resp
+        client_mock.get.return_value = models_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "hermes-brain:qwen3-14b-ctx32k", "http://100.77.243.5:11434/v1"
+            )
+
+        assert result == 32768, (
+            f"Expected num_ctx (32768) to win over model_info (40960), got {result}. "
+            "If Hermes uses the GGUF training max, conversations will silently truncate."
+        )
+
     def test_ollama_show_404_falls_through(self):
         """When /api/show returns 404, falls through to /v1/models/{model}."""
         from agent.model_metadata import _query_local_context_length
@@ -384,6 +422,68 @@ class TestQueryLocalContextLengthLmStudio:
             f"Expected loaded instance context (122651) but got {result}. "
             "max_context_length (1048576) must not win over loaded_instances."
         )
+
+
+class TestDetectLocalServerTypeAuth:
+    def test_passes_bearer_token_to_probe_requests(self):
+        from agent.model_metadata import detect_local_server_type
+
+        resp = MagicMock()
+        resp.status_code = 200
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock) as mock_client:
+            result = detect_local_server_type("http://localhost:1234/v1", api_key="lm-token")
+
+        assert result == "lm-studio"
+        assert mock_client.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer lm-token"
+        }
+
+
+class TestFetchEndpointModelMetadataLmStudio:
+    """fetch_endpoint_model_metadata should use LM Studio's native models endpoint."""
+
+    def _make_resp(self, body):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = body
+        return resp
+
+    def test_uses_native_models_endpoint_only(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        native_resp = self._make_resp(
+            {
+                "models": [
+                    {
+                        "key": "lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf",
+                        "id": "lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf",
+                        "max_context_length": 131072,
+                    }
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("agent.model_metadata.requests.get", return_value=native_resp) as mock_get:
+            result = fetch_endpoint_model_metadata(
+                "http://localhost:1234/v1",
+                api_key="lm-token",
+                force_refresh=True,
+            )
+
+        assert mock_get.call_count == 1
+        assert mock_get.call_args[0][0] == "http://localhost:1234/api/v1/models"
+        assert mock_get.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer lm-token"
+        }
+        assert result["lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
+        assert result["Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072
 
 
 class TestQueryLocalContextLengthNetworkError:

@@ -93,15 +93,18 @@ class TestResolveCommand:
     def test_canonical_name_resolves(self):
         assert resolve_command("help").name == "help"
         assert resolve_command("background").name == "background"
+        assert resolve_command("copy").name == "copy"
+        assert resolve_command("agents").name == "agents"
 
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
         assert resolve_command("reset").name == "new"
-        assert resolve_command("q").name == "quit"
+        assert resolve_command("q").name == "queue"
         assert resolve_command("exit").name == "quit"
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
+        assert resolve_command("tasks").name == "agents"
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
@@ -685,6 +688,32 @@ class TestTelegramMenuCommands:
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
 
+    def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
+        """Telegram menu generation should discover plugin slash commands on first access."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
+        )
+        # Opt-in: plugins are opt-in by default, so enable in config.yaml
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - cmd-plugin\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        menu_names = {name for name, _ in menu}
+        assert "lcm" in menu_names
+
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""
         from unittest.mock import patch, MagicMock
@@ -1028,3 +1057,270 @@ class TestDiscordSkillCommands:
             assert len(name) <= _CMD_NAME_LIMIT, (
                 f"Name '{name}' is {len(name)} chars (limit {_CMD_NAME_LIMIT})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Discord skill commands grouped by category
+# ---------------------------------------------------------------------------
+
+from hermes_cli.commands import discord_skill_commands_by_category  # noqa: E402
+
+
+class TestDiscordSkillCommandsByCategory:
+    """Tests for discord_skill_commands_by_category() — /skill group registration."""
+
+    def test_groups_skills_by_category(self, tmp_path, monkeypatch):
+        """Skills nested 2+ levels deep should be grouped by top-level category."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        # Create the directory structure so resolve() works
+        for p in [
+            "skills/creative/ascii-art",
+            "skills/creative/excalidraw",
+            "skills/media/gif-search",
+        ]:
+            (tmp_path / p).mkdir(parents=True, exist_ok=True)
+            (tmp_path / p / "SKILL.md").write_text("---\nname: test\n---\n")
+
+        fake_cmds = {
+            "/ascii-art": {
+                "name": "ascii-art",
+                "description": "Generate ASCII art",
+                "skill_md_path": f"{fake_skills_dir}/creative/ascii-art/SKILL.md",
+            },
+            "/excalidraw": {
+                "name": "excalidraw",
+                "description": "Hand-drawn diagrams",
+                "skill_md_path": f"{fake_skills_dir}/creative/excalidraw/SKILL.md",
+            },
+            "/gif-search": {
+                "name": "gif-search",
+                "description": "Search for GIFs",
+                "skill_md_path": f"{fake_skills_dir}/media/gif-search/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert "creative" in categories
+        assert "media" in categories
+        assert len(categories["creative"]) == 2
+        assert len(categories["media"]) == 1
+        assert uncategorized == []
+        assert hidden == 0
+
+    def test_root_level_skills_are_uncategorized(self, tmp_path, monkeypatch):
+        """Skills directly under SKILLS_DIR (only 1 path component) → uncategorized."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        (tmp_path / "skills" / "dogfood").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / "dogfood" / "SKILL.md").write_text("")
+
+        fake_cmds = {
+            "/dogfood": {
+                "name": "dogfood",
+                "description": "QA testing",
+                "skill_md_path": f"{fake_skills_dir}/dogfood/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert categories == {}
+        assert len(uncategorized) == 1
+        assert uncategorized[0][0] == "dogfood"
+
+    def test_hub_skills_excluded(self, tmp_path, monkeypatch):
+        """Skills under .hub should be excluded."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        (tmp_path / "skills" / ".hub" / "some-skill").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / ".hub" / "some-skill" / "SKILL.md").write_text("")
+
+        fake_cmds = {
+            "/some-skill": {
+                "name": "some-skill",
+                "description": "Hub skill",
+                "skill_md_path": f"{fake_skills_dir}/.hub/some-skill/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        assert categories == {}
+        assert uncategorized == []
+
+    def test_deep_nested_skills_use_top_category(self, tmp_path, monkeypatch):
+        """Skills like mlops/training/axolotl should group under 'mlops'."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        (tmp_path / "skills" / "mlops" / "training" / "axolotl").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / "mlops" / "training" / "axolotl" / "SKILL.md").write_text("")
+        (tmp_path / "skills" / "mlops" / "inference" / "vllm").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "skills" / "mlops" / "inference" / "vllm" / "SKILL.md").write_text("")
+
+        fake_cmds = {
+            "/axolotl": {
+                "name": "axolotl",
+                "description": "Fine-tuning with Axolotl",
+                "skill_md_path": f"{fake_skills_dir}/mlops/training/axolotl/SKILL.md",
+            },
+            "/vllm": {
+                "name": "vllm",
+                "description": "vLLM inference",
+                "skill_md_path": f"{fake_skills_dir}/mlops/inference/vllm/SKILL.md",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        # Both should be under 'mlops' regardless of sub-category
+        assert "mlops" in categories
+        names = {n for n, _d, _k in categories["mlops"]}
+        assert "axolotl" in names
+        assert "vllm" in names
+        assert len(uncategorized) == 0
+
+
+# ---------------------------------------------------------------------------
+# Plugin slash command integration
+# ---------------------------------------------------------------------------
+
+class TestPluginCommandEnumeration:
+    """Plugin commands registered via ctx.register_command() must be surfaced
+    by every gateway enumerator (Telegram menu, Slack subcommand map, etc.).
+    """
+
+    def _patch_plugin_commands(self, monkeypatch, commands):
+        """Monkeypatch hermes_cli.plugins.get_plugin_commands() to a fixed dict."""
+        from hermes_cli import plugins as _plugins_mod
+
+        monkeypatch.setattr(
+            _plugins_mod, "get_plugin_commands", lambda: dict(commands)
+        )
+
+    def test_plugin_command_appears_in_telegram_menu(self, monkeypatch):
+        """/metricas registered by a plugin must appear in Telegram BotCommand menu."""
+        self._patch_plugin_commands(monkeypatch, {
+            "metricas": {
+                "handler": lambda _a: "ok",
+                "description": "Metrics dashboard",
+                "args_hint": "dias:7",
+                "plugin": "metrics-plugin",
+            }
+        })
+        names = {name for name, _desc in telegram_bot_commands()}
+        assert "metricas" in names
+
+    def test_plugin_command_appears_in_slack_subcommand_map(self, monkeypatch):
+        """/hermes metricas must route through the Slack subcommand map."""
+        self._patch_plugin_commands(monkeypatch, {
+            "metricas": {
+                "handler": lambda _a: "ok",
+                "description": "Metrics",
+                "args_hint": "",
+                "plugin": "metrics-plugin",
+            }
+        })
+        mapping = slack_subcommand_map()
+        assert mapping.get("metricas") == "/metricas"
+
+    def test_plugin_command_does_not_shadow_builtin_in_slack(self, monkeypatch):
+        """If a plugin registers a name that collides with a built-in, the built-in mapping wins."""
+        self._patch_plugin_commands(monkeypatch, {
+            "status": {
+                "handler": lambda _a: "plugin-status",
+                "description": "Plugin status",
+                "args_hint": "",
+                "plugin": "shadow-plugin",
+            }
+        })
+        mapping = slack_subcommand_map()
+        # Built-in /status must still be present and not overwritten.
+        assert mapping.get("status") == "/status"
+
+    def test_plugin_command_with_hyphens_sanitized_for_telegram(self, monkeypatch):
+        """Plugin names containing hyphens must be underscore-normalized for Telegram."""
+        self._patch_plugin_commands(monkeypatch, {
+            "my-plugin-cmd": {
+                "handler": lambda _a: "ok",
+                "description": "desc",
+                "args_hint": "",
+                "plugin": "p",
+            }
+        })
+        names = {name for name, _desc in telegram_bot_commands()}
+        assert "my_plugin_cmd" in names
+        assert "my-plugin-cmd" not in names
+
+    def test_is_gateway_known_command_recognizes_plugin_commands(self, monkeypatch):
+        """is_gateway_known_command() must return True for plugin commands."""
+        from hermes_cli.commands import is_gateway_known_command
+
+        self._patch_plugin_commands(monkeypatch, {
+            "metricas": {
+                "handler": lambda _a: "ok",
+                "description": "Metrics",
+                "args_hint": "",
+                "plugin": "p",
+            }
+        })
+        assert is_gateway_known_command("metricas") is True
+        assert is_gateway_known_command("definitely-not-registered") is False
+
+    def test_is_gateway_known_command_still_recognizes_builtins(self, monkeypatch):
+        """Built-in commands must remain known even when plugin discovery fails."""
+        from hermes_cli import plugins as _plugins_mod
+        from hermes_cli.commands import is_gateway_known_command
+
+        def _boom():
+            raise RuntimeError("plugin system down")
+
+        monkeypatch.setattr(_plugins_mod, "get_plugin_commands", _boom)
+
+        assert is_gateway_known_command("status") is True
+        assert is_gateway_known_command(None) is False
+        assert is_gateway_known_command("") is False
+
+    def test_plugin_enumerator_handles_missing_plugin_manager(self, monkeypatch):
+        """Enumerators must never raise when plugin discovery raises."""
+        from hermes_cli import plugins as _plugins_mod
+
+        def _boom():
+            raise RuntimeError("plugin system down")
+
+        monkeypatch.setattr(_plugins_mod, "get_plugin_commands", _boom)
+
+        # Both calls should succeed and just return the built-in set.
+        tg_names = {name for name, _desc in telegram_bot_commands()}
+        slack_names = set(slack_subcommand_map())
+        assert "status" in tg_names
+        assert "status" in slack_names

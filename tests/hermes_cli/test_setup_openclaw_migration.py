@@ -437,6 +437,112 @@ class TestGetSectionConfigSummary:
             result = setup_mod._get_section_config_summary({}, "tools")
         assert "Browser" in result
 
+    # Regression tests for issue #13025: the model / gateway summaries used
+    # stale, hardcoded env-var allowlists that drifted from the real setup +
+    # status flows.  Every case below would previously return ``None`` and
+    # force OpenClaw migration to re-run setup for an already-configured
+    # section.
+
+    def test_model_recognises_zai_glm_api_key(self):
+        """GLM_API_KEY (zai provider) should count as configured."""
+        def env_side(key):
+            return "glm-test-key" if key == "GLM_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(
+                {"model": {"provider": "zai", "default": "glm-5"}}, "model"
+            )
+        assert result == "glm-5"
+
+    def test_model_recognises_minimax_api_key(self):
+        """MINIMAX_API_KEY should count as configured."""
+        def env_side(key):
+            return "minimax-key" if key == "MINIMAX_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(
+                {"model": {"provider": "minimax", "default": "MiniMax-M1"}},
+                "model",
+            )
+        assert result == "MiniMax-M1"
+
+    def test_gateway_recognises_whatsapp_enabled(self):
+        """WhatsApp uses WHATSAPP_ENABLED (not WHATSAPP_PHONE_NUMBER_ID)."""
+        def env_side(key):
+            return "true" if key == "WHATSAPP_ENABLED" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+        assert result is not None
+        assert "WhatsApp" in result
+
+    def test_gateway_recognises_signal_http_url(self):
+        """Signal uses SIGNAL_HTTP_URL (not SIGNAL_ACCOUNT)."""
+        def env_side(key):
+            return "http://signal.local" if key == "SIGNAL_HTTP_URL" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+        assert result is not None
+        assert "Signal" in result
+
+    def test_model_ignores_bare_gh_token(self):
+        """GH_TOKEN is commonly set for `gh` / git and must NOT count as a
+        configured inference provider on its own — mirrors the copilot
+        exclusion in resolve_provider()."""
+        def env_side(key):
+            return "gho_xxx" if key == "GH_TOKEN" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "model")
+        assert result is None
+
+    def test_model_ignores_bare_github_token(self):
+        """GITHUB_TOKEN is commonly set in CI and must not trigger skip."""
+        def env_side(key):
+            return "ghp_xxx" if key == "GITHUB_TOKEN" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "model")
+        assert result is None
+
+    def test_model_ignores_claude_code_oauth_token(self):
+        """CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself and must not
+        trigger skip — mirrors the _IMPLICIT_ENV_VARS guard in
+        is_provider_explicitly_configured()."""
+        def env_side(key):
+            return "sk-ant-oat01-xxx" if key == "CLAUDE_CODE_OAUTH_TOKEN" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "model")
+        assert result is None
+
+    def test_model_copilot_recognised_when_explicitly_chosen(self):
+        """If the user picked copilot in config, GH_TOKEN *does* count —
+        only the auto-detect path excludes it."""
+        def env_side(key):
+            return "gho_xxx" if key == "GH_TOKEN" else ""
+
+        cfg = {"model": {"provider": "copilot", "default": "gpt-5"}}
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(cfg, "model")
+        assert result == "gpt-5"
+
+    def test_gateway_matches_platform_registry(self):
+        """Every platform in _GATEWAY_PLATFORMS should be recognised by its
+        own env-var sentinel — i.e. the summary must not drift from the
+        registry used by the setup checklist."""
+        for label, env_var, _fn in setup_mod._GATEWAY_PLATFORMS:
+            def env_side(key, _target=env_var):
+                return "x" if key == _target else ""
+            with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+                result = setup_mod._get_section_config_summary({}, "gateway")
+            expected = setup_mod._gateway_platform_short_label(label)
+            assert result is not None, f"{label} ({env_var}) not recognised"
+            assert expected in result, (
+                f"{label} ({env_var}) recognised but label missing from summary: {result!r}"
+            )
+
 
 class TestSkipConfiguredSection:
     """Test the _skip_configured_section helper."""

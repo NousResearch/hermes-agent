@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from gateway.channel_directory import (
     build_channel_directory,
+    lookup_channel_type,
     resolve_channel_name,
     format_directory_for_display,
     load_directory,
@@ -285,3 +286,49 @@ class TestFormatDirectoryForDisplay:
         assert "Discord (Server1):" in result
         assert "Discord (Server2):" in result
         assert "discord:#general" in result
+
+
+class TestLookupChannelType:
+    def _setup(self, tmp_path, platforms):
+        cache_file = _write_directory(tmp_path, platforms)
+        return patch("gateway.channel_directory.DIRECTORY_PATH", cache_file)
+
+    def test_forum_channel(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "100", "name": "ideas", "guild": "Server1", "type": "forum"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_type("discord", "100") == "forum"
+
+    def test_regular_channel(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "200", "name": "general", "guild": "Server1", "type": "channel"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_type("discord", "200") == "channel"
+
+    def test_unknown_chat_id_returns_none(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "200", "name": "general", "guild": "Server1", "type": "channel"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_type("discord", "999") is None
+
+    def test_unknown_platform_returns_none(self, tmp_path):
+        with self._setup(tmp_path, {}):
+            assert lookup_channel_type("discord", "100") is None
+
+    def test_channel_without_type_key_returns_none(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "300", "name": "general", "guild": "Server1"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_type("discord", "300") is None

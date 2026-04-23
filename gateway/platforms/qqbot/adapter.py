@@ -856,8 +856,8 @@ class QQAdapter(BasePlatformAdapter):
 
         # Process all attachments uniformly (images, voice, files)
         att_result = await self._process_attachments(attachments_raw)
-        image_urls = att_result["image_urls"]
-        image_media_types = att_result["image_media_types"]
+        media_urls = att_result["media_urls"]
+        media_types = att_result["media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
 
@@ -876,13 +876,13 @@ class QQAdapter(BasePlatformAdapter):
             )
 
         logger.info(
-            "[%s] After processing: images=%d, voice=%d",
+            "[%s] After processing: media=%d, voice=%d",
             self._log_tag,
-            len(image_urls),
+            len(media_urls),
             len(voice_transcripts),
         )
 
-        if not text.strip() and not image_urls:
+        if not text.strip() and not media_urls:
             return
 
         self._chat_type_map[user_openid] = "c2c"
@@ -893,11 +893,11 @@ class QQAdapter(BasePlatformAdapter):
                 chat_type="dm",
             ),
             text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types),
+            message_type=self._detect_message_type(media_urls, media_types),
             raw_message=d,
             message_id=msg_id,
-            media_urls=image_urls,
-            media_types=image_media_types,
+            media_urls=media_urls,
+            media_types=media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -922,8 +922,8 @@ class QQAdapter(BasePlatformAdapter):
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
         att_result = await self._process_attachments(d.get("attachments"))
-        image_urls = att_result["image_urls"]
-        image_media_types = att_result["image_media_types"]
+        media_urls = att_result["media_urls"]
+        media_types = att_result["media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
 
@@ -940,7 +940,7 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
-        if not text.strip() and not image_urls:
+        if not text.strip() and not media_urls:
             return
 
         self._chat_type_map[group_openid] = "group"
@@ -951,11 +951,11 @@ class QQAdapter(BasePlatformAdapter):
                 chat_type="group",
             ),
             text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types),
+            message_type=self._detect_message_type(media_urls, media_types),
             raw_message=d,
             message_id=msg_id,
-            media_urls=image_urls,
-            media_types=image_media_types,
+            media_urls=media_urls,
+            media_types=media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -978,8 +978,8 @@ class QQAdapter(BasePlatformAdapter):
 
         text = content
         att_result = await self._process_attachments(d.get("attachments"))
-        image_urls = att_result["image_urls"]
-        image_media_types = att_result["image_media_types"]
+        media_urls = att_result["media_urls"]
+        media_types = att_result["media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
 
@@ -995,7 +995,7 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
-        if not text.strip() and not image_urls:
+        if not text.strip() and not media_urls:
             return
 
         self._chat_type_map[channel_id] = "guild"
@@ -1007,11 +1007,11 @@ class QQAdapter(BasePlatformAdapter):
                 chat_type="group",
             ),
             text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types),
+            message_type=self._detect_message_type(media_urls, media_types),
             raw_message=d,
             message_id=msg_id,
-            media_urls=image_urls,
-            media_types=image_media_types,
+            media_urls=media_urls,
+            media_types=media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -1031,8 +1031,8 @@ class QQAdapter(BasePlatformAdapter):
 
         text = content
         att_result = await self._process_attachments(d.get("attachments"))
-        image_urls = att_result["image_urls"]
-        image_media_types = att_result["image_media_types"]
+        media_urls = att_result["media_urls"]
+        media_types = att_result["media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
 
@@ -1048,7 +1048,7 @@ class QQAdapter(BasePlatformAdapter):
                 else attachment_info
             )
 
-        if not text.strip() and not image_urls:
+        if not text.strip() and not media_urls:
             return
 
         self._chat_type_map[guild_id] = "dm"
@@ -1059,11 +1059,11 @@ class QQAdapter(BasePlatformAdapter):
                 chat_type="dm",
             ),
             text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types),
+            message_type=self._detect_message_type(media_urls, media_types),
             raw_message=d,
             message_id=msg_id,
-            media_urls=image_urls,
-            media_types=image_media_types,
+            media_urls=media_urls,
+            media_types=media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -1078,7 +1078,7 @@ class QQAdapter(BasePlatformAdapter):
         if not media_urls:
             return MessageType.TEXT
         if not media_types:
-            return MessageType.PHOTO
+            return MessageType.DOCUMENT
         first_type = media_types[0].lower() if media_types else ""
         if "audio" in first_type or "voice" in first_type or "silk" in first_type:
             return MessageType.VOICE
@@ -1087,10 +1087,10 @@ class QQAdapter(BasePlatformAdapter):
         if "image" in first_type or "photo" in first_type:
             return MessageType.PHOTO
         logger.debug(
-            "Unknown media content_type '%s', defaulting to TEXT",
+            "Unknown media content_type '%s', defaulting to DOCUMENT",
             first_type,
         )
-        return MessageType.TEXT
+        return MessageType.DOCUMENT
 
     async def _process_attachments(
             self,
@@ -1102,21 +1102,21 @@ class QQAdapter(BasePlatformAdapter):
         other files uniformly.
 
         Returns a dict with:
-        - image_urls: list[str]  — cached local image paths
-        - image_media_types: list[str] — MIME types of cached images
+        - media_urls: list[str]  — cached local media paths
+        - media_types: list[str] — MIME types of cached media
         - voice_transcripts: list[str] — STT transcripts for voice messages
         - attachment_info: str — text description of non-image, non-voice attachments
         """
         if not isinstance(attachments, list):
             return {
-                "image_urls": [],
-                "image_media_types": [],
+                "media_urls": [],
+                "media_types": [],
                 "voice_transcripts": [],
                 "attachment_info": "",
             }
 
-        image_urls: List[str] = []
-        image_media_types: List[str] = []
+        media_urls: List[str] = []
+        media_types: List[str] = []
         voice_transcripts: List[str] = []
         other_attachments: List[str] = []
 
@@ -1174,8 +1174,8 @@ class QQAdapter(BasePlatformAdapter):
                 try:
                     cached_path = await self._download_and_cache(url, ct)
                     if cached_path and os.path.isfile(cached_path):
-                        image_urls.append(cached_path)
-                        image_media_types.append(ct or "image/jpeg")
+                        media_urls.append(cached_path)
+                        media_types.append(ct or "image/jpeg")
                     elif cached_path:
                         logger.warning(
                             "[%s] Cached image path does not exist: %s",
@@ -1185,18 +1185,31 @@ class QQAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache image: %s", self._log_tag, exc)
             else:
-                # Other attachments (video, file, etc.): record as text.
+                # Other attachments (video, file, etc.): attach the cached file
+                # to the event and keep the text hint for operator visibility.
                 try:
                     cached_path = await self._download_and_cache(url, ct)
-                    if cached_path:
+                    if cached_path and os.path.isfile(cached_path):
+                        media_urls.append(cached_path)
+                        media_types.append(
+                            ct
+                            or mimetypes.guess_type(filename or "")[0]
+                            or "application/octet-stream"
+                        )
                         other_attachments.append(f"[Attachment: {filename or ct}]")
+                    elif cached_path:
+                        logger.warning(
+                            "[%s] Cached attachment path does not exist: %s",
+                            self._log_tag,
+                            cached_path,
+                        )
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
 
         attachment_info = "\n".join(other_attachments) if other_attachments else ""
         return {
-            "image_urls": image_urls,
-            "image_media_types": image_media_types,
+            "media_urls": media_urls,
+            "media_types": media_types,
             "voice_transcripts": voice_transcripts,
             "attachment_info": attachment_info,
         }

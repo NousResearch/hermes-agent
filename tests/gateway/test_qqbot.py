@@ -334,6 +334,13 @@ class TestDetectMessageType:
         from gateway.platforms.base import MessageType
         assert self._fn(["vid.mp4"], ["video/mp4"]) == MessageType.VIDEO
 
+    def test_document(self):
+        from gateway.platforms.base import MessageType
+        assert self._fn(
+            ["report.xlsx"],
+            ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+        ) == MessageType.DOCUMENT
+
 
 # ---------------------------------------------------------------------------
 # QQCloseError
@@ -362,6 +369,71 @@ class TestQQCloseError:
         err = QQCloseError(4008, "rate limit")
         assert "4008" in str(err)
         assert "rate limit" in str(err)
+
+
+# ---------------------------------------------------------------------------
+# Attachment processing
+# ---------------------------------------------------------------------------
+
+class TestAttachmentProcessing:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    @pytest.mark.asyncio
+    async def test_process_document_attachment_adds_cached_path_to_media(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._download_and_cache = mock.AsyncMock(return_value="/tmp/report.xlsx")
+
+        with mock.patch("gateway.platforms.qqbot.adapter.os.path.isfile", return_value=True):
+            result = await adapter._process_attachments([
+                {
+                    "url": "https://example.com/report.xlsx",
+                    "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "filename": "report.xlsx",
+                }
+            ])
+
+        assert result["media_urls"] == ["/tmp/report.xlsx"]
+        assert result["media_types"] == [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ]
+        assert result["attachment_info"] == "[Attachment: report.xlsx]"
+
+    @pytest.mark.asyncio
+    async def test_c2c_document_attachment_reaches_message_event(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._download_and_cache = mock.AsyncMock(return_value="/tmp/report.xlsx")
+        adapter.handle_message = mock.AsyncMock()
+
+        payload = {
+            "attachments": [
+                {
+                    "url": "https://example.com/report.xlsx",
+                    "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "filename": "report.xlsx",
+                }
+            ]
+        }
+
+        with mock.patch("gateway.platforms.qqbot.adapter.os.path.isfile", return_value=True):
+            await adapter._handle_c2c_message(
+                payload,
+                "msg-1",
+                "",
+                {"user_openid": "user-1"},
+                "2026-04-23T00:00:00Z",
+            )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == ["/tmp/report.xlsx"]
+        assert event.media_types == [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ]
+        assert event.message_type == MessageType.DOCUMENT
+        assert "[Attachment: report.xlsx]" in event.text
 
 
 # ---------------------------------------------------------------------------

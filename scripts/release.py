@@ -141,6 +141,7 @@ AUTHOR_MAP = {
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
     "akhater@gmail.com": "akhater",
+    "Cos_Admin@PTG-COS.lodluvup4uaudnm3ycd14giyug.xx.internal.cloudapp.net": "akhater",
     "239876380+handsdiff@users.noreply.github.com": "handsdiff",
     "hesapacicam112@gmail.com": "etherman-os",
     "mark.ramsell@rivermounts.com": "mark-ramsell",

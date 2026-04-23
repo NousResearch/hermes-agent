@@ -663,46 +663,111 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
         return None
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coerce_limit(limit: Any) -> Optional[int]:
+    if limit in (None, ""):
+        return None
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _skill_graph_path() -> Path:
+    return SKILLS_DIR / ".graph" / "skill_graph.json"
+
+
+def _fallback_skill_graph_status(status: str) -> Dict[str, Any]:
+    return {"enabled": True, "status": status, "path": str(_skill_graph_path())}
+
+
+def skills_list(
+    category: str = None,
+    query: str = None,
+    limit: int = None,
+    task_id: str = None,
+) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
 
     Returns only name + description to minimize token usage. Use skill_view() to
-    load full content, tags, related files, etc.
+    load full content, tags, related files, etc. When Skill Graphs v0 is enabled,
+    query ranks against the read-only graph and returns one-hop dependency
+    suggestions. With flags off, query and limit are ignored for rollback safety.
 
     Args:
         category: Optional category filter (e.g., "mlops")
+        query: Optional discovery query used only when HERMES_SKILL_GRAPH_ENABLED=1
+        limit: Optional max result count used only when graph query is active or falling back
         task_id: Optional task identifier used to probe the active backend
 
     Returns:
         JSON string with minimal skill info: name, description, category
     """
     try:
+        graph_enabled = _env_flag_enabled("HERMES_SKILL_GRAPH_ENABLED")
+        result_limit = _coerce_limit(limit)
+        if graph_enabled and query:
+            graph_path = _skill_graph_path()
+            if graph_path.exists():
+                try:
+                    from agent.skill_graph import load_skill_graph, query_skill_graph
+
+                    graph = load_skill_graph(graph_path)
+                    ranked = query_skill_graph(graph, query, limit=result_limit)
+                    if category:
+                        ranked = [s for s in ranked if s.get("category") == category]
+                    categories = sorted(
+                        set(s.get("category") for s in ranked if s.get("category"))
+                    )
+                    return json.dumps(
+                        {
+                            "success": True,
+                            "skills": ranked,
+                            "categories": categories,
+                            "count": len(ranked),
+                            "skill_graph": {"enabled": True, "status": "ok", "path": str(graph_path)},
+                            "hint": "Use skill_view(name) to load full content. Dependency suggestions are one-hop only.",
+                        },
+                        ensure_ascii=False,
+                    )
+                except Exception as e:
+                    logger.debug("Skill graph query fallback: %s", e, exc_info=True)
+                    graph_status = _fallback_skill_graph_status("fallback_error")
+            else:
+                graph_status = _fallback_skill_graph_status("fallback_missing")
+        else:
+            graph_status = None
+
         if not SKILLS_DIR.exists():
             SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
+            payload = {
+                "success": True,
+                "skills": [],
+                "categories": [],
+                "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
+            }
+            if graph_status:
+                payload["skill_graph"] = graph_status
+            return json.dumps(payload, ensure_ascii=False)
 
         # Find all skills
         all_skills = _find_all_skills()
 
         if not all_skills:
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": "No skills found in skills/ directory.",
-                },
-                ensure_ascii=False,
-            )
+            payload = {
+                "success": True,
+                "skills": [],
+                "categories": [],
+                "message": "No skills found in skills/ directory.",
+            }
+            if graph_status:
+                payload["skill_graph"] = graph_status
+            return json.dumps(payload, ensure_ascii=False)
 
         # Filter by category if specified
         if category:
@@ -710,22 +775,24 @@ def skills_list(category: str = None, task_id: str = None) -> str:
 
         # Sort by category then name
         all_skills.sort(key=lambda s: (s.get("category") or "", s["name"]))
+        if graph_status and result_limit is not None:
+            all_skills = all_skills[:result_limit]
 
         # Extract unique categories
         categories = sorted(
             set(s.get("category") for s in all_skills if s.get("category"))
         )
 
-        return json.dumps(
-            {
-                "success": True,
-                "skills": all_skills,
-                "categories": categories,
-                "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
-            },
-            ensure_ascii=False,
-        )
+        payload = {
+            "success": True,
+            "skills": all_skills,
+            "categories": categories,
+            "count": len(all_skills),
+            "hint": "Use skill_view(name) to see full content, tags, and linked files",
+        }
+        if graph_status:
+            payload["skill_graph"] = graph_status
+        return json.dumps(payload, ensure_ascii=False)
 
     except Exception as e:
         return tool_error(str(e), success=False)
@@ -1391,7 +1458,16 @@ SKILLS_LIST_SCHEMA = {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
-            }
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional natural-language skill discovery query. Uses Skill Graphs v0 only when HERMES_SKILL_GRAPH_ENABLED=1.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional maximum result count for graph-backed queries and safe fallback output.",
+                "minimum": 1,
+            },
         },
         "required": [],
     },
@@ -1421,7 +1497,10 @@ registry.register(
     toolset="skills",
     schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
+        category=args.get("category"),
+        query=args.get("query"),
+        limit=args.get("limit"),
+        task_id=kw.get("task_id"),
     ),
     check_fn=check_skills_requirements,
     emoji="📚",

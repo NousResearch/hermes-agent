@@ -288,6 +288,90 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
 
+    def test_schema_exposes_query_and_limit(self):
+        props = skills_tool_module.SKILLS_LIST_SCHEMA["parameters"]["properties"]
+        assert "query" in props
+        assert "limit" in props
+
+    def test_query_uses_skill_graph_when_enabled(self, tmp_path, monkeypatch):
+        from agent.skill_graph import build_skill_graph, write_skill_graph
+
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_ENABLED", "1")
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_PROMPT", "0")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "memory-system-monitor",
+                category="devops",
+                frontmatter_extra="metadata:\n  hermes:\n    layer: atom\n",
+            )
+            _make_skill(
+                tmp_path,
+                "opik-hourly-watch-canonical-runbook",
+                category="devops",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    layer: compound\n"
+                    "    depends_on:\n"
+                    "      - skill: memory-system-monitor\n"
+                    "        mode: explicit\n"
+                    "        when: reconcile memory telemetry\n"
+                ),
+                body="Run Hermes Opik hourly watch and reconcile telemetry.",
+            )
+            _make_skill(tmp_path, "qbo-create-customer", category="jetstream-ops")
+            graph = build_skill_graph(tmp_path, generated_at="2026-04-23T12:00:00Z")
+            write_skill_graph(
+                graph,
+                tmp_path / ".graph" / "skill_graph.json",
+                tmp_path / ".graph" / "skill_graph.md",
+            )
+            raw = skills_list(query="run Hermes Opik hourly watch", limit=2)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["skill_graph"]["enabled"] is True
+        assert result["skill_graph"]["status"] == "ok"
+        assert result["skills"][0]["name"] == "opik-hourly-watch-canonical-runbook"
+        assert result["skills"][0]["dependency_suggestions"][0]["skill"] == "memory-system-monitor"
+        assert result["count"] == 2
+
+    def test_query_falls_back_safely_when_graph_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_ENABLED", "1")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", category="devops")
+            _make_skill(tmp_path, "opik-hourly-watch-canonical-runbook", category="devops")
+            raw = skills_list(query="run opik hourly watch", limit=1)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["skill_graph"]["enabled"] is True
+        assert result["skill_graph"]["status"] == "fallback_missing"
+        assert result["skills"]
+
+    def test_query_is_ignored_when_graph_flag_is_off(self, tmp_path, monkeypatch):
+        from agent.skill_graph import build_skill_graph, write_skill_graph
+
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_ENABLED", "0")
+        monkeypatch.setenv("HERMES_SKILL_GRAPH_PROMPT", "1")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", category="devops")
+            _make_skill(tmp_path, "opik-hourly-watch-canonical-runbook", category="devops")
+            graph = build_skill_graph(tmp_path, generated_at="2026-04-23T12:00:00Z")
+            write_skill_graph(
+                graph,
+                tmp_path / ".graph" / "skill_graph.json",
+                tmp_path / ".graph" / "skill_graph.md",
+            )
+            raw = skills_list(query="run opik hourly watch", limit=1)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["skills"][0]["name"] == "alpha"
+        assert "score" not in result["skills"][0]
+        assert result.get("skill_graph", {}).get("enabled") in (None, False)
+
 
 # ---------------------------------------------------------------------------
 # skill_view

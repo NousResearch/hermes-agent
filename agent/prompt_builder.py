@@ -587,6 +587,64 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         return True, {}, ""
 
 
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _skill_graph_manifest_path(skills_dir: Path) -> Path:
+    return skills_dir / ".graph" / "skill_graph.json"
+
+
+def _build_compact_skill_graph_prompt(skills_dir: Path) -> str | None:
+    """Return the feature-flagged Skill Graphs v0 prompt, or None for legacy."""
+    if not (
+        _env_flag_enabled("HERMES_SKILL_GRAPH_ENABLED")
+        and _env_flag_enabled("HERMES_SKILL_GRAPH_PROMPT")
+    ):
+        return None
+
+    graph_path = _skill_graph_manifest_path(skills_dir)
+    if not graph_path.exists():
+        return None
+
+    try:
+        from agent.skill_graph import load_skill_graph
+
+        graph = load_skill_graph(graph_path)
+    except Exception as e:
+        logger.debug("Skill graph compact prompt fallback: %s", e, exc_info=True)
+        return None
+
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    counts = graph.get("counts") or {}
+    layer_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    for node in nodes:
+        layer = str(node.get("layer") or "atom")
+        category = str(node.get("category") or "general")
+        layer_counts[layer] = layer_counts.get(layer, 0) + 1
+        category_counts[category] = category_counts.get(category, 0) + 1
+
+    top_categories = sorted(category_counts.items(), key=lambda item: (-item[1], item[0]))[:12]
+    layer_summary = ", ".join(f"{layer}: {count}" for layer, count in sorted(layer_counts.items())) or "none"
+    category_summary = ", ".join(f"{category}: {count}" for category, count in top_categories) or "none"
+
+    return (
+        "## Skills (mandatory)\n"
+        "Skill Graphs v0 compact prompt is enabled. Do not rely on a full inline skill catalog. "
+        "For any task where a skill may help, call skills_list(query=\"short task description\", limit=5) first, then load the best match with skill_view(name). "
+        "Use dependency_suggestions as one-hop hints only. Do not recursively load or walk dependency chains. "
+        "If a skill has issues, fix it with skill_manage(action='patch'). "
+        "After difficult or iterative tasks, offer to save a reusable skill.\n"
+        f"Graph manifest: {graph_path}\n"
+        f"Graph counts: {counts.get('nodes', len(nodes))} skills, {counts.get('edges', len(edges))} explicit edges.\n"
+        f"Layers: {layer_summary}.\n"
+        f"Top categories: {category_summary}.\n"
+        "Rollback: set HERMES_SKILL_GRAPH_PROMPT=0 to restore the legacy inline skill catalog prompt."
+    )
+
+
 def _skill_should_show(
     conditions: dict,
     available_tools: "set[str] | None",
@@ -641,6 +699,10 @@ def build_skills_system_prompt(
 
     if not skills_dir.exists() and not external_dirs:
         return ""
+
+    compact_prompt = _build_compact_skill_graph_prompt(skills_dir)
+    if compact_prompt is not None:
+        return compact_prompt
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists

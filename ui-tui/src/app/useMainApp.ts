@@ -672,7 +672,10 @@ export function useMainApp(gw: GatewayClient) {
     return top + vp >= total - 3
   })()
 
-  const liveProgress = useMemo(() => ({ ...turn, showProgressArea, showStreamingArea: Boolean(turn.streaming) }), [turn, showProgressArea])
+  const liveProgress = useMemo(
+    () => ({ ...turn, showProgressArea, showStreamingArea: Boolean(turn.streaming) }),
+    [turn, showProgressArea]
+  )
 
   const frozenProgressRef = useRef(liveProgress)
 

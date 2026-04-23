@@ -11,7 +11,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from hermes_constants import display_hermes_home
 
@@ -238,6 +238,7 @@ def cronjob(
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
+    context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     task_id: str = None,
@@ -265,6 +266,18 @@ def cronjob(
                 if script_error:
                     return tool_error(script_error, success=False)
 
+            # Validate context_from references existing jobs
+            if context_from:
+                from cron.jobs import get_job as _get_job
+                refs = [context_from] if isinstance(context_from, str) else context_from
+                for ref_id in refs:
+                    if not _get_job(ref_id):
+                        return tool_error(
+                            f"context_from job '{ref_id}' not found. "
+                            "Use cronjob(action='list') to see available jobs.",
+                            success=False,
+                        )
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
@@ -277,6 +290,7 @@ def cronjob(
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
+                context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
             )
@@ -473,6 +487,19 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under {display_hermes_home()}/scripts/. On update, pass empty string to clear."
             },
+            "context_from": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional job ID or list of job IDs whose most recent completed output is "
+                    "injected into the prompt as context before each run. "
+                    "Use this to chain cron jobs: job A collects data, job B processes it. "
+                    "Each entry must be a valid job ID (from cronjob action='list'). "
+                    "Note: injects the most recent completed output — does not wait for "
+                    "upstream jobs running in the same tick. "
+                    "On update, pass an empty array to clear."
+                ),
+            },
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -481,6 +508,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+
             },
         },
         "required": ["action"]
@@ -526,6 +554,7 @@ registry.register(
         base_url=args.get("base_url"),
         reason=args.get("reason"),
         script=args.get("script"),
+        context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         task_id=kw.get("task_id"),

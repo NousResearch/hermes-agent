@@ -150,6 +150,43 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     return text or None
 
 
+def _resolve_create_runtime_defaults(
+    *,
+    provider: Optional[str],
+    base_url: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Best-effort runtime defaults for cron create.
+
+    Gateway-created jobs may omit provider/base_url. Resolve the active runtime
+    settings so persisted jobs execute with the same provider selection as the
+    current session. Explicit user values always win.
+    """
+    resolved_provider = _normalize_optional_job_value(provider)
+    resolved_base_url = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+    if resolved_provider and resolved_base_url:
+        return resolved_provider, resolved_base_url
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=resolved_provider,
+            explicit_base_url=resolved_base_url,
+        )
+    except Exception as exc:
+        logger.debug("cron create: runtime provider resolution unavailable: %s", exc)
+        return resolved_provider, resolved_base_url
+
+    if not resolved_provider:
+        resolved_provider = _normalize_optional_job_value(runtime.get("provider"))
+    if not resolved_base_url:
+        resolved_base_url = _normalize_optional_job_value(
+            runtime.get("base_url"),
+            strip_trailing_slash=True,
+        )
+    return resolved_provider, resolved_base_url
+
+
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
@@ -259,6 +296,11 @@ def cronjob(
                 if script_error:
                     return tool_error(script_error, success=False)
 
+            resolved_provider, resolved_base_url = _resolve_create_runtime_defaults(
+                provider=provider,
+                base_url=base_url,
+            )
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
@@ -268,8 +310,8 @@ def cronjob(
                 origin=_origin_from_env(),
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
-                provider=_normalize_optional_job_value(provider),
-                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                provider=resolved_provider,
+                base_url=resolved_base_url,
                 script=_normalize_optional_job_value(script),
             )
             return json.dumps(

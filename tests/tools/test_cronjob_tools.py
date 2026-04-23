@@ -231,3 +231,63 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["skills"] == []
         assert updated["job"]["skill"] is None
+
+    def test_create_inherits_runtime_provider_when_missing(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+        def _fake_runtime_provider(**kwargs):
+            return {
+                "provider": "custom",
+                "base_url": "https://gateway.example/v1/",
+                "api_key": "dummy",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            _fake_runtime_provider,
+        )
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                name="Provider Inheritance",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["provider"] == "custom"
+        assert created["job"]["base_url"] == "https://gateway.example/v1"
+
+    def test_create_preserves_explicit_provider_and_base_url(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+        def _fake_runtime_provider(**kwargs):
+            return {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "dummy",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            _fake_runtime_provider,
+        )
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                name="Provider Explicit",
+                provider="custom",
+                base_url="https://keep.me/v1/",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["provider"] == "custom"
+        assert created["job"]["base_url"] == "https://keep.me/v1"

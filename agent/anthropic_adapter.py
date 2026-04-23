@@ -1602,15 +1602,17 @@ def build_anthropic_kwargs(
 def normalize_anthropic_response(
     response,
     strip_tool_prefix: bool = False,
-) -> Tuple[SimpleNamespace, str]:
-    """Normalize Anthropic response to match the shape expected by AIAgent.
+) -> "NormalizedResponse":
+    """Normalize Anthropic response to NormalizedResponse.
 
-    Returns (assistant_message, finish_reason) where assistant_message has
-    .content, .tool_calls, and .reasoning attributes.
+    Returns a NormalizedResponse with content, tool_calls, finish_reason,
+    reasoning, and provider_data fields.
 
     When *strip_tool_prefix* is True, removes the ``mcp_`` prefix that was
     added to tool names for OAuth Claude Code compatibility.
     """
+    from agent.transports.types import NormalizedResponse, ToolCall
+
     text_parts = []
     reasoning_parts = []
     reasoning_details = []
@@ -1629,23 +1631,13 @@ def normalize_anthropic_response(
             if strip_tool_prefix and name.startswith(_MCP_TOOL_PREFIX):
                 name = name[len(_MCP_TOOL_PREFIX):]
             tool_calls.append(
-                SimpleNamespace(
+                ToolCall(
                     id=block.id,
-                    type="function",
-                    function=SimpleNamespace(
-                        name=name,
-                        arguments=json.dumps(block.input),
-                    ),
+                    name=name,
+                    arguments=json.dumps(block.input),
                 )
             )
 
-    # Map Anthropic stop_reason to OpenAI finish_reason.
-    # Newer stop reasons added in Claude 4.5+ / 4.7:
-    #   - refusal: the model declined to answer (cyber safeguards, CSAM, etc.)
-    #   - model_context_window_exceeded: hit context limit (not max_tokens)
-    # Both need distinct handling upstream — a refusal should surface to the
-    # user with a clear message, and a context-window overflow should trigger
-    # compression/truncation rather than be treated as normal end-of-turn.
     stop_reason_map = {
         "end_turn": "stop",
         "tool_use": "tool_calls",
@@ -1656,13 +1648,15 @@ def normalize_anthropic_response(
     }
     finish_reason = stop_reason_map.get(response.stop_reason, "stop")
 
-    return (
-        SimpleNamespace(
-            content="\n".join(text_parts) if text_parts else None,
-            tool_calls=tool_calls or None,
-            reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
-            reasoning_content=None,
-            reasoning_details=reasoning_details or None,
-        ),
-        finish_reason,
+    provider_data = {}
+    if reasoning_details:
+        provider_data["reasoning_details"] = reasoning_details
+
+    return NormalizedResponse(
+        content="\n".join(text_parts) if text_parts else None,
+        tool_calls=tool_calls or None,
+        finish_reason=finish_reason,
+        reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
+        usage=None,
+        provider_data=provider_data or None,
     )

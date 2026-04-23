@@ -3290,6 +3290,29 @@ class AIAgent:
         """
         raw = str(error)
 
+        # Empty-message errors (bare `assert`, empty `raise`, or third-party
+        # SDK accumulators that swallow the original payload) leave users
+        # staring at `📝 Error:` with no content.  Dump the traceback's last
+        # frame so the real root cause is visible without re-running under
+        # a debugger.  Known trigger: the anthropic SDK's streaming
+        # accumulator raises `RuntimeError('Unexpected event order, got
+        # error before "message_start"')` when Bedrock/Anthropic returns
+        # a service-level error event first (throttling, overload, etc.) —
+        # the raised exception has a message, but bare AssertionErrors in
+        # user-authored code paths often don't.
+        if not raw.strip():
+            import traceback as _tb
+            tb = getattr(error, "__traceback__", None)
+            if tb is not None:
+                frames = _tb.extract_tb(tb)
+                if frames:
+                    last = frames[-1]
+                    return (
+                        f"{type(error).__name__} at {last.filename}:{last.lineno} "
+                        f"in {last.name}() — {last.line or '(no source)'}"
+                    )
+            return f"{type(error).__name__} (no message, no traceback)"
+
         # Cloudflare / proxy HTML pages: grab the <title> for a clean summary
         if "<!DOCTYPE" in raw or "<html" in raw:
             m = re.search(r"<title[^>]*>([^<]+)</title>", raw, re.IGNORECASE)

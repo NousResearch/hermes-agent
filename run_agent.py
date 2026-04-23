@@ -5664,6 +5664,35 @@ class AIAgent:
         if self._memory_store:
             self._memory_store.load_from_disk()
 
+
+    @staticmethod
+    def _is_valid_tool_call(tool_call) -> bool:
+        """Validate a tool call before persisting to session history.
+
+        Malformed tool calls (empty function name, non-JSON arguments) can poison
+        a session and cause repeated 400 errors when replayed to strict providers.
+
+        Returns True if the tool call is valid and should be persisted.
+        """
+        fn = getattr(tool_call, "function", None)
+        if fn is None:
+            return False
+        fn_name = getattr(fn, "name", None)
+        if not isinstance(fn_name, str) or not fn_name.strip():
+            return False
+        fn_args = getattr(fn, "arguments", None)
+        if fn_args is None:
+            return True
+        if not isinstance(fn_args, str):
+            return False
+        if not fn_args.strip():
+            return False
+        try:
+            parsed = json.loads(fn_args)
+            return isinstance(parsed, dict)
+        except (json.JSONDecodeError, ValueError):
+            return False
+
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
         """Generate a deterministic call_id from tool call content.
@@ -9103,6 +9132,18 @@ class AIAgent:
         if assistant_tool_calls:
             tool_calls = []
             for tool_call in assistant_tool_calls:
+                # Validate tool call before persisting to prevent session poisoning.
+                # Malformed tool calls (empty name, invalid arguments) can cause
+                # repeated 400 errors when replayed to strict providers.
+                if not self._is_valid_tool_call(tool_call):
+                    fn = getattr(tool_call, "function", None)
+                    fn_name = getattr(fn, "name", "<empty>") if fn else "<missing>"
+                    fn_args = getattr(fn, "arguments", "<empty>") if fn else "<missing>"
+                    logging.warning(
+                        f"Skipping malformed tool call: name={fn_name!r}, "
+                        f"arguments={str(fn_args)[:100]!r}"
+                    )
+                    continue
                 raw_id = getattr(tool_call, "id", None)
                 call_id = getattr(tool_call, "call_id", None)
                 if not isinstance(call_id, str) or not call_id.strip():

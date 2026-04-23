@@ -119,16 +119,20 @@ def _run_async(coro):
             pool.shutdown(wait=False, cancel_futures=True)
 
     # If we're on a worker thread (e.g., parallel tool execution in
-    # delegate_task), use a per-thread persistent loop.  This avoids
-    # contention with the main thread's shared loop while keeping cached
-    # httpx/AsyncOpenAI clients bound to a live loop for the thread's
-    # lifetime — preventing "Event loop is closed" on GC cleanup.
+    # delegate_task), always use asyncio.run() so that a proper task
+    # context exists.  run_until_complete does NOT create a task, so
+    # asyncio.current_task() returns None — which breaks aiohttp's
+    # ClientTimeout context manager ("Timeout context manager should be
+    # used inside a task").
     if threading.current_thread() is not threading.main_thread():
-        worker_loop = _get_worker_loop()
-        return worker_loop.run_until_complete(coro)
+        return asyncio.run(coro)
 
-    tool_loop = _get_tool_loop()
-    return tool_loop.run_until_complete(coro)
+    # Main thread, no running loop — use asyncio.run() for proper task
+    # context (avoids "Timeout context manager should be used inside a
+    # task" with aiohttp >= 3.9).  The trade-off is that each call
+    # creates/destroys a loop, but this only applies to the CLI path
+    # where no running loop exists.
+    return asyncio.run(coro)
 
 
 # =============================================================================

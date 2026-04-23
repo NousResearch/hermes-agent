@@ -41,6 +41,14 @@ fi
 
 PYTHON="$VENV/bin/python"
 
+# ── Ensure pytest is installed (declared in pyproject optional-deps [test]) ──
+if ! "$PYTHON" -c "import pytest" 2>/dev/null; then
+  echo "error: pytest is not installed in $VENV" >&2
+  echo "  From the repo root, install the test extra (requires Python >=3.11):" >&2
+  echo "    cd \"$REPO_ROOT\" && \"$PYTHON\" -m pip install -e \".[test]\"" >&2
+  exit 1
+fi
+
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
   echo "→ installing pytest-split into $VENV"

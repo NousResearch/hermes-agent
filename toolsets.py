@@ -295,7 +295,18 @@ TOOLSETS = {
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
-    
+
+    "hermes-cron": {
+        # Mirrors hermes-cli so cron's "default" toolset is the same set of
+        # core tools users see interactively — then `hermes tools` filters
+        # them down per the platform config. _DEFAULT_OFF_TOOLSETS (moa,
+        # homeassistant, rl) are excluded by _get_platform_tools() unless
+        # the user explicitly enables them.
+        "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
         "tools": _HERMES_CORE_TOOLS,

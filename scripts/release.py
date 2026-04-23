@@ -369,6 +369,7 @@ AUTHOR_MAP = {
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",
     "projectadmin@wit.id": "projectadmin-dev",
+    "mrigankamondal10@gmail.com": "Dev-Mriganka",
 }
 
 

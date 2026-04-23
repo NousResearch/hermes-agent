@@ -697,7 +697,12 @@ class SessionDB:
         If not, searches for "title #N" variants and returns the latest one.
         If the exact title exists AND numbered variants exist, returns the
         latest numbered variant (the most recent continuation).
+        If neither exists, accepts a unique title prefix so users can resume
+        from titles copied out of width-limited session lists.
         """
+        if not title or not title.strip():
+            return None
+
         # First try exact match
         exact = self.get_session_by_title(title)
 
@@ -717,6 +722,19 @@ class SessionDB:
             return numbered[0]["id"]
         elif exact:
             return exact["id"]
+
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions "
+                "WHERE title LIKE ? ESCAPE '\\' "
+                "ORDER BY started_at DESC "
+                "LIMIT 2",
+                (f"{escaped}%",),
+            )
+            prefix_matches = cursor.fetchall()
+
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]["id"]
         return None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
@@ -1588,4 +1606,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

@@ -1335,6 +1335,27 @@ class TestTitleLineage:
     def test_resolve_nonexistent_title(self, db):
         assert db.resolve_session_by_title("nonexistent") is None
 
+    def test_resolve_blank_title_returns_none(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "my project")
+
+        assert db.resolve_session_by_title("") is None
+        assert db.resolve_session_by_title("   ") is None
+
+    def test_resolve_unique_title_prefix_from_truncated_display(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Salvage BytePlus Volcengine PR With Fixes")
+
+        assert db.resolve_session_by_title("Salvage BytePlus Volcengine PR") == "s1"
+
+    def test_resolve_ambiguous_title_prefix_returns_none(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "Salvage BytePlus Volcengine PR With Fixes")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "Salvage BytePlus Volcengine PR Review")
+
+        assert db.resolve_session_by_title("Salvage BytePlus Volcengine PR") is None
+
     def test_next_title_no_existing(self, db):
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"
@@ -1911,4 +1932,3 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
-

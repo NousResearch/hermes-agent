@@ -1344,7 +1344,7 @@ class GatewayRunner:
         """Load reasoning effort from config.yaml.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
+        "minimal", "low", "medium", "high", "xhigh", "max". Returns None to use
         default (medium).
         """
         from hermes_constants import parse_reasoning_effort
@@ -6788,7 +6788,7 @@ class GatewayRunner:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
+            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh, max)
             /reasoning show|on      Show model reasoning in responses
             /reasoning hide|off     Hide model reasoning from responses
         """
@@ -6833,7 +6833,7 @@ class GatewayRunner:
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"
                 f"**Display:** {display_state}\n\n"
-                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|show|hide>`"
+                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|show|hide>`"
             )
 
         # Display toggle (per-platform)
@@ -6853,14 +6853,15 @@ class GatewayRunner:
 
         # Effort level change
         effort = args.strip()
+        from hermes_constants import VALID_REASONING_EFFORTS
         if effort == "none":
             parsed = {"enabled": False}
-        elif effort in ("minimal", "low", "medium", "high", "xhigh"):
+        elif effort in VALID_REASONING_EFFORTS:
             parsed = {"enabled": True, "effort": effort}
         else:
             return (
                 f"⚠️ Unknown argument: `{effort}`\n\n"
-                "**Valid levels:** none, minimal, low, medium, high, xhigh\n"
+                f"**Valid levels:** none, {', '.join(VALID_REASONING_EFFORTS)}\n"
                 "**Display:** show, hide"
             )
 

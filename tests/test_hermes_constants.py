@@ -111,3 +111,47 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+class TestParseReasoningEffort:
+    """Tests for parse_reasoning_effort() — reasoning effort parsing and validation."""
+
+    def test_empty_string_returns_none(self):
+        """Empty input defers to caller's default."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort("") is None
+        assert parse_reasoning_effort("   ") is None
+
+    def test_none_disables_reasoning(self):
+        """'none' explicitly disables reasoning."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort("none") == {"enabled": False}
+        assert parse_reasoning_effort("NONE") == {"enabled": False}
+
+    def test_standard_levels(self):
+        """Each canonical effort level round-trips correctly."""
+        from hermes_constants import parse_reasoning_effort
+        for level in ("minimal", "low", "medium", "high", "xhigh"):
+            assert parse_reasoning_effort(level) == {"enabled": True, "effort": level}
+
+    def test_max_level_accepted(self):
+        """'max' is the strongest adaptive-thinking level on Claude 4.6+/4.7."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort("max") == {"enabled": True, "effort": "max"}
+
+    def test_case_insensitive(self):
+        """Effort strings are case-insensitive."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort("MAX") == {"enabled": True, "effort": "max"}
+        assert parse_reasoning_effort("XHigh") == {"enabled": True, "effort": "xhigh"}
+
+    def test_unknown_level_returns_none(self):
+        """Unrecognized levels return None so caller can fall back to default."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort("extreme") is None
+        assert parse_reasoning_effort("ultra") is None
+
+    def test_valid_reasoning_efforts_includes_max(self):
+        """VALID_REASONING_EFFORTS exposes 'max' as a supported level."""
+        from hermes_constants import VALID_REASONING_EFFORTS
+        assert "max" in VALID_REASONING_EFFORTS

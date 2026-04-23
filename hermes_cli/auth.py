@@ -22,6 +22,7 @@ import shutil
 import shlex
 import ssl
 import stat
+import sys
 import base64
 import hashlib
 import subprocess
@@ -1708,6 +1709,24 @@ def resolve_codex_runtime_credentials(
 # TLS verification helper
 # =============================================================================
 
+def _default_verify() -> bool | ssl.SSLContext:
+    """Platform-aware default SSL verify for httpx clients.
+
+    On macOS with Homebrew Python, the system OpenSSL cannot locate the
+    system trust store and valid public certs fail verification. When
+    certifi is importable we pin its bundle explicitly; elsewhere we
+    defer to httpx's built-in default (certifi via its own dependency).
+    Mirrors the weixin fix in 3a0ec1d93.
+    """
+    if sys.platform == "darwin":
+        try:
+            import certifi
+            return ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            pass
+    return True
+
+
 def _resolve_verify(
     *,
     insecure: Optional[bool] = None,
@@ -1726,6 +1745,7 @@ def _resolve_verify(
         or tls_state.get("ca_bundle")
         or os.getenv("HERMES_CA_BUNDLE")
         or os.getenv("SSL_CERT_FILE")
+        or os.getenv("REQUESTS_CA_BUNDLE")
     )
 
     if effective_insecure:
@@ -1737,9 +1757,9 @@ def _resolve_verify(
                 "CA bundle path does not exist: %s — falling back to default certificates",
                 ca_path,
             )
-            return True
+            return _default_verify()
         return ssl.create_default_context(cafile=ca_path)
-    return True
+    return _default_verify()
 
 
 # =============================================================================

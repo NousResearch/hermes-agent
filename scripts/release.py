@@ -392,6 +392,7 @@ AUTHOR_MAP = {
     "373119611@qq.com": "roytian1217",
     "brett@brettbrewer.com": "minorgod",
     "67779267+wenhao7@users.noreply.github.com": "wenhao7",
+    "git@yzx9.xyz": "yzx9",
 }
 
 

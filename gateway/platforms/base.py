@@ -1134,6 +1134,20 @@ class BasePlatformAdapter(ABC):
         Default is a no-op for platforms with one-shot typing indicators.
         """
         pass
+
+    async def update_thread_title(
+        self,
+        chat_id: str,
+        thread_id: str,
+        title: str,
+    ) -> bool:
+        """Rename a platform-specific thread/topic when supported.
+
+        Default implementation is a no-op so callers can optimistically try
+        to sync session titles to platform threads without special-casing
+        every adapter.
+        """
+        return False
     
     async def send_image(
         self,

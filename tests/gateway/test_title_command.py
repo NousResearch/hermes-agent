@@ -4,8 +4,7 @@ Tests the _handle_title_command handler (set/show session titles)
 across all gateway messenger platforms.
 """
 
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -15,13 +14,14 @@ from gateway.session import SessionSource
 
 
 def _make_event(text="/title", platform=Platform.TELEGRAM,
-                user_id="12345", chat_id="67890"):
+                user_id="12345", chat_id="67890", thread_id=None):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
         user_name="testuser",
+        thread_id=thread_id,
     )
     return MessageEvent(text=text, source=source)
 
@@ -68,6 +68,66 @@ class TestHandleTitleCommand:
 
         # Verify in DB
         assert db.get_session_title("test_session_123") == "My Research Project"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_renames_telegram_topic_when_in_thread(self, tmp_path):
+        """Telegram /title should also rename the active topic thread when possible."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        event = _make_event(text="/title Indicative Topic", thread_id="470094")
+        result = await runner._handle_title_command(event)
+
+        adapter.update_thread_title.assert_awaited_once_with("67890", "470094", "Indicative Topic")
+        assert "Telegram topic renamed too" in result
+        assert db.get_session_title("test_session_123") == "Indicative Topic"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_renames_telegram_general_topic_when_thread_is_one(self, tmp_path):
+        """Telegram General topic thread_id=1 should still trigger a rename attempt."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        event = _make_event(text="/title Lobby", thread_id="1")
+        result = await runner._handle_title_command(event)
+
+        adapter.update_thread_title.assert_awaited_once_with("67890", "1", "Lobby")
+        assert "Telegram topic renamed too" in result
+        assert db.get_session_title("test_session_123") == "Lobby"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_set_title_skips_telegram_topic_rename_without_thread(self, tmp_path):
+        """Telegram chats without a thread_id keep the existing DB-only behavior."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        adapter = MagicMock()
+        adapter.update_thread_title = AsyncMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        event = _make_event(text="/title Plain Chat Title")
+        result = await runner._handle_title_command(event)
+
+        adapter.update_thread_title.assert_not_called()
+        assert "Telegram topic renamed too" not in result
+        assert db.get_session_title("test_session_123") == "Plain Chat Title"
         db.close()
 
     @pytest.mark.asyncio

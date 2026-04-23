@@ -247,6 +247,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Runtime cache of topic titles keyed by "chat_id:thread_id".
+        # This lets /title-driven renames and Telegram service messages show up
+        # in Hermes context immediately without waiting for config changes.
+        self._thread_topic_titles: Dict[str, str] = {}
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
@@ -510,6 +514,57 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+    def _cache_thread_topic_title(self, chat_id: str, thread_id: str, title: str) -> None:
+        """Remember the latest known title for a Telegram thread/topic."""
+        normalized = (title or "").strip()
+        if not normalized or not chat_id or not thread_id:
+            return
+        cache_key = f"{chat_id}:{thread_id}"
+        self._thread_topic_titles[cache_key] = normalized
+
+    def _get_cached_thread_topic_title(self, chat_id: str, thread_id: Optional[str]) -> Optional[str]:
+        if not chat_id or not thread_id:
+            return None
+        return self._thread_topic_titles.get(f"{chat_id}:{thread_id}")
+
+    async def update_thread_title(self, chat_id: str, thread_id: str, title: str) -> bool:
+        """Rename a Telegram forum topic / DM topic thread."""
+        if not self._bot or not chat_id or not thread_id:
+            return False
+        normalized = (title or "").strip()
+        if not normalized:
+            return False
+        try:
+            if str(thread_id) == self._GENERAL_TOPIC_THREAD_ID:
+                await self._bot.edit_general_forum_topic(
+                    chat_id=int(chat_id),
+                    name=normalized,
+                )
+            else:
+                await self._bot.edit_forum_topic(
+                    chat_id=int(chat_id),
+                    message_thread_id=int(thread_id),
+                    name=normalized,
+                )
+            self._cache_thread_topic_title(str(chat_id), str(thread_id), normalized)
+            logger.info(
+                "[%s] Renamed Telegram topic chat=%s thread=%s -> %s",
+                self.name,
+                chat_id,
+                thread_id,
+                normalized,
+            )
+            return True
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to rename Telegram topic chat=%s thread=%s: %s",
+                self.name,
+                chat_id,
+                thread_id,
+                e,
+            )
+            return False
+
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:
@@ -759,7 +814,11 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             self._app.add_handler(TelegramMessageHandler(
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
+                self._handle_media_message,
+            ))
+            self._app.add_handler(TelegramMessageHandler(
+                filters.StatusUpdate.FORUM_TOPIC_CREATED | filters.StatusUpdate.FORUM_TOPIC_EDITED,
+                self._handle_forum_topic_service_message,
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
@@ -2446,6 +2505,26 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = "\n".join(parts)
         await self.handle_message(event)
 
+    async def _handle_forum_topic_service_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Cache Telegram forum-topic create/edit service messages."""
+        message = getattr(update, "message", None)
+        if not message:
+            return
+        thread_id = getattr(message, "message_thread_id", None)
+        chat = getattr(message, "chat", None)
+        if thread_id is None or not chat:
+            return
+
+        if hasattr(message, "forum_topic_created") and message.forum_topic_created:
+            created_name = getattr(message.forum_topic_created, "name", None)
+            if created_name:
+                self._cache_thread_topic_title(str(chat.id), str(thread_id), created_name)
+
+        if hasattr(message, "forum_topic_edited") and message.forum_topic_edited:
+            edited_name = getattr(message.forum_topic_edited, "name", None)
+            if edited_name:
+                self._cache_thread_topic_title(str(chat.id), str(thread_id), edited_name)
+
     # ------------------------------------------------------------------
     # Text message aggregation (handles Telegram client-side splits)
     # ------------------------------------------------------------------
@@ -3019,6 +3098,22 @@ class TelegramAdapter(BasePlatformAdapter):
                             topic_skill = topic.get("skill")
                             break
                     break
+
+        cached_topic_title = self._get_cached_thread_topic_title(str(chat.id), thread_id_str)
+        if cached_topic_title:
+            chat_topic = cached_topic_title
+
+        if thread_id_str and hasattr(message, "forum_topic_created") and message.forum_topic_created:
+            created_name = message.forum_topic_created.name
+            if created_name:
+                self._cache_thread_topic_title(str(chat.id), thread_id_str, created_name)
+                chat_topic = created_name
+
+        if thread_id_str and hasattr(message, "forum_topic_edited") and message.forum_topic_edited:
+            edited_name = getattr(message.forum_topic_edited, "name", None)
+            if edited_name:
+                self._cache_thread_topic_title(str(chat.id), thread_id_str, edited_name)
+                chat_topic = edited_name
 
         # Build source
         source = self.build_source(

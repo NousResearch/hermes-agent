@@ -7064,7 +7064,16 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
-                    return f"✏️ Session title set: **{sanitized}**"
+                    response = f"✏️ Session title set: **{sanitized}**"
+                    if source.platform == Platform.TELEGRAM and source.thread_id:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter and await adapter.update_thread_title(
+                            source.chat_id,
+                            source.thread_id,
+                            sanitized,
+                        ):
+                            response += "\n🧵 Telegram topic renamed too."
+                    return response
                 else:
                     return "Session not found in database."
             except ValueError as e:

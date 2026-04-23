@@ -198,6 +198,71 @@ async def test_create_dm_topic_returns_none_without_bot():
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_update_thread_title_calls_edit_forum_topic_and_caches_name():
+    """Successful topic rename should hit Bot API and update runtime cache."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    result = await adapter.update_thread_title("111", "222", "Indicative Topic")
+
+    assert result is True
+    adapter._bot.edit_forum_topic.assert_called_once_with(
+        chat_id=111,
+        message_thread_id=222,
+        name="Indicative Topic",
+    )
+    assert adapter._get_cached_thread_topic_title("111", "222") == "Indicative Topic"
+
+
+@pytest.mark.asyncio
+async def test_update_thread_title_uses_general_topic_api_for_thread_one():
+    """The General topic uses Telegram's separate rename API."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    result = await adapter.update_thread_title("111", TelegramAdapter._GENERAL_TOPIC_THREAD_ID, "Lobby")
+
+    assert result is True
+    adapter._bot.edit_general_forum_topic.assert_called_once_with(
+        chat_id=111,
+        name="Lobby",
+    )
+    adapter._bot.edit_forum_topic.assert_not_called()
+    assert adapter._get_cached_thread_topic_title("111", TelegramAdapter._GENERAL_TOPIC_THREAD_ID) == "Lobby"
+
+
+@pytest.mark.asyncio
+async def test_update_thread_title_returns_false_on_api_error():
+    """Rename failures should be non-fatal and return False."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.edit_forum_topic.side_effect = Exception("boom")
+
+    result = await adapter.update_thread_title("111", "222", "Indicative Topic")
+
+    assert result is False
+    assert adapter._get_cached_thread_topic_title("111", "222") is None
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_service_handler_caches_created_and_edited_names():
+    """Service messages should hot-update the runtime topic-title cache."""
+    adapter = _make_adapter()
+    update = SimpleNamespace(
+        message=SimpleNamespace(
+            chat=SimpleNamespace(id=111),
+            message_thread_id=222,
+            forum_topic_created=SimpleNamespace(name="Created Title"),
+            forum_topic_edited=SimpleNamespace(name="Edited Title"),
+        )
+    )
+
+    await adapter._handle_forum_topic_service_message(update, None)
+
+    assert adapter._get_cached_thread_topic_title("111", "222") == "Edited Title"
+
+
 # ── _persist_dm_topic_thread_id ──
 
 

@@ -401,6 +401,7 @@ AUTHOR_MAP = {
     "yuanhe@minimaxi.com": "RyanLee-Dev",
     "curtis992250@gmail.com": "TaroballzChen",
     "92638503+Lind3ey@users.noreply.github.com": "Lind3ey",
+    "1352808998@qq.com": "phpoh",
 }
 
 

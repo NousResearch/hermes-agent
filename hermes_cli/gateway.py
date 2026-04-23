@@ -4794,9 +4794,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     from gateway.run import start_gateway
 
     print("┌─────────────────────────────────────────────────────────┐")
-    print("│           ⚕ Hermes Gateway Starting...                 │")
+    print("│           ⚕ Hermes Gateway Starting...                  │")
     print("├─────────────────────────────────────────────────────────┤")
-    print("│  Messaging platforms + cron scheduler                    │")
+    print("│  Messaging platforms + cron scheduler                   │")
     print("│  Press Ctrl+C to stop                                   │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
@@ -6062,7 +6062,7 @@ def gateway_setup():
     )
     print(
         color(
-            "│             ⚕ Gateway Setup                            │", Colors.MAGENTA
+            "│             ⚕ Gateway Setup                             │", Colors.MAGENTA
         )
     )
     print(
@@ -6079,7 +6079,7 @@ def gateway_setup():
     )
     print(
         color(
-            "│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA
+            "│  Press Ctrl+C at any time to exit.                      │", Colors.MAGENTA
         )
     )
     print(

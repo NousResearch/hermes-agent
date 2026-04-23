@@ -61,28 +61,28 @@ Is the task objectively verifiable (code, math, factual)?
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                    ITERATION LOOP                         │
-│                                                           │
-│   Incumbent A ──► Critic ──► Author B ──► Synthesizer     │
-│       │                                      │            │
-│       │              ┌───────────────────────┘            │
-│       ▼              ▼                                    │
-│      [A]           [AB]          [B]                      │
-│       │              │            │                       │
-│       └──────────────┼────────────┘                       │
-│                      ▼                                    │
-│              Judge Panel (blind)                          │
-│                      │                                    │
-│                      ▼                                    │
-│                   Winner                                  │
-│                      │                                    │
-│              ┌───────┴───────┐                            │
-│              ▼               ▼                            │
-│         A wins k=2      B or AB wins                      │
-│         consecutive?    → new incumbent                   │
-│              │                                            │
-│              ▼                                            │
-│           CONVERGED                                       │
+│                    ITERATION LOOP                        │
+│                                                          │
+│   Incumbent A ──► Critic ──► Author B ──► Synthesizer    │
+│       │                                      │           │
+│       │              ┌───────────────────────┘           │
+│       ▼              ▼                                   │
+│      [A]           [AB]          [B]                     │
+│       │              │            │                      │
+│       └──────────────┼────────────┘                      │
+│                      ▼                                   │
+│              Judge Panel (blind)                         │
+│                      │                                   │
+│                      ▼                                   │
+│                   Winner                                 │
+│                      │                                   │
+│              ┌───────┴───────┐                           │
+│              ▼               ▼                           │
+│         A wins k=2      B or AB wins                     │
+│         consecutive?    → new incumbent                  │
+│              │                                           │
+│              ▼                                           │
+│           CONVERGED                                      │
 └──────────────────────────────────────────────────────────┘
 ```
 

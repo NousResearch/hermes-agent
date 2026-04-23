@@ -37,13 +37,17 @@ _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "
 
 
 def _get_custom_provider_names() -> list:
-    """Return list of (display_name, pool_key, provider_key) tuples."""
+    """Return (display_name, pool_key, provider_key) tuples for custom providers.
+
+    Includes both live entries from config.yaml and orphaned credentials
+    in auth.json so users can still remove them from the interactive menu.
+    """
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
         config = load_config()
     except Exception:
-        return []
+        config = {}
     result = []
     for entry in get_compatible_custom_providers(config):
         if not isinstance(entry, dict):
@@ -54,6 +58,20 @@ def _get_custom_provider_names() -> list:
         pool_key = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
         provider_key = str(entry.get("provider_key", "") or "").strip()
         result.append((name.strip(), pool_key, provider_key))
+
+    # Scan auth.json for orphaned custom provider pool keys that no
+    # longer have a matching config.yaml entry.  Without this, hermes auth
+    # list shows them but the interactive remove menu silently hides them.
+    try:
+        known_pool_keys = {r[1] for r in result}
+        for orphan_key in list_custom_pool_providers():
+            if orphan_key not in known_pool_keys:
+                # Derive display name from pool key: "custom:yunwu.ai" -> "yunwu.ai"
+                display = orphan_key[len(CUSTOM_POOL_PREFIX):]
+                result.append((display, orphan_key, ""))
+    except Exception:
+        pass
+
     return result
 
 

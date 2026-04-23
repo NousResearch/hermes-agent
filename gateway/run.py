@@ -10856,7 +10856,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     Also refreshes the channel directory every 5 minutes and prunes the
     image/audio/document cache once per hour.
     """
-    from cron.scheduler import tick as cron_tick
+    from cron.scheduler import tick as cron_tick, _wake_event
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
@@ -10893,7 +10893,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             except Exception as e:
                 logger.debug("Document cache cleanup error: %s", e)
 
-        stop_event.wait(timeout=interval)
+        for _ in range(interval):
+            if stop_event.is_set():
+                break
+            if _wake_event.wait(timeout=1):
+                _wake_event.clear()
+                break
     logger.info("Cron ticker stopped")
 
 

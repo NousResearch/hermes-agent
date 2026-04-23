@@ -562,11 +562,11 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick."""
+    """Schedule a job to run immediately by waking the ticker."""
     job = get_job(job_id)
     if not job:
         return None
-    return update_job(
+    result = update_job(
         job_id,
         {
             "enabled": True,
@@ -576,6 +576,13 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "next_run_at": _hermes_now().isoformat(),
         },
     )
+    if result:
+        try:
+            from cron.scheduler import wake
+            wake()
+        except Exception:
+            pass
+    return result
 
 
 def remove_job(job_id: str) -> bool:

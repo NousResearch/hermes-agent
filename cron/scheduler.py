@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -39,6 +40,14 @@ from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+_wake_event = threading.Event()
+
+
+def wake():
+    """Signal the background ticker to process due jobs immediately."""
+    _wake_event.set()
+
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.

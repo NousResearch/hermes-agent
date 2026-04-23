@@ -26,9 +26,8 @@ from .adapter import (  # noqa: F401
 # -- Onboard (QR-code scan-to-configure) -----------------------------------
 from .onboard import (  # noqa: F401
     BindStatus,
-    create_bind_task,
-    poll_bind_result,
     build_connect_url,
+    qr_register,
 )
 from .crypto import decrypt_secret, generate_bind_key  # noqa: F401
 
@@ -44,9 +43,8 @@ __all__ = [
     "_ssrf_redirect_guard",
     # onboard
     "BindStatus",
-    "create_bind_task",
-    "poll_bind_result",
     "build_connect_url",
+    "qr_register",
     # crypto
     "decrypt_secret",
     "generate_bind_key",

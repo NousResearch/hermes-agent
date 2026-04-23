@@ -314,6 +314,7 @@ export interface AnalyticsDailyEntry {
   estimated_cost: number;
   actual_cost: number;
   sessions: number;
+  api_calls: number;
 }
 
 export interface AnalyticsModelEntry {
@@ -322,6 +323,7 @@ export interface AnalyticsModelEntry {
   output_tokens: number;
   estimated_cost: number;
   sessions: number;
+  api_calls: number;
 }
 
 export interface AnalyticsSkillEntry {
@@ -351,6 +353,7 @@ export interface AnalyticsResponse {
     total_estimated_cost: number;
     total_actual_cost: number;
     total_sessions: number;
+    total_api_calls: number;
   };
   skills: {
     summary: AnalyticsSkillsSummary;

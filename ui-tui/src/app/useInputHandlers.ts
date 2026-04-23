@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 
 import type {
   ApprovalRespondResponse,
+  ConfigSetResponse,
   SecretRespondResponse,
   SudoRespondResponse,
   VoiceRecordResponse
@@ -73,6 +74,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.picker) {
       return patchOverlayState({ picker: false })
+    }
+
+    if (overlay.agents) {
+      return patchOverlayState({ agents: false })
     }
   }
 
@@ -180,6 +185,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         if (isCtrl(key, ch, 'c')) {
           cancelOverlayFromCtrlC()
         }
+
         return
       }
 
@@ -290,6 +296,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (key.upArrow && !cState.inputBuf.length) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+
       const noLineAbove =
         !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
 
@@ -369,6 +376,29 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isAction(key, ch, 'g')) {
       return cActions.openEditor()
+    }
+
+    // shift-tab flips yolo without spending a turn (claude-code parity)
+    if (key.shift && key.tab && !cState.completions.length) {
+      if (!live.sid) {
+        return void actions.sys('yolo needs an active session')
+      }
+
+      // gateway.rpc swallows errors with its own sys() message and resolves to null,
+      // so we only speak when it came back with a real shape. null = rpc already spoke.
+      return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
+        if (r?.value === '1') {
+          return actions.sys('yolo on')
+        }
+
+        if (r?.value === '0') {
+          return actions.sys('yolo off')
+        }
+
+        if (r) {
+          actions.sys('failed to toggle yolo')
+        }
+      })
     }
 
     if (key.tab && cState.completions.length) {

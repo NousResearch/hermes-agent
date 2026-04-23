@@ -72,11 +72,48 @@ from tools.tool_backend_helpers import (
 )
 
 
+def _safe_parse_import_env(
+    name: str,
+    default: Any,
+    converter,
+    type_label: str,
+):
+    """Parse module-level numeric env vars without breaking import.
+
+    Terminal tool is imported by CLI, ACP, tests, and tool discovery. A single
+    malformed env var must not make the whole module unloadable at import time.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return converter(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid value for %s: %r (expected %s). Falling back to %r.",
+            name,
+            raw,
+            type_label,
+            default,
+        )
+        return default
+
+
 # Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
-FOREGROUND_MAX_TIMEOUT = int(os.getenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "600"))
+FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env(
+    "TERMINAL_MAX_FOREGROUND_TIMEOUT",
+    600,
+    int,
+    "integer",
+)
 
 # Disk usage warning threshold (in GB)
-DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
+DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
+    "TERMINAL_DISK_WARNING_GB",
+    500.0,
+    float,
+    "number",
+)
 
 
 def _check_disk_usage_warning():
@@ -1510,6 +1547,8 @@ def terminal_tool(
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                                "docker_forward_env": config.get("docker_forward_env", []),
+                                "docker_env": config.get("docker_env", {}),
                             }
 
                         local_config = None

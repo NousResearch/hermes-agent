@@ -527,6 +527,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._slash_commands: bool = self.config.extra.get("slash_commands", True)
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -744,7 +745,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
 
             # Register slash commands
-            self._register_slash_commands()
+            if self._slash_commands:
+                self._register_slash_commands()
 
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
@@ -2129,10 +2131,42 @@ class DiscordAdapter(BasePlatformAdapter):
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
         # commands without needing a manual entry here.
+        def _build_auto_slash_command(_name: str, _description: str, _args_hint: str = ""):
+            """Build a discord.app_commands.Command that proxies to _run_simple_slash."""
+            discord_name = _name.lower()[:32]
+            desc = (_description or f"Run /{_name}")[:100]
+            has_args = bool(_args_hint)
+
+            if has_args:
+                def _make_args_handler(__name: str, __hint: str):
+                    @discord.app_commands.describe(args=f"Arguments: {__hint}"[:100])
+                    async def _handler(interaction: discord.Interaction, args: str = ""):
+                        await self._run_simple_slash(
+                            interaction, f"/{__name} {args}".strip()
+                        )
+                    _handler.__name__ = f"auto_slash_{__name.replace('-', '_')}"
+                    return _handler
+
+                handler = _make_args_handler(_name, _args_hint)
+            else:
+                def _make_simple_handler(__name: str):
+                    async def _handler(interaction: discord.Interaction):
+                        await self._run_simple_slash(interaction, f"/{__name}")
+                    _handler.__name__ = f"auto_slash_{__name.replace('-', '_')}"
+                    return _handler
+
+                handler = _make_simple_handler(_name)
+
+            return discord.app_commands.Command(
+                name=discord_name,
+                description=desc,
+                callback=handler,
+            )
+
+        already_registered: set[str] = set()
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
-            already_registered = set()
             try:
                 already_registered = {cmd.name for cmd in tree.get_commands()}
             except Exception:
@@ -2147,38 +2181,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 discord_name = cmd_def.name.lower()[:32]
                 if discord_name in already_registered:
                     continue
-                # Skip aliases that overlap with already-registered names
-                # (aliases for explicitly registered commands are handled above).
-                desc = (cmd_def.description or f"Run /{cmd_def.name}")[:100]
-                has_args = bool(cmd_def.args_hint)
-
-                if has_args:
-                    # Command takes optional arguments — create handler with
-                    # an optional ``args`` string parameter.
-                    def _make_args_handler(_name: str, _hint: str):
-                        @discord.app_commands.describe(args=f"Arguments: {_hint}"[:100])
-                        async def _handler(interaction: discord.Interaction, args: str = ""):
-                            await self._run_simple_slash(
-                                interaction, f"/{_name} {args}".strip()
-                            )
-                        _handler.__name__ = f"auto_slash_{_name.replace('-', '_')}"
-                        return _handler
-
-                    handler = _make_args_handler(cmd_def.name, cmd_def.args_hint)
-                else:
-                    # Parameterless command.
-                    def _make_simple_handler(_name: str):
-                        async def _handler(interaction: discord.Interaction):
-                            await self._run_simple_slash(interaction, f"/{_name}")
-                        _handler.__name__ = f"auto_slash_{_name.replace('-', '_')}"
-                        return _handler
-
-                    handler = _make_simple_handler(cmd_def.name)
-
-                auto_cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=desc,
-                    callback=handler,
+                auto_cmd = _build_auto_slash_command(
+                    cmd_def.name,
+                    cmd_def.description,
+                    cmd_def.args_hint,
                 )
                 try:
                     tree.add_command(auto_cmd)
@@ -2194,6 +2200,35 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
+
+        # ── Plugin-registered slash commands ──
+        # Plugins register via PluginContext.register_command(); we mirror
+        # those into Discord's native slash picker so users get the same
+        # autocomplete UX as for built-in commands. No per-platform plugin
+        # API needed — plugin commands are platform-agnostic.
+        try:
+            from hermes_cli.commands import _iter_plugin_command_entries
+
+            for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
+                discord_name = plugin_name.lower()[:32]
+                if discord_name in already_registered:
+                    continue
+                auto_cmd = _build_auto_slash_command(
+                    plugin_name,
+                    plugin_desc,
+                    plugin_args_hint,
+                )
+                try:
+                    tree.add_command(auto_cmd)
+                    already_registered.add(discord_name)
+                except Exception:
+                    # Silently skip commands that fail registration (e.g.
+                    # name conflict with a subcommand group).
+                    pass
+        except Exception as e:
+            logger.warning(
+                "Discord auto-register from plugin commands failed: %s", e
+            )
 
         # Register skills under a single /skill command group with category
         # subcommand groups.  This uses 1 top-level slot instead of N,

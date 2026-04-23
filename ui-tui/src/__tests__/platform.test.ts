@@ -30,3 +30,22 @@ describe('platform action modifier', () => {
     expect(isActionMod({ ctrl: false, meta: false, super: true })).toBe(false)
   })
 })
+
+describe('isMacActionFallback', () => {
+  it('routes raw Ctrl+K and Ctrl+W to readline kill-to-end / delete-word on macOS', async () => {
+    const { isMacActionFallback } = await importPlatform('darwin')
+
+    expect(isMacActionFallback({ ctrl: true, meta: false, super: false }, 'k', 'k')).toBe(true)
+    expect(isMacActionFallback({ ctrl: true, meta: false, super: false }, 'w', 'w')).toBe(true)
+    // Must not fire when Cmd (meta/super) is held — those are distinct chords.
+    expect(isMacActionFallback({ ctrl: true, meta: true, super: false }, 'k', 'k')).toBe(false)
+    expect(isMacActionFallback({ ctrl: true, meta: false, super: true }, 'w', 'w')).toBe(false)
+  })
+
+  it('is a no-op on non-macOS (Linux routes Ctrl+K/W through isActionMod directly)', async () => {
+    const { isMacActionFallback } = await importPlatform('linux')
+
+    expect(isMacActionFallback({ ctrl: true, meta: false, super: false }, 'k', 'k')).toBe(false)
+    expect(isMacActionFallback({ ctrl: true, meta: false, super: false }, 'w', 'w')).toBe(false)
+  })
+})

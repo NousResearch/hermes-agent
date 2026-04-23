@@ -298,9 +298,15 @@ class TestClassifyApiError:
         assert result.retryable is False
 
     def test_404_generic(self):
+        # Generic 404 with no "model not found" signal — common for local
+        # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths.  Treat
+        # as unknown (retryable) so the real error surfaces, rather than
+        # claiming the model is missing and silently falling back.
         e = MockAPIError("Not Found", status_code=404)
         result = classify_api_error(e)
-        assert result.reason == FailoverReason.model_not_found
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+        assert result.should_fallback is False
 
     # ── Payload too large ──
 
@@ -943,3 +949,94 @@ class TestAdversarialEdgeCases:
         e = MockAPIError("server error", status_code=500, body={"message": None})
         result = classify_api_error(e)
         assert result is not None
+
+
+# ── Test: SSL/TLS transient errors ─────────────────────────────────────
+
+class TestSSLTransientPatterns:
+    """SSL/TLS alerts mid-stream should retry as timeout, not unknown, and
+    should NOT trigger context compression even on a large session.
+
+    Motivation: OpenSSL 3.x changed TLS alert error code format
+    (`SSLV3_ALERT_BAD_RECORD_MAC` → `SSL/TLS_ALERT_BAD_RECORD_MAC`),
+    breaking string-exact matching in downstream retry logic.  We match
+    stable substrings instead.
+    """
+
+    def test_bad_record_mac_classifies_as_timeout(self):
+        """OpenSSL 3.x mid-stream bad record mac alert."""
+        e = Exception("[SSL: BAD_RECORD_MAC] sslv3 alert bad record mac (_ssl.c:2580)")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_openssl_3x_format_classifies_as_timeout(self):
+        """New format `ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC` still matches
+        because we key on both space- and underscore-separated forms of
+        the stable `bad_record_mac` token."""
+        e = Exception("ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC during streaming")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_tls_alert_internal_error_classifies_as_timeout(self):
+        e = Exception("[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_ssl_handshake_failure_classifies_as_timeout(self):
+        e = Exception("ssl handshake failure during mid-stream")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_ssl_prefix_classifies_as_timeout(self):
+        """Python's generic '[SSL: XYZ]' prefix from the ssl module."""
+        e = Exception("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_ssl_alert_on_large_session_does_not_compress(self):
+        """Critical: SSL alerts on big contexts must NOT trigger context
+        compression — compression is expensive and won't fix a transport
+        hiccup.  This is why _SSL_TRANSIENT_PATTERNS is separate from
+        _SERVER_DISCONNECT_PATTERNS.
+        """
+        e = Exception("[SSL: BAD_RECORD_MAC] sslv3 alert bad record mac")
+        result = classify_api_error(
+            e,
+            approx_tokens=180000,      # 90% of a 200k-context window
+            context_length=200000,
+            num_messages=300,
+        )
+        assert result.reason == FailoverReason.timeout
+        assert result.should_compress is False
+
+    def test_plain_disconnect_on_large_session_still_compresses(self):
+        """Regression guard: the context-overflow-via-disconnect path
+        (non-SSL disconnects on large sessions) must still trigger
+        compression.  Only SSL-specific disconnects skip it.
+        """
+        e = Exception("Server disconnected without sending a response")
+        result = classify_api_error(
+            e,
+            approx_tokens=180000,
+            context_length=200000,
+            num_messages=300,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_real_ssl_error_type_classifies_as_timeout(self):
+        """Real ssl.SSLError instance — the type name alone (not message)
+        should route to the transport bucket."""
+        import ssl
+        e = ssl.SSLError("arbitrary ssl error")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True

@@ -16,7 +16,7 @@ const buildUiState = (): UiState => ({
   showReasoning: false,
   sid: null,
   status: 'summoning hermes…',
-  statusBar: true,
+  statusBar: 'top',
   statusBarFieldsLeft: undefined,
   statusBarFieldsRight: undefined,
   statusBarSeparator: ' │ ',

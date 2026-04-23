@@ -283,6 +283,7 @@ class PluginContext:
         name: str,
         handler: Callable,
         description: str = "",
+        args_hint: str = "",
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -292,6 +293,13 @@ class PluginContext:
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
         terminal commands), this registers in-session slash commands that users
         invoke during a conversation.
+
+        ``args_hint`` is an optional short string (e.g. ``"<file>"`` or
+        ``"dias:7 formato:json"``) used by gateway adapters to surface the
+        command with an argument field — for example Discord's native slash
+        command picker. Plugin commands without ``args_hint`` register as
+        parameterless in Discord and still accept trailing text when invoked
+        as free-form chat.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -320,6 +328,7 @@ class PluginContext:
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
+            "args_hint": (args_hint or "").strip(),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
@@ -733,6 +742,30 @@ class PluginManager:
                     key, raw_kind, ", ".join(sorted(_VALID_PLUGIN_KINDS)),
                 )
                 kind = "standalone"
+
+            # Auto-coerce user-installed memory providers to kind="exclusive"
+            # so they're routed to plugins/memory discovery instead of being
+            # loaded by the general PluginManager (which has no
+            # register_memory_provider on PluginContext). Mirrors the
+            # heuristic in plugins/memory/__init__.py:_is_memory_provider_dir.
+            # Bundled memory providers are already skipped via skip_names.
+            if kind == "standalone" and "kind" not in data:
+                init_file = plugin_dir / "__init__.py"
+                if init_file.exists():
+                    try:
+                        source_text = init_file.read_text(errors="replace")[:8192]
+                        if (
+                            "register_memory_provider" in source_text
+                            or "MemoryProvider" in source_text
+                        ):
+                            kind = "exclusive"
+                            logger.debug(
+                                "Plugin %s: detected memory provider, "
+                                "treating as kind='exclusive'",
+                                key,
+                            )
+                    except Exception:
+                        pass
 
             return PluginManifest(
                 name=name,

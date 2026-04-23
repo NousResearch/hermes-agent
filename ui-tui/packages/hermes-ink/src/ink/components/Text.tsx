@@ -69,6 +69,12 @@ const memoizedStylesForWrap: Record<NonNullable<Styles['textWrap']>, Styles> = {
     flexDirection: 'row',
     textWrap: 'wrap'
   },
+  'wrap-char': {
+    flexGrow: 0,
+    flexShrink: 1,
+    flexDirection: 'row',
+    textWrap: 'wrap-char'
+  },
   'wrap-trim': {
     flexGrow: 0,
     flexShrink: 1,

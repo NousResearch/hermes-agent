@@ -776,6 +776,7 @@ delegation:
   # max_concurrent_children: 3                # Max parallel child agents (default: 3)
   # max_spawn_depth: 1                        # Tree depth cap (1-3, default: 1 = flat). Raise to 2 or 3 to allow orchestrator children to spawn their own workers.
   # orchestrator_enabled: true                # Kill switch for role="orchestrator" children (default: true).
+  # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.

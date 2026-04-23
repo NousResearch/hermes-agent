@@ -10,8 +10,19 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
+import type { StatusBarMode } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
+
+const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
+  bottom: 'bottom',
+  off: 'off',
+  on: 'top',
+  top: 'top'
+}
+
+export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
+  raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
 
 const MTIME_POLL_MS = 5000
 
@@ -29,13 +40,13 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
 
 export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
   const d = cfg?.config?.display ?? {}
+  // Backward compat: if tui_statusbar was stored as a dict, extract fields from it
   const statusBarRaw = d.tui_statusbar
-  const statusBarObj = typeof statusBarRaw === 'object' ? statusBarRaw : null
-  const statusBarEnabled = statusBarObj ? statusBarObj.enabled !== false : statusBarRaw !== false
-  const statusBarSep = statusBarObj?.separator ? statusBarObj.separator : ' │ '
-  // fields_left/fields_right take precedence; fallback to fields for backward compat
-  const statusBarFieldsLeft = statusBarObj?.fields_left ?? statusBarObj?.fields ?? undefined
-  const statusBarFieldsRight = statusBarObj?.fields_right ?? undefined
+  const statusBarObj = typeof statusBarRaw === 'object' && statusBarRaw !== null ? statusBarRaw as Record<string, unknown> : null
+  const statusBarSep = statusBarObj?.separator ? String(statusBarObj.separator) : (d.tui_statusbar_separator as string | undefined) ?? ' │ '
+  // Prefer dedicated config keys; fallback to dict fields for backward compat
+  const statusBarFieldsLeft = (d.tui_statusbar_fields_left as string[] | undefined) ?? statusBarObj?.fields_left as string[] | undefined ?? statusBarObj?.fields as string[] | undefined
+  const statusBarFieldsRight = (d.tui_statusbar_fields_right as string[] | undefined) ?? statusBarObj?.fields_right as string[] | undefined
 
   setBell(!!d.bell_on_complete)
   patchUiState({
@@ -44,7 +55,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     inlineDiffs: d.inline_diffs !== false,
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
-    statusBar: statusBarEnabled,
+    statusBar: normalizeStatusBar(d.tui_statusbar),
     statusBarFieldsLeft,
     statusBarFieldsRight,
     statusBarSeparator: statusBarSep,

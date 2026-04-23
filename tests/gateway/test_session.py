@@ -1059,6 +1059,7 @@ class TestRewriteTranscriptPreservesReasoning:
             role="assistant",
             content="The answer is 42.",
             reasoning="I need to think step by step.",
+            reasoning_content="provider scratchpad",
             reasoning_details=[{"type": "summary", "text": "step by step"}],
             codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
         )
@@ -1066,6 +1067,7 @@ class TestRewriteTranscriptPreservesReasoning:
         # Verify all three were stored
         before = db.get_messages_as_conversation(session_id)
         assert before[0].get("reasoning") == "I need to think step by step."
+        assert before[0].get("reasoning_content") == "provider scratchpad"
         assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
@@ -1082,5 +1084,6 @@ class TestRewriteTranscriptPreservesReasoning:
         # Load again — all three reasoning fields must survive
         after = db.get_messages_as_conversation(session_id)
         assert after[0].get("reasoning") == "I need to think step by step."
+        assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]

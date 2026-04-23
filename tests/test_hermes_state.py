@@ -93,6 +93,27 @@ class TestSessionLifecycle:
         assert session["input_tokens"] == 300
         assert session["output_tokens"] == 150
 
+    def test_update_token_counts_tracks_api_call_count(self, db):
+        """api_call_count increments with each update_token_counts call."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+
+        session = db.get_session("s1")
+        assert session["api_call_count"] == 3
+
+    def test_update_token_counts_api_call_count_absolute(self, db):
+        """absolute mode sets api_call_count directly."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=300, output_tokens=150,
+                               api_call_count=5, absolute=True)
+
+        session = db.get_session("s1")
+        assert session["api_call_count"] == 5
+        assert session["input_tokens"] == 300
+
     def test_update_token_counts_backfills_model_when_null(self, db):
         db.create_session(session_id="s1", source="telegram")
         db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
@@ -254,6 +275,38 @@ class TestMessageStorage:
         msg = conv[0]
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
+
+    def test_reasoning_content_persisted_and_restored(self, db):
+        """reasoning_content must survive session replay as its own field."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Hello",
+            reasoning="Short summary",
+            reasoning_content="Longer provider-native scratchpad",
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0]["reasoning"] == "Short summary"
+        assert conv[0]["reasoning_content"] == "Longer provider-native scratchpad"
+
+    def test_reasoning_content_empty_string_restored_for_assistant(self, db):
+        """Empty reasoning_content still needs to round-trip for strict replays."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "date", "arguments": "{}"}}],
+            reasoning_content="",
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert "reasoning_content" in conv[0]
+        assert conv[0]["reasoning_content"] == ""
 
     def test_reasoning_not_set_for_non_assistant(self, db):
         """reasoning is never leaked onto user or tool messages."""
@@ -1120,7 +1173,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 8
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1176,17 +1229,23 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v8
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 8
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
         assert session is not None
         assert session["title"] is None
+
+        # Verify api_call_count column was added with default 0
+        cursor = migrated_db._conn.execute(
+            "SELECT api_call_count FROM sessions WHERE id = 'existing'"
+        )
+        assert cursor.fetchone()[0] == 0
 
         # Verify we can set title on migrated session
         assert migrated_db.set_session_title("existing", "Migrated Title") is True
@@ -1732,3 +1791,124 @@ class TestConcurrentWriteSafety:
         assert "30" in src, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
+
+
+# =========================================================================
+# Auto-maintenance: state_meta + vacuum + maybe_auto_prune_and_vacuum
+# =========================================================================
+
+class TestStateMeta:
+    def test_get_meta_missing_returns_none(self, db):
+        assert db.get_meta("nonexistent") is None
+
+    def test_set_then_get_meta(self, db):
+        db.set_meta("foo", "bar")
+        assert db.get_meta("foo") == "bar"
+
+    def test_set_meta_upsert(self, db):
+        """set_meta overwrites existing value (ON CONFLICT DO UPDATE)."""
+        db.set_meta("key", "v1")
+        db.set_meta("key", "v2")
+        assert db.get_meta("key") == "v2"
+
+
+class TestVacuum:
+    def test_vacuum_runs_without_error(self, db):
+        """VACUUM must succeed on a fresh DB (no rows to reclaim)."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hi")
+        # Should not raise, even though there's nothing significant to reclaim.
+        db.vacuum()
+
+
+class TestAutoMaintenance:
+    def _make_old_ended(self, db, sid: str, days_old: int = 100):
+        """Create a session that is ended and was started `days_old` days ago."""
+        db.create_session(session_id=sid, source="cli")
+        db.end_session(sid, end_reason="done")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - days_old * 86400, sid),
+        )
+        db._conn.commit()
+
+    def test_first_run_prunes_and_vacuums(self, db):
+        self._make_old_ended(db, "old1", days_old=100)
+        self._make_old_ended(db, "old2", days_old=100)
+        db.create_session(session_id="new", source="cli")  # active, must survive
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["pruned"] == 2
+        assert result["vacuumed"] is True
+        assert result.get("error") is None
+        assert db.get_session("old1") is None
+        assert db.get_session("old2") is None
+        assert db.get_session("new") is not None
+
+    def test_second_call_within_interval_skips(self, db):
+        self._make_old_ended(db, "old", days_old=100)
+        first = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=24
+        )
+        assert first["skipped"] is False
+        assert first["pruned"] == 1
+
+        # Create another prunable session; a second call within
+        # min_interval_hours should still skip without touching it.
+        self._make_old_ended(db, "old2", days_old=100)
+        second = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=24
+        )
+        assert second["skipped"] is True
+        assert second["pruned"] == 0
+        assert db.get_session("old2") is not None  # untouched
+
+    def test_second_call_after_interval_runs_again(self, db):
+        self._make_old_ended(db, "old", days_old=100)
+        db.maybe_auto_prune_and_vacuum(retention_days=90, min_interval_hours=24)
+
+        # Backdate the last-run marker to force another run.
+        db.set_meta("last_auto_prune", str(time.time() - 48 * 3600))
+
+        self._make_old_ended(db, "old2", days_old=100)
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=24
+        )
+        assert result["skipped"] is False
+        assert result["pruned"] == 1
+        assert db.get_session("old2") is None
+
+    def test_no_prunable_sessions_no_vacuum(self, db):
+        """When prune deletes 0 rows, VACUUM is skipped (wasted I/O)."""
+        db.create_session(session_id="fresh", source="cli")  # too recent
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["pruned"] == 0
+        assert result["vacuumed"] is False
+        # But last-run is still recorded so we don't retry immediately.
+        assert db.get_meta("last_auto_prune") is not None
+
+    def test_vacuum_disabled_via_flag(self, db):
+        self._make_old_ended(db, "old", days_old=100)
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90, vacuum=False)
+        assert result["pruned"] == 1
+        assert result["vacuumed"] is False
+
+    def test_corrupt_last_run_marker_treated_as_no_prior_run(self, db):
+        """A non-numeric marker must not break maintenance."""
+        db.set_meta("last_auto_prune", "not-a-timestamp")
+        self._make_old_ended(db, "old", days_old=100)
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["pruned"] == 1
+
+    def test_state_meta_survives_vacuum(self, db):
+        """Marker written just before VACUUM must still be readable after."""
+        self._make_old_ended(db, "old", days_old=100)
+        db.maybe_auto_prune_and_vacuum(retention_days=90)
+        marker = db.get_meta("last_auto_prune")
+        assert marker is not None
+        # Should parse as a float timestamp close to now.
+        assert abs(float(marker) - time.time()) < 60
+

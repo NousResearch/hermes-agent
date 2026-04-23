@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    api_call_count INTEGER DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -80,8 +81,14 @@ CREATE TABLE IF NOT EXISTS messages (
     token_count INTEGER,
     finish_reason TEXT,
     reasoning TEXT,
+    reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT
+);
+
+CREATE TABLE IF NOT EXISTS state_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -329,6 +336,26 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: preserve provider-native reasoning_content separately from
+                # normalized reasoning text. Kimi/Moonshot replay can require
+                # this field on assistant tool-call messages when thinking is on.
+                try:
+                    cursor.execute('ALTER TABLE messages ADD COLUMN "reasoning_content" TEXT')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 7")
+            if current_version < 8:
+                # v8: add api_call_count column to sessions — tracks the number
+                # of individual LLM API calls made within a session (as opposed
+                # to the session count itself).
+                try:
+                    cursor.execute(
+                        'ALTER TABLE sessions ADD COLUMN "api_call_count" INTEGER DEFAULT 0'
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 8")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -435,6 +462,7 @@ class SessionDB:
         billing_provider: Optional[str] = None,
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
+        api_call_count: int = 0,
         absolute: bool = False,
     ) -> None:
         """Update token counters and backfill model if not already set.
@@ -464,7 +492,8 @@ class SessionDB:
                    billing_provider = COALESCE(billing_provider, ?),
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?)
+                   model = COALESCE(model, ?),
+                   api_call_count = ?
                    WHERE id = ?"""
         else:
             sql = """UPDATE sessions SET
@@ -484,7 +513,8 @@ class SessionDB:
                    billing_provider = COALESCE(billing_provider, ?),
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?)
+                   model = COALESCE(model, ?),
+                   api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
         params = (
             input_tokens,
@@ -502,6 +532,7 @@ class SessionDB:
             billing_base_url,
             billing_mode,
             model,
+            api_call_count,
             session_id,
         )
         def _do(conn):
@@ -922,6 +953,7 @@ class SessionDB:
         token_count: int = None,
         finish_reason: str = None,
         reasoning: str = None,
+        reasoning_content: str = None,
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
     ) -> int:
@@ -951,8 +983,8 @@ class SessionDB:
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_details, codex_reasoning_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -964,6 +996,7 @@ class SessionDB:
                     token_count,
                     finish_reason,
                     reasoning,
+                    reasoning_content,
                     reasoning_details_json,
                     codex_items_json,
                 ),
@@ -1014,7 +1047,7 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "reasoning, reasoning_details, codex_reasoning_items "
+                "reasoning, reasoning_content, reasoning_details, codex_reasoning_items "
                 "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
                 (session_id,),
             )
@@ -1038,6 +1071,8 @@ class SessionDB:
             if row["role"] == "assistant":
                 if row["reasoning"]:
                     msg["reasoning"] = row["reasoning"]
+                if row["reasoning_content"] is not None:
+                    msg["reasoning_content"] = row["reasoning_content"]
                 if row["reasoning_details"]:
                     try:
                         msg["reasoning_details"] = json.loads(row["reasoning_details"])
@@ -1441,3 +1476,116 @@ class SessionDB:
             return len(session_ids)
 
         return self._execute_write(_do)
+
+    # ── Meta key/value (for scheduler bookkeeping) ──
+
+    def get_meta(self, key: str) -> Optional[str]:
+        """Read a value from the state_meta key/value store."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?", (key,)
+            ).fetchone()
+        if row is None:
+            return None
+        return row["value"] if isinstance(row, sqlite3.Row) else row[0]
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Write a value to the state_meta key/value store."""
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+        self._execute_write(_do)
+
+    # ── Space reclamation ──
+
+    def vacuum(self) -> None:
+        """Run VACUUM to reclaim disk space after large deletes.
+
+        SQLite does not shrink the database file when rows are deleted —
+        freed pages just get reused on the next insert. After a prune that
+        removed hundreds of sessions, the file stays bloated unless we
+        explicitly VACUUM.
+
+        VACUUM rewrites the entire DB, so it's expensive (seconds per
+        100MB) and cannot run inside a transaction. It also acquires an
+        exclusive lock, so callers must ensure no other writers are
+        active. Safe to call at startup before the gateway/CLI starts
+        serving traffic.
+        """
+        # VACUUM cannot be executed inside a transaction.
+        with self._lock:
+            # Best-effort WAL checkpoint first, then VACUUM.
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            self._conn.execute("VACUUM")
+
+    def maybe_auto_prune_and_vacuum(
+        self,
+        retention_days: int = 90,
+        min_interval_hours: int = 24,
+        vacuum: bool = True,
+    ) -> Dict[str, Any]:
+        """Idempotent auto-maintenance: prune old sessions + optional VACUUM.
+
+        Records the last run timestamp in state_meta so subsequent calls
+        within ``min_interval_hours`` no-op. Designed to be called once at
+        startup from long-lived entrypoints (CLI, gateway, cron scheduler).
+
+        Never raises. On any failure, logs a warning and returns a dict
+        with ``"error"`` set.
+
+        Returns a dict with keys:
+          - ``"skipped"`` (bool) — true if within min_interval_hours of last run
+          - ``"pruned"`` (int)   — number of sessions deleted
+          - ``"vacuumed"`` (bool) — true if VACUUM ran
+          - ``"error"`` (str, optional) — present only on failure
+        """
+        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
+        try:
+            # Skip if another process/call did maintenance recently.
+            last_raw = self.get_meta("last_auto_prune")
+            now = time.time()
+            if last_raw:
+                try:
+                    last_ts = float(last_raw)
+                    if now - last_ts < min_interval_hours * 3600:
+                        result["skipped"] = True
+                        return result
+                except (TypeError, ValueError):
+                    pass  # corrupt meta; treat as no prior run
+
+            pruned = self.prune_sessions(older_than_days=retention_days)
+            result["pruned"] = pruned
+
+            # Only VACUUM if we actually freed rows — VACUUM on a tight DB
+            # is wasted I/O. Threshold keeps small DBs from paying the cost.
+            if vacuum and pruned > 0:
+                try:
+                    self.vacuum()
+                    result["vacuumed"] = True
+                except Exception as exc:
+                    logger.warning("state.db VACUUM failed: %s", exc)
+
+            # Record the attempt even if pruned == 0, so we don't retry
+            # every startup within the min_interval_hours window.
+            self.set_meta("last_auto_prune", str(now))
+
+            if pruned > 0:
+                logger.info(
+                    "state.db auto-maintenance: pruned %d session(s) older than %d days%s",
+                    pruned,
+                    retention_days,
+                    " + VACUUM" if result["vacuumed"] else "",
+                )
+        except Exception as exc:
+            # Maintenance must never block startup. Log and return error marker.
+            logger.warning("state.db auto-maintenance failed: %s", exc)
+            result["error"] = str(exc)
+
+        return result
+

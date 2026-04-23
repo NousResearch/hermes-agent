@@ -383,7 +383,7 @@ class BaseEnvironment(ABC):
         quoted_cwd = (
             shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
         )
-        parts.append(f"cd {quoted_cwd} || exit 126")
+        parts.append(f"builtin cd {quoted_cwd} || exit 126")
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")

@@ -5,6 +5,7 @@ import pytest
 
 from agent.intent_preclassifier import IntentPreclassification, preclassify_intent
 from hermes_cli.command_templates import build_command_invocation
+from hermes_cli.work_command_adapter import prepare_work_command
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -218,8 +219,15 @@ class TestRuntimeActivationPreclassifier:
                 "deep",
                 "research",
             ),
+            (
+                "Inspect this PDF diagram and explain the visual flow.",
+                "multimodal_specialist",
+                "researcher",
+                "visual",
+                "research",
+            ),
         ],
-        ids=["builder", "code_reviewer", "qa_guard", "planner", "bug_hunter", "analyst", "investigator"],
+        ids=["builder", "code_reviewer", "qa_guard", "planner", "bug_hunter", "analyst", "investigator", "multimodal_specialist"],
     )
     def test_preclassifier_specialist_matrix_keeps_taxonomy_layers_explicit(
         self,
@@ -276,6 +284,24 @@ class TestRuntimeActivationPreclassifier:
         assert "## Archetype\nname: verifier" in state["wave1_overlay_prompt"]
         assert "## Delegation Profile\nname: verification" in state["wave1_overlay_prompt"]
 
+    def test_runtime_activation_extracts_structured_contract_from_rendered_handoff_prompt(self):
+        agent = _make_agent()
+        invocation = build_command_invocation(
+            "handoff",
+            raw_args='{"task":"Resume the delegated task","expected_outcome":"Done","required_skills":["python"],"required_tools":["terminal"],"must_do":["inspect state"],"must_not_do":["discard context"],"context":{"ticket":"p1"}}',
+            session_id="sess-1",
+            cwd="/tmp",
+        )
+
+        state = agent._resolve_runtime_activation_state(invocation.prompt_text)
+
+        assert state["task_contract"] == invocation.task_contract
+        assert state["runtime_mode"] == "default"
+        assert state["delegation_profile"] == "general"
+        assert state["named_workflow"] is None
+        assert state["activation_applied"] is True
+        assert "Resume the delegated task" in (state["activation_note"] or "")
+
     def test_preclassifier_mixed_review_and_bug_prompt_keeps_keyword_collision_behavior_explicit(self):
         result = preclassify_intent(
             "Review this patch, reproduce the bug, and call out regressions with verification evidence."
@@ -288,6 +314,17 @@ class TestRuntimeActivationPreclassifier:
         assert result.inferred_runtime_mode == "default"
         assert "specialist=bug_hunter" in result.activation_reason
         assert "specialist=code_reviewer" not in result.activation_reason
+
+    def test_preclassifier_routes_pdf_and_diagram_work_to_multimodal_specialist(self):
+        result = preclassify_intent("Inspect this PDF diagram and explain the visual flow.")
+
+        assert result.inferred_specialist == "multimodal_specialist"
+        assert result.inferred_archetype == "researcher"
+        assert result.inferred_route_category == "visual"
+        assert result.inferred_delegation_profile == "research"
+        assert result.inferred_runtime_mode == "default"
+        assert "specialist=multimodal_specialist" in result.activation_reason
+        assert "route_category=visual" in result.activation_reason
 
 
 def _make_tool_defs(*names: str) -> list[dict]:
@@ -327,6 +364,71 @@ def _make_agent(*tool_names: str) -> AIAgent:
 
 
 class TestRuntimeActivationRunAgentIntegration:
+    def test_multimodal_runtime_activation_applies_when_multimodal_tools_are_loaded(self):
+        agent = _make_agent("vision_analyze")
+        captured_api_kwargs = {}
+
+        def fake_api_call(api_kwargs):
+            captured_api_kwargs.update(api_kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="Visual analysis ready.", tool_calls=[]),
+                    )
+                ],
+                usage=None,
+            )
+
+        with patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call):
+            result = agent.run_conversation("Inspect this PDF diagram and explain the visual flow.")
+
+        assert result["final_response"] == "Visual analysis ready."
+        state = agent.get_runtime_activation_state()
+        assert state["specialist"] == "multimodal_specialist"
+        assert state["archetype"] == "researcher"
+        assert state["route_category"] == "visual"
+        assert state["delegation_profile"] == "research"
+        assert state["runtime_mode"] == "default"
+        assert state["activation_applied"] is True
+        assert "specialist: multimodal_specialist" in state["activation_note"]
+        assert "## Route Category\nname: visual" in state["wave1_overlay_prompt"]
+
+        injected_user_message = captured_api_kwargs["messages"][-1]["content"]
+        assert "<wave2-runtime-activation>" in injected_user_message
+        assert "specialist: multimodal_specialist" in injected_user_message
+
+    @pytest.mark.parametrize("tool_name", ["browser_navigate", "browser_snapshot", None])
+    def test_multimodal_runtime_activation_falls_back_safely_when_multimodal_tools_are_unavailable(self, tool_name):
+        agent = _make_agent(*( [tool_name] if tool_name else [] ))
+        captured_api_kwargs = {}
+
+        def fake_api_call(api_kwargs):
+            captured_api_kwargs.update(api_kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="Safe fallback.", tool_calls=[]),
+                    )
+                ],
+                usage=None,
+            )
+
+        with patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call):
+            result = agent.run_conversation("Inspect this PDF diagram and explain the visual flow.")
+
+        assert result["final_response"] == "Safe fallback."
+        state = agent.get_runtime_activation_state()
+        assert state["specialist"] is None
+        assert state["archetype"] == "generalist"
+        assert state["route_category"] == "unspecified_low"
+        assert state["delegation_profile"] == "general"
+        assert state["runtime_mode"] == "default"
+        assert state["activation_applied"] is False
+        assert "multimodal tools unavailable" in state["activation_reason"]
+        assert captured_api_kwargs["messages"][-1]["content"] == "Inspect this PDF diagram and explain the visual flow."
+
     def test_run_conversation_stores_and_applies_top_level_runtime_activation(self):
         agent = _make_agent("delegate_task")
         captured_api_kwargs = {}
@@ -410,7 +512,9 @@ class TestRuntimeActivationRunAgentIntegration:
         ):
             result = agent.run_conversation("Implement the delegated change in ultrawork mode.")
 
-        assert result["final_response"] == "Done."
+        assert result["final_response"].startswith(
+            "Task contract completion gate blocked success: required tool(s) unavailable in this runtime:"
+        )
         snapshot = agent.get_runtime_activation_snapshot()
         assert snapshot["current"]["archetype"] == "implementer"
         assert snapshot["current"]["runtime_mode"] == "ultrawork"
@@ -425,6 +529,151 @@ class TestRuntimeActivationRunAgentIntegration:
         assert transcript[0]["role"] == "user"
         assert "<wave2-runtime-activation>" not in (transcript[0]["content"] or "")
         db.close()
+
+    def test_run_conversation_accepts_prepared_handoff_command_objects(self):
+        agent = _make_agent()
+        prepared = prepare_work_command(
+            "handoff",
+            raw_args='{"task":"Resume the delegated task","expected_outcome":"Done","required_skills":["python"],"required_tools":["terminal"],"must_do":["inspect state"],"must_not_do":["discard context"],"context":{"ticket":"p1"}}',
+            session_id="sess-1",
+            cwd="/tmp",
+        )
+        captured_api_kwargs = {}
+
+        def fake_api_call(api_kwargs):
+            captured_api_kwargs.update(api_kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="Done.", tool_calls=[]),
+                    )
+                ],
+                usage=None,
+            )
+
+        with patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call):
+            result = agent.run_conversation(prepared)
+
+        assert result["final_response"].startswith(
+            "Task contract completion gate blocked success: required tool(s) unavailable in this runtime:"
+        )
+        state = agent.get_runtime_activation_state()
+        assert state["task_contract"] == prepared.task_contract
+        assert state["named_workflow"] is None
+        assert captured_api_kwargs["messages"][-1]["content"].startswith("[OMO command handoff]")
+
+    def test_run_conversation_supports_leading_named_agent_invocation_for_oracle(self):
+        agent = _make_agent("read_file", "search_files", "web_search", "terminal", "patch")
+        captured_api_kwargs = {}
+
+        def fake_api_call(api_kwargs):
+            captured_api_kwargs.update(api_kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="Done.", tool_calls=[]),
+                    )
+                ],
+                usage=None,
+            )
+
+        with patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call):
+            result = agent.run_conversation("@oracle Compare the docs and summarize the answer.")
+
+        assert result["final_response"] == "Done."
+        state = agent.get_runtime_activation_state()
+        assert state["named_agent"] == "oracle"
+        assert state["specialist"] == "consultant"
+        assert state["archetype"] == "researcher"
+        assert state["route_category"] == "deep"
+        assert state["delegation_profile"] == "research"
+        assert state["runtime_mode"] == "default"
+        assert state["activation_applied"] is True
+        assert "named_agent: oracle" in state["activation_note"]
+        assert "named-agent invocation" in state["activation_reason"]
+
+        injected_user_message = captured_api_kwargs["messages"][-1]["content"]
+        assert injected_user_message.startswith("Compare the docs and summarize the answer.")
+        assert "@oracle" not in injected_user_message
+        assert "<wave2-runtime-activation>" in injected_user_message
+
+        assert agent._maybe_block_named_role_tool_call("terminal", {"command": "git status"}) == (
+            "Named role runtime boundary (oracle): tool 'terminal' is blocked for this role. "
+            "Use the role's permitted tools instead."
+        )
+
+    def test_run_conversation_canonicalizes_leading_named_agent_alias_invocation(self):
+        agent = _make_agent("read_file", "search_files", "web_search", "terminal", "patch")
+        captured_api_kwargs = {}
+
+        def fake_api_call(api_kwargs):
+            captured_api_kwargs.update(api_kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="Explored.", tool_calls=[]),
+                    )
+                ],
+                usage=None,
+            )
+
+        with patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call):
+            result = agent.run_conversation("@explorer Trace the relevant files.")
+
+        assert result["final_response"] == "Explored."
+        state = agent.get_runtime_activation_state()
+        assert state["named_agent"] == "explore"
+        assert state["specialist"] == "investigator"
+        assert state["archetype"] == "researcher"
+        assert state["route_category"] == "deep"
+        assert state["delegation_profile"] == "research"
+        assert captured_api_kwargs["messages"][-1]["content"].startswith("Trace the relevant files.")
+        assert "@explorer" not in captured_api_kwargs["messages"][-1]["content"]
+
+    def test_prepared_work_command_uses_display_text_for_hooks_and_memory_sync(self):
+        agent = _make_agent()
+        prepared = prepare_work_command(
+            "handoff",
+            raw_args='{"task":"Resume the delegated task","expected_outcome":"Done","required_skills":["python"],"required_tools":["terminal"],"must_do":["inspect state"],"must_not_do":["discard context"],"context":{"ticket":"p1"}}',
+            session_id="sess-1",
+            cwd="/tmp",
+        )
+        sync_calls = []
+        prefetch_calls = []
+        hook_calls = []
+
+        class _FakeMemoryManager:
+            def sync_all(self, user_message, assistant_response):
+                sync_calls.append((user_message, assistant_response))
+
+            def queue_prefetch_all(self, user_message):
+                prefetch_calls.append(user_message)
+
+        def fake_invoke_hook(name, **kwargs):
+            if name == "post_llm_call":
+                hook_calls.append(kwargs)
+
+        agent._memory_manager = _FakeMemoryManager()
+
+        with (
+            patch.object(agent, "_interruptible_api_call", return_value=SimpleNamespace(
+                choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content="Done.", tool_calls=[]))],
+                usage=None,
+            )),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook),
+        ):
+            result = agent.run_conversation(prepared)
+
+        assert result["final_response"].startswith(
+            "Task contract completion gate blocked success: required tool(s) unavailable in this runtime:"
+        )
+        assert sync_calls == [(prepared.display_text, result["final_response"])]
+        assert prefetch_calls == [prepared.display_text]
+        assert hook_calls[-1]["user_message"] == prepared.display_text
+        assert isinstance(hook_calls[-1]["user_message"], str)
 
     def test_runtime_activation_snapshot_tracks_current_and_last_across_session_reload(self, tmp_path):
         db = SessionDB(db_path=tmp_path / "state.db")

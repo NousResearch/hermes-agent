@@ -16,10 +16,12 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import copy
 import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import re
 import shlex
 import sys
 import threading
@@ -30,10 +32,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-from agent.archetypes import resolve_archetype, resolve_archetype_defaults, resolve_specialist_mapping
+from agent.archetypes import get_tool_restrictions, resolve_archetype, resolve_archetype_defaults, resolve_specialist_mapping
 from agent.continuation_engine import apply_bounded_continuation_engine, build_continuation_snapshot
 from agent.prompt_builder import build_wave1_overlay_prompt_from_normalized, normalize_wave1_overlay_inputs
-from agent.route_categories import BUILTIN_ROUTE_CATEGORIES, DEFAULT_ROUTE_CATEGORY
+from agent.route_categories import (
+    BUILTIN_ROUTE_CATEGORIES,
+    DEFAULT_LITERAL_CATEGORY,
+    DEFAULT_ROUTE_CATEGORY,
+    resolve_literal_category,
+    resolve_route_category,
+)
 from agent.runtime_modes import DEFAULT_RUNTIME_MODE_NAME, resolve_runtime_mode
 from agent.task_contracts import (
     build_named_workflow_artifact,
@@ -260,6 +268,87 @@ def _normalize_named_string_list(values: Any) -> List[str]:
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
+def _canonicalize_named_agent_lookup_key(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    token = re.sub(r"[\s_]+", "-", token)
+    token = re.sub(r"-+", "-", token)
+    return token.strip("-")
+
+
+def _resolve_named_agent_config(
+    task: Dict[str, Any],
+    *,
+    registry: Dict[str, Dict[str, Any]],
+    top_level_agent: Optional[str] = None,
+) -> Dict[str, Any]:
+    requested_name = str(task.get("agent") or top_level_agent or "").strip()
+    if not requested_name:
+        return {}
+    if not isinstance(registry, dict):
+        raise ValueError(f"Unknown named agent '{requested_name}'.")
+
+    lookup_key = _canonicalize_named_agent_lookup_key(requested_name)
+    canonical_name = None
+    for raw_name, raw_entry in registry.items():
+        if not isinstance(raw_entry, dict):
+            continue
+        if _canonicalize_named_agent_lookup_key(raw_name) == lookup_key:
+            canonical_name = raw_name
+            break
+        for alias in _normalize_named_string_list(raw_entry.get("aliases")):
+            if _canonicalize_named_agent_lookup_key(alias) == lookup_key:
+                canonical_name = raw_name
+                break
+        if canonical_name:
+            break
+
+    resolved = registry.get(canonical_name) if canonical_name else None
+    if not isinstance(resolved, dict) or not resolved:
+        raise ValueError(f"Unknown named agent '{requested_name}'.")
+    return {"name": canonical_name, "requested_name": requested_name, **copy.deepcopy(resolved)}
+
+
+def _apply_named_agent_task_defaults(task: Dict[str, Any], named_agent: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(task, dict):
+        task = {}
+    if not isinstance(named_agent, dict) or not named_agent:
+        return dict(task)
+
+    merged = dict(task)
+    if named_agent.get("name") not in (None, ""):
+        merged["agent"] = copy.deepcopy(named_agent["name"])
+    for key in ("agent", "model", "provider", "archetype", "specialist", "route_category", "runtime_mode"):
+        if merged.get(key) in (None, "") and named_agent.get(key) not in (None, ""):
+            merged[key] = copy.deepcopy(named_agent[key])
+    return merged
+
+
+def _apply_named_agent_tool_restrictions(
+    *,
+    named_agent: Dict[str, Any],
+    toolsets: Optional[List[str]],
+    enabled_tools: Optional[List[str]],
+    parent_agent=None,
+) -> tuple[Optional[List[str]], Optional[List[str]]]:
+    if not isinstance(named_agent, dict) or not named_agent:
+        return toolsets, enabled_tools
+
+    blocked_tools = set(_normalize_named_string_list(named_agent.get("blocked_tools")))
+    allowed_tools = set(_normalize_named_string_list(named_agent.get("allowed_tools")))
+    if not blocked_tools and not allowed_tools:
+        return toolsets, enabled_tools
+
+    parent_tool_names = set(getattr(parent_agent, "valid_tool_names", set()) or [])
+    restricted_tools = set(_normalize_named_string_list(enabled_tools)) if enabled_tools is not None else set(parent_tool_names)
+    if allowed_tools:
+        restricted_tools &= allowed_tools
+    restricted_tools -= blocked_tools
+    restricted_tools -= set(DELEGATE_BLOCKED_TOOLS)
+    return toolsets, sorted(tool for tool in restricted_tools if tool in parent_tool_names)
+
+
 def _canonicalize_archetype_name(value: Optional[str]) -> str:
     return resolve_archetype(value).name
 
@@ -339,7 +428,13 @@ def _is_reviewer_like_resolution(resolved_inputs: Optional[Dict[str, Any]]) -> b
     if not isinstance(resolved_inputs, dict):
         return False
     specialist = str(resolved_inputs.get("specialist") or "").strip().lower()
-    return bool(specialist in _REVIEWER_SPECIALISTS)
+    archetype = str(
+        resolved_inputs.get("archetype")
+        or resolved_inputs.get("resolved_archetype")
+        or resolved_inputs.get("inferred_archetype")
+        or ""
+    ).strip().lower()
+    return bool(specialist in _REVIEWER_SPECIALISTS or archetype == "verifier")
 
 
 def _apply_named_role_tool_policy(
@@ -426,7 +521,8 @@ def _apply_named_role_completion_gate(
 
 
 def _resolve_route_category_entry(category_name: Optional[str], cfg: Dict[str, Any]) -> Dict[str, str]:
-    normalized_name = _normalize_category_name(category_name) or DEFAULT_ROUTE_CATEGORY
+    resolved_builtin = resolve_route_category(category_name)
+    normalized_name = str(category_name or resolved_builtin.name).strip() or resolved_builtin.name
     registry = cfg.get("route_categories") if isinstance(cfg, dict) else {}
     if isinstance(registry, dict) and normalized_name in registry and isinstance(registry[normalized_name], dict):
         entry = registry[normalized_name]
@@ -447,6 +543,26 @@ def _resolve_route_category_entry(category_name: Optional[str], cfg: Dict[str, A
         "intensity": builtin.intensity,
     }
 
+
+def _resolve_literal_category_name(category_name: Optional[str]) -> str:
+    return resolve_literal_category(category_name).name
+
+
+def _is_literal_category_input(category_name: Optional[str]) -> bool:
+    normalized_input = str(category_name or "").strip()
+    if not normalized_input:
+        return False
+    return _resolve_literal_category_name(normalized_input) != DEFAULT_LITERAL_CATEGORY or _normalize_category_name(normalized_input) in {
+        _normalize_category_name(DEFAULT_LITERAL_CATEGORY),
+        "visual",
+        "ultrabrain",
+        "deep",
+        "quick",
+        "writing",
+        "artistry",
+        "unspecified_low",
+        "unspecified_high",
+    }
 
 def _resolve_runtime_mode_entry(
     runtime_mode_name: Optional[str],
@@ -510,7 +626,7 @@ def _resolve_task_delegation_profile_details(
         }
 
     legacy_task_category = _normalize_category_name(task.get("category"))
-    if legacy_task_category:
+    if legacy_task_category and not _is_literal_category_input(task.get("category")):
         return {
             "value": legacy_task_category,
             "source": "legacy_task_category",
@@ -528,7 +644,7 @@ def _resolve_task_delegation_profile_details(
         }
 
     inherited_legacy_category = _normalize_category_name(top_level_category)
-    if inherited_legacy_category:
+    if inherited_legacy_category and not _is_literal_category_input(top_level_category):
         return {
             "value": inherited_legacy_category,
             "source": "inherited_legacy_category",
@@ -633,6 +749,16 @@ def _resolve_wave1_task_inputs(
             cfg.get("default_skills") or archetype_defaults.get("default_skills")
         )
 
+    explicit_task_category_input = str(task.get("category") or "").strip()
+    explicit_top_level_category_input = str(top_level_category or "").strip()
+    configured_category_input = str(cfg.get("category") or cfg.get("default_category") or "").strip()
+    resolved_literal_category = resolve_literal_category(
+        explicit_task_category_input
+        or explicit_top_level_category_input
+        or configured_category_input
+        or DEFAULT_LITERAL_CATEGORY
+    )
+
     explicit_route_category = _normalize_category_name(task.get("route_category"))
     explicit_top_level_route_category = _normalize_category_name(top_level_route_category)
     inherited_route_category = _normalize_category_name(inherited_parent_route_category)
@@ -640,6 +766,7 @@ def _resolve_wave1_task_inputs(
         explicit_route_category
         or explicit_top_level_route_category
         or ("" if archetype_override_present else inherited_route_category)
+        or _normalize_category_name(resolved_literal_category.route_category)
         or _normalize_category_name(default_route_category)
         or DEFAULT_ROUTE_CATEGORY
     )
@@ -689,6 +816,8 @@ def _resolve_wave1_task_inputs(
 
     explicit_named_workflow = task.get("named_workflow")
     resolved_named_workflow = None
+    inherited_named_workflow_invalid = False
+    named_workflow_source = None
     for source_name, candidate_named_workflow in (
         ("explicit", explicit_named_workflow),
         ("inherited", inherited_named_workflow),
@@ -697,10 +826,12 @@ def _resolve_wave1_task_inputs(
             continue
         try:
             resolved_named_workflow = validate_named_workflow_artifact(candidate_named_workflow).model_dump(by_alias=True)
+            named_workflow_source = source_name
             break
         except Exception as exc:
             if source_name == "explicit":
                 raise ValueError(f"Invalid named_workflow for delegated task '{task.get('goal', '')}': {exc}") from exc
+            inherited_named_workflow_invalid = True
             logger.debug(
                 "Ignoring invalid inherited named_workflow for delegated task '%s': %s",
                 task.get("goal", ""),
@@ -719,6 +850,7 @@ def _resolve_wave1_task_inputs(
     }
     normalized_overlay_inputs = normalize_wave1_overlay_inputs(
         archetype_name=resolved_archetype,
+        category=resolved_literal_category,
         route_category=resolved_route_category,
         delegation_profile=resolved_delegation_profile,
         runtime_mode=resolved_runtime_mode,
@@ -726,7 +858,7 @@ def _resolve_wave1_task_inputs(
         task_contract=resolved_task_contract,
         orchestration_hints=orchestration_hints,
     )
-    if resolved_named_workflow is None:
+    if resolved_named_workflow is None and not inherited_named_workflow_invalid:
         resolved_named_workflow = build_named_workflow_artifact(
             objective=str(task.get("goal") or "").strip(),
             specialist=resolved_specialist,
@@ -736,11 +868,18 @@ def _resolve_wave1_task_inputs(
             delegation_profile=normalized_overlay_inputs["delegation_profile"],
             task_contract=normalized_overlay_inputs["task_contract"],
         )
+        if resolved_named_workflow is not None:
+            named_workflow_source = "generated_from_resolved_inputs"
     overlay_prompt = build_wave1_overlay_prompt_from_normalized(normalized_overlay_inputs)
 
     return {
+        "named_agent": str(task.get("agent") or "").strip() or None,
         "specialist": resolved_specialist,
         "archetype": normalized_overlay_inputs["archetype"],
+        "category": resolved_literal_category.name,
+        "category_source": "explicit_or_inherited_category" if (
+            explicit_task_category_input or explicit_top_level_category_input
+        ) else "default_category",
         "route_category": normalized_overlay_inputs["route_category"],
         "route_category_definition": normalized_overlay_inputs["route_category_definition"],
         "route_category_source": "explicit_or_inherited_route_category" if (
@@ -753,6 +892,8 @@ def _resolve_wave1_task_inputs(
         "skills": normalized_overlay_inputs["skills"],
         "task_contract": normalized_overlay_inputs["task_contract"],
         "named_workflow": resolved_named_workflow,
+        "named_workflow_source": named_workflow_source,
+        "named_workflow_inherited_invalid": inherited_named_workflow_invalid,
         "runtime_mode": normalized_overlay_inputs["runtime_mode"],
         "runtime_mode_definition": normalized_overlay_inputs["runtime_mode_definition"],
         "permission_preset": orchestration_hints["permission_preset"],
@@ -827,11 +968,19 @@ def _normalize_delegation_config(cfg: Any) -> Dict[str, Any]:
     normalized["delegation_profiles"] = profiles
     normalized["categories"] = profiles
 
+    explicit_category_input = str(cfg.get("category") or cfg.get("default_category") or "").strip()
+    resolved_literal_category = resolve_literal_category(explicit_category_input)
+    normalized["category"] = resolved_literal_category.name
+    normalized["default_category"] = resolved_literal_category.name
+
     default_profile = _normalize_category_name(cfg.get("default_delegation_profile")) if isinstance(cfg, dict) else ""
-    default_category = _normalize_category_name(cfg.get("default_category")) if isinstance(cfg, dict) else ""
-    resolved_default_profile = default_profile or default_category or DEFAULT_DELEGATION_PROFILE
+    resolved_default_profile = default_profile or DEFAULT_DELEGATION_PROFILE
     normalized["default_delegation_profile"] = resolved_default_profile
-    normalized["default_category"] = resolved_default_profile
+
+    explicit_route_category = _normalize_category_name(cfg.get("route_category") or cfg.get("default_route_category"))
+    resolved_route_category = explicit_route_category or _normalize_category_name(resolved_literal_category.route_category) or DEFAULT_ROUTE_CATEGORY
+    normalized["route_category"] = resolved_route_category
+    normalized["default_route_category"] = resolved_route_category
     return normalized
 
 
@@ -860,6 +1009,94 @@ def _resolve_category_profile(cfg: Dict[str, Any], category: str) -> Dict[str, A
     if isinstance(profiles, dict):
         return _merge_category_profile({}, profiles.get(fallback_name, {}) or profiles.get(DEFAULT_DELEGATION_PROFILE, {}))
     return {}
+
+
+def _resolve_exact_category_profile(cfg: Dict[str, Any], category: str) -> Dict[str, Any]:
+    if not isinstance(cfg, dict):
+        return {}
+    normalized_category = _normalize_category_name(category)
+    if not normalized_category:
+        return {}
+    profiles = cfg.get("delegation_profiles") or cfg.get("categories") or {}
+    if not isinstance(profiles, dict):
+        return {}
+    profile = profiles.get(normalized_category)
+    if not isinstance(profile, dict):
+        return {}
+    return _merge_category_profile({}, profile)
+
+
+def _resolve_route_category_fallback_config(
+    cfg: Dict[str, Any],
+    fallback_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(cfg, dict):
+        return None
+
+    normalized_fallback_name = _normalize_category_name(fallback_name)
+    if not normalized_fallback_name:
+        return None
+    if normalized_fallback_name == "default":
+        return dict(cfg)
+
+    fallback_profile = _resolve_exact_category_profile(cfg, normalized_fallback_name)
+    if fallback_profile:
+        return _merge_category_profile(cfg, fallback_profile)
+
+    if normalized_fallback_name not in BUILTIN_ROUTE_CATEGORIES:
+        return None
+
+    route_categories = cfg.get("route_categories") if isinstance(cfg, dict) else None
+    route_category_profile = (
+        route_categories.get(normalized_fallback_name)
+        if isinstance(route_categories, dict)
+        else None
+    )
+    if isinstance(route_category_profile, dict):
+        return _merge_category_profile(cfg, route_category_profile)
+
+    return dict(cfg)
+
+
+def _resolve_route_category_fallback_models(
+    cfg: Dict[str, Any],
+    route_category_name: Optional[str],
+    parent_agent,
+) -> List[Dict[str, Any]]:
+    normalized_route_category = _normalize_category_name(route_category_name)
+    route_category = BUILTIN_ROUTE_CATEGORIES.get(normalized_route_category)
+    if route_category is None:
+        return []
+
+    fallback_chain: List[Dict[str, Any]] = []
+    seen_targets: set[tuple[Optional[str], Optional[str], Optional[str], Optional[str]]] = set()
+
+    for fallback_name in route_category.fallback_models:
+        fallback_cfg = _resolve_route_category_fallback_config(cfg, fallback_name)
+        if not fallback_cfg:
+            continue
+
+        try:
+            fallback_creds = _resolve_delegation_credentials(fallback_cfg, parent_agent)
+        except ValueError:
+            continue
+
+        target = (
+            fallback_creds.get("provider"),
+            fallback_creds.get("model"),
+            fallback_creds.get("base_url"),
+            fallback_creds.get("api_key"),
+        )
+        if target in seen_targets or not any(target[:3]):
+            continue
+        seen_targets.add(target)
+        fallback_chain.append({
+            key: value
+            for key, value in fallback_creds.items()
+            if key in {"provider", "model", "base_url", "api_key"} and value
+        })
+
+    return fallback_chain
 
 
 def _enforce_category_concurrency(
@@ -1051,8 +1288,10 @@ def _build_child_agent(
     toolsets: Optional[List[str]],
     enabled_tools: Optional[List[str]] = None,
     model: Optional[str] = None,
+    fallback_model: Optional[List[Dict[str, Any]] | Dict[str, Any]] = None,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     task_count: int = 1,
+    task: Optional[Dict[str, Any]] = None,
     parent_agent=None,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
@@ -1062,6 +1301,9 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    override_service_tier: Optional[str] = None,
+    override_request_overrides: Optional[Dict[str, Any]] = None,
+    override_reasoning_config: Optional[Dict[str, Any]] = None,
     wave1_overlay_prompt: Optional[str] = None,
     delegate_resolution: Optional[Dict[str, Any]] = None,
 ):
@@ -1167,10 +1409,10 @@ def _build_child_agent(
 
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
-    child_reasoning = parent_reasoning
+    child_reasoning = copy.deepcopy(override_reasoning_config) if isinstance(override_reasoning_config, dict) else parent_reasoning
     try:
         delegation_cfg = _load_config()
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        delegation_effort = str((override_request_overrides or {}).get("reasoning_effort") or delegation_cfg.get("reasoning_effort") or "").strip()
         if delegation_effort:
             from hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(delegation_effort)
@@ -1192,9 +1434,12 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        fallback_model=fallback_model,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
+        service_tier=override_service_tier,
+        request_overrides=dict(override_request_overrides or {}),
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
         enabled_tools=child_enabled_tools,
@@ -1215,6 +1460,48 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
+
+    effective_archetype = None
+    effective_specialist = None
+    if isinstance(delegate_resolution, dict):
+        effective_archetype = str(delegate_resolution.get("archetype") or "").strip() or None
+        effective_specialist = str(delegate_resolution.get("specialist") or "").strip() or None
+
+    # Apply archetype/specialist tool restrictions at dispatch level
+    try:
+        blocked, allowed = get_tool_restrictions(
+            effective_archetype or 'generalist',
+            effective_specialist,
+        )
+    except Exception:
+        blocked, allowed = frozenset(), frozenset()
+
+    task = task if isinstance(task, dict) else {}
+    # Also check named-agent overrides for blocked/allowed tools
+    named_blocked = frozenset(task.get('_named_agent_blocked_tools', []))
+    named_allowed = frozenset(task.get('_named_agent_allowed_tools', []))
+    blocked = blocked | named_blocked
+    if named_allowed:
+        allowed = named_allowed if not allowed else (allowed & named_allowed)
+
+    if blocked or allowed:
+        filtered = []
+        for t in child.tools:
+            tool_name = t.get('function', {}).get('name', '') if isinstance(t, dict) else getattr(t, 'name', '')
+            if tool_name in blocked:
+                continue
+            if allowed and tool_name not in allowed:
+                continue
+            filtered.append(t)
+        removed = len(child.tools) - len(filtered)
+        if removed > 0:
+            logging.getLogger(__name__).info(
+                'Tool restriction applied: removed %d tools from child agent (blocked=%s, allowed=%s)',
+                removed, blocked or 'none', allowed or 'all'
+            )
+        child.tools = filtered
+        child.valid_tool_names = [t.get('function', {}).get('name', '') if isinstance(t, dict) else getattr(t, 'name', '') for t in filtered]
+
     child._print_fn = getattr(parent_agent, '_print_fn', None)
     child._delegate_resolution = dict(delegate_resolution or {})
     # Set delegation depth so children can't spawn grandchildren
@@ -1395,14 +1682,16 @@ def _run_single_child(
                         # Fallback for messages without tool_call_id
                         tool_trace[-1].update(result_meta)
 
-        # Determine exit reason
-        if status == "completed":
-            exit_reason = "completed"
-        elif continuation_state.get("exhausted"):
+        # Determine exit reason from raw completion signals rather than the
+        # synthesized status. The synthesized status can become "completed"
+        # for reporting purposes even when the child actually stopped because it
+        # ran out of iteration budget without completing.
+        completion_confirmed = (outcome_status == "completed" and not has_open_todos) or bool(completed)
+        if continuation_state.get("exhausted"):
             exit_reason = "continuation_exhausted"
         elif outcome_status == "interrupted" or interrupted:
             exit_reason = "interrupted"
-        elif completed:
+        elif completion_confirmed:
             exit_reason = "completed"
         else:
             exit_reason = "max_iterations"
@@ -1448,7 +1737,7 @@ def _run_single_child(
                 child_progress_cb(
                     "subagent.complete",
                     preview=summary[:160] if summary else entry.get("error", ""),
-                    status=status,
+                    status=entry.get("status") or status,
                     duration_seconds=duration,
                     summary=summary[:500] if summary else entry.get("error", ""),
                 )
@@ -1537,6 +1826,7 @@ def _build_persistent_launch_spec(
     acp_command: Optional[str],
     acp_args: Optional[List[str]],
     wave1_overlay_prompt: Optional[str],
+    fallback_model: Optional[List[Dict[str, Any]] | Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -1556,6 +1846,7 @@ def _build_persistent_launch_spec(
         "api_mode": creds.get("api_mode") or getattr(parent_agent, "api_mode", None),
         "acp_command": acp_command,
         "acp_args": list(acp_args or []),
+        "fallback_model": copy.deepcopy(fallback_model),
         "max_iterations": max_iterations,
         "wave1_overlay_prompt": wave1_overlay_prompt,
         "delegate_resolution": dict(resolved_inputs or {}),
@@ -1603,6 +1894,52 @@ def _build_persistent_parent_agent(launch_spec: Dict[str, Any]):
     return parent
 
 
+def _extract_delegate_open_todos(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    continuation = dict(result.get("continuation") or {})
+    orchestration = dict(result.get("orchestration") or {})
+    open_todos = continuation.get("open_todos") or orchestration.get("activeTodos") or []
+    return [dict(item) for item in open_todos if isinstance(item, dict)]
+
+
+def _record_persistent_delegate_completion(
+    task_store: TaskStore,
+    task_id: str,
+    *,
+    result: Dict[str, Any],
+    runtime_mode: Optional[str],
+) -> None:
+    record = task_store.require_task(task_id)
+    continuation = dict(result.get("continuation") or {})
+    orchestration = dict(result.get("orchestration") or {})
+    open_todos = _extract_delegate_open_todos(result)
+
+    if result.get("status") == "completed" and not open_todos:
+        task_store.clear_continuation(task_id)
+        final_status = TaskStatus.completed
+        final_error = result.get("error")
+    else:
+        task_store.update_continuation(
+            task_id,
+            mode=continuation.get("mode") or record.runtime_mode or runtime_mode,
+            status="retry_requested" if open_todos else (continuation.get("status") or "resolved"),
+            open_todos=open_todos,
+            latest_response_preview=orchestration.get("responsePreview") or result.get("summary"),
+            last_outcome_status=continuation.get("final_outcome_status") or orchestration.get("outcomeStatus"),
+            resume_count=continuation.get("resume_count"),
+            attempt_count=continuation.get("attempt_count"),
+        )
+        final_status = TaskStatus.failed
+        final_error = result.get("error") or ("unfinished work remains" if open_todos else None)
+
+    task_store.record_result(
+        task_id,
+        status=final_status,
+        result=result,
+        summary=result.get("summary"),
+        error=final_error,
+    )
+
+
 def launch_persistent_delegate_task(task_id: str, *, store: Optional[TaskStore] = None, process_registry_obj=None) -> dict[str, Any]:
     return launch_background_delegate_task(
         task_id,
@@ -1630,6 +1967,7 @@ def run_persistent_delegate_task(task_id: str, store_root: Optional[str] = None)
             model=launch_spec.get("model"),
             max_iterations=int(launch_spec.get("max_iterations") or DEFAULT_MAX_ITERATIONS),
             task_count=1,
+            task=launch_spec,
             parent_agent=parent,
             override_provider=launch_spec.get("provider"),
             override_base_url=launch_spec.get("base_url"),
@@ -1637,34 +1975,16 @@ def run_persistent_delegate_task(task_id: str, store_root: Optional[str] = None)
             override_api_mode=launch_spec.get("api_mode"),
             override_acp_command=launch_spec.get("acp_command"),
             override_acp_args=launch_spec.get("acp_args"),
+            fallback_model=launch_spec.get("fallback_model"),
             wave1_overlay_prompt=launch_spec.get("wave1_overlay_prompt"),
             delegate_resolution=launch_spec.get("delegate_resolution") or record.resolved_inputs,
         )
         result = _run_single_child(0, record.goal, child=child, parent_agent=parent)
-        continuation = dict(result.get("continuation") or {})
-        orchestration = dict(result.get("orchestration") or {})
-        open_todos = continuation.get("open_todos") or orchestration.get("activeTodos") or []
-        if result.get("status") == "completed" and not open_todos:
-            task_store.clear_continuation(task_id)
-            final_status = TaskStatus.completed
-        else:
-            task_store.update_continuation(
-                task_id,
-                mode=continuation.get("mode") or record.runtime_mode,
-                status="retry_requested" if open_todos else "resolved",
-                open_todos=open_todos,
-                latest_response_preview=orchestration.get("responsePreview") or result.get("summary"),
-                last_outcome_status=continuation.get("final_outcome_status") or orchestration.get("outcomeStatus"),
-                resume_count=continuation.get("resume_count"),
-                attempt_count=continuation.get("attempt_count"),
-            )
-            final_status = TaskStatus.failed
-        task_store.record_result(
+        _record_persistent_delegate_completion(
+            task_store,
             task_id,
-            status=final_status,
             result=result,
-            summary=result.get("summary"),
-            error=result.get("error") or ("unfinished work remains" if open_todos else None),
+            runtime_mode=record.runtime_mode,
         )
     except Exception as exc:
         task_store.record_result(
@@ -1682,6 +2002,7 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    agent: Optional[str] = None,
     category: Optional[str] = None,
     archetype: Optional[str] = None,
     route_category: Optional[str] = None,
@@ -1719,7 +2040,9 @@ def delegate_task(
         })
 
     # Load config
-    cfg = _normalize_delegation_config(_load_config())
+    full_cfg = _load_full_config()
+    cfg = _load_config()
+    named_agent_registry = full_cfg.get("agents", {}) if isinstance(full_cfg, dict) else {}
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
@@ -1777,6 +2100,7 @@ def delegate_task(
             "goal": goal,
             "context": context,
             "toolsets": toolsets,
+            "agent": agent,
             "acp_command": acp_command,
             "acp_args": acp_args,
         }]
@@ -1819,9 +2143,25 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task = dict(t)
+            resolved_named_agent = {}
+            try:
+                resolved_named_agent = _resolve_named_agent_config(
+                    task,
+                    registry=named_agent_registry,
+                    top_level_agent=agent,
+                )
+            except ValueError as exc:
+                return tool_error(str(exc))
+
+            if str(resolved_named_agent.get("mode") or "").strip().lower() == "disabled":
+                agent_name = resolved_named_agent.get("name") or task.get("agent") or agent
+                return tool_error(f"Named agent '{agent_name}' is disabled in config.")
+
+            task = _apply_named_agent_task_defaults(task, resolved_named_agent)
             try:
                 resolved_inputs = _resolve_wave1_task_inputs(
-                    t,
+                    task,
                     cfg=cfg,
                     top_level_archetype=explicit_top_level_archetype,
                     inherited_parent_archetype=inherited_parent_archetype,
@@ -1842,18 +2182,36 @@ def delegate_task(
             category_profile = _resolve_category_profile(cfg, resolved_profile)
             merged_cfg = _merge_category_profile(cfg, category_profile)
             category_creds = _resolve_delegation_credentials(merged_cfg, parent_agent)
+            if resolved_named_agent:
+                named_agent_cred_cfg = dict(merged_cfg)
+                for key in ("model", "provider", "base_url", "api_key"):
+                    value = resolved_named_agent.get(key)
+                    if value not in (None, ""):
+                        named_agent_cred_cfg[key] = value
+                category_creds = _resolve_delegation_credentials(named_agent_cred_cfg, parent_agent)
+            route_category_fallback_models = _resolve_route_category_fallback_models(
+                cfg,
+                resolved_inputs.get("route_category"),
+                parent_agent,
+            )
             contract_tool_policy = _resolve_contract_tool_requirements(
                 resolved_inputs.get("task_contract"),
                 parent_agent=parent_agent,
             )
             task_toolsets = list(dict.fromkeys(
-                _normalize_named_string_list(t.get("toolsets") or category_profile.get("toolsets") or toolsets)
+                _normalize_named_string_list(task.get("toolsets") or category_profile.get("toolsets") or toolsets)
                 + contract_tool_policy["toolsets"]
             )) or None
             task_enabled_tools = list(dict.fromkeys(
                 _normalize_named_string_list(category_profile.get("enabled_tools"))
                 + contract_tool_policy["enabled_tools"]
             )) or None
+            task_toolsets, task_enabled_tools = _apply_named_agent_tool_restrictions(
+                named_agent=resolved_named_agent,
+                toolsets=task_toolsets,
+                enabled_tools=task_enabled_tools,
+                parent_agent=parent_agent,
+            )
             task_toolsets, task_enabled_tools = _apply_named_role_tool_policy(
                 resolved_inputs=resolved_inputs,
                 toolsets=task_toolsets,
@@ -1873,21 +2231,25 @@ def delegate_task(
                 )
             )
             resolved_inputs["overlay_prompt"] = task_overlay_prompt
+            effective_agent_name = resolved_named_agent.get("name") or task.get("agent") or agent
+            if effective_agent_name:
+                resolved_inputs["agent"] = effective_agent_name
             child = _build_child_agent(
-                task_index=i, goal=t["goal"], context=t.get("context"),
+                task_index=i, goal=task["goal"], context=task.get("context"),
                 toolsets=task_toolsets, enabled_tools=task_enabled_tools, model=category_creds["model"] or creds["model"],
-                max_iterations=task_max_iter, task_count=n_tasks, parent_agent=parent_agent,
+                fallback_model=route_category_fallback_models or None,
+                max_iterations=task_max_iter, task_count=n_tasks, task=task, parent_agent=parent_agent,
                 override_provider=category_creds["provider"] or creds["provider"], override_base_url=category_creds["base_url"] or creds["base_url"],
                 override_api_key=category_creds["api_key"] or creds["api_key"],
                 override_api_mode=category_creds["api_mode"] or creds["api_mode"],
-                override_acp_command=t.get("acp_command") or category_profile.get("acp_command") or acp_command,
-                override_acp_args=t.get("acp_args") or category_profile.get("acp_args") or acp_args,
+                override_acp_command=task.get("acp_command") or category_profile.get("acp_command") or acp_command,
+                override_acp_args=task.get("acp_args") or category_profile.get("acp_args") or acp_args,
                 wave1_overlay_prompt=task_overlay_prompt,
                 delegate_resolution={key: value for key, value in resolved_inputs.items() if key != "overlay_prompt"},
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child, task_max_iter, task_overlay_prompt))
+            children.append((i, task, child, task_max_iter, task_overlay_prompt))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -1916,6 +2278,7 @@ def delegate_task(
             acp_command=getattr(child, "acp_command", None),
             acp_args=getattr(child, "acp_args", None),
             wave1_overlay_prompt=task_overlay_prompt,
+            fallback_model=route_category_fallback_models or None,
         )
         store = TaskStore()
         record = store.create_task(
@@ -1966,13 +2329,11 @@ def delegate_task(
         store.transition_task(record.id, TaskStatus.running)
         try:
             result = _run_single_child(0, _t["goal"], child, parent_agent)
-            status = TaskStatus.completed if result.get("status") == "completed" else TaskStatus.failed
-            store.record_result(
+            _record_persistent_delegate_completion(
+                store,
                 record.id,
-                status=status,
                 result=result,
-                summary=result.get("summary"),
-                error=result.get("error"),
+                runtime_mode=record.runtime_mode,
             )
         except Exception as exc:
             store.record_result(
@@ -2267,8 +2628,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
-def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+def _load_full_config() -> dict:
+    """Load full Hermes config from CLI_CONFIG or persistent config.
 
     Prefer the live CLI runtime config when it was loaded for the current
     HERMES_HOME. If ``cli`` was imported earlier under a different home/profile
@@ -2283,17 +2644,23 @@ def _load_config() -> dict:
         cli_home = getattr(cli_mod, "_hermes_home", None)
         cli_home_resolved = Path(cli_home).resolve() if cli_home is not None else None
         if cli_home_resolved == current_home:
-            cfg = getattr(cli_mod, "CLI_CONFIG", {}).get("delegation", {})
-            if cfg:
-                return _normalize_delegation_config(cfg)
+            cfg = getattr(cli_mod, "CLI_CONFIG", {})
+            if isinstance(cfg, dict) and cfg:
+                return dict(cfg)
     except Exception:
         pass
     try:
         from hermes_cli.config import load_config
         full = load_config()
-        return _normalize_delegation_config(full.get("delegation", {}))
+        return dict(full) if isinstance(full, dict) else {}
     except Exception:
-        return _normalize_delegation_config({})
+        return {}
+
+
+def _load_config() -> dict:
+    """Load normalized delegation config from full Hermes config."""
+    full = _load_full_config()
+    return _normalize_delegation_config(full.get("delegation", {}))
 
 
 # ---------------------------------------------------------------------------
@@ -2358,6 +2725,10 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "agent": {
+                "type": "string",
+                "description": "Named agent to use from config agents registry. Applies blocked_tools, allowed_tools, model/provider overrides from the named agent config.",
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2365,6 +2736,10 @@ DELEGATE_TASK_SCHEMA = {
                     "properties": {
                         "goal": {"type": "string", "description": "Task goal"},
                         "context": {"type": "string", "description": "Task-specific context"},
+                        "agent": {
+                            "type": "string",
+                            "description": "Named agent to use from config agents registry. Applies blocked_tools, allowed_tools, model/provider overrides from the named agent config.",
+                        },
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -2499,6 +2874,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        agent=args.get("agent"),
         category=args.get("category"),
         archetype=args.get("archetype"),
         route_category=args.get("route_category"),

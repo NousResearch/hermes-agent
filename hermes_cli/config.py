@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import difflib
 import os
 import platform
 import re
@@ -59,8 +60,107 @@ _EXTRA_ENV_KEYS = frozenset({
 })
 import yaml
 
+from agent.archetypes import (
+    DEFAULT_ARCHETYPE_NAME,
+    REQUIRED_ARCHETYPE_FIELDS,
+    get_tool_restrictions,
+    resolve_archetype,
+    resolve_archetype_defaults,
+    resolve_specialist_mapping,
+)
+from agent.route_categories import (
+    BUILTIN_LITERAL_CATEGORIES,
+    BUILTIN_ROUTE_CATEGORIES,
+    DEFAULT_LITERAL_CATEGORY,
+    DEFAULT_ROUTE_CATEGORY,
+    resolve_literal_category,
+)
+from agent.runtime_modes import (
+    BUILTIN_RUNTIME_MODES,
+    DEFAULT_RUNTIME_MODE_NAME,
+    resolve_runtime_mode,
+)
+from agent.task_contracts import REQUIRED_TASK_CONTRACT_FIELDS, validate_task_contract
 from hermes_cli.colors import Colors, color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+
+DEFAULT_OMO_AGENTS = {
+    "sisyphus": {
+        "archetype": "generalist",
+        "specialist": "builder",
+        "mode": "primary",
+        "color": "blue",
+        "aliases": ["orchestrator"],
+    },
+    "hephaestus": {
+        "archetype": "implementer",
+        "route_category": "deep",
+        "mode": "subagent",
+        "color": "red",
+        "aliases": ["deep_worker"],
+    },
+    "oracle": {
+        "archetype": "researcher",
+        "blocked_tools": ["write_file", "patch", "terminal", "execute_code", "delegate_task", "task"],
+        "mode": "subagent",
+    },
+    "librarian": {
+        "archetype": "researcher",
+        "mode": "subagent",
+        "blocked_tools": ["write_file", "patch", "terminal", "execute_code", "delegate_task", "task"],
+    },
+    "explore": {
+        "archetype": "researcher",
+        "specialist": "investigator",
+        "mode": "subagent",
+        "blocked_tools": ["write_file", "patch", "execute_code", "delegate_task"],
+        "aliases": ["explorer"],
+    },
+    "multimodal-looker": {
+        "archetype": "generalist",
+        "specialist": "multimodal_specialist",
+        "allowed_tools": [
+            "read_file",
+            "search_files",
+            "vision_analyze",
+            "browser_vision",
+            "browser_snapshot",
+            "browser_get_images",
+        ],
+        "mode": "subagent",
+        "aliases": ["looker"],
+    },
+    "prometheus": {
+        "archetype": "generalist",
+        "specialist": "planner",
+        "mode": "subagent",
+        "color": "green",
+        "aliases": ["planner"],
+    },
+    "metis": {
+        "archetype": "verifier",
+        "mode": "subagent",
+        "aliases": ["gap_analyzer"],
+    },
+    "momus": {
+        "archetype": "verifier",
+        "mode": "subagent",
+        "blocked_tools": ["write_file", "patch", "terminal", "execute_code", "delegate_task", "task"],
+        "aliases": ["critic"],
+    },
+    "atlas": {
+        "archetype": "generalist",
+        "specialist": "planner",
+        "mode": "subagent",
+        "blocked_tools": ["delegate_task", "task"],
+    },
+    "sisyphus-junior": {
+        "archetype": "implementer",
+        "mode": "subagent",
+        "aliases": ["executor"],
+    },
+}
 
 
 # =============================================================================
@@ -397,7 +497,7 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
-    "agents": {},
+    "agents": copy.deepcopy(DEFAULT_OMO_AGENTS),
     "categories": {},
     "runtime_fallback": {"enabled": False},
     "model_capabilities": {},
@@ -502,6 +602,15 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "protected_tools": [
+            "task",
+            "todoread",
+            "todowrite",
+            "lsp_rename",
+            "session_search",
+            "session_read",
+            "session_write",
+        ],
 
     },
 
@@ -723,10 +832,11 @@ DEFAULT_CONFIG = {
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
     # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
-    # Category profiles also serve as Hermes-native routing hints for the
-    # primary agent: the delegate_task schema and orchestration notes surface
-    # their names and routing_description values so the parent can choose the
-    # right category before spawning subagents.
+    # delegation_profiles is the primary Wave 1 config surface for delegation
+    # policy. DG2 adds category as a bounded literal upstream product surface.
+    # Route categories and runtime modes stay separate internal registries:
+    # their metadata is still rendered into prompts and runtime state, while
+    # literal category names map onto that substrate truthfully.
     "delegation": {
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
@@ -740,8 +850,47 @@ DEFAULT_CONFIG = {
         "auto_decompose_large_tasks": True,  # prompt the primary agent to make a todo list on large requests
         "auto_fanout_batch_mode": True,      # prefer one batched delegate_task call over many single-task calls
         "auto_fanout_max_tasks": 3,          # soft cap for one delegated batch after routing/truncation logic
-        "default_category": "general",     # fallback routing label when the primary agent omits category
-        "categories": {
+        "default_category": DEFAULT_LITERAL_CATEGORY,
+        # Wave 1 schema/default surfaces. These remain structurally distinct:
+        # category is the literal upstream-facing product surface, route_category
+        # is the mapped internal routing label, delegation_profile selects a child
+        # policy profile, runtime_mode is an operating-mode concept, and
+        # task_contract stays canonical structured data.
+        "category": DEFAULT_LITERAL_CATEGORY,
+        "archetype": DEFAULT_ARCHETYPE_NAME,
+        "runtime_mode": DEFAULT_RUNTIME_MODE_NAME,
+        "route_category": DEFAULT_ROUTE_CATEGORY,
+        "default_route_category": DEFAULT_ROUTE_CATEGORY,
+        "default_delegation_profile": "general",
+        "default_skills": ["general_reasoning", "task_execution"],
+        "default_required_tools": ["read_file", "search_files"],
+        "permission_preset": "inherit",
+        "fallback_policy": "legacy_default_mapping",
+        "task_contract": None,
+        "literal_categories": {
+            name: {
+                "summary": category.summary,
+                "route_category": category.route_category,
+                "default_runtime_mode": category.default_runtime_mode,
+            }
+            for name, category in BUILTIN_LITERAL_CATEGORIES.items()
+        },  # built-in literal-category mapping metadata
+        "route_categories": {
+            name: {
+                "summary": category.summary,
+                "intensity": category.intensity,
+            }
+            for name, category in BUILTIN_ROUTE_CATEGORIES.items()
+        },  # built-in route-category metadata overrides only
+        "runtime_modes": {
+            mode.name: {
+                "description": mode.description,
+                "operating_posture": mode.operating_posture,
+                "kind": mode.kind,
+            }
+            for mode in BUILTIN_RUNTIME_MODES
+        },  # built-in runtime-mode metadata overrides only
+        "delegation_profiles": {
             "general": {
                 "routing_description": "Default fallback for uncategorized delegated work.",
                 "max_concurrent_children": 3,
@@ -891,7 +1040,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 19,
+    "_config_version": 20,
 }
 
 # =============================================================================
@@ -2086,11 +2235,15 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     Catches common YAML formatting mistakes that produce confusing runtime
     errors (like "Unknown provider") instead of clear diagnostics.
 
-    Can be called with a pre-loaded config dict, or will load from disk.
+    Can be called with a pre-loaded config dict, or will load the raw config
+    from disk so warnings can still see ignored/unknown keys before
+    normalization drops them.
     """
+    raw_config = config
     if config is None:
         try:
-            config = load_config()
+            config = read_raw_config()
+            raw_config = config
         except Exception:
             return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
 
@@ -2199,6 +2352,36 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "Add: model: anthropic/claude-sonnet-4 (or another model)",
                 ))
 
+    fallback_providers = config.get("fallback_providers")
+    if fallback_providers is not None:
+        if not isinstance(fallback_providers, list):
+            issues.append(ConfigIssue(
+                "error",
+                f"fallback_providers should be a list of provider/model dicts, got {type(fallback_providers).__name__}",
+                "Change to:\n  fallback_providers:\n    - provider: openrouter\n      model: anthropic/claude-sonnet-4",
+            ))
+        else:
+            for i, entry in enumerate(fallback_providers):
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"fallback_providers[{i}] should be a dict, got {type(entry).__name__}",
+                        "Each fallback_providers entry should include provider and model fields.",
+                    ))
+                    continue
+                if not entry.get("provider"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"fallback_providers[{i}] is missing 'provider' field",
+                        "Add: provider: openrouter (or another provider)",
+                    ))
+                if not entry.get("model"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"fallback_providers[{i}] is missing 'model' field",
+                        "Add: model: anthropic/claude-sonnet-4 (or another model)",
+                    ))
+
     # ── Check for fallback_model accidentally nested inside custom_providers ──
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         issues.append(ConfigIssue(
@@ -2229,20 +2412,29 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "Change to:\n  delegation:\n    max_iterations: 50\n    max_concurrent_children: 3",
             ))
         else:
+            profile_buckets = []
+            delegation_profiles = delegation_cfg.get("delegation_profiles")
+            if delegation_profiles is not None:
+                profile_buckets.append(("delegation_profiles", delegation_profiles, "primary Wave 1 delegation-profile config"))
             categories = delegation_cfg.get("categories")
-            if categories is not None and not isinstance(categories, dict):
-                issues.append(ConfigIssue(
-                    "error",
-                    f"delegation.categories should be a dict of category profiles, got {type(categories).__name__}",
-                    "Change to:\n  delegation:\n    categories:\n      research:\n        enabled_tools:\n          - read_file",
-                ))
-            elif isinstance(categories, dict):
-                for name, entry in categories.items():
+            if categories is not None:
+                profile_buckets.append(("categories", categories, "legacy alias for delegation_profiles"))
+
+            for bucket_name, bucket_value, bucket_note in profile_buckets:
+                if not isinstance(bucket_value, dict):
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"delegation.{bucket_name} should be a dict of delegation profiles, got {type(bucket_value).__name__}",
+                        f"Change to:\n  delegation:\n    {bucket_name}:\n      research:\n        enabled_tools:\n          - read_file",
+                    ))
+                    continue
+
+                for name, entry in bucket_value.items():
                     if not isinstance(entry, dict):
                         issues.append(ConfigIssue(
                             "warning",
-                            f"delegation.categories.{name} should be a dict, got {type(entry).__name__}",
-                            "Each category should define keys like toolsets, enabled_tools, max_iterations, or max_concurrent_children",
+                            f"delegation.{bucket_name}.{name} should be a dict, got {type(entry).__name__}",
+                            f"Each {bucket_note} entry should define keys like toolsets, enabled_tools, runtime_mode, max_iterations, or max_concurrent_children",
                         ))
                         continue
 
@@ -2250,9 +2442,71 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     if routing_description is not None and not isinstance(routing_description, str):
                         issues.append(ConfigIssue(
                             "warning",
-                            f"delegation.categories.{name}.routing_description should be a string, got {type(routing_description).__name__}",
-                            "Use a short sentence describing when the primary agent should route work into this category.",
+                            f"delegation.{bucket_name}.{name}.routing_description should be a string, got {type(routing_description).__name__}",
+                            "Use a short sentence describing when the primary agent should route work into this delegation profile.",
                         ))
+
+            route_categories = delegation_cfg.get("route_categories")
+            if route_categories is not None and not isinstance(route_categories, dict):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"delegation.route_categories should be a dict of built-in route-category metadata overrides, got {type(route_categories).__name__}",
+                    "Change to:\n  delegation:\n    route_categories:\n      quick:\n        summary: Fast-path routing lane\n        intensity: low",
+                ))
+
+            runtime_modes = delegation_cfg.get("runtime_modes")
+            if runtime_modes is not None and not isinstance(runtime_modes, dict):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"delegation.runtime_modes should be a dict of built-in runtime-mode metadata overrides, got {type(runtime_modes).__name__}",
+                    "Change to:\n  delegation:\n    runtime_modes:\n      default:\n        description: Standard Hermes operating posture\n        operating_posture: balanced_general_operation",
+                ))
+
+            delegation_metadata = inspect_wave1_delegation_metadata(
+                _normalize_wave1_delegation_config({"delegation": delegation_cfg}, include_defaults=False),
+                raw_config if isinstance(raw_config, dict) else {"delegation": delegation_cfg},
+            )
+            ignored_route_category_names = delegation_metadata["ignored_route_category_names"]
+            if ignored_route_category_names:
+                issues.append(ConfigIssue(
+                    "warning",
+                    "delegation.route_categories contains unknown names that stay inactive metadata only: "
+                    + ", ".join(ignored_route_category_names),
+                    "Wave 1 only applies built-in route-category metadata overrides. Unknown names are ignored for routing semantics; use delegation_profiles/categories for active delegation profiles.",
+                ))
+
+            ignored_runtime_mode_names = delegation_metadata["ignored_runtime_mode_names"]
+            if ignored_runtime_mode_names:
+                issues.append(ConfigIssue(
+                    "warning",
+                    "delegation.runtime_modes contains unknown names that stay inactive metadata only: "
+                    + ", ".join(ignored_runtime_mode_names),
+                    "Wave 1 only applies built-in runtime-mode metadata overrides. Unknown names are ignored for runtime semantics.",
+                ))
+
+            task_contract = delegation_cfg.get("task_contract")
+            if task_contract not in (None, "", {}) and not isinstance(task_contract, dict):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"delegation.task_contract should be a dict matching the Wave 1 task-contract schema, got {type(task_contract).__name__}",
+                    "Remove delegation.task_contract to preserve legacy delegation behavior, or add all required fields under delegation.task_contract.",
+                ))
+
+            permission_preset = delegation_cfg.get("permission_preset")
+            if permission_preset is not None and not isinstance(permission_preset, str):
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"delegation.permission_preset should be a string, got {type(permission_preset).__name__}",
+                    "Use values like 'inherit' or 'workspace_write' to preserve Wave 1 permission semantics.",
+                ))
+
+            fallback_policy = delegation_cfg.get("fallback_policy")
+            if fallback_policy is not None and not isinstance(fallback_policy, str):
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"delegation.fallback_policy should be a string, got {type(fallback_policy).__name__}",
+                    "Use values like 'legacy_default_mapping' or 'degrade_to_generalist' to preserve Wave 1 fallback semantics.",
+                ))
 
     # ── Root-level keys that look misplaced ──────────────────────────────
     for key in config:
@@ -2934,21 +3188,497 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def _normalize_openagent_named_bucket(bucket: Any) -> Dict[str, Dict[str, Any]]:
     """Normalize OpenAgent-style named agent/category mappings."""
+    return _normalize_openagent_named_bucket_with_defaults(bucket)
+
+
+def _normalize_openagent_named_bucket_with_defaults(
+    bucket: Any,
+    defaults: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Dict[str, Any]]:
     if not isinstance(bucket, dict):
-        return {}
+        bucket = {}
 
     normalized: Dict[str, Dict[str, Any]] = {}
+    if isinstance(defaults, dict):
+        for raw_name, entry in defaults.items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            normalized[name] = _normalize_openagent_named_entry(entry)
+
+    alias_map = _build_named_agent_alias_map(normalized)
     for raw_name, entry in bucket.items():
         name = str(raw_name or "").strip()
         if not name:
             continue
+        name = alias_map.get(name, name)
+        base = dict(normalized.get(name, {}))
+        normalized[name] = _normalize_openagent_named_entry(entry, defaults=base)
+    return normalized
+
+
+def _build_named_agent_alias_map(registry: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    """Map every explicit secondary alias to its canonical agent name."""
+    alias_map: Dict[str, str] = {}
+    for canonical_name, entry in registry.items():
+        for alias in _normalize_named_string_list(entry.get("aliases")):
+            alias_map.setdefault(alias, canonical_name)
+    return alias_map
+
+
+def _canonicalize_named_agent_lookup_key(value: Any) -> str:
+    """Normalize named-agent invocation tokens for stable lookup."""
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    token = re.sub(r"[\s_]+", "-", token)
+    token = re.sub(r"-+", "-", token)
+    return token.strip("-")
+
+
+def _build_named_agent_lookup_map(registry: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    """Map canonical/alias invocation variants onto canonical names."""
+    lookup: Dict[str, str] = {}
+    for canonical_name, entry in registry.items():
+        lookup.setdefault(_canonicalize_named_agent_lookup_key(canonical_name), canonical_name)
+        for alias in _normalize_named_string_list(entry.get("aliases")):
+            lookup.setdefault(_canonicalize_named_agent_lookup_key(alias), canonical_name)
+    return lookup
+
+
+def _resolve_named_agent_disabled_state(
+    canonical_name: str,
+    *,
+    registry: Dict[str, Dict[str, Any]],
+    config: Optional[Dict[str, Any]],
+) -> Tuple[bool, Optional[str]]:
+    """Return whether an agent is disabled and which canonical surface disabled it."""
+    source = config if isinstance(config, dict) else {}
+    lookup_map = _build_named_agent_lookup_map(registry)
+
+    for entry in source.get("disabled_agents") or []:
+        disabled_name = lookup_map.get(_canonicalize_named_agent_lookup_key(entry))
+        if disabled_name == canonical_name:
+            return True, "disabled_agents"
+
+    raw_agents = source.get("agents")
+    if isinstance(raw_agents, dict):
+        for raw_name, raw_entry in raw_agents.items():
+            if not isinstance(raw_entry, dict) or not raw_entry.get("disable"):
+                continue
+            disabled_name = lookup_map.get(_canonicalize_named_agent_lookup_key(raw_name))
+            if disabled_name == canonical_name:
+                return True, f"agents.{canonical_name}.disable"
+
+    return False, None
+
+
+_NAMED_AGENT_PERMISSION_KEYS = (
+    "edit",
+    "bash",
+    "webfetch",
+    "doom_loop",
+    "external_directory",
+)
+_NAMED_AGENT_PERMISSION_VALUES = {"ask", "allow", "deny"}
+_NAMED_AGENT_FALLBACK_MODEL_KEYS = (
+    "model",
+    "variant",
+    "reasoningEffort",
+    "temperature",
+    "top_p",
+    "maxTokens",
+    "thinking",
+)
+
+
+def _normalize_named_agent_permission_surface(value: Any) -> Optional[Dict[str, Any]]:
+    """Normalize the bounded upstream-style named-agent permission surface."""
+    if not isinstance(value, dict):
+        return None
+
+    normalized: Dict[str, Any] = {}
+    for key in _NAMED_AGENT_PERMISSION_KEYS:
+        if key not in value:
+            continue
+        raw = value.get(key)
+        if isinstance(raw, str):
+            permission_value = raw.strip().lower()
+            if permission_value in _NAMED_AGENT_PERMISSION_VALUES:
+                normalized[key] = permission_value
+            continue
+        if key == "bash" and isinstance(raw, dict):
+            per_command: Dict[str, str] = {}
+            for raw_command, raw_permission in raw.items():
+                command = str(raw_command or "").strip()
+                permission_value = str(raw_permission or "").strip().lower()
+                if command and permission_value in _NAMED_AGENT_PERMISSION_VALUES:
+                    per_command[command] = permission_value
+            if per_command:
+                normalized[key] = per_command
+    return normalized or None
+
+
+def _normalize_named_agent_fallback_models(value: Any) -> List[Dict[str, Any]]:
+    """Normalize fallback_models into a bounded list of model entries."""
+    entries = value if isinstance(value, list) else [value]
+    normalized: List[Dict[str, Any]] = []
+    for entry in entries:
         if isinstance(entry, str):
             model = entry.strip()
             if model:
-                normalized[name] = {"model": model}
-        elif isinstance(entry, dict):
-            normalized[name] = dict(entry)
+                normalized.append({"model": model})
+            continue
+        if not isinstance(entry, dict):
+            continue
+        model = str(entry.get("model") or "").strip()
+        if not model:
+            continue
+        normalized_entry: Dict[str, Any] = {"model": model}
+        for key in _NAMED_AGENT_FALLBACK_MODEL_KEYS:
+            if key == "model" or key not in entry:
+                continue
+            raw = entry.get(key)
+            if raw in (None, ""):
+                continue
+            if key == "thinking":
+                if isinstance(raw, dict) and raw:
+                    normalized_entry[key] = copy.deepcopy(raw)
+                continue
+            if isinstance(raw, str):
+                stripped = raw.strip()
+                if stripped:
+                    normalized_entry[key] = stripped
+                continue
+            if isinstance(raw, (int, float)):
+                normalized_entry[key] = raw
+        normalized.append(normalized_entry)
     return normalized
+
+
+def _normalize_named_agent_disable_flag(value: Any) -> bool:
+    """Normalize a named-agent disable flag to a strict boolean."""
+    return value is True
+
+
+
+def _resolve_disabled_named_agents(
+    registry: Dict[str, Dict[str, Any]],
+    config: Optional[Dict[str, Any]] = None,
+) -> Tuple[set, Dict[str, str]]:
+    """Resolve disabled named agents from per-agent and global config surfaces."""
+    lookup_map = _build_named_agent_lookup_map(registry)
+    disabled_names = set()
+    disabled_via: Dict[str, str] = {}
+
+    for canonical_name, entry in registry.items():
+        if _normalize_named_agent_disable_flag(entry.get("disable")):
+            disabled_names.add(canonical_name)
+            disabled_via.setdefault(canonical_name, f"agents.{canonical_name}.disable")
+
+    raw_disabled_agents = []
+    if isinstance(config, dict):
+        raw_disabled_agents = _normalize_named_string_list(config.get("disabled_agents"))
+    for raw_name in raw_disabled_agents:
+        canonical_name = lookup_map.get(_canonicalize_named_agent_lookup_key(raw_name), raw_name)
+        if canonical_name in registry:
+            disabled_names.add(canonical_name)
+            disabled_via[canonical_name] = "disabled_agents"
+
+    return disabled_names, disabled_via
+
+
+def _format_named_agent_permission_surface(permission_surface: Optional[Dict[str, Any]]) -> str:
+    """Render the bounded named-agent permission surface for detail views."""
+    if not permission_surface:
+        return "-"
+
+    parts: List[str] = []
+    for key in _NAMED_AGENT_PERMISSION_KEYS:
+        if key not in permission_surface:
+            continue
+        value = permission_surface[key]
+        if isinstance(value, dict):
+            command_summary = ",".join(
+                f"{command}:{value[command]}"
+                for command in sorted(value)
+            )
+            parts.append(f"{key}={command_summary}")
+        else:
+            parts.append(f"{key}={value}")
+    return "; ".join(parts) if parts else "-"
+
+
+def _format_named_agent_fallback_models(fallback_models: List[Dict[str, Any]]) -> str:
+    """Render bounded fallback-model truth for detail views."""
+    if not fallback_models:
+        return "-"
+
+    rendered_models: List[str] = []
+    for entry in fallback_models:
+        label = entry.get("model", "")
+        extras: List[str] = []
+        for key in _NAMED_AGENT_FALLBACK_MODEL_KEYS:
+            if key == "model" or key not in entry:
+                continue
+            value = entry[key]
+            if isinstance(value, dict):
+                extras.append(f"{key}={value}")
+            else:
+                extras.append(f"{key}={value}")
+        if extras:
+            label = f"{label} [{' '.join(extras)}]"
+        rendered_models.append(label)
+    return " -> ".join(rendered_models)
+
+
+def _normalize_openagent_named_entry(
+    entry: Any,
+    *,
+    defaults: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = copy.deepcopy(defaults or {})
+
+    if isinstance(entry, str):
+        model = entry.strip()
+        if model:
+            normalized["model"] = model
+        return normalized
+
+    if not isinstance(entry, dict):
+        return normalized
+
+    for key, value in entry.items():
+        normalized[key] = copy.deepcopy(value)
+
+    for key in (
+        "model",
+        "provider",
+        "archetype",
+        "specialist",
+        "route_category",
+        "runtime_mode",
+        "color",
+        "description",
+        "base_url",
+        "api_key",
+        "reasoning_effort",
+        "routing_description",
+        "acp_command",
+    ):
+        if key in entry:
+            value = str(entry.get(key) or "").strip()
+            if value:
+                normalized[key] = value
+            else:
+                normalized.pop(key, None)
+
+    for key in ("blocked_tools", "allowed_tools", "toolsets", "enabled_tools", "acp_args", "aliases"):
+        if key in entry:
+            value = _normalize_named_string_list(entry.get(key))
+            if value:
+                normalized[key] = value
+            else:
+                normalized.pop(key, None)
+
+    if "provider_options" in entry:
+        provider_options = entry.get("provider_options")
+        if isinstance(provider_options, dict):
+            normalized["provider_options"] = copy.deepcopy(provider_options)
+        else:
+            normalized.pop("provider_options", None)
+
+    if "permission" in entry:
+        permission_surface = _normalize_named_agent_permission_surface(entry.get("permission"))
+        if permission_surface:
+            normalized["permission"] = permission_surface
+        else:
+            normalized.pop("permission", None)
+
+    if "fallback_models" in entry:
+        fallback_models = _normalize_named_agent_fallback_models(entry.get("fallback_models"))
+        if fallback_models:
+            normalized["fallback_models"] = fallback_models
+        else:
+            normalized.pop("fallback_models", None)
+
+    if "disable" in entry:
+        if _normalize_named_agent_disable_flag(entry.get("disable")):
+            normalized["disable"] = True
+        else:
+            normalized.pop("disable", None)
+
+    if "ultrawork" in entry:
+        ultrawork = entry.get("ultrawork")
+        if isinstance(ultrawork, dict):
+            normalized_ultrawork = {
+                key: str(ultrawork.get(key) or "").strip()
+                for key in ("model", "variant")
+                if str(ultrawork.get(key) or "").strip()
+            }
+            if normalized_ultrawork:
+                normalized["ultrawork"] = normalized_ultrawork
+            else:
+                normalized.pop("ultrawork", None)
+        else:
+            normalized.pop("ultrawork", None)
+
+    if "mode" in entry:
+        mode = str(entry.get("mode") or "").strip().lower()
+        if mode in {"primary", "subagent", "disabled"}:
+            normalized["mode"] = mode
+        else:
+            normalized.pop("mode", None)
+
+    return normalized
+
+
+def _normalize_named_agent_registry(bucket: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize named agents, merging user config onto built-in OMO defaults."""
+    return _normalize_openagent_named_bucket_with_defaults(bucket, DEFAULT_OMO_AGENTS)
+
+
+def get_named_agent_registry(config: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+    """Return the normalized named-agent registry from config."""
+    source = load_config() if config is None else config
+    return _normalize_named_agent_registry(source.get("agents"))
+
+
+def describe_named_agent(name: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a resolved, user-facing description of a named agent."""
+    source = config if isinstance(config, dict) else load_config()
+    registry = get_named_agent_registry(source)
+    requested_name = str(name or "").strip()
+    alias_map = _build_named_agent_alias_map(registry)
+    disabled_names, disabled_via = _resolve_disabled_named_agents(registry, source)
+    canonical_name = alias_map.get(requested_name, requested_name)
+    if canonical_name == requested_name:
+        lookup_map = _build_named_agent_lookup_map(registry)
+        canonical_name = lookup_map.get(_canonicalize_named_agent_lookup_key(requested_name), requested_name)
+    entry = registry.get(canonical_name)
+    if not entry:
+        available = sorted({*registry, *alias_map})
+        hint = ""
+        matches = difflib.get_close_matches(requested_name, available, n=3, cutoff=0.5)
+        if matches:
+            hint = f" Did you mean: {', '.join(matches)}?"
+        raise KeyError(f"Unknown named agent '{requested_name}'.{hint}")
+
+    specialist = str(entry.get("specialist") or "").strip() or None
+    specialist_mapping = resolve_specialist_mapping(specialist)
+    resolved_archetype = str(entry.get("archetype") or "").strip() or (
+        specialist_mapping.archetype_name if specialist_mapping is not None else DEFAULT_ARCHETYPE_NAME
+    )
+    archetype_defaults = resolve_archetype_defaults(resolved_archetype)
+    blocked_tools, allowed_tools = get_tool_restrictions(resolved_archetype, specialist)
+
+    named_blocked = set(_normalize_named_string_list(entry.get("blocked_tools")))
+    named_allowed = set(_normalize_named_string_list(entry.get("allowed_tools")))
+    effective_blocked = set(blocked_tools) | named_blocked
+    effective_allowed = set(allowed_tools)
+    if named_allowed:
+        effective_allowed = effective_allowed.intersection(named_allowed) if effective_allowed else set(named_allowed)
+    effective_allowed.difference_update(effective_blocked)
+    reviewer_like = bool((specialist or "").strip().lower() in {"code_reviewer", "qa_guard"} or resolved_archetype == "verifier")
+    configured_permission_surface = _normalize_named_agent_permission_surface(entry.get("permission"))
+    configured_fallback_models = _normalize_named_agent_fallback_models(entry.get("fallback_models"))
+
+    return {
+        "name": canonical_name,
+        "requested_name": requested_name or canonical_name,
+        "aliases": _normalize_named_string_list(entry.get("aliases")),
+        "description": str(entry.get("description") or "").strip(),
+        "mode": str(entry.get("mode") or "subagent").strip() or "subagent",
+        "provider": str(entry.get("provider") or "").strip(),
+        "model": str(entry.get("model") or "").strip(),
+        "resolved_archetype": resolved_archetype,
+        "resolved_specialist": specialist,
+        "resolved_route_category": str(entry.get("route_category") or archetype_defaults.get("default_route_category") or DEFAULT_ROUTE_CATEGORY).strip(),
+        "resolved_runtime_mode": str(entry.get("runtime_mode") or DEFAULT_RUNTIME_MODE_NAME).strip(),
+        "toolsets": _normalize_named_string_list(entry.get("toolsets")),
+        "enabled_tools": _normalize_named_string_list(entry.get("enabled_tools")),
+        "named_allowed_tools": sorted(named_allowed),
+        "named_blocked_tools": sorted(named_blocked),
+        "effective_allowed_tools": sorted(effective_allowed),
+        "effective_blocked_tools": sorted(effective_blocked),
+        "configured_permission_surface": configured_permission_surface,
+        "configured_fallback_models": configured_fallback_models,
+        "permission_truth_surface": "configured_named_agent_surface" if configured_permission_surface else None,
+        "fallback_truth_surface": "configured_named_agent_surface" if configured_fallback_models else None,
+        "completion_gate": "verification_evidence_required" if reviewer_like else None,
+        "behavior_boundary": "reviewer_read_only" if reviewer_like else None,
+        "is_disabled": canonical_name in disabled_names,
+        "disabled_via": disabled_via.get(canonical_name),
+    }
+
+
+def render_named_agents_text(name: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> str:
+    """Render a CLI/gateway-friendly named-agent overview or detail view."""
+    source = config if isinstance(config, dict) else load_config()
+    registry = get_named_agent_registry(source)
+    requested_name = str(name or "").strip()
+    if requested_name:
+        desc = describe_named_agent(requested_name, config=source)
+        lines = [f"Named agent: {desc['name']}"]
+        if desc["requested_name"] != desc["name"]:
+            lines.append(f"Requested as: {desc['requested_name']}")
+        if desc["aliases"]:
+            lines.append(f"Aliases: {', '.join(desc['aliases'])}")
+        if desc["description"]:
+            lines.append(f"Description: {desc['description']}")
+        lines.append(f"Status: {'disabled' if desc['is_disabled'] else 'enabled'}")
+        if desc["disabled_via"]:
+            lines.append(f"Disabled via: {desc['disabled_via']}")
+        lines.extend(
+            [
+                f"Mode: {desc['mode']}",
+                f"Invocation: @{desc['name']} <prompt> (leading mention only)",
+                f"Archetype: {desc['resolved_archetype']}",
+                f"Specialist: {desc['resolved_specialist'] or '-'}",
+                f"Route category: {desc['resolved_route_category']}",
+                f"Runtime mode: {desc['resolved_runtime_mode']}",
+                f"Provider: {desc['provider'] or '-'}",
+                f"Model: {desc['model'] or '-'}",
+                f"Toolsets: {', '.join(desc['toolsets']) if desc['toolsets'] else '-'}",
+                f"Enabled tools: {', '.join(desc['enabled_tools']) if desc['enabled_tools'] else '-'}",
+                f"Named allowed tools: {', '.join(desc['named_allowed_tools']) if desc['named_allowed_tools'] else '-'}",
+                f"Named blocked tools: {', '.join(desc['named_blocked_tools']) if desc['named_blocked_tools'] else '-'}",
+                f"Effective allowed tools: {', '.join(desc['effective_allowed_tools']) if desc['effective_allowed_tools'] else '-'}",
+                f"Effective blocked tools: {', '.join(desc['effective_blocked_tools']) if desc['effective_blocked_tools'] else '-'}",
+                f"Configured permission surface: {_format_named_agent_permission_surface(desc['configured_permission_surface'])}",
+                f"Permission truth surface: {desc['permission_truth_surface'] or '-'}",
+                f"Configured fallback models: {_format_named_agent_fallback_models(desc['configured_fallback_models'])}",
+                f"Fallback truth surface: {desc['fallback_truth_surface'] or '-'}",
+                f"Behavior boundary: {desc['behavior_boundary'] or '-'}",
+                f"Completion gate: {desc['completion_gate'] or '-'}",
+            ]
+        )
+        return "\n".join(lines)
+
+    visible_agent_names = [
+        agent_name for agent_name in registry
+        if not describe_named_agent(agent_name, config=source)["is_disabled"]
+    ]
+    lines = [f"Named agents ({len(visible_agent_names)}):"]
+    for agent_name in visible_agent_names:
+        desc = describe_named_agent(agent_name, config=source)
+        label = agent_name
+        if desc["aliases"]:
+            label = f"{label} (aliases: {', '.join(desc['aliases'])})"
+        summary = [desc["resolved_archetype"]]
+        if desc["resolved_specialist"]:
+            summary.append(desc["resolved_specialist"])
+        summary.append(desc["mode"])
+        if desc["model"]:
+            summary.append(desc["model"])
+        restriction = ""
+        if desc["effective_allowed_tools"]:
+            restriction = f" · allow={len(desc['effective_allowed_tools'])}"
+        elif desc["effective_blocked_tools"]:
+            restriction = f" · block={len(desc['effective_blocked_tools'])}"
+        lines.append(f"- {label} · {' · '.join(summary)}{restriction}")
+    lines.append("Use /named-agents <name> to inspect one agent.")
+    return "\n".join(lines)
 
 
 def _normalize_runtime_fallback_config(config: Any) -> Dict[str, Any]:
@@ -2965,6 +3695,285 @@ def _normalize_model_capabilities_config(config: Any) -> Dict[str, Any]:
     return dict(config) if isinstance(config, dict) else {}
 
 
+def _normalize_named_string_list(value: Any) -> List[str]:
+    """Normalize a list/tuple of names into trimmed unique strings."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized: List[str] = []
+    seen = set()
+    for item in value:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        normalized.append(text)
+        seen.add(text)
+    return normalized
+
+
+def _normalize_wave1_route_categories(route_categories: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize built-in route-category metadata overrides while preserving built-ins."""
+    normalized: Dict[str, Dict[str, Any]] = {
+        name: {
+            "summary": category.summary,
+            "intensity": category.intensity,
+        }
+        for name, category in BUILTIN_ROUTE_CATEGORIES.items()
+    }
+    if not isinstance(route_categories, dict):
+        return normalized
+
+    for raw_name, entry in route_categories.items():
+        name = str(raw_name or "").strip()
+        if not name or name not in normalized:
+            continue
+        if isinstance(entry, str):
+            normalized[name] = {
+                "summary": entry.strip(),
+                "intensity": normalized.get(name, {}).get("intensity", ""),
+            }
+            continue
+        if not isinstance(entry, dict):
+            continue
+        merged = dict(normalized.get(name, {}))
+        if "summary" in entry and entry["summary"] is not None:
+            merged["summary"] = str(entry["summary"]).strip()
+        if "intensity" in entry and entry["intensity"] is not None:
+            merged["intensity"] = str(entry["intensity"]).strip()
+        normalized[name] = merged
+    return normalized
+
+
+def _normalize_wave1_runtime_modes(runtime_modes: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize built-in runtime-mode metadata overrides while preserving built-ins."""
+    normalized: Dict[str, Dict[str, Any]] = {
+        mode.name: {
+            "description": mode.description,
+            "operating_posture": mode.operating_posture,
+            "kind": mode.kind,
+        }
+        for mode in BUILTIN_RUNTIME_MODES
+    }
+    if not isinstance(runtime_modes, dict):
+        return normalized
+
+    for raw_name, entry in runtime_modes.items():
+        name = str(raw_name or "").strip()
+        if not name or name not in normalized:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        merged = dict(normalized.get(name, {}))
+        for field_name in ("description", "operating_posture", "kind"):
+            if field_name in entry and entry[field_name] is not None:
+                merged[field_name] = str(entry[field_name]).strip()
+        if not merged.get("kind"):
+            merged["kind"] = "runtime_mode"
+        normalized[name] = merged
+    return normalized
+
+
+def _collect_unknown_wave1_metadata_names(entries: Any, known_names: List[str]) -> List[str]:
+    """Return trimmed unknown metadata-override names in stable order."""
+    if not isinstance(entries, dict):
+        return []
+
+    known_name_set = {name.strip() for name in known_names if str(name).strip()}
+    unknown_names: List[str] = []
+    seen_names = set()
+    for raw_name in entries:
+        name = str(raw_name or "").strip()
+        if not name or name in known_name_set or name in seen_names:
+            continue
+        seen_names.add(name)
+        unknown_names.append(name)
+    return unknown_names
+
+
+def _wave1_effective_metadata_override_names(
+    defaults: Dict[str, Dict[str, Any]],
+    normalized: Any,
+) -> List[str]:
+    """Return built-in metadata names whose effective values differ from defaults."""
+    if not isinstance(normalized, dict):
+        return []
+
+    override_names: List[str] = []
+    for name, default_entry in defaults.items():
+        if normalized.get(name) != default_entry:
+            override_names.append(name)
+    return override_names
+
+
+def inspect_wave1_delegation_metadata(
+    config: Optional[Dict[str, Any]] = None,
+    raw_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, List[str]]:
+    """Inspect effective and ignored Wave 1 delegation metadata overrides."""
+    if config is None:
+        config = load_config()
+    if raw_config is None:
+        raw_config = read_raw_config()
+
+    normalized_delegation = config.get("delegation") if isinstance(config, dict) else {}
+    if not isinstance(normalized_delegation, dict):
+        normalized_delegation = {}
+
+    raw_delegation = raw_config.get("delegation") if isinstance(raw_config, dict) else {}
+    if not isinstance(raw_delegation, dict):
+        raw_delegation = {}
+
+    default_route_categories = {
+        name: {
+            "summary": category.summary,
+            "intensity": category.intensity,
+        }
+        for name, category in BUILTIN_ROUTE_CATEGORIES.items()
+    }
+    default_runtime_modes = {
+        mode.name: {
+            "description": mode.description,
+            "operating_posture": mode.operating_posture,
+            "kind": mode.kind,
+        }
+        for mode in BUILTIN_RUNTIME_MODES
+    }
+
+    return {
+        "effective_route_category_override_names": _wave1_effective_metadata_override_names(
+            default_route_categories,
+            normalized_delegation.get("route_categories"),
+        ),
+        "ignored_route_category_names": _collect_unknown_wave1_metadata_names(
+            raw_delegation.get("route_categories"),
+            list(default_route_categories.keys()),
+        ),
+        "effective_runtime_mode_override_names": _wave1_effective_metadata_override_names(
+            default_runtime_modes,
+            normalized_delegation.get("runtime_modes"),
+        ),
+        "ignored_runtime_mode_names": _collect_unknown_wave1_metadata_names(
+            raw_delegation.get("runtime_modes"),
+            list(default_runtime_modes.keys()),
+        ),
+    }
+
+
+def _normalize_wave1_task_contract(task_contract: Any) -> Optional[Dict[str, Any]]:
+    """Normalize a configured task contract or raise with migration guidance."""
+    if task_contract in (None, "", {}):
+        return None
+    if not isinstance(task_contract, dict):
+        raise ValueError(
+            "delegation.task_contract must be a dict matching the Wave 1 task-contract schema. "
+            "Migration guidance: either remove delegation.task_contract to keep the legacy default-mapping path, "
+            f"or provide all required fields: {', '.join(REQUIRED_TASK_CONTRACT_FIELDS)}"
+        )
+    try:
+        return validate_task_contract(task_contract).model_dump()
+    except Exception as exc:
+        raise ValueError(
+            "Invalid delegation.task_contract in config. Migration guidance: remove delegation.task_contract "
+            "to preserve legacy delegation behavior, or update it to include the required structured fields "
+            f"({', '.join(REQUIRED_TASK_CONTRACT_FIELDS)}). Original error: {exc}"
+        ) from exc
+
+
+def _normalize_wave1_delegation_config(
+    config: Dict[str, Any], *, include_defaults: bool = True,
+) -> Dict[str, Any]:
+    """Resolve Wave 1 delegation surfaces into compatibility-safe defaults."""
+    config = dict(config)
+    if not include_defaults and "delegation" not in config:
+        return config
+
+    delegation = config.get("delegation")
+    if not isinstance(delegation, dict):
+        delegation = {}
+    else:
+        delegation = dict(delegation)
+
+    requested_archetype = delegation.get("archetype")
+    resolved_archetype = resolve_archetype(requested_archetype)
+    delegation["archetype"] = resolved_archetype.name
+
+    archetype_overrides = {}
+    for field_name in REQUIRED_ARCHETYPE_FIELDS:
+        if field_name not in delegation or delegation[field_name] is None:
+            continue
+        value = delegation[field_name]
+        if field_name in {"default_skills", "default_required_tools"}:
+            archetype_overrides[field_name] = _normalize_named_string_list(value)
+        else:
+            archetype_overrides[field_name] = value
+    archetype_defaults = resolve_archetype_defaults(
+        resolved_archetype.name,
+        overrides=archetype_overrides,
+    )
+
+    explicit_category_input = str(
+        delegation.get("category")
+        or delegation.get("default_category")
+        or ""
+    ).strip()
+    resolved_literal_category = resolve_literal_category(explicit_category_input)
+
+    explicit_route_category = str(
+        delegation.get("route_category")
+        or delegation.get("default_route_category")
+        or ""
+    ).strip()
+    resolved_route_category = (
+        explicit_route_category
+        if explicit_route_category in BUILTIN_ROUTE_CATEGORIES
+        else resolved_literal_category.route_category
+        or str(archetype_defaults["default_route_category"]).strip()
+        or DEFAULT_ROUTE_CATEGORY
+    )
+
+    runtime_mode = resolve_runtime_mode(delegation.get("runtime_mode"))
+    delegation["category"] = resolved_literal_category.name
+    delegation["runtime_mode"] = runtime_mode.name
+    delegation["route_category"] = resolved_route_category
+    delegation["default_route_category"] = resolved_route_category
+    delegation["default_category"] = resolved_literal_category.name
+    resolved_default_profile = str(
+        delegation.get("default_delegation_profile")
+        or archetype_defaults["default_delegation_profile"]
+    ).strip()
+    delegation["default_delegation_profile"] = resolved_default_profile
+    delegation["default_skills"] = _normalize_named_string_list(
+        delegation.get("default_skills") or archetype_defaults["default_skills"]
+    )
+    delegation["default_required_tools"] = _normalize_named_string_list(
+        delegation.get("default_required_tools") or archetype_defaults["default_required_tools"]
+    )
+    delegation["permission_preset"] = str(
+        delegation.get("permission_preset") or archetype_defaults["permission_preset"]
+    ).strip()
+    delegation["fallback_policy"] = str(
+        delegation.get("fallback_policy") or archetype_defaults["fallback_policy"]
+    ).strip()
+    delegation["task_contract"] = _normalize_wave1_task_contract(delegation.get("task_contract"))
+    delegation["route_categories"] = _normalize_wave1_route_categories(delegation.get("route_categories"))
+    delegation["runtime_modes"] = _normalize_wave1_runtime_modes(delegation.get("runtime_modes"))
+    normalized_profiles: Dict[str, Dict[str, Any]] = {}
+    for bucket_name in ("delegation_profiles", "categories"):
+        bucket = delegation.get(bucket_name)
+        if not isinstance(bucket, dict):
+            continue
+        for raw_name, entry in _normalize_openagent_named_bucket(bucket).items():
+            merged = dict(normalized_profiles.get(raw_name, {}))
+            if isinstance(entry, dict):
+                merged.update(entry)
+            normalized_profiles[raw_name] = merged
+    delegation["delegation_profiles"] = normalized_profiles
+    delegation["categories"] = copy.deepcopy(normalized_profiles)
+    delegation["archetype_defaults"] = dict(archetype_defaults)
+
+    config["delegation"] = delegation
+    return config
+
+
 def _normalize_openagent_config_buckets(
     config: Dict[str, Any], *, include_defaults: bool = True,
 ) -> Dict[str, Any]:
@@ -2972,7 +3981,7 @@ def _normalize_openagent_config_buckets(
     config = dict(config)
 
     if include_defaults or "agents" in config:
-        config["agents"] = _normalize_openagent_named_bucket(config.get("agents"))
+        config["agents"] = _normalize_named_agent_registry(config.get("agents"))
     if include_defaults or "categories" in config:
         config["categories"] = _normalize_openagent_named_bucket(config.get("categories"))
     if include_defaults or "runtime_fallback" in config:
@@ -3026,8 +4035,10 @@ def load_config() -> Dict[str, Any]:
 
     normalized = _normalize_profile_path_settings(
         _expand_env_vars(
-            _normalize_openagent_config_buckets(
-                _normalize_root_model_keys(_normalize_max_turns_config(config))
+            _normalize_wave1_delegation_config(
+                _normalize_openagent_config_buckets(
+                    _normalize_root_model_keys(_normalize_max_turns_config(config))
+                )
             )
         )
     )
@@ -3142,15 +4153,21 @@ def save_config(config: Dict[str, Any]):
     ensure_hermes_home()
     config_path = get_config_path()
     current_normalized = _normalize_profile_path_settings(
-        _normalize_openagent_config_buckets(
-            _normalize_root_model_keys(_normalize_max_turns_config(config)),
+        _normalize_wave1_delegation_config(
+            _normalize_openagent_config_buckets(
+                _normalize_root_model_keys(_normalize_max_turns_config(config)),
+                include_defaults=False,
+            ),
             include_defaults=False,
         )
     )
     normalized = current_normalized
     raw_existing = _normalize_profile_path_settings(
-        _normalize_openagent_config_buckets(
-            _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config())),
+        _normalize_wave1_delegation_config(
+            _normalize_openagent_config_buckets(
+                _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config())),
+                include_defaults=False,
+            ),
             include_defaults=False,
         )
     )
@@ -3599,7 +4616,29 @@ def show_config():
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
     print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
-    
+
+    # Delegation
+    print()
+    print(color("◆ Delegation", Colors.CYAN, Colors.BOLD))
+    delegation = config.get('delegation', {}) if isinstance(config.get('delegation'), dict) else {}
+    raw_config = read_raw_config()
+    delegation_metadata = inspect_wave1_delegation_metadata(config, raw_config)
+    print(f"  Default profile: {delegation.get('default_delegation_profile', 'general')}")
+    print(f"  Category:        {delegation.get('category', DEFAULT_LITERAL_CATEGORY)}")
+    print(f"  Route category:  {delegation.get('route_category', DEFAULT_ROUTE_CATEGORY)}")
+    print(f"  Runtime mode:    {delegation.get('runtime_mode', DEFAULT_RUNTIME_MODE_NAME)}")
+
+    effective_route_overrides = delegation_metadata['effective_route_category_override_names']
+    effective_runtime_overrides = delegation_metadata['effective_runtime_mode_override_names']
+    ignored_route_names = delegation_metadata['ignored_route_category_names']
+    ignored_runtime_names = delegation_metadata['ignored_runtime_mode_names']
+    print(f"  Route metadata overrides:   {', '.join(effective_route_overrides) if effective_route_overrides else color('(none)', Colors.DIM)}")
+    print(f"  Runtime metadata overrides: {', '.join(effective_runtime_overrides) if effective_runtime_overrides else color('(none)', Colors.DIM)}")
+    if ignored_route_names:
+        print(f"  Ignored route metadata:     {', '.join(ignored_route_names)}")
+    if ignored_runtime_names:
+        print(f"  Ignored runtime metadata:   {', '.join(ignored_runtime_names)}")
+
     # Display
     print()
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))

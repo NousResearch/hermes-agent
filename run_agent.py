@@ -37,7 +37,7 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Mapping
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -103,9 +103,16 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, build_wave1_overlay_prompt_from_normalized, normalize_wave1_overlay_inputs
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from agent.archetypes import resolve_archetype, resolve_specialist_mapping
+from agent.archetypes import get_tool_restrictions, resolve_archetype, resolve_specialist_mapping
 from agent.intent_preclassifier import preclassify_intent
-from agent.route_categories import BUILTIN_ROUTE_CATEGORIES, DEFAULT_ROUTE_CATEGORY, resolve_route_category
+from agent.route_categories import (
+    BUILTIN_ROUTE_CATEGORIES,
+    DEFAULT_ROUTE_CATEGORY,
+    resolve_literal_category,
+    resolve_literal_category_from_route_category,
+    resolve_literal_category_to_route_category,
+    resolve_route_category,
+)
 from agent.runtime_modes import get_default_runtime_mode, resolve_runtime_mode
 from agent.task_contracts import build_named_workflow_artifact, validate_named_workflow_artifact, validate_task_contract
 from agent.display import (
@@ -267,6 +274,11 @@ _REVIEWER_ARCHETYPES = frozenset({"verifier"})
 _REVIEWER_SPECIALISTS = frozenset({"code_reviewer", "qa_guard"})
 _REVIEWER_DELEGATION_PROFILES = frozenset({"verification"})
 _REVIEWER_BLOCKED_TOOLS = frozenset({"write_file", "patch", "memory", "send_message"})
+_MULTIMODAL_SPECIALIST = "multimodal_specialist"
+_MULTIMODAL_CAPABILITY_TOOLS = frozenset({
+    "vision_analyze",
+    "browser_vision",
+})
 _REVIEWER_EVIDENCE_TOOLS = frozenset({
     "browser_console",
     "browser_get_images",
@@ -287,6 +299,7 @@ _REVIEWER_EVIDENCE_TOOLS = frozenset({
     "web_extract",
     "web_search",
 })
+_LEADING_NAMED_AGENT_INVOKE_RE = re.compile(r"^\s*@(?P<agent>[^\s:]+)\s+(?P<message>.+?)\s*$", re.DOTALL)
 
 
 def _is_destructive_command(cmd: str) -> bool:
@@ -298,6 +311,59 @@ def _is_destructive_command(cmd: str) -> bool:
     if _REDIRECT_OVERWRITE.search(cmd):
         return True
     return False
+
+
+def _extract_leading_named_agent_invocation_payload(user_message: Any) -> Optional[Dict[str, Any]]:
+    """Resolve a leading ``@agent`` invocation into runtime-activation inputs.
+
+    Bound intentionally to the smallest honest DG1 surface:
+    only a leading mention followed by a non-empty prompt is recognized.
+    Inline mentions and bare ``@agent`` prompts are left untouched.
+    """
+    if not isinstance(user_message, str):
+        return None
+    match = _LEADING_NAMED_AGENT_INVOKE_RE.match(user_message)
+    if not match:
+        return None
+
+    requested_name = str(match.group("agent") or "").strip()
+    stripped_message = str(match.group("message") or "").strip()
+    if not requested_name or not stripped_message:
+        return None
+
+    try:
+        from hermes_cli.config import describe_named_agent
+
+        desc = describe_named_agent(requested_name)
+    except Exception:
+        return None
+
+    specialist_hint = str(desc.get("resolved_specialist") or desc.get("name") or "").strip() or None
+    specialist_mapping = resolve_specialist_mapping(specialist_hint)
+    resolved_archetype = (
+        specialist_mapping.archetype_name
+        if specialist_mapping is not None
+        else str(desc.get("resolved_archetype") or "").strip() or resolve_archetype(None).name
+    )
+    resolved_route_category = str(desc.get("resolved_route_category") or "").strip() or (
+        specialist_mapping.default_route_category if specialist_mapping is not None else resolve_archetype(resolved_archetype).default_route_category
+    )
+    resolved_delegation_profile = (
+        str(getattr(specialist_mapping, "default_delegation_profile", "") or "").strip()
+        or resolve_archetype(resolved_archetype).default_delegation_profile
+        or "general"
+    )
+
+    return {
+        "message": stripped_message,
+        "named_agent": desc["name"],
+        "specialist": specialist_hint,
+        "archetype": resolved_archetype,
+        "route_category": resolved_route_category,
+        "runtime_mode": str(desc.get("resolved_runtime_mode") or "default").strip() or "default",
+        "delegation_profile": resolved_delegation_profile,
+        "activation_reason": f"named-agent invocation: {desc['name']}",
+    }
 
 
 def _should_parallelize_tool_batch(tool_calls) -> bool:
@@ -1468,6 +1534,21 @@ class AIAgent:
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_protected_tools = _compression_cfg.get("protected_tools")
+        if compression_protected_tools is not None:
+            if isinstance(compression_protected_tools, (list, tuple, set, frozenset)):
+                compression_protected_tools = [
+                    str(tool_name)
+                    for tool_name in compression_protected_tools
+                    if str(tool_name)
+                ]
+            else:
+                logger.warning(
+                    "Invalid compression.protected_tools in config.yaml: %r — must be a list of tool names. "
+                    "Falling back to built-in defaults.",
+                    compression_protected_tools,
+                )
+                compression_protected_tools = None
         compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
         if compression_threshold_tokens is not None:
             try:
@@ -1622,6 +1703,7 @@ class AIAgent:
                 provider=self.provider,
                 api_mode=self.api_mode,
                 explicit_threshold_tokens=compression_threshold_tokens,
+                protected_tools=compression_protected_tools,
             )
         self.compression_enabled = compression_enabled
 
@@ -3365,11 +3447,14 @@ class AIAgent:
             if str(item.get("status") or "").strip().lower() in {"pending", "in_progress"}
         ]
 
-        if payload.get("interrupted"):
+        explicit_outcome_status = str(payload.get("outcomeStatus") or payload.get("outcome_status") or "").strip().lower()
+        if explicit_outcome_status in {"stopped", "cancelled", "canceled"}:
+            outcome_status = explicit_outcome_status
+        elif payload.get("interrupted"):
             outcome_status = "interrupted"
         elif payload.get("failed"):
             outcome_status = "failed"
-        elif payload.get("completed") or not active_todos:
+        elif payload.get("completed") or explicit_outcome_status == "completed" or not active_todos:
             outcome_status = "completed"
         else:
             outcome_status = "incomplete"
@@ -3416,14 +3501,16 @@ class AIAgent:
             failed = True
         elif outcome_status == "interrupted":
             interrupted_flag = True
+        stop_requested = bool(
+            self._runtime_continuation_message_flag(assistant_message, "stopRequested", "stop_requested")
+        ) or outcome_status in {"stopped", "cancelled", "canceled"}
         return {
             "final_response": final_response,
             "completed": completed,
             "failed": failed,
             "interrupted": interrupted_flag,
-            "stopRequested": bool(
-                self._runtime_continuation_message_flag(assistant_message, "stopRequested", "stop_requested")
-            ),
+            "outcomeStatus": outcome_status or None,
+            "stopRequested": stop_requested,
             "retryRequested": bool(
                 self._runtime_continuation_message_flag(assistant_message, "retryRequested", "retry_requested")
             ),
@@ -3662,6 +3749,8 @@ class AIAgent:
         default_delegation_profile = default_archetype.default_delegation_profile
         return {
             "archetype": default_archetype.name,
+            "category": resolve_literal_category_from_route_category(default_route_category).name,
+            "named_agent": None,
             "specialist": None,
             "route_category": default_route_category,
             "runtime_mode": default_runtime_mode.name,
@@ -3674,6 +3763,40 @@ class AIAgent:
             "activation_applied": False,
             "inference_source": "wave2_intent_preclassifier",
         }
+
+    @staticmethod
+    def _finalize_runtime_activation_reason(
+        activation_reason: Any,
+        *,
+        named_agent: Optional[str],
+        specialist: Optional[str],
+        archetype: str,
+        category: str,
+        route_category: str,
+        delegation_profile: str,
+        runtime_mode: str,
+    ) -> str:
+        base_reason = str(activation_reason or "").strip() or "fallback: compatibility-safe default activation"
+        resolved_segments = [
+            ("named_agent", str(named_agent or "").strip()),
+            ("specialist", str(specialist or "").strip()),
+            ("archetype", str(archetype or "").strip()),
+            ("category", str(category or "").strip()),
+            ("route_category", str(route_category or "").strip()),
+            ("delegation_profile", str(delegation_profile or "").strip()),
+            ("runtime_mode", str(runtime_mode or "").strip()),
+        ]
+        missing_segments: list[str] = []
+        rewritten_reason = base_reason
+        for key, value in resolved_segments:
+            if not value:
+                continue
+            rewritten_reason, replacements = re.subn(rf"{re.escape(key)}=[^,;\s]+", f"{key}={value}", rewritten_reason)
+            if replacements == 0 and f"{key}={value}" not in rewritten_reason:
+                missing_segments.append(f"{key}={value}")
+        if not missing_segments:
+            return rewritten_reason
+        return f"{rewritten_reason}; final_state: {' '.join(missing_segments)}"
 
     def get_runtime_activation_state(self) -> Dict[str, Any]:
         return copy.deepcopy(self.runtime_activation_state)
@@ -3719,12 +3842,20 @@ class AIAgent:
     def _build_runtime_activation_snapshot_entry(self, state: Dict[str, Any]) -> Dict[str, Any]:
         task_contract = state.get("task_contract") if isinstance(state, dict) else None
         named_workflow = state.get("named_workflow") if isinstance(state, dict) else None
+        activation_identity = (
+            state.get("named_agent")
+            or state.get("specialist")
+            or state.get("archetype")
+        )
         return {
+            "named_agent": state.get("named_agent"),
             "specialist": state.get("specialist"),
             "archetype": state.get("archetype"),
+            "category": state.get("category"),
             "route_category": state.get("route_category"),
             "delegation_profile": state.get("delegation_profile"),
             "runtime_mode": state.get("runtime_mode"),
+            "activation_identity": activation_identity,
             "task_contract_present": bool(task_contract),
             "task_contract_summary": self._summarize_task_contract_for_snapshot(task_contract),
             "named_workflow_present": bool(named_workflow),
@@ -3745,6 +3876,70 @@ class AIAgent:
         except Exception as exc:
             logger.debug("Session DB update_runtime_activation_snapshot failed: %s", exc)
 
+    @staticmethod
+    def _resolve_machine_readable_task_contract(
+        task_contract_payload: Any,
+        *,
+        named_workflow_payload: Any = None,
+        log_context: str,
+    ) -> Optional[Dict[str, Any]]:
+        resolved_task_contract = None
+        if task_contract_payload not in (None, "", {}):
+            try:
+                resolved_task_contract = validate_task_contract(task_contract_payload).model_dump()
+            except Exception as exc:
+                logger.debug("Ignoring invalid task_contract from %s: %s", log_context, exc)
+
+        resolved_named_workflow = None
+        if isinstance(named_workflow_payload, dict) and named_workflow_payload:
+            try:
+                resolved_named_workflow = validate_named_workflow_artifact(named_workflow_payload).model_dump(by_alias=True)
+            except Exception as exc:
+                logger.debug("Ignoring invalid named_workflow from %s: %s", log_context, exc)
+
+        if resolved_task_contract is not None:
+            return resolved_task_contract
+
+        workflow_task_contract = (
+            resolved_named_workflow.get("execution_task_contract")
+            if isinstance(resolved_named_workflow, dict)
+            else None
+        )
+        if workflow_task_contract not in (None, "", {}):
+            try:
+                return validate_task_contract(workflow_task_contract).model_dump()
+            except Exception as exc:
+                logger.debug(
+                    "Ignoring invalid named_workflow.execution_task_contract from %s: %s",
+                    log_context,
+                    exc,
+                )
+        return None
+
+    @staticmethod
+    def _resolve_delegate_runtime_mode_payload(delegate_resolution: Mapping[str, Any], default_runtime_mode: str) -> Any:
+        runtime_mode_definition = delegate_resolution.get("runtime_mode_definition")
+        if isinstance(runtime_mode_definition, Mapping):
+            runtime_mode_name = str(runtime_mode_definition.get("name") or "").strip()
+            description = str(runtime_mode_definition.get("description") or "").strip()
+            operating_posture = str(runtime_mode_definition.get("operating_posture") or "").strip()
+            kind = str(runtime_mode_definition.get("kind") or "").strip()
+            resolved_runtime_mode = resolve_runtime_mode(runtime_mode_name)
+            if (
+                runtime_mode_name
+                and resolved_runtime_mode.name == runtime_mode_name
+                and description
+                and operating_posture
+                and kind == "runtime_mode"
+            ):
+                return runtime_mode_definition
+            logger.debug(
+                "Ignoring invalid delegate runtime_mode_definition during runtime activation passthrough: %s",
+                runtime_mode_definition,
+            )
+        runtime_mode_name = delegate_resolution.get("runtime_mode")
+        return resolve_runtime_mode(runtime_mode_name or default_runtime_mode).name
+
     def _update_runtime_activation_snapshot(self, state: Dict[str, Any]) -> None:
         previous_current = copy.deepcopy(
             (getattr(self, "_runtime_activation_snapshot", {}) or {}).get("current")
@@ -3757,6 +3952,8 @@ class AIAgent:
 
     @staticmethod
     def _should_apply_runtime_activation_state(state: Dict[str, Any]) -> bool:
+        if state.get("named_agent"):
+            return True
         if state.get("specialist"):
             return True
         if state.get("task_contract"):
@@ -3778,21 +3975,55 @@ class AIAgent:
         if not isinstance(state, dict):
             state = {}
 
+        named_agent = str(state.get("named_agent") or "").strip() or None
         raw_specialist = str(state.get("specialist") or "").strip().lower()
         specialist_mapping = resolve_specialist_mapping(raw_specialist)
         specialist = specialist_mapping.name if specialist_mapping is not None else raw_specialist
         archetype = str(state.get("archetype") or "").strip().lower()
         delegation_profile = str(state.get("delegation_profile") or "").strip().lower()
         reviewer_like = bool(specialist in _REVIEWER_SPECIALISTS)
-        allowed_tool_names = set(getattr(self, "valid_tool_names", set()) or [])
+        valid_tool_names = set(getattr(self, "valid_tool_names", set()) or [])
+
+        blocked_tool_names: set[str] = set()
+        allowed_tool_names = set(valid_tool_names)
+        restriction_source = None
+        allowed_tool_boundary_active = False
+        if archetype or specialist:
+            try:
+                restricted_archetype = archetype or resolve_archetype(None).name
+                resolved_blocked, resolved_allowed = get_tool_restrictions(restricted_archetype, specialist or None)
+            except Exception:
+                resolved_blocked, resolved_allowed = frozenset(), frozenset()
+            else:
+                blocked_tool_names.update(resolved_blocked)
+                if resolved_allowed:
+                    allowed_tool_boundary_active = True
+                    allowed_tool_names.intersection_update(resolved_allowed)
+                    if not valid_tool_names:
+                        allowed_tool_names = set(resolved_allowed)
+                    restriction_source = "allowed_tools"
+                if resolved_blocked:
+                    restriction_source = restriction_source or "blocked_tools"
+
         if reviewer_like:
-            allowed_tool_names.difference_update(_REVIEWER_BLOCKED_TOOLS)
+            blocked_tool_names.update(_REVIEWER_BLOCKED_TOOLS)
+            restriction_source = restriction_source or "reviewer_read_only"
+
+        allowed_tool_names.difference_update(blocked_tool_names)
+        runtime_boundary_active = reviewer_like or bool(blocked_tool_names) or allowed_tool_boundary_active
+
         return {
             "reviewer_like": reviewer_like,
+            "named_agent": named_agent,
+            "identity_name": named_agent or specialist or archetype or None,
             "specialist": specialist or None,
             "archetype": archetype or None,
             "delegation_profile": delegation_profile or None,
             "allowed_tool_names": allowed_tool_names,
+            "allowed_tool_boundary_active": allowed_tool_boundary_active,
+            "blocked_tool_names": blocked_tool_names,
+            "runtime_boundary_active": runtime_boundary_active,
+            "restriction_source": restriction_source,
         }
 
     def _get_runtime_scoped_tool_names(self) -> set[str]:
@@ -3808,19 +4039,41 @@ class AIAgent:
             sorted(self._get_runtime_scoped_tool_names()),
         )
 
+    def _has_multimodal_capability_tools(self) -> bool:
+        available_tool_names = set(getattr(self, "valid_tool_names", set()) or [])
+        return bool(available_tool_names.intersection(_MULTIMODAL_CAPABILITY_TOOLS))
+
     def _maybe_block_named_role_tool_call(self, function_name: str, function_args: Optional[Dict[str, Any]]) -> Optional[str]:
         policy = self._get_named_role_policy()
-        if not policy.get("reviewer_like"):
+
+        if policy.get("reviewer_like"):
+            if function_name in _REVIEWER_BLOCKED_TOOLS:
+                return (
+                    "Reviewer/verifier runtime boundary: this role is read-only and cannot call "
+                    f"'{function_name}'. Use read-only inspection, testing, or delegation instead."
+                )
+            if function_name == "terminal" and _is_destructive_command(str((function_args or {}).get("command") or "")):
+                return (
+                    "Reviewer/verifier runtime boundary: destructive terminal commands are blocked in "
+                    "read-only verification sessions."
+                )
+
+        if not policy.get("runtime_boundary_active"):
             return None
-        if function_name in _REVIEWER_BLOCKED_TOOLS:
+
+        blocked_tool_names = set(policy.get("blocked_tool_names") or [])
+        allowed_tool_names = set(policy.get("allowed_tool_names") or [])
+        specialist = str(policy.get("identity_name") or policy.get("specialist") or policy.get("archetype") or "named role")
+
+        if function_name in blocked_tool_names:
             return (
-                "Reviewer/verifier runtime boundary: this role is read-only and cannot call "
-                f"'{function_name}'. Use read-only inspection, testing, or delegation instead."
+                f"Named role runtime boundary ({specialist}): tool '{function_name}' is blocked for this role. "
+                "Use the role's permitted tools instead."
             )
-        if function_name == "terminal" and _is_destructive_command(str((function_args or {}).get("command") or "")):
+        if policy.get("allowed_tool_boundary_active") and function_name not in allowed_tool_names:
             return (
-                "Reviewer/verifier runtime boundary: destructive terminal commands are blocked in "
-                "read-only verification sessions."
+                f"Named role runtime boundary ({specialist}): tool '{function_name}' is outside this role's "
+                "allowed tool set."
             )
         return None
 
@@ -3829,31 +4082,158 @@ class AIAgent:
         if not policy.get("reviewer_like"):
             return None
 
-        tool_names: set[str] = set()
+        tool_names = self._collect_tool_names_used_in_messages(messages)
+        _, successful_tool_names, tool_result_seen = self._collect_tool_execution_outcomes(messages)
         blocked_violation_seen = False
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    if not isinstance(tc, dict):
-                        continue
-                    tool_name = str(tc.get("function", {}).get("name") or "").strip()
-                    if tool_name:
-                        tool_names.add(tool_name)
-            elif msg.get("role") == "tool":
+            if msg.get("role") == "tool":
                 content = str(msg.get("content") or "")
                 if "Reviewer/verifier runtime boundary:" in content:
                     blocked_violation_seen = True
 
         if blocked_violation_seen:
             return "Reviewer/verifier completion gate blocked success after a read-only policy violation."
-        if not tool_names.intersection(_REVIEWER_EVIDENCE_TOOLS):
+        evidence_tool_names = tool_names.intersection(_REVIEWER_EVIDENCE_TOOLS)
+        if not evidence_tool_names:
             return (
                 "Reviewer/verifier completion gate blocked success: no verification evidence tool "
                 "was used in this run."
             )
+        if tool_result_seen and not successful_tool_names.intersection(_REVIEWER_EVIDENCE_TOOLS):
+            return (
+                "Reviewer/verifier completion gate blocked success: no successful verification evidence tool "
+                "result was produced in this run."
+            )
         return None
+
+    @staticmethod
+    def _collect_tool_names_used_in_messages(messages: List[Dict[str, Any]]) -> set[str]:
+        tool_names: set[str] = set()
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                tool_name = str(tc.get("function", {}).get("name") or "").strip()
+                if tool_name:
+                    tool_names.add(tool_name)
+        return tool_names
+
+    @staticmethod
+    def _collect_tool_execution_outcomes(messages: List[Dict[str, Any]]) -> tuple[set[str], set[str], bool]:
+        requested_tool_names: set[str] = set()
+        successful_tool_names: set[str] = set()
+        call_name_by_id: dict[str, str] = {}
+        tool_result_seen = False
+
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                tool_name = str(tc.get("function", {}).get("name") or "").strip()
+                if not tool_name:
+                    continue
+                requested_tool_names.add(tool_name)
+                tool_call_id = str(tc.get("id") or tc.get("call_id") or "").strip()
+                if tool_call_id:
+                    call_name_by_id[tool_call_id] = tool_name
+
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            tool_call_id = str(msg.get("tool_call_id") or "").strip()
+            tool_name = call_name_by_id.get(tool_call_id)
+            if not tool_name:
+                tool_name = str(msg.get("tool_name") or msg.get("name") or "").strip()
+            if not tool_name:
+                continue
+            tool_result_seen = True
+            is_failure, _ = _detect_tool_failure(tool_name, str(msg.get("content") or ""))
+            if not is_failure:
+                successful_tool_names.add(tool_name)
+
+        return requested_tool_names, successful_tool_names, tool_result_seen
+
+    def _evaluate_task_contract_completion_gate(self, messages: List[Dict[str, Any]]) -> Optional[str]:
+        state = getattr(self, "runtime_activation_state", None)
+        if not isinstance(state, dict):
+            state = getattr(self, "_runtime_activation_state", None)
+        if not isinstance(state, dict):
+            state = {}
+
+        task_contract = state.get("task_contract")
+        if not isinstance(task_contract, dict) or not task_contract:
+            return None
+
+        required_tools = task_contract.get("required_tools")
+        if not isinstance(required_tools, list) or not required_tools:
+            return None
+
+        normalized_required_tools = [
+            str(tool_name).strip()
+            for tool_name in required_tools
+            if str(tool_name).strip()
+        ]
+        if not normalized_required_tools:
+            return None
+
+        available_tool_names = self._get_runtime_scoped_tool_names()
+        missing_tools = sorted(
+            tool_name for tool_name in normalized_required_tools if tool_name not in available_tool_names
+        )
+        if missing_tools:
+            return (
+                "Task contract completion gate blocked success: required tool(s) unavailable in this "
+                f"runtime: {', '.join(missing_tools)}."
+            )
+
+        used_tool_names = self._collect_tool_names_used_in_messages(messages)
+        unused_required_tools = sorted(
+            tool_name for tool_name in normalized_required_tools if tool_name not in used_tool_names
+        )
+        if unused_required_tools:
+            return (
+                "Task contract completion gate blocked success: required tool(s) were not used in this "
+                f"run: {', '.join(unused_required_tools)}."
+            )
+
+        _, successful_tool_names, tool_result_seen = self._collect_tool_execution_outcomes(messages)
+        if tool_result_seen:
+            unsuccessful_required_tools = sorted(
+                tool_name for tool_name in normalized_required_tools if tool_name not in successful_tool_names
+            )
+            if unsuccessful_required_tools:
+                return (
+                    "Task contract completion gate blocked success: required tool(s) did not produce "
+                    f"successful results in this run: {', '.join(unsuccessful_required_tools)}."
+                )
+
+        return None
+
+    def _get_active_iteration_limit(self) -> int:
+        configured_limit = max(1, int(getattr(self, "max_iterations", 1) or 1))
+        if getattr(self, "_delegate_depth", 0) != 0:
+            return configured_limit
+
+        runtime_state = getattr(self, "runtime_activation_state", None)
+        if not isinstance(runtime_state, dict):
+            runtime_state = getattr(self, "_runtime_activation_state", None)
+        runtime_mode_name = runtime_state.get("runtime_mode") if isinstance(runtime_state, dict) else None
+
+        try:
+            runtime_mode = resolve_runtime_mode(runtime_mode_name)
+        except Exception:
+            runtime_mode = get_default_runtime_mode()
+
+        runtime_cap = getattr(runtime_mode, "iteration_cap", configured_limit)
+        if not isinstance(runtime_cap, int) or runtime_cap < 1:
+            runtime_cap = configured_limit
+        return min(configured_limit, runtime_cap)
 
     def _build_runtime_activation_note(self, state: Dict[str, Any]) -> str:
         if not self._should_apply_runtime_activation_state(state):
@@ -3863,6 +4243,12 @@ class AIAgent:
             "<wave2-runtime-activation>",
             "Wave 2 Runtime Activation",
             f"specialist: {state.get('specialist') or 'none'}",
+            f"named_agent: {state.get('named_agent') or 'none'}",
+            f"archetype: {state.get('archetype') or 'generalist'}",
+            f"category: {state.get('category') or resolve_literal_category_from_route_category(state.get('route_category')).name}",
+            f"route_category: {state.get('route_category') or DEFAULT_ROUTE_CATEGORY}",
+            f"delegation_profile: {state.get('delegation_profile') or 'general'}",
+            f"runtime_mode: {state.get('runtime_mode') or get_default_runtime_mode().name}",
             f"activation_reason: {state.get('activation_reason') or 'fallback: compatibility-safe default activation'}",
             f"inference_source: {state.get('inference_source') or 'wave2_intent_preclassifier'}",
         ]
@@ -3932,7 +4318,7 @@ class AIAgent:
         lines.append("</execution-supervisor-state>")
         return "\n".join(lines)
 
-    def _resolve_runtime_activation_state(self, user_message: str) -> Dict[str, Any]:
+    def _resolve_runtime_activation_state(self, user_message: Any) -> Dict[str, Any]:
         if getattr(self, "_delegate_depth", 0) != 0:
             state = self._build_default_runtime_activation_state()
             delegate_resolution = dict(getattr(self, "_delegate_resolution", {}) or {})
@@ -3952,105 +4338,235 @@ class AIAgent:
                 or (specialist_mapping.default_delegation_profile if specialist_mapping is not None else None)
                 or state["delegation_profile"]
             )
-            normalized_inputs = normalize_wave1_overlay_inputs(
-                archetype_name=delegate_archetype,
-                route_category=delegate_route_category,
-                delegation_profile=delegate_delegation_profile,
-                runtime_mode=delegate_resolution.get("runtime_mode_definition") or delegate_resolution.get("runtime_mode") or state["runtime_mode"],
-                skills=delegate_resolution.get("skills"),
-                task_contract=delegate_resolution.get("task_contract"),
-                orchestration_hints=delegate_resolution.get("orchestration_hints"),
-            )
-            resolved_named_workflow = None
             raw_named_workflow = delegate_resolution.get("named_workflow")
+            resolved_named_workflow = None
             if isinstance(raw_named_workflow, dict) and raw_named_workflow:
                 try:
                     resolved_named_workflow = validate_named_workflow_artifact(raw_named_workflow).model_dump(by_alias=True)
                 except Exception as exc:
                     logger.debug("Ignoring invalid delegate named_workflow during runtime activation passthrough: %s", exc)
+            effective_task_contract = self._resolve_machine_readable_task_contract(
+                delegate_resolution.get("task_contract"),
+                named_workflow_payload=resolved_named_workflow,
+                log_context="delegate runtime activation passthrough",
+            )
+            delegate_category = (
+                delegate_resolution.get("category_definition")
+                or delegate_resolution.get("category")
+                or resolve_literal_category_from_route_category(delegate_route_category)
+            )
+            normalized_inputs = normalize_wave1_overlay_inputs(
+                archetype_name=delegate_archetype,
+                category=delegate_category,
+                route_category=delegate_route_category,
+                delegation_profile=delegate_delegation_profile,
+                runtime_mode=self._resolve_delegate_runtime_mode_payload(delegate_resolution, state["runtime_mode"]),
+                skills=delegate_resolution.get("skills"),
+                task_contract=effective_task_contract,
+                orchestration_hints=delegate_resolution.get("orchestration_hints"),
+            )
             state.update({
+                "named_agent": str(delegate_resolution.get("named_agent") or delegate_resolution.get("agent") or "").strip() or None,
                 "specialist": resolved_specialist,
                 "archetype": normalized_inputs["archetype"],
+                "category": normalized_inputs["category"],
                 "route_category": normalized_inputs["route_category"],
                 "runtime_mode": normalized_inputs["runtime_mode"],
                 "delegation_profile": normalized_inputs["delegation_profile"],
-                "task_contract": normalized_inputs["task_contract"],
+                "task_contract": effective_task_contract,
                 "named_workflow": resolved_named_workflow,
                 "wave1_overlay_prompt": build_wave1_overlay_prompt_from_normalized(normalized_inputs),
             })
+            state["activation_reason"] = self._finalize_runtime_activation_reason(
+                delegate_resolution.get("activation_reason") or state.get("activation_reason"),
+                named_agent=state.get("named_agent"),
+                specialist=state.get("specialist"),
+                archetype=state["archetype"],
+                category=state["category"],
+                route_category=state["route_category"],
+                delegation_profile=state["delegation_profile"],
+                runtime_mode=state["runtime_mode"],
+            )
             state["inference_source"] = "delegate_passthrough"
             state["activation_note"] = self._build_runtime_activation_note(state)
             state["activation_applied"] = bool(state["activation_note"])
             return state
 
+        preclassification_input = user_message
+        if isinstance(user_message, str):
+            try:
+                from hermes_cli.command_templates import extract_structured_command_prompt_payload
+
+                structured_payload = extract_structured_command_prompt_payload(user_message)
+                if structured_payload is not None:
+                    preclassification_input = {
+                        "message": user_message,
+                        **structured_payload,
+                    }
+            except Exception as exc:
+                logger.debug("Failed to extract structured command payload for runtime activation: %s", exc)
+
+        explicit_named_agent = None
+        explicit_specialist = None
+        explicit_archetype = None
+        explicit_route_category = None
+        explicit_category = None
+        explicit_runtime_mode = None
+        explicit_delegation_profile = None
+        explicit_activation_reason = ""
+        if isinstance(preclassification_input, Mapping):
+            explicit_named_agent = str(preclassification_input.get("named_agent") or preclassification_input.get("agent") or "").strip() or None
+            explicit_specialist = str(preclassification_input.get("specialist") or "").strip() or None
+            explicit_archetype = str(preclassification_input.get("archetype") or "").strip() or None
+            explicit_route_category = str(preclassification_input.get("route_category") or "").strip() or None
+            explicit_category = str(preclassification_input.get("category") or "").strip() or None
+            explicit_runtime_mode = str(preclassification_input.get("runtime_mode") or "").strip() or None
+            explicit_delegation_profile = str(preclassification_input.get("delegation_profile") or "").strip() or None
+            explicit_activation_reason = str(preclassification_input.get("activation_reason") or "").strip()
+
         try:
-            preclassification = preclassify_intent(user_message)
+            preclassification = preclassify_intent(preclassification_input)
         except Exception as exc:
             logger.debug("Wave 2 runtime activation preclassification failed: %s", exc, exc_info=True)
             preclassification = preclassify_intent(None)
 
         default_state = self._build_default_runtime_activation_state()
-        raw_specialist = getattr(preclassification, "inferred_specialist", None)
+        raw_specialist = explicit_specialist or getattr(preclassification, "inferred_specialist", None)
         specialist_mapping = resolve_specialist_mapping(raw_specialist)
         resolved_specialist = specialist_mapping.name if specialist_mapping is not None else None
+        activation_reason = str(
+            explicit_activation_reason
+            or getattr(preclassification, "activation_reason", "")
+            or default_state["activation_reason"]
+        ).strip()
 
-        inferred_archetype = specialist_mapping.archetype_name if specialist_mapping is not None else getattr(preclassification, "inferred_archetype", None)
-        resolved_archetype = resolve_archetype(inferred_archetype)
-        raw_route_category = str(getattr(preclassification, "inferred_route_category", "") or "").strip()
-        if raw_route_category and raw_route_category in BUILTIN_ROUTE_CATEGORIES:
+        if resolved_specialist == _MULTIMODAL_SPECIALIST and not self._has_multimodal_capability_tools():
+            available_multimodal_tools = sorted(
+                set(getattr(self, "valid_tool_names", set()) or []).intersection(_MULTIMODAL_CAPABILITY_TOOLS)
+            )
+            resolved_specialist = None
+            specialist_mapping = None
+            inferred_archetype = None
+            inferred_category = ""
+            raw_route_category = ""
+            delegation_profile = ""
+            activation_reason = (
+                f"{activation_reason}; fallback: multimodal tools unavailable "
+                f"(requires one of {sorted(_MULTIMODAL_CAPABILITY_TOOLS)}, available={available_multimodal_tools})"
+            )
+        else:
+            inferred_archetype = (
+                specialist_mapping.archetype_name
+                if specialist_mapping is not None
+                else (explicit_archetype or getattr(preclassification, "inferred_archetype", None))
+            )
+            inferred_category = str(explicit_category or getattr(preclassification, "inferred_category", "") or "").strip()
+            raw_route_category = str(explicit_route_category or getattr(preclassification, "inferred_route_category", "") or "").strip()
+            delegation_profile = str(explicit_delegation_profile or getattr(preclassification, "inferred_delegation_profile", "") or "").strip()
+
+        resolved_archetype = resolve_archetype(explicit_archetype or inferred_archetype)
+        if explicit_route_category and explicit_route_category in BUILTIN_ROUTE_CATEGORIES:
+            route_category = resolve_route_category(explicit_route_category).name
+        elif raw_route_category and raw_route_category in BUILTIN_ROUTE_CATEGORIES:
             route_category = resolve_route_category(raw_route_category).name
+        elif inferred_category:
+            route_category = resolve_literal_category_to_route_category(inferred_category).name
         elif specialist_mapping is not None and specialist_mapping.default_route_category:
             route_category = resolve_route_category(specialist_mapping.default_route_category).name
         else:
             route_category = resolve_route_category(resolved_archetype.default_route_category).name
-        runtime_mode = resolve_runtime_mode(getattr(preclassification, "inferred_runtime_mode", None)).name
-        delegation_profile = str(getattr(preclassification, "inferred_delegation_profile", "") or "").strip()
+        if inferred_category:
+            category = resolve_literal_category(inferred_category).name
+        else:
+            category = resolve_literal_category_from_route_category(route_category).name
+        runtime_mode = resolve_runtime_mode(explicit_runtime_mode or getattr(preclassification, "inferred_runtime_mode", None)).name
         if not delegation_profile and specialist_mapping is not None and specialist_mapping.default_delegation_profile:
             delegation_profile = specialist_mapping.default_delegation_profile
         if not delegation_profile:
             delegation_profile = resolved_archetype.default_delegation_profile or default_state["delegation_profile"]
 
-        task_contract_payload = None
-        raw_task_contract = getattr(preclassification, "task_contract", None)
-        if raw_task_contract not in (None, "", {}):
-            try:
-                task_contract_payload = validate_task_contract(raw_task_contract).model_dump()
-            except Exception as exc:
-                logger.debug("Ignoring invalid task_contract from runtime activation preclassifier: %s", exc)
+        structured_named_workflow = None
+        structured_payload_present = False
+        if isinstance(preclassification_input, Mapping):
+            structured_payload_present = any(
+                preclassification_input.get(key) not in (None, "", {})
+                for key in ("task_contract", "named_workflow", "orchestration_hints")
+            )
+            raw_named_workflow = preclassification_input.get("named_workflow")
+            if isinstance(raw_named_workflow, dict) and raw_named_workflow:
+                try:
+                    structured_named_workflow = validate_named_workflow_artifact(raw_named_workflow).model_dump(by_alias=True)
+                except Exception as exc:
+                    logger.debug("Ignoring invalid named_workflow from runtime activation payload: %s", exc)
+
+        task_contract_payload = self._resolve_machine_readable_task_contract(
+            getattr(preclassification, "task_contract", None),
+            named_workflow_payload=structured_named_workflow,
+            log_context="runtime activation preclassifier/payload",
+        )
 
         normalized_inputs = normalize_wave1_overlay_inputs(
             archetype_name=resolved_archetype.name,
+            category=category,
             route_category=route_category,
             delegation_profile=delegation_profile,
             runtime_mode=runtime_mode,
+            skills=resolved_archetype.default_skills,
             task_contract=task_contract_payload,
         )
 
+        resolved_named_agent = (
+            str(preclassification_input.get("named_agent") or preclassification_input.get("agent") or "").strip() or None
+            if isinstance(preclassification_input, Mapping)
+            else None
+        )
+        activation_reason = self._finalize_runtime_activation_reason(
+            activation_reason,
+            named_agent=resolved_named_agent,
+            specialist=resolved_specialist,
+            archetype=normalized_inputs["archetype"],
+            category=normalized_inputs["category"],
+            route_category=normalized_inputs["route_category"],
+            delegation_profile=normalized_inputs["delegation_profile"],
+            runtime_mode=normalized_inputs["runtime_mode"],
+        )
         state = {
+            "named_agent": resolved_named_agent,
             "archetype": normalized_inputs["archetype"],
+            "category": normalized_inputs["category"],
             "specialist": resolved_specialist,
             "route_category": normalized_inputs["route_category"],
             "runtime_mode": normalized_inputs["runtime_mode"],
             "delegation_profile": normalized_inputs["delegation_profile"],
-            "activation_reason": str(
-                getattr(preclassification, "activation_reason", "")
-                or default_state["activation_reason"]
-            ).strip(),
+            "activation_reason": activation_reason,
             "task_contract": normalized_inputs["task_contract"],
             "inference_source": str(
                 getattr(preclassification, "inference_source", "")
                 or default_state["inference_source"]
             ).strip(),
         }
-        state["named_workflow"] = build_named_workflow_artifact(
-            objective=user_message,
-            specialist=resolved_specialist,
-            archetype=state["archetype"],
-            route_category=state["route_category"],
-            runtime_mode=state["runtime_mode"],
-            delegation_profile=state["delegation_profile"],
-            task_contract=state["task_contract"],
-        )
+        if structured_named_workflow is not None:
+            state["named_workflow"] = structured_named_workflow
+        elif structured_payload_present:
+            state["named_workflow"] = None
+        else:
+            workflow_objective = user_message
+            if isinstance(preclassification_input, Mapping):
+                workflow_objective = (
+                    preclassification_input.get("message")
+                    or preclassification_input.get("user_message")
+                    or preclassification_input.get("task")
+                    or user_message
+                )
+            state["named_workflow"] = build_named_workflow_artifact(
+                objective=workflow_objective,
+                specialist=resolved_specialist,
+                archetype=state["archetype"],
+                route_category=state["route_category"],
+                runtime_mode=state["runtime_mode"],
+                delegation_profile=state["delegation_profile"],
+                task_contract=state["task_contract"],
+            )
         state["wave1_overlay_prompt"] = build_wave1_overlay_prompt_from_normalized(normalized_inputs)
         state["activation_note"] = self._build_runtime_activation_note(state)
         state["activation_applied"] = bool(state["activation_note"])
@@ -6898,7 +7414,7 @@ class AIAgent:
             # when no explicit key is in the fallback config.
             if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
                 fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
-            fb_client, _resolved_fb_model = resolve_provider_client(
+            fb_client, resolved_fb_model = resolve_provider_client(
                 fb_provider, model=fb_model, raw_codex=True,
                 explicit_base_url=fb_base_url_hint,
                 explicit_api_key=fb_api_key_hint)
@@ -6910,9 +7426,9 @@ class AIAgent:
             try:
                 from hermes_cli.model_normalize import normalize_model_for_provider
 
-                fb_model = normalize_model_for_provider(fb_model, fb_provider)
+                fb_model = resolved_fb_model or normalize_model_for_provider(fb_model, fb_provider)
             except Exception:
-                pass
+                fb_model = resolved_fb_model or fb_model
 
             # Determine api_mode from provider / base URL / model
             fb_api_mode = "chat_completions"
@@ -9384,6 +9900,29 @@ class AIAgent:
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
         # that are invalid UTF-8 and crash JSON serialization in the OpenAI SDK.
+        runtime_activation_input = user_message
+        try:
+            from hermes_cli.work_command_adapter import is_prepared_work_command
+        except Exception:
+            is_prepared_work_command = None
+
+        if callable(is_prepared_work_command) and is_prepared_work_command(user_message):
+            prepared_work_command = user_message
+            runtime_activation_input = {
+                "message": prepared_work_command.agent_message,
+                "task_contract": prepared_work_command.task_contract,
+                "named_workflow": prepared_work_command.invocation.named_workflow,
+                "orchestration_hints": prepared_work_command.orchestration_hints,
+            }
+            user_message = prepared_work_command.agent_message
+            if persist_user_message is None:
+                persist_user_message = prepared_work_command.display_text
+        else:
+            named_agent_invocation = _extract_leading_named_agent_invocation_payload(user_message)
+            if named_agent_invocation is not None:
+                runtime_activation_input = dict(named_agent_invocation)
+                user_message = str(named_agent_invocation.get("message") or user_message)
+
         if isinstance(user_message, str):
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
@@ -9443,8 +9982,6 @@ class AIAgent:
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
-        self.iteration_budget = IterationBudget(self.max_iterations)
-
         # Log conversation turn start for debugging/observability
         _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
         _msg_preview = _msg_preview.replace("\n", " ")
@@ -9473,8 +10010,10 @@ class AIAgent:
         self._user_turn_count += 1
 
         # Preserve the original user message (no nudge injection).
-        original_user_message = persist_user_message if persist_user_message is not None else user_message
-        self._activate_runtime_for_turn(original_user_message)
+        original_user_message = persist_user_message if isinstance(persist_user_message, str) else user_message
+        self._activate_runtime_for_turn(runtime_activation_input)
+        active_iteration_limit = self._get_active_iteration_limit()
+        self.iteration_budget = IterationBudget(active_iteration_limit)
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
@@ -9704,7 +10243,7 @@ class AIAgent:
             except Exception:
                 pass
 
-        while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
+        while (api_call_count < active_iteration_limit and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
 
@@ -9904,7 +10443,7 @@ class AIAgent:
             thinking_spinner = None
             
             if not self.quiet_mode:
-                self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
+                self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{active_iteration_limit}...")
                 self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
             else:
@@ -12357,26 +12896,26 @@ class AIAgent:
                     break
         
         if final_response is None and (
-            api_call_count >= self.max_iterations
+            api_call_count >= active_iteration_limit
             or self.iteration_budget.remaining <= 0
         ):
             # Budget exhausted — ask the model for a summary via one extra
             # API call with tools stripped.  _handle_max_iterations injects a
             # user message and makes a single toolless request.
-            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
+            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{active_iteration_limit})"
             self._emit_status(
-                f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
+                f"⚠️ Iteration budget exhausted ({api_call_count}/{active_iteration_limit}) "
                 "— asking model to summarise"
             )
             if not self.quiet_mode:
                 self._safe_print(
-                    f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
+                    f"\n⚠️  Iteration budget exhausted ({api_call_count}/{active_iteration_limit}) "
                     "— requesting summary..."
                 )
             final_response = self._handle_max_iterations(messages, api_call_count)
-        
+
         # Determine if conversation completed successfully
-        completed = final_response is not None and api_call_count < self.max_iterations
+        completed = final_response is not None and api_call_count < active_iteration_limit
 
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)
@@ -12415,7 +12954,7 @@ class AIAgent:
             "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
         )
         _diag_args = (
-            _turn_exit_reason, self.model, api_call_count, self.max_iterations,
+            _turn_exit_reason, self.model, api_call_count, active_iteration_limit,
             _budget_used, _budget_max,
             _turn_tool_count, _last_msg_role, _resp_len,
             self.session_id or "none",
@@ -12436,6 +12975,11 @@ class AIAgent:
             if named_role_completion_error:
                 final_response = named_role_completion_error
                 completed = False
+            else:
+                task_contract_completion_error = self._evaluate_task_contract_completion_gate(messages)
+                if task_contract_completion_error:
+                    final_response = task_contract_completion_error
+                    completed = False
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.

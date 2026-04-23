@@ -10,11 +10,26 @@ import os
 import re
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Optional
+from typing import Any, Optional
 
+from agent.archetypes import Archetype, resolve_archetype
+from agent.context_rules import (
+    MAX_HERMES_CONTEXT_LAYERS,
+    apply_bounded_hierarchical_context,
+    discover_hermes_context_layers,
+)
+from agent.route_categories import (
+    LiteralCategory,
+    RouteCategory,
+    get_route_category,
+    resolve_literal_category,
+    resolve_literal_category_from_route_category,
+)
+from agent.runtime_modes import RuntimeMode, resolve_runtime_mode
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
@@ -24,9 +39,427 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_platform,
 )
+from agent.task_contracts import TaskContract, validate_task_contract
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PromptOverlaySection:
+    """Structured prompt section used for deterministic overlay assembly."""
+
+    key: str
+    title: str
+    content: str
+
+
+WAVE1_OVERLAY_ORDER = (
+    "archetype",
+    "category",
+    "route_category",
+    "delegation_profile",
+    "runtime_mode",
+    "skills",
+    "task_contract",
+    "orchestration_hints",
+)
+
+_WAVE1_OVERLAY_TITLES = {
+    "archetype": "Archetype",
+    "category": "Category",
+    "route_category": "Route Category",
+    "delegation_profile": "Delegation Profile",
+    "runtime_mode": "Runtime Mode",
+    "skills": "Skills",
+    "task_contract": "Task Contract",
+    "orchestration_hints": "Orchestration Hints",
+}
+
+
+def _normalize_overlay_list(values: Any) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple, set)):
+        raise TypeError("Overlay list values must be a string or list-like collection")
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _format_json_block(payload: Any) -> str:
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _format_archetype_overlay(archetype: Archetype) -> str:
+    return "\n".join(
+        [
+            f"name: {archetype.name}",
+            f"summary: {archetype.summary}",
+            f"default_route_category: {archetype.default_route_category}",
+            f"default_delegation_profile: {archetype.default_delegation_profile}",
+            "default_skills:",
+            *[f"- {skill}" for skill in archetype.default_skills],
+            "default_required_tools:",
+            *[f"- {tool_name}" for tool_name in archetype.default_required_tools],
+            f"permission_preset: {archetype.permission_preset}",
+            f"fallback_policy: {archetype.fallback_policy}",
+        ]
+    )
+
+
+def _coerce_literal_category_overlay(
+    category: Any,
+    *,
+    route_category_name: str,
+) -> LiteralCategory | dict[str, str]:
+    if isinstance(category, LiteralCategory):
+        payload = {
+            "name": category.name,
+            "summary": category.summary,
+            "mapped_route_category": category.route_category,
+            "default_runtime_mode": category.default_runtime_mode or "inherit",
+        }
+    elif isinstance(category, dict):
+        name = str(category.get("name") or "").strip()
+        if not name:
+            raise ValueError("category overlay dict requires a non-empty name")
+        payload = {
+            "name": name,
+            "summary": str(category.get("summary") or "").strip(),
+            "mapped_route_category": str(category.get("mapped_route_category") or route_category_name).strip() or route_category_name,
+            "default_runtime_mode": str(category.get("default_runtime_mode") or "inherit").strip() or "inherit",
+        }
+    else:
+        resolved = resolve_literal_category(category)
+        payload = {
+            "name": resolved.name,
+            "summary": resolved.summary,
+            "mapped_route_category": resolved.route_category,
+            "default_runtime_mode": resolved.default_runtime_mode or "inherit",
+        }
+
+    mapped_route = get_route_category(payload["mapped_route_category"])
+    payload["fallback_semantics"] = "inherits_mapped_route_category"
+    payload["mapped_route_fallbacks"] = ", ".join(mapped_route.fallback_models) if mapped_route.fallback_models else "(none)"
+    return payload
+
+
+def _format_literal_category_overlay(category: LiteralCategory | dict[str, str]) -> str:
+    if isinstance(category, LiteralCategory):
+        mapped_route = get_route_category(category.route_category)
+        payload = {
+            "name": category.name,
+            "summary": category.summary,
+            "mapped_route_category": category.route_category,
+            "default_runtime_mode": category.default_runtime_mode or "inherit",
+            "fallback_semantics": "inherits_mapped_route_category",
+            "mapped_route_fallbacks": ", ".join(mapped_route.fallback_models) if mapped_route.fallback_models else "(none)",
+        }
+    else:
+        payload = category
+    return "\n".join(
+        [
+            f"name: {payload['name']}",
+            f"summary: {payload['summary']}",
+            f"mapped_route_category: {payload['mapped_route_category']}",
+            f"default_runtime_mode: {payload['default_runtime_mode']}",
+            f"fallback_semantics: {payload['fallback_semantics']}",
+            f"mapped_route_fallbacks: {payload['mapped_route_fallbacks']}",
+        ]
+    )
+
+
+def _coerce_route_category_overlay(route_category: Any) -> RouteCategory | dict[str, str]:
+    if isinstance(route_category, RouteCategory):
+        return route_category
+    if isinstance(route_category, dict):
+        name = str(route_category.get("name") or "").strip()
+        if not name:
+            raise ValueError("route_category overlay dict requires a non-empty name")
+        return {
+            "name": name,
+            "summary": str(route_category.get("summary") or "").strip(),
+            "intensity": str(route_category.get("intensity") or "").strip(),
+        }
+    return get_route_category(str(route_category).strip())
+
+
+def _format_route_category_overlay(route_category: RouteCategory | dict[str, str]) -> str:
+    if isinstance(route_category, RouteCategory):
+        payload = {
+            "name": route_category.name,
+            "summary": route_category.summary,
+            "intensity": route_category.intensity,
+        }
+    else:
+        payload = route_category
+    return "\n".join(
+        [
+            f"name: {payload['name']}",
+            f"summary: {payload['summary']}",
+            f"intensity: {payload['intensity']}",
+        ]
+    )
+
+
+def _coerce_runtime_mode_overlay(runtime_mode: Any) -> RuntimeMode | dict[str, str]:
+    if isinstance(runtime_mode, RuntimeMode):
+        return runtime_mode
+    if isinstance(runtime_mode, dict):
+        name = str(runtime_mode.get("name") or "").strip()
+        if not name:
+            raise ValueError("runtime_mode overlay dict requires a non-empty name")
+        return {
+            "name": name,
+            "description": str(runtime_mode.get("description") or "").strip(),
+            "operating_posture": str(runtime_mode.get("operating_posture") or "").strip(),
+            "kind": str(runtime_mode.get("kind") or "runtime_mode").strip() or "runtime_mode",
+        }
+    return resolve_runtime_mode(str(runtime_mode).strip())
+
+
+def _format_runtime_mode_overlay(runtime_mode: RuntimeMode | dict[str, str]) -> str:
+    if isinstance(runtime_mode, RuntimeMode):
+        payload = {
+            "name": runtime_mode.name,
+            "description": runtime_mode.description,
+            "operating_posture": runtime_mode.operating_posture,
+            "kind": runtime_mode.kind,
+        }
+    else:
+        payload = runtime_mode
+    return "\n".join(
+        [
+            f"name: {payload['name']}",
+            f"description: {payload['description']}",
+            f"operating_posture: {payload['operating_posture']}",
+            f"kind: {payload['kind']}",
+        ]
+    )
+
+
+def _format_delegation_profile_overlay(delegation_profile: str) -> str:
+    return f"name: {delegation_profile}"
+
+
+def _format_skills_overlay(skills: list[str]) -> str:
+    return "\n".join(f"- {skill_name}" for skill_name in skills)
+
+
+def _format_orchestration_hints_overlay(orchestration_hints: Any) -> str:
+    if isinstance(orchestration_hints, str):
+        return orchestration_hints.strip()
+    if isinstance(orchestration_hints, (list, tuple, dict)):
+        return _format_json_block(orchestration_hints)
+    raise TypeError("orchestration_hints must be a string, list, tuple, or dict")
+
+
+def normalize_wave1_overlay_inputs(
+    *,
+    archetype_name: str | None = None,
+    category: Any = None,
+    route_category: Any = None,
+    delegation_profile: str | None = None,
+    runtime_mode: Any = None,
+    skills: Any = None,
+    task_contract: dict[str, Any] | TaskContract | None = None,
+    orchestration_hints: Any = None,
+) -> dict[str, Any]:
+    """Canonicalize Wave 1 overlay inputs before any rendering occurs."""
+
+    archetype = resolve_archetype(archetype_name)
+    resolved_route_category = _coerce_route_category_overlay(
+        route_category if route_category not in (None, "") else archetype.default_route_category
+    )
+    route_category_name = getattr(resolved_route_category, "name", None)
+    if route_category_name is None:
+        route_category_name = resolved_route_category["name"]
+    resolved_category = _coerce_literal_category_overlay(
+        category if category not in (None, "") else resolve_literal_category_from_route_category(route_category_name),
+        route_category_name=route_category_name,
+    )
+    resolved_delegation_profile = (
+        str(delegation_profile).strip()
+        if delegation_profile and str(delegation_profile).strip()
+        else archetype.default_delegation_profile
+    )
+    resolved_runtime_mode = _coerce_runtime_mode_overlay(runtime_mode or None)
+    explicit_skills = _normalize_overlay_list(skills)
+    resolved_skills = list(archetype.default_skills)
+    resolved_skills.extend(explicit_skills)
+    resolved_skills = list(dict.fromkeys(resolved_skills))
+
+    validated_contract = None
+    if task_contract is not None:
+        validated_contract = validate_task_contract(task_contract).model_dump()
+
+    rendered_orchestration_hints = None
+    if orchestration_hints is not None:
+        rendered_orchestration_hints = _format_orchestration_hints_overlay(orchestration_hints)
+        if not rendered_orchestration_hints:
+            rendered_orchestration_hints = None
+
+    category_name = getattr(resolved_category, "name", None)
+    if category_name is None:
+        category_name = resolved_category["name"]
+
+    runtime_mode_name = getattr(resolved_runtime_mode, "name", None)
+    if runtime_mode_name is None:
+        runtime_mode_name = resolved_runtime_mode["name"]
+
+    return {
+        "archetype": archetype.name,
+        "archetype_definition": archetype,
+        "category": category_name,
+        "category_definition": resolved_category,
+        "route_category": route_category_name,
+        "route_category_definition": resolved_route_category,
+        "delegation_profile": resolved_delegation_profile,
+        "runtime_mode": runtime_mode_name,
+        "runtime_mode_definition": resolved_runtime_mode,
+        "skills": resolved_skills,
+        "skills_explicit": bool(explicit_skills),
+        "task_contract": validated_contract,
+        "orchestration_hints": orchestration_hints,
+        "orchestration_hints_rendered": rendered_orchestration_hints,
+    }
+
+
+def build_wave1_overlay_sections_from_normalized(normalized_inputs: dict[str, Any]) -> list[PromptOverlaySection]:
+    """Render Wave 1 overlay sections from canonical normalized inputs."""
+
+    sections: list[PromptOverlaySection] = [
+        PromptOverlaySection(
+            key="archetype",
+            title=_WAVE1_OVERLAY_TITLES["archetype"],
+            content=_format_archetype_overlay(normalized_inputs["archetype_definition"]),
+        ),
+        PromptOverlaySection(
+            key="category",
+            title=_WAVE1_OVERLAY_TITLES["category"],
+            content=_format_literal_category_overlay(normalized_inputs["category_definition"]),
+        ),
+        PromptOverlaySection(
+            key="route_category",
+            title=_WAVE1_OVERLAY_TITLES["route_category"],
+            content=_format_route_category_overlay(normalized_inputs["route_category_definition"]),
+        ),
+        PromptOverlaySection(
+            key="delegation_profile",
+            title=_WAVE1_OVERLAY_TITLES["delegation_profile"],
+            content=_format_delegation_profile_overlay(normalized_inputs["delegation_profile"]),
+        ),
+        PromptOverlaySection(
+            key="runtime_mode",
+            title=_WAVE1_OVERLAY_TITLES["runtime_mode"],
+            content=_format_runtime_mode_overlay(normalized_inputs["runtime_mode_definition"]),
+        ),
+    ]
+
+    if normalized_inputs.get("skills_explicit"):
+        sections.append(
+            PromptOverlaySection(
+                key="skills",
+                title=_WAVE1_OVERLAY_TITLES["skills"],
+                content=_format_skills_overlay(normalized_inputs["skills"]),
+            )
+        )
+
+    if normalized_inputs.get("task_contract") is not None:
+        sections.append(
+            PromptOverlaySection(
+                key="task_contract",
+                title=_WAVE1_OVERLAY_TITLES["task_contract"],
+                content=_format_json_block(normalized_inputs["task_contract"]),
+            )
+        )
+
+    if normalized_inputs.get("orchestration_hints_rendered"):
+        sections.append(
+            PromptOverlaySection(
+                key="orchestration_hints",
+                title=_WAVE1_OVERLAY_TITLES["orchestration_hints"],
+                content=normalized_inputs["orchestration_hints_rendered"],
+            )
+        )
+
+    section_order = tuple(section.key for section in sections)
+    expected_prefix = tuple(key for key in WAVE1_OVERLAY_ORDER if key in section_order)
+    if section_order != expected_prefix:
+        raise AssertionError(
+            f"Wave 1 overlay order violation: expected {expected_prefix}, got {section_order}"
+        )
+
+    return sections
+
+
+def build_wave1_overlay_prompt_from_normalized(normalized_inputs: dict[str, Any]) -> str:
+    sections = build_wave1_overlay_sections_from_normalized(normalized_inputs)
+    if not sections:
+        return ""
+    rendered_sections = [f"## {section.title}\n{section.content}" for section in sections]
+    return "# Wave 1 Prompt Overlays\n\n" + "\n\n".join(rendered_sections)
+
+
+def build_wave1_overlay_sections(
+    *,
+    archetype_name: str | None = None,
+    category: Any = None,
+    route_category: Any = None,
+    delegation_profile: str | None = None,
+    runtime_mode: Any = None,
+    skills: Any = None,
+    task_contract: dict[str, Any] | TaskContract | None = None,
+    orchestration_hints: Any = None,
+) -> list[PromptOverlaySection]:
+    """Build the Wave 1 prompt overlays in the exact locked order.
+
+    Ordering is structural and deterministic so downstream delegation code can
+    rely on this helper instead of hand-assembling prompt fragments.
+    """
+
+    normalized_inputs = normalize_wave1_overlay_inputs(
+        archetype_name=archetype_name,
+        category=category,
+        route_category=route_category,
+        delegation_profile=delegation_profile,
+        runtime_mode=runtime_mode,
+        skills=skills,
+        task_contract=task_contract,
+        orchestration_hints=orchestration_hints,
+    )
+    return build_wave1_overlay_sections_from_normalized(normalized_inputs)
+
+
+def build_wave1_overlay_prompt(
+    *,
+    archetype_name: str | None = None,
+    category: Any = None,
+    route_category: Any = None,
+    delegation_profile: str | None = None,
+    runtime_mode: Any = None,
+    skills: Any = None,
+    task_contract: dict[str, Any] | TaskContract | None = None,
+    orchestration_hints: Any = None,
+) -> str:
+    """Render the exact Wave 1 overlays as a prompt block.
+
+    `task_contract` is preserved as canonical structured JSON inside its own
+    section rather than flattened into prose.
+    """
+
+    normalized_inputs = normalize_wave1_overlay_inputs(
+        archetype_name=archetype_name,
+        category=category,
+        route_category=route_category,
+        delegation_profile=delegation_profile,
+        runtime_mode=runtime_mode,
+        skills=skills,
+        task_contract=task_contract,
+        orchestration_hints=orchestration_hints,
+    )
+    return build_wave1_overlay_prompt_from_normalized(normalized_inputs)
 
 # ---------------------------------------------------------------------------
 # Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,
@@ -919,11 +1352,8 @@ def load_soul_md() -> Optional[str]:
         return None
 
 
-def _load_hermes_md(cwd_path: Path) -> str:
-    """.hermes.md / HERMES.md — walk to git root."""
-    hermes_md_path = _find_hermes_md(cwd_path)
-    if not hermes_md_path:
-        return ""
+def _load_hermes_md_file(cwd_path: Path, hermes_md_path: Path) -> str:
+    """Load one .hermes.md/HERMES.md file with stable relative path rendering."""
     try:
         content = hermes_md_path.read_text(encoding="utf-8").strip()
         if not content:
@@ -933,13 +1363,24 @@ def _load_hermes_md(cwd_path: Path) -> str:
         try:
             rel = str(hermes_md_path.relative_to(cwd_path))
         except ValueError:
-            pass
+            try:
+                rel = str(hermes_md_path.relative_to(_find_git_root(cwd_path) or cwd_path.parent))
+            except ValueError:
+                rel = hermes_md_path.name
         content = _scan_context_content(content, rel)
         result = f"## {rel}\n\n{content}"
-        return _truncate_content(result, ".hermes.md")
+        return _truncate_content(result, hermes_md_path.name)
     except Exception as e:
         logger.debug("Could not read %s: %s", hermes_md_path, e)
         return ""
+
+
+def _load_hermes_md(cwd_path: Path) -> str:
+    """Backward-compatible single-file .hermes.md / HERMES.md loader."""
+    hermes_md_path = _find_hermes_md(cwd_path)
+    if not hermes_md_path:
+        return ""
+    return _load_hermes_md_file(cwd_path, hermes_md_path)
 
 
 def _load_agents_md(cwd_path: Path) -> str:
@@ -1004,36 +1445,57 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
-def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
-    """Discover and load context files for the system prompt.
+def build_context_files_prompt(
+    cwd: Optional[str] = None,
+    skip_soul: bool = False,
+    task_contract: dict[str, Any] | TaskContract | None = None,
+    max_hermes_hierarchy_layers: int = MAX_HERMES_CONTEXT_LAYERS,
+) -> str:
+    """Discover and load bounded project context for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
-      1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
-      3. CLAUDE.md / claude.md   (cwd only)
-      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+    Hierarchical behavior:
+      1. Load up to ``max_hermes_hierarchy_layers`` .hermes.md/HERMES.md files
+         along the git-root→cwd lineage, in deterministic root→leaf order.
+      2. If no Hermes lineage exists, fall back to exactly one cwd-only context
+         source by the historical priority order: AGENTS.md → CLAUDE.md → cursor rules.
+      3. SOUL.md from HERMES_HOME remains independent and optional.
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
-
-    When *skip_soul* is True, SOUL.md is not included here (it was already
-    loaded via ``load_soul_md()`` for the identity slot).
+    When ``task_contract`` is provided, bounded context precedence metadata is
+    rendered additively without mutating the canonical contract fields.
     """
     if cwd is None:
         cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
-    sections = []
+    sections: list[str] = []
+    layer_descriptors = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
+    hermes_layers = discover_hermes_context_layers(
+        cwd_path,
+        max_layers=max_hermes_hierarchy_layers,
     )
-    if project_context:
-        sections.append(project_context)
+    if hermes_layers:
+        for layer in hermes_layers:
+            project_context = _load_hermes_md_file(cwd_path, layer.path)
+            if project_context:
+                sections.append(project_context)
+                layer_descriptors.append(layer)
+    else:
+        project_context = (
+            _load_agents_md(cwd_path)
+            or _load_claude_md(cwd_path)
+            or _load_cursorrules(cwd_path)
+        )
+        if project_context:
+            sections.append(project_context)
+
+    if task_contract is not None and layer_descriptors:
+        bounded = apply_bounded_hierarchical_context(task_contract, layer_descriptors)
+        sections.append(
+            "## Context Precedence\n\n"
+            "Task-contract fields remain authoritative. Bounded hierarchical context is additive only.\n\n"
+            + "precedence: " + " > ".join(bounded.precedence)
+        )
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

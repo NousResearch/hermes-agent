@@ -65,6 +65,7 @@ def test_parent_runtime_activation_uses_canonical_overlay_contract(monkeypatch):
         lambda _message: SimpleNamespace(
             inferred_specialist=None,
             inferred_archetype="implementer",
+            inferred_category="deep",
             inferred_route_category="deep",
             inferred_runtime_mode="execution_supervisor",
             inferred_delegation_profile="verification",
@@ -81,6 +82,7 @@ def test_parent_runtime_activation_uses_canonical_overlay_contract(monkeypatch):
         route_category="deep",
         delegation_profile="verification",
         runtime_mode="execution_supervisor",
+        skills=archetypes.resolve_archetype("implementer").default_skills,
         task_contract=contract,
     )
 
@@ -100,6 +102,7 @@ def test_delegated_child_preserves_passed_through_wave1_state_without_reset():
     agent = _make_bare_agent(delegate_depth=1)
     agent._delegate_resolution = {
         "archetype": "implementer",
+        "category": "deep",
         "route_category": "deep",
         "route_category_definition": {"name": "deep", "summary": "Deep implementation lane", "intensity": "high"},
         "delegation_profile": "verification",
@@ -128,14 +131,82 @@ def test_delegated_child_preserves_passed_through_wave1_state_without_reset():
 
     assert state["inference_source"] == "delegate_passthrough"
     assert state["archetype"] == normalized["archetype"]
+    assert state["category"] == normalized["category"]
     assert state["route_category"] == normalized["route_category"]
     assert state["delegation_profile"] == normalized["delegation_profile"]
     assert state["runtime_mode"] == normalized["runtime_mode"]
     assert state["task_contract"] == normalized["task_contract"]
     assert state["wave1_overlay_prompt"] == build_wave1_overlay_prompt_from_normalized(normalized)
     assert state["wave1_overlay_prompt"] in state["activation_note"]
+    assert "category: deep" in state["activation_note"]
+    assert "route_category: deep" in state["activation_note"]
+    assert "delegation_profile: verification" in state["activation_note"]
     assert "## Archetype\nname: implementer" in state["wave1_overlay_prompt"]
     assert "## Archetype\nname: generalist" not in state["wave1_overlay_prompt"]
+
+
+def test_delegated_child_preserves_literal_category_when_distinct_from_route_and_profile():
+    agent = _make_bare_agent(delegate_depth=1)
+    agent._delegate_resolution = {
+        "specialist": "multimodal_specialist",
+        "archetype": "researcher",
+        "category": "visual-engineering",
+        "route_category": "visual",
+        "delegation_profile": "research",
+        "runtime_mode": "default",
+        "skills": ["vision", "research"],
+    }
+
+    state = agent._resolve_runtime_activation_state("ignored in delegated child")
+    snapshot = agent._build_runtime_activation_snapshot_entry(state)
+
+    assert state["specialist"] == "multimodal_specialist"
+    assert state["archetype"] == "researcher"
+    assert state["category"] == "visual-engineering"
+    assert state["route_category"] == "visual"
+    assert state["delegation_profile"] == "research"
+    assert state["runtime_mode"] == "default"
+    assert state["inference_source"] == "delegate_passthrough"
+    assert "specialist=multimodal_specialist" in state["activation_reason"]
+    assert "archetype=researcher" in state["activation_reason"]
+    assert "category=visual-engineering" in state["activation_reason"]
+    assert "route_category=visual" in state["activation_reason"]
+    assert "delegation_profile=research" in state["activation_reason"]
+    assert "runtime_mode=default" in state["activation_reason"]
+    assert "category: visual-engineering" in state["activation_note"]
+    assert "route_category: visual" in state["activation_note"]
+    assert "delegation_profile: research" in state["activation_note"]
+    assert "## Category\nname: visual-engineering" in state["wave1_overlay_prompt"]
+    assert "## Route Category\nname: visual" in state["wave1_overlay_prompt"]
+    assert "## Delegation Profile\nname: research" in state["wave1_overlay_prompt"]
+    assert snapshot["category"] == "visual-engineering"
+    assert snapshot["route_category"] == "visual"
+    assert snapshot["delegation_profile"] == "research"
+
+
+def test_delegated_child_preserves_named_agent_identity_in_runtime_state_and_snapshot():
+    agent = _make_bare_agent(delegate_depth=1)
+    agent._delegate_resolution = {
+        "agent": "oracle",
+        "named_agent": "oracle",
+        "specialist": "consultant",
+        "archetype": "researcher",
+        "route_category": "deep",
+        "delegation_profile": "research",
+        "runtime_mode": "default",
+    }
+
+    state = agent._resolve_runtime_activation_state("ignored in delegated child")
+    snapshot = agent._build_runtime_activation_snapshot_entry(state)
+
+    assert state["named_agent"] == "oracle"
+    assert state["category"] == "deep"
+    assert "named_agent: oracle" in state["activation_note"]
+    assert "category: deep" in state["activation_note"]
+    assert "route_category: deep" in state["activation_note"]
+    assert snapshot["named_agent"] == "oracle"
+    assert snapshot["category"] == "deep"
+    assert snapshot["activation_identity"] == "oracle"
 
 
 def test_parent_runtime_activation_proves_qa_guard_quick_overlay_end_to_end():
@@ -144,6 +215,7 @@ def test_parent_runtime_activation_proves_qa_guard_quick_overlay_end_to_end():
 
     assert state["specialist"] == "qa_guard"
     assert state["archetype"] == "verifier"
+    assert state["category"] == "quick"
     assert state["route_category"] == "quick"
     assert state["delegation_profile"] == "verification"
     assert state["runtime_mode"] == "default"
@@ -152,17 +224,24 @@ def test_parent_runtime_activation_proves_qa_guard_quick_overlay_end_to_end():
     assert "keyword-derived specialist: qa_guard" in state["activation_reason"]
     assert "archetype=verifier" in state["activation_reason"]
     assert "specialist=qa_guard" in state["activation_reason"]
+    assert "category=quick" in state["activation_reason"]
     assert "route_category=quick" in state["activation_reason"]
     assert "delegation_profile=verification" in state["activation_reason"]
     assert "runtime_mode=default" in state["activation_reason"]
 
     assert state["activation_note"].startswith("<wave2-runtime-activation>")
     assert state["activation_note"].endswith("</wave2-runtime-activation>")
+    assert "category: quick" in state["activation_note"]
+    assert "route_category: quick" in state["activation_note"]
+    assert "delegation_profile: verification" in state["activation_note"]
+    assert "runtime_mode: default" in state["activation_note"]
     assert state["wave1_overlay_prompt"] in state["activation_note"]
 
     assert "## Archetype\nname: verifier" in state["wave1_overlay_prompt"]
     assert "default_route_category: quick" in state["wave1_overlay_prompt"]
     assert "default_delegation_profile: verification" in state["wave1_overlay_prompt"]
+    assert "## Category\nname: quick" in state["wave1_overlay_prompt"]
+    assert "fallback_semantics: inherits_mapped_route_category" in state["wave1_overlay_prompt"]
     assert "## Route Category\nname: quick" in state["wave1_overlay_prompt"]
     assert "summary: Fast-path routing lane for lighter-weight execution." in state["wave1_overlay_prompt"]
     assert "intensity: low" in state["wave1_overlay_prompt"]
@@ -183,6 +262,7 @@ def test_parent_runtime_activation_proves_builder_deep_default_overlay_end_to_en
 
     assert state["specialist"] == "builder"
     assert state["archetype"] == "implementer"
+    assert state["category"] == "deep"
     assert state["route_category"] == "deep"
     assert state["delegation_profile"] == "implementation"
     assert state["runtime_mode"] == "default"
@@ -191,20 +271,100 @@ def test_parent_runtime_activation_proves_builder_deep_default_overlay_end_to_en
     assert "keyword-derived specialist: builder" in state["activation_reason"]
     assert "archetype=implementer" in state["activation_reason"]
     assert "specialist=builder" in state["activation_reason"]
+    assert "category=deep" in state["activation_reason"]
     assert "route_category=deep" in state["activation_reason"]
     assert "delegation_profile=implementation" in state["activation_reason"]
     assert "runtime_mode=default" in state["activation_reason"]
 
     assert state["activation_note"].startswith("<wave2-runtime-activation>")
     assert state["activation_note"].endswith("</wave2-runtime-activation>")
+    assert "category: deep" in state["activation_note"]
+    assert "route_category: deep" in state["activation_note"]
+    assert "delegation_profile: implementation" in state["activation_note"]
+    assert "runtime_mode: default" in state["activation_note"]
     assert state["wave1_overlay_prompt"] in state["activation_note"]
 
     assert "## Archetype\nname: implementer" in state["wave1_overlay_prompt"]
     assert "default_route_category: deep" in state["wave1_overlay_prompt"]
     assert "default_delegation_profile: implementation" in state["wave1_overlay_prompt"]
+    assert "## Category\nname: deep" in state["wave1_overlay_prompt"]
     assert "## Route Category\nname: deep" in state["wave1_overlay_prompt"]
     assert "## Delegation Profile\nname: implementation" in state["wave1_overlay_prompt"]
     assert "## Runtime Mode\nname: default" in state["wave1_overlay_prompt"]
+
+
+def test_parent_runtime_activation_proves_mixed_visual_research_prompt_keeps_literal_category_distinct():
+    agent = _make_bare_agent(delegate_depth=0)
+    agent.valid_tool_names = {"vision_analyze"}
+    state = agent._resolve_runtime_activation_state(
+        "Inspect this PDF diagram, investigate the architecture, and gather evidence for the visual flow."
+    )
+
+    assert state["specialist"] == "multimodal_specialist"
+    assert state["archetype"] == "researcher"
+    assert state["category"] == "visual-engineering"
+    assert state["route_category"] == "visual"
+    assert state["delegation_profile"] == "research"
+    assert state["runtime_mode"] == "default"
+    assert state["inference_source"] == "wave2_intent_preclassifier"
+
+    assert "keyword-derived specialist: multimodal_specialist" in state["activation_reason"]
+    assert "archetype=researcher" in state["activation_reason"]
+    assert "specialist=multimodal_specialist" in state["activation_reason"]
+    assert "category=visual-engineering" in state["activation_reason"]
+    assert "route_category=visual" in state["activation_reason"]
+    assert "delegation_profile=research" in state["activation_reason"]
+    assert "runtime_mode=default" in state["activation_reason"]
+
+    assert "category: visual-engineering" in state["activation_note"]
+    assert "route_category: visual" in state["activation_note"]
+    assert "delegation_profile: research" in state["activation_note"]
+    assert "runtime_mode: default" in state["activation_note"]
+    assert "## Category\nname: visual-engineering" in state["wave1_overlay_prompt"]
+    assert "## Route Category\nname: visual" in state["wave1_overlay_prompt"]
+    assert "## Delegation Profile\nname: research" in state["wave1_overlay_prompt"]
+    assert "## Runtime Mode\nname: default" in state["wave1_overlay_prompt"]
+
+
+def test_parent_runtime_activation_explicit_overrides_keep_activation_reason_honest():
+    agent = _make_bare_agent(delegate_depth=0)
+    agent.enabled_toolsets = ["file"]
+    agent.disabled_toolsets = []
+
+    state = agent._resolve_runtime_activation_state(
+        {
+            "message": "do something",
+            "category": "visual-engineering",
+            "route_category": "deep",
+            "runtime_mode": "execution_supervisor",
+        }
+    )
+
+    assert state["category"] == "visual-engineering"
+    assert state["route_category"] == "deep"
+    assert state["delegation_profile"] == "general"
+    assert state["runtime_mode"] == "execution_supervisor"
+    assert "category=visual-engineering" in state["activation_reason"]
+    assert "route_category=deep" in state["activation_reason"]
+    assert "delegation_profile=general" in state["activation_reason"]
+    assert "runtime_mode=execution_supervisor" in state["activation_reason"]
+    assert "category=unspecified-low" not in state["activation_reason"]
+    assert "route_category=unspecified_low" not in state["activation_reason"]
+    assert "runtime_mode=default" not in state["activation_reason"]
+
+
+def test_parent_runtime_activation_baseline_reason_still_reports_final_resolved_state():
+    agent = _make_bare_agent(delegate_depth=0)
+
+    state = agent._resolve_runtime_activation_state("implement the delegated change")
+
+    assert "keyword-derived specialist: builder" in state["activation_reason"]
+    assert "specialist=builder" in state["activation_reason"]
+    assert "archetype=implementer" in state["activation_reason"]
+    assert "category=deep" in state["activation_reason"]
+    assert "route_category=deep" in state["activation_reason"]
+    assert "delegation_profile=implementation" in state["activation_reason"]
+    assert "runtime_mode=default" in state["activation_reason"]
 
 
 def test_named_workflow_alone_triggers_runtime_activation_injection():

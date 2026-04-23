@@ -22,7 +22,10 @@ from unittest.mock import MagicMock, patch
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
+    _apply_named_role_completion_gate,
     _get_max_concurrent_children,
+    _is_reviewer_like_resolution,
+    _resolve_named_agent_config,
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
@@ -31,6 +34,10 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_route_category_fallback_models,
+    _resolve_task_delegation_profile,
+    _resolve_wave1_task_inputs,
+    _normalize_delegation_config,
 )
 
 
@@ -69,6 +76,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
+        self.assertIn("agent", props)
+        self.assertIn("agent", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
@@ -88,6 +97,206 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_includes_wave1_overlay_prompt(self):
+        prompt = _build_child_system_prompt(
+            "Do something",
+            "Context block",
+            wave1_overlay_prompt="# Wave 1 Prompt Overlays\n\n## Route Category\nname: deep",
+        )
+        self.assertIn("WAVE 1 DELEGATION INPUTS", prompt)
+        self.assertIn("# Wave 1 Prompt Overlays", prompt)
+        self.assertIn("name: deep", prompt)
+
+
+class TestWave1DelegateResolution(unittest.TestCase):
+    def test_delegation_profile_prefers_new_field_but_preserves_non_literal_legacy_alias(self):
+        cfg = {"default_delegation_profile": "general", "default_category": "general"}
+        self.assertEqual(
+            _resolve_task_delegation_profile(
+                {"delegation_profile": "verification", "category": "research"},
+                top_level_delegation_profile=None,
+                top_level_category=None,
+                cfg=cfg,
+            ),
+            "verification",
+        )
+        self.assertEqual(
+            _resolve_task_delegation_profile(
+                {"category": "research"},
+                top_level_delegation_profile=None,
+                top_level_category=None,
+                cfg=cfg,
+            ),
+            "research",
+        )
+
+    def test_wave1_inputs_keep_literal_category_surface_distinct_from_route_and_profile(self):
+        cfg = {
+            "archetype": "generalist",
+            "category": "unspecified-low",
+            "route_category": "unspecified_low",
+            "route_categories": {
+                "visual": {"summary": "Config-tuned visual lane", "intensity": "medium"},
+            },
+            "default_delegation_profile": "general",
+            "delegation_profiles": {
+                "verification": {"runtime_mode": "execution_supervisor"},
+            },
+            "default_skills": ["general_reasoning"],
+            "task_contract": None,
+            "runtime_mode": "default",
+            "runtime_modes": {
+                "execution_supervisor": {
+                    "description": "Config-tuned oversight posture",
+                    "operating_posture": "oversight_and_coordination",
+                    "kind": "runtime_mode",
+                },
+            },
+            "permission_preset": "inherit",
+            "fallback_policy": "legacy_default_mapping",
+            "default_category": "unspecified-low",
+        }
+        resolved = _resolve_wave1_task_inputs(
+            {
+                "goal": "Investigate bug",
+                "category": "visual-engineering",
+                "delegation_profile": "verification",
+                "skills": ["pytest"],
+            },
+            cfg=_normalize_delegation_config(cfg),
+        )
+        self.assertEqual(resolved["category"], "visual-engineering")
+        self.assertEqual(resolved["route_category"], "visual")
+        self.assertEqual(resolved["route_category_definition"]["summary"], "Config-tuned visual lane")
+        self.assertEqual(resolved["delegation_profile"], "verification")
+        self.assertNotEqual(resolved["category"], resolved["route_category"])
+        self.assertNotEqual(resolved["category"], resolved["delegation_profile"])
+        self.assertEqual(resolved["runtime_mode"], "execution_supervisor")
+        self.assertEqual(resolved["runtime_mode_definition"]["description"], "Config-tuned oversight posture")
+        self.assertIn("pytest", resolved["skills"])
+        self.assertIn("## Route Category", resolved["overlay_prompt"])
+        self.assertIn("## Delegation Profile", resolved["overlay_prompt"])
+        self.assertIn("## Runtime Mode", resolved["overlay_prompt"])
+
+    def test_wave1_inputs_preserve_literal_category_default_mapping_when_missing(self):
+        cfg = {
+            "archetype": "generalist",
+            "category": "unspecified-low",
+            "route_category": "unspecified_low",
+            "default_delegation_profile": "research",
+            "default_skills": ["general_reasoning"],
+            "task_contract": None,
+            "runtime_mode": "default",
+            "permission_preset": "inherit",
+            "fallback_policy": "legacy_default_mapping",
+            "default_category": "unspecified-low",
+        }
+        resolved = _resolve_wave1_task_inputs({"goal": "Find sources"}, cfg=_normalize_delegation_config(cfg))
+        self.assertEqual(resolved["archetype"], "generalist")
+        self.assertEqual(resolved["category"], "unspecified-low")
+        self.assertEqual(resolved["route_category"], "unspecified_low")
+        self.assertEqual(resolved["delegation_profile"], "research")
+        self.assertEqual(resolved["runtime_mode"], "default")
+        self.assertIsNone(resolved["task_contract"])
+
+    def test_task_route_category_wins_over_literal_category_mapping(self):
+        resolved = _resolve_wave1_task_inputs(
+            {
+                "goal": "Check precedence",
+                "category": "visual-engineering",
+                "route_category": "deep",
+                "runtime_mode": "execution_supervisor",
+                "delegation_profile": "verification",
+            },
+            cfg=_normalize_delegation_config({
+                "default_delegation_profile": "general",
+                "route_category": "unspecified_low",
+                "runtime_mode": "default",
+            }),
+        )
+
+        self.assertEqual(resolved["category"], "visual-engineering")
+        self.assertEqual(resolved["route_category"], "deep")
+        self.assertEqual(resolved["runtime_mode"], "execution_supervisor")
+        self.assertEqual(resolved["delegation_profile"], "verification")
+        self.assertIn("## Category\nname: visual-engineering", resolved["overlay_prompt"])
+        self.assertIn("mapped_route_category: visual", resolved["overlay_prompt"])
+        self.assertIn("## Route Category\nname: deep", resolved["overlay_prompt"])
+
+    def test_delegation_profile_surface_is_distinct_from_literal_category_surface(self):
+        normalized = _normalize_delegation_config(
+            {
+                "category": "visual-engineering",
+                "default_category": "visual-engineering",
+                "default_delegation_profile": "verification",
+                "delegation_profiles": {
+                    "verification": {"max_iterations": 11, "runtime_mode": "execution_supervisor"},
+                },
+                "categories": {
+                    "research": {"max_iterations": 7},
+                },
+            }
+        )
+
+        self.assertEqual(normalized["category"], "visual-engineering")
+        self.assertEqual(normalized["default_category"], "visual-engineering")
+        self.assertEqual(normalized["route_category"], "visual")
+        self.assertEqual(normalized["default_delegation_profile"], "verification")
+        self.assertIn("verification", normalized["delegation_profiles"])
+        self.assertIn("research", normalized["delegation_profiles"])
+        self.assertEqual(normalized["categories"], normalized["delegation_profiles"])
+        self.assertEqual(normalized["delegation_profiles"]["verification"]["runtime_mode"], "execution_supervisor")
+
+
+class TestRouteCategoryFallbackResolution(unittest.TestCase):
+    def test_builtin_route_category_fallbacks_degrade_to_root_config_when_no_profile_matches(self):
+        cfg = _normalize_delegation_config({
+            "model": "root-model",
+            "default_delegation_profile": "general",
+        })
+
+        fallback_models = _resolve_route_category_fallback_models(
+            cfg,
+            "deep",
+            _make_mock_parent(),
+        )
+
+        self.assertEqual(fallback_models, [{"model": "root-model"}])
+
+    def test_route_category_fallback_prefers_route_category_model_override(self):
+        cfg = _normalize_delegation_config({
+            "model": "root-model",
+            "default_delegation_profile": "general",
+            "route_categories": {
+                "quick": {
+                    "model": "quick-model",
+                },
+            },
+        })
+
+        fallback_models = _resolve_route_category_fallback_models(
+            cfg,
+            "deep",
+            _make_mock_parent(),
+        )
+
+        self.assertEqual(fallback_models, [{"model": "quick-model"}])
+
+
+class TestReviewerLikeNamedRoles(unittest.TestCase):
+    def test_verifier_archetype_counts_as_reviewer_like(self):
+        self.assertTrue(_is_reviewer_like_resolution({"archetype": "verifier"}))
+
+    def test_completion_gate_blocks_verifier_without_evidence(self):
+        entry = _apply_named_role_completion_gate(
+            {"status": "completed", "tool_trace": []},
+            resolved_inputs={"archetype": "verifier"},
+        )
+
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "verification_evidence_missing")
+        self.assertIn("no verification evidence tool", entry["error"])
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -132,6 +341,202 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
 
     @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_full_config")
+    def test_named_agent_overrides_apply_to_defaults_tools_and_credentials(
+        self,
+        mock_load_full_config,
+        mock_resolve_creds,
+        mock_build_child,
+        mock_run_child,
+    ):
+        mock_load_full_config.return_value = {
+            "delegation": {"max_iterations": 50},
+            "agents": {
+                "writer": {
+                    "archetype": "implementer",
+                    "route_category": "deep",
+                    "allowed_tools": ["read_file", "search_files"],
+                    "blocked_tools": ["terminal"],
+                    "model": "writer-model",
+                    "provider": "writer-provider",
+                },
+                "reviewer": {
+                    "archetype": "verifier",
+                    "route_category": "quick",
+                    "allowed_tools": ["read_file", "terminal"],
+                    "blocked_tools": ["search_files"],
+                    "model": "review-model",
+                    "provider": "review-provider",
+                },
+            },
+        }
+
+        def _creds_for(cfg, _parent_agent):
+            provider = cfg.get("provider")
+            return {
+                "model": cfg.get("model"),
+                "provider": provider,
+                "base_url": f"https://{provider}.example/v1" if provider else None,
+                "api_key": f"key-for-{provider}" if provider else None,
+                "api_mode": "chat_completions" if provider else None,
+            }
+
+        mock_resolve_creds.side_effect = _creds_for
+        mock_build_child.side_effect = [MagicMock(), MagicMock()]
+        mock_run_child.side_effect = lambda *, task_index, goal, child, parent_agent: {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": f"Done {goal}",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+        parent.valid_tool_names = {"read_file", "search_files", "terminal", "patch"}
+
+        result = json.loads(delegate_task(
+            tasks=[
+                {"goal": "Draft changelog"},
+                {"goal": "Review changes", "agent": "reviewer"},
+            ],
+            agent="writer",
+            parent_agent=parent,
+        ))
+
+        self.assertIn("results", result)
+        self.assertEqual(mock_build_child.call_count, 2)
+
+        writer_call = mock_build_child.call_args_list[0].kwargs
+        self.assertEqual(writer_call["enabled_tools"], ["read_file", "search_files"])
+        self.assertEqual(writer_call["model"], "writer-model")
+        self.assertEqual(writer_call["override_provider"], "writer-provider")
+        self.assertEqual(writer_call["delegate_resolution"]["archetype"], "implementer")
+        self.assertEqual(writer_call["delegate_resolution"]["route_category"], "deep")
+        self.assertEqual(writer_call["delegate_resolution"]["agent"], "writer")
+
+        reviewer_call = mock_build_child.call_args_list[1].kwargs
+        self.assertEqual(reviewer_call["enabled_tools"], ["read_file", "terminal"])
+        self.assertEqual(reviewer_call["model"], "review-model")
+        self.assertEqual(reviewer_call["override_provider"], "review-provider")
+        self.assertEqual(reviewer_call["delegate_resolution"]["archetype"], "verifier")
+        self.assertEqual(reviewer_call["delegate_resolution"]["route_category"], "quick")
+        self.assertEqual(reviewer_call["delegate_resolution"]["agent"], "reviewer")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_full_config")
+    def test_named_agent_unknown_returns_error(self, mock_load_full_config, mock_resolve_creds):
+        mock_load_full_config.return_value = {
+            "delegation": {"max_iterations": 50},
+            "agents": {
+                "writer": {"archetype": "implementer"},
+            },
+        }
+        mock_resolve_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(delegate_task(goal="Draft changelog", agent="missing-agent", parent_agent=parent))
+
+        self.assertIn("error", result)
+        self.assertIn("Unknown named agent 'missing-agent'", result["error"])
+
+    def test_named_agent_resolution_canonicalizes_alias_case_and_separator_variants(self):
+        resolved = _resolve_named_agent_config(
+            {"agent": "Multimodal_Looker"},
+            registry={
+                "multimodal-looker": {
+                    "specialist": "multimodal_specialist",
+                    "aliases": ["looker"],
+                }
+            },
+        )
+
+        self.assertEqual(resolved["name"], "multimodal-looker")
+        self.assertEqual(resolved["requested_name"], "Multimodal_Looker")
+        self.assertEqual(resolved["specialist"], "multimodal_specialist")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_full_config")
+    def test_named_agent_alias_invocation_uses_canonical_runtime_identity(
+        self,
+        mock_load_full_config,
+        mock_resolve_creds,
+        mock_build_child,
+        mock_run_child,
+    ):
+        mock_load_full_config.return_value = {
+            "delegation": {"max_iterations": 50},
+            "agents": {
+                "explore": {
+                    "archetype": "researcher",
+                    "route_category": "deep",
+                    "allowed_tools": ["read_file", "search_files"],
+                    "aliases": ["explorer"],
+                    "model": "explore-model",
+                    "provider": "explore-provider",
+                },
+            },
+        }
+        mock_resolve_creds.side_effect = lambda cfg, _parent_agent: {
+            "model": cfg.get("model"),
+            "provider": cfg.get("provider"),
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_build_child.return_value = MagicMock()
+        mock_run_child.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done Explore task",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+        parent.valid_tool_names = {"read_file", "search_files", "terminal"}
+
+        result = json.loads(delegate_task(goal="Inspect codebase", agent="explorer", parent_agent=parent))
+
+        self.assertIn("results", result)
+        build_call = mock_build_child.call_args.kwargs
+        self.assertEqual(build_call["enabled_tools"], ["read_file", "search_files"])
+        self.assertEqual(build_call["model"], "explore-model")
+        self.assertEqual(build_call["override_provider"], "explore-provider")
+        self.assertEqual(build_call["delegate_resolution"]["agent"], "explore")
+        self.assertEqual(build_call["delegate_resolution"]["named_agent"], "explore")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_full_config")
+    def test_named_agent_disabled_returns_error(self, mock_load_full_config, mock_resolve_creds):
+        mock_load_full_config.return_value = {
+            "delegation": {"max_iterations": 50},
+            "agents": {
+                "writer": {"mode": "disabled"},
+            },
+        }
+        mock_resolve_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(delegate_task(goal="Draft changelog", agent="writer", parent_agent=parent))
+
+        self.assertIn("error", result)
+        self.assertIn("disabled", result["error"])
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):
         mock_run.return_value = {
             "task_index": 0, "status": "completed",
@@ -144,6 +549,110 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_single_task_carries_separate_wave1_inputs(self, mock_run):
+        mock_run.side_effect = lambda *args, **kwargs: {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "resolved_inputs": getattr(kwargs.get("child") or args[2], "_delegate_resolution", None),
+        }
+        parent = _make_mock_parent()
+        task_contract = {
+            "task": "Fix tests",
+            "expected_outcome": "Passing tests",
+            "required_skills": ["python"],
+            "required_tools": ["terminal"],
+            "must_do": ["Run pytest"],
+            "must_not_do": ["Ignore failures"],
+            "context": [{"path": "tests/"}],
+        }
+        result = json.loads(delegate_task(
+            goal="Fix tests",
+            archetype="implementer",
+            route_category="deep",
+            delegation_profile="verification",
+            skills=["pytest"],
+            task_contract=task_contract,
+            parent_agent=parent,
+        ))
+        resolved = result["results"][0]["resolved_inputs"]
+        self.assertEqual(resolved["archetype"], "implementer")
+        self.assertEqual(resolved["route_category"], "deep")
+        self.assertEqual(resolved["delegation_profile"], "verification")
+        self.assertIn("pytest", resolved["skills"])
+        self.assertEqual(resolved["task_contract"], task_contract)
+        self.assertEqual(resolved["runtime_mode"], "default")
+
+    @patch("tools.delegate_tool._load_full_config")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_config_to_delegate_to_prompt_smoke_path_uses_distinct_wave1_layers(self, mock_run, mock_load_config, mock_load_full_config):
+        mock_run.side_effect = lambda *args, **kwargs: {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "system_prompt": getattr(kwargs.get("child") or args[2], "ephemeral_system_prompt", ""),
+            "resolved_inputs": getattr(kwargs.get("child") or args[2], "_delegate_resolution", None),
+        }
+        mock_load_config.return_value = {
+            "provider": "",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "runtime_mode": "default",
+            "route_category": "unspecified_low",
+            "default_route_category": "unspecified_low",
+            "default_delegation_profile": "general",
+            "default_category": "general",
+            "route_categories": {
+                "deep": {"summary": "Config-tuned deep lane", "intensity": "high"},
+            },
+            "runtime_modes": {
+                "execution_supervisor": {
+                    "description": "Config-tuned oversight posture",
+                    "operating_posture": "oversight_and_coordination",
+                    "kind": "runtime_mode",
+                },
+            },
+            "delegation_profiles": {
+                "verification": {"runtime_mode": "execution_supervisor", "max_iterations": 9},
+            },
+            "categories": {
+                "research": {"max_iterations": 7},
+            },
+            "default_skills": ["general_reasoning"],
+            "task_contract": None,
+            "permission_preset": "inherit",
+            "fallback_policy": "legacy_default_mapping",
+            "max_iterations": 50,
+            "max_concurrent_children": 3,
+        }
+        mock_load_full_config.return_value = {"delegation": dict(mock_load_config.return_value), "agents": {}}
+        parent = _make_mock_parent()
+
+        result = json.loads(delegate_task(
+            goal="Verify the patch",
+            route_category="deep",
+            delegation_profile="verification",
+            parent_agent=parent,
+        ))
+        payload = result["results"][0]
+        resolved = payload["resolved_inputs"]
+        prompt = payload["system_prompt"]
+
+        self.assertEqual(resolved["route_category"], "deep")
+        self.assertEqual(resolved["delegation_profile"], "verification")
+        self.assertEqual(resolved["runtime_mode"], "execution_supervisor")
+        self.assertIn("## Route Category\nname: deep\nsummary: Config-tuned deep lane", prompt)
+        self.assertIn("## Delegation Profile\nname: verification", prompt)
+        self.assertIn("## Runtime Mode\nname: execution_supervisor", prompt)
+        self.assertIn("description: Config-tuned oversight posture", prompt)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):
@@ -1337,9 +1846,10 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 class TestDelegationCategoryPolicy(unittest.TestCase):
     @patch("tools.delegate_tool._run_single_child")
     @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._load_full_config")
     @patch("tools.delegate_tool._load_config")
-    def test_category_profile_applies_tool_policy(self, mock_load_config, mock_build_child, mock_run_child):
-        mock_load_config.return_value = {
+    def test_category_profile_applies_tool_policy(self, mock_load_config, mock_load_full_config, mock_build_child, mock_run_child):
+        category_cfg = {
             "max_concurrent_children": 5,
             "categories": {
                 "research": {
@@ -1349,6 +1859,8 @@ class TestDelegationCategoryPolicy(unittest.TestCase):
                 }
             },
         }
+        mock_load_config.return_value = category_cfg
+        mock_load_full_config.return_value = {"delegation": category_cfg, "agents": {}}
         mock_build_child.return_value = MagicMock()
         mock_run_child.return_value = {
             "task_index": 0,
@@ -1367,14 +1879,17 @@ class TestDelegationCategoryPolicy(unittest.TestCase):
         self.assertEqual(kwargs["enabled_tools"], ["read_file", "search_files"])
         self.assertEqual(kwargs["max_iterations"], 7)
 
+    @patch("tools.delegate_tool._load_full_config")
     @patch("tools.delegate_tool._load_config")
-    def test_category_concurrency_cap_rejected(self, mock_load_config):
-        mock_load_config.return_value = {
+    def test_category_concurrency_cap_rejected(self, mock_load_config, mock_load_full_config):
+        category_cfg = {
             "max_concurrent_children": 5,
             "categories": {
                 "implementation": {"max_concurrent_children": 1},
             },
         }
+        mock_load_config.return_value = category_cfg
+        mock_load_full_config.return_value = {"delegation": category_cfg, "agents": {}}
         parent = _make_mock_parent()
 
         result = json.loads(delegate_task(
@@ -1390,14 +1905,17 @@ class TestDelegationCategoryPolicy(unittest.TestCase):
 
     @patch("tools.delegate_tool._run_single_child")
     @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._load_full_config")
     @patch("tools.delegate_tool._load_config")
-    def test_category_only_batch_can_exceed_root_default(self, mock_load_config, mock_build_child, mock_run_child):
-        mock_load_config.return_value = {
+    def test_category_only_batch_can_exceed_root_default(self, mock_load_config, mock_load_full_config, mock_build_child, mock_run_child):
+        category_cfg = {
             "max_concurrent_children": 3,
             "categories": {
                 "research": {"max_concurrent_children": 5},
             },
         }
+        mock_load_config.return_value = category_cfg
+        mock_load_full_config.return_value = {"delegation": category_cfg, "agents": {}}
         mock_build_child.side_effect = [MagicMock() for _ in range(4)]
         mock_run_child.side_effect = lambda *, task_index, goal, child, parent_agent: {
             "task_index": task_index,

@@ -452,6 +452,90 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 
 
+def _is_multimodal_tool_result(value: Any) -> bool:
+    """True if the value is a multimodal tool result envelope.
+
+    Multimodal handlers (e.g. tools/computer_use) return a dict with
+    `_multimodal=True`, a `content` key holding OpenAI-style content
+    parts, and an optional `text_summary` for string-only fallbacks.
+    """
+    return (
+        isinstance(value, dict)
+        and value.get("_multimodal") is True
+        and isinstance(value.get("content"), list)
+    )
+
+
+def _multimodal_text_summary(value: Any) -> str:
+    """Extract a plain text view of a multimodal tool result.
+
+    Used wherever downstream code needs a string — logging, previews,
+    persistence size heuristics, fall-back content for providers that
+    don't support multipart tool messages.
+    """
+    if _is_multimodal_tool_result(value):
+        if value.get("text_summary"):
+            return str(value["text_summary"])
+        parts = []
+        for p in value.get("content") or []:
+            if isinstance(p, dict) and p.get("type") == "text":
+                parts.append(str(p.get("text", "")))
+        if parts:
+            return "\n".join(parts)
+        return "[multimodal tool result]"
+    if isinstance(value, str):
+        return value
+    try:
+        import json as _json
+        return _json.dumps(value, default=str)
+    except Exception:
+        return str(value)
+
+
+def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
+    """Mutate a multimodal tool-result envelope to append a subdir hint.
+
+    The hint is added to the first text part so the model sees it; image
+    parts are left untouched. `text_summary` is also updated for
+    string-fallback callers.
+    """
+    if not _is_multimodal_tool_result(value):
+        return
+    parts = value.get("content") or []
+    for p in parts:
+        if isinstance(p, dict) and p.get("type") == "text":
+            p["text"] = str(p.get("text", "")) + hint
+            break
+    else:
+        parts.insert(0, {"type": "text", "text": hint})
+        value["content"] = parts
+    if isinstance(value.get("text_summary"), str):
+        value["text_summary"] = value["text_summary"] + hint
+
+
+def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip image blobs from a message for trajectory saving.
+
+    Returns a shallow copy with multimodal tool results replaced by their
+    text_summary, and image parts in content lists replaced by
+    `[screenshot]` placeholders. Keeps the message schema otherwise intact.
+    """
+    if not isinstance(msg, dict):
+        return msg
+    content = msg.get("content")
+    if _is_multimodal_tool_result(content):
+        return {**msg, "content": _multimodal_text_summary(content)}
+    if isinstance(content, list):
+        cleaned = []
+        for p in content:
+            if isinstance(p, dict) and p.get("type") in ("image", "image_url", "input_image"):
+                cleaned.append({"type": "text", "text": "[screenshot]"})
+            else:
+                cleaned.append(p)
+        return {**msg, "content": cleaned}
+    return msg
+
+
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD (replacement character).
 
@@ -4017,6 +4101,20 @@ class AIAgent:
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                # Persist multimodal tool results as their text summary only —
+                # base64 images would bloat the session DB and aren't useful
+                # for cross-session replay.
+                if _is_multimodal_tool_result(content):
+                    content = _multimodal_text_summary(content)
+                elif isinstance(content, list):
+                    # List of OpenAI-style content parts: strip images, keep text.
+                    _txt = []
+                    for p in content:
+                        if isinstance(p, dict) and p.get("type") == "text":
+                            _txt.append(str(p.get("text", "")))
+                        elif isinstance(p, dict) and p.get("type") in ("image", "image_url", "input_image"):
+                            _txt.append("[screenshot]")
+                    content = "\n".join(_txt) if _txt else None
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [
@@ -4110,6 +4208,10 @@ class AIAgent:
         Returns:
             List[Dict]: Messages in trajectory format
         """
+        # Normalize multimodal tool results — trajectories are text-only, so
+        # replace image-bearing tool messages with their text_summary to avoid
+        # embedding ~1MB base64 blobs into every saved trajectory.
+        messages = [_trajectory_normalize_msg(m) for m in messages]
         trajectory = []
         
         # Add system message with tool definitions
@@ -5161,6 +5263,12 @@ class AIAgent:
             tool_guidance.append(KANBAN_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
+
+        # Computer-use (macOS) — goes in as its own block rather than being
+        # merged into tool_guidance because the content is multi-paragraph.
+        if "computer_use" in self.valid_tool_names:
+            from agent.prompt_builder import COMPUTER_USE_GUIDANCE
+            prompt_parts.append(COMPUTER_USE_GUIDANCE)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
@@ -10088,7 +10196,8 @@ class AIAgent:
                     )
 
                 if is_error:
-                    result_preview = function_result[:200] if len(function_result) > 200 else function_result
+                    _err_text = _multimodal_text_summary(function_result)
+                    result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
                 if not blocked and self.tool_progress_callback:
@@ -10109,11 +10218,12 @@ class AIAgent:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
                 self._safe_print(f"  {cute_msg}")
             elif not self.quiet_mode:
+                _preview_str = _multimodal_text_summary(function_result)
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
-                    print(self._wrap_verbose("Result: ", function_result))
+                    print(self._wrap_verbose("Result: ", _preview_str))
                 else:
-                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
+                    response_preview = _preview_str[:self.log_prefix_chars] + "..." if len(_preview_str) > self.log_prefix_chars else _preview_str
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             self._current_tool = None
@@ -10130,11 +10240,16 @@ class AIAgent:
                 tool_name=name,
                 tool_use_id=tc.id,
                 env=get_active_env(effective_task_id),
-            )
+            ) if not _is_multimodal_tool_result(function_result) else function_result
 
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
-                function_result += subdir_hints
+                if _is_multimodal_tool_result(function_result):
+                    # Append the hint to the text summary part so the model
+                    # still sees it; don't touch the image blocks.
+                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                else:
+                    function_result += subdir_hints
 
             tool_msg = {
                 "role": "tool",
@@ -10505,7 +10620,8 @@ class AIAgent:
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
+                _log_result = _multimodal_text_summary(function_result)
+                logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
 
             if not _execution_blocked and self.tool_complete_callback:
                 try:
@@ -10518,12 +10634,15 @@ class AIAgent:
                 tool_name=function_name,
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
-            )
+            ) if not _is_multimodal_tool_result(function_result) else function_result
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
             if subdir_hints:
-                function_result += subdir_hints
+                if _is_multimodal_tool_result(function_result):
+                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                else:
+                    function_result += subdir_hints
 
             tool_msg = {
                 "role": "tool",

@@ -74,6 +74,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
+    ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]
 
 # Toolsets that are OFF by default for new installs.
@@ -445,6 +446,27 @@ TOOL_CATEGORIES = {
             },
         ],
     },
+    "computer_use": {
+        "name": "Computer Use (macOS)",
+        "icon": "🖱️",
+        "platform_gate": "darwin",
+        "providers": [
+            {
+                "name": "cua-driver (background)",
+                "badge": "★ recommended · free · local",
+                "tag": (
+                    "macOS background computer-use via SkyLight SPIs — does "
+                    "NOT steal your cursor or focus. Works with any model."
+                ),
+                "env_vars": [
+                    # cua-driver reads HOME/TMPDIR from the process env, no
+                    # extra keys required. HERMES_CUA_DRIVER_VERSION is an
+                    # optional pin for reproducibility across macOS updates.
+                ],
+                "post_setup": "cua_driver",
+            },
+        ],
+    },
     "rl": {
         "name": "RL Training",
         "icon": "🧪",
@@ -628,6 +650,53 @@ def _run_post_setup(post_setup_key: str):
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+
+    elif post_setup_key == "cua_driver":
+        # cua-driver provides macOS background computer-use (SkyLight SPIs).
+        # Install via upstream curl script if the binary isn't on $PATH yet.
+        import platform as _plat
+        import subprocess
+        if _plat.system() != "Darwin":
+            _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
+            return
+        if shutil.which("cua-driver"):
+            try:
+                version = subprocess.run(
+                    ["cua-driver", "--version"],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout.strip()
+                _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
+            except Exception:
+                _print_success("    cua-driver already installed.")
+            _print_info("    Grant macOS permissions if not done yet:")
+            _print_info("      System Settings > Privacy & Security > Accessibility")
+            _print_info("      System Settings > Privacy & Security > Screen Recording")
+            return
+        if not shutil.which("curl"):
+            _print_warning("    curl not found — install manually:")
+            _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
+            return
+        _print_info("    Installing cua-driver (macOS background computer-use)...")
+        try:
+            install_cmd = (
+                "/bin/bash -c \"$(curl -fsSL "
+                "https://raw.githubusercontent.com/trycua/cua/main/"
+                "libs/cua-driver/scripts/install.sh)\""
+            )
+            result = subprocess.run(install_cmd, shell=True, timeout=300)
+            if result.returncode == 0 and shutil.which("cua-driver"):
+                _print_success("    cua-driver installed.")
+                _print_info("    IMPORTANT — grant macOS permissions now:")
+                _print_info("      System Settings > Privacy & Security > Accessibility")
+                _print_info("      System Settings > Privacy & Security > Screen Recording")
+                _print_info("    Both must allow the terminal / Hermes process.")
+            else:
+                _print_warning("    cua-driver install did not complete. Re-run manually:")
+                _print_info(f"      {install_cmd}")
+        except subprocess.TimeoutExpired:
+            _print_warning("    cua-driver install timed out. Re-run manually.")
+        except Exception as e:
+            _print_warning(f"    cua-driver install failed: {e}")
 
     elif post_setup_key == "kittentts":
         try:

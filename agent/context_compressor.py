@@ -150,6 +150,31 @@ def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -
     return text + rendered if prepend else rendered + text
 
 
+def _strip_image_parts_from_parts(parts: Any) -> Any:
+    """Strip image parts from an OpenAI-style content-parts list.
+
+    Returns a new list with image_url / image / input_image parts replaced
+    by a text placeholder, or None if the list had no images (callers
+    skip the replacement in that case). Used by the compressor to prune
+    old computer_use screenshots.
+    """
+    if not isinstance(parts, list):
+        return None
+    had_image = False
+    out = []
+    for part in parts:
+        if not isinstance(part, dict):
+            out.append(part)
+            continue
+        ptype = part.get("type")
+        if ptype in ("image", "image_url", "input_image"):
+            had_image = True
+            out.append({"type": "text", "text": "[screenshot removed to save context]"})
+        else:
+            out.append(part)
+    return out if had_image else None
+
+
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """Shrink long string values inside a tool-call arguments JSON blob while
     preserving JSON validity.
@@ -578,10 +603,12 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content") or ""
-            # Skip multimodal content (list of content blocks)
+            # Multimodal content — dedupe by the text summary if available.
             if isinstance(content, list):
                 continue
             if not isinstance(content, str):
+                # Multimodal dict envelopes ({_multimodal: True, content: [...]}) and
+                # other non-string tool-result shapes can't be hashed/deduped by text.
                 continue
             if len(content) < 200:
                 continue
@@ -599,8 +626,20 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content", "")
-            # Skip multimodal content (list of content blocks)
+            # Multimodal content (base64 screenshots etc.): strip the image
+            # payload — keep a lightweight text placeholder in its place.
+            # Without this, an old computer_use screenshot (~1MB base64 +
+            # ~1500 real tokens) survives every compression pass forever.
             if isinstance(content, list):
+                stripped = _strip_image_parts_from_parts(content)
+                if stripped is not None:
+                    result[i] = {**msg, "content": stripped}
+                    pruned += 1
+                continue
+            if isinstance(content, dict) and content.get("_multimodal"):
+                summary = content.get("text_summary") or "[screenshot removed to save context]"
+                result[i] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
+                pruned += 1
                 continue
             if not isinstance(content, str):
                 continue

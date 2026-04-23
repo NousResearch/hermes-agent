@@ -1422,6 +1422,32 @@ def _convert_content_to_anthropic(content: Any) -> Any:
     return converted
 
 
+def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
+    """Convert OpenAI-style tool-message content parts → Anthropic tool_result inner blocks.
+
+    Used for multimodal tool results (e.g. computer_use screenshots). Each
+    part is normalized via `_convert_content_part_to_anthropic`, then
+    filtered to the block types Anthropic tool_result accepts (text + image).
+    """
+    if not isinstance(parts, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for part in parts:
+        block = _convert_content_part_to_anthropic(part)
+        if not block:
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text_val = block.get("text")
+            if isinstance(text_val, str) and text_val:
+                out.append({"type": "text", "text": text_val})
+        elif btype == "image":
+            src = block.get("source")
+            if isinstance(src, dict) and src:
+                out.append({"type": "image", "source": src})
+    return out
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -1524,8 +1550,41 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "tool":
-            # Sanitize tool_use_id and ensure non-empty content
-            result_content = content if isinstance(content, str) else json.dumps(content)
+            # Sanitize tool_use_id and ensure non-empty content.
+            # Computer-use (and other multimodal) tool results arrive as
+            # either a list of OpenAI-style content parts, or a dict
+            # marked `_multimodal` with an embedded `content` list. Convert
+            # both into Anthropic `tool_result` inner blocks (text + image).
+            multimodal_blocks: Optional[List[Dict[str, Any]]] = None
+            if isinstance(content, dict) and content.get("_multimodal"):
+                multimodal_blocks = _content_parts_to_anthropic_blocks(
+                    content.get("content") or []
+                )
+                # Fallback text if the conversion produced nothing usable.
+                if not multimodal_blocks and content.get("text_summary"):
+                    multimodal_blocks = [
+                        {"type": "text", "text": str(content["text_summary"])}
+                    ]
+            elif isinstance(content, list):
+                converted = _content_parts_to_anthropic_blocks(content)
+                if any(b.get("type") == "image" for b in converted):
+                    multimodal_blocks = converted
+            # Back-compat: some callers stash blocks under a private key.
+            if multimodal_blocks is None:
+                stashed = m.get("_anthropic_content_blocks")
+                if isinstance(stashed, list) and stashed:
+                    text_content = content if isinstance(content, str) and content.strip() else None
+                    multimodal_blocks = (
+                        [{"type": "text", "text": text_content}] + stashed
+                        if text_content else list(stashed)
+                    )
+
+            if multimodal_blocks:
+                result_content: Any = multimodal_blocks
+            elif isinstance(content, str):
+                result_content = content
+            else:
+                result_content = json.dumps(content) if content else "(no output)"
             if not result_content:
                 result_content = "(no output)"
             tool_result = {
@@ -1748,6 +1807,38 @@ def convert_messages_to_anthropic(
         for b in m["content"]:
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
+
+    # ── Image eviction: keep only the most recent N screenshots ─────
+    # computer_use screenshots (base64 images) sit inside tool_result
+    # blocks: they accumulate and are sent with every API call. Each
+    # costs ~1,465 tokens; after 10+ the conversation becomes slow
+    # even for simple text queries. Walk backward, keep the most recent
+    # _MAX_KEEP_IMAGES, replace older ones with a text placeholder.
+    _MAX_KEEP_IMAGES = 3
+    _image_count = 0
+    for msg in reversed(result):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            inner = block.get("content")
+            if not isinstance(inner, list):
+                continue
+            has_image = any(
+                isinstance(b, dict) and b.get("type") == "image"
+                for b in inner
+            )
+            if not has_image:
+                continue
+            _image_count += 1
+            if _image_count > _MAX_KEEP_IMAGES:
+                block["content"] = [
+                    b if b.get("type") != "image"
+                    else {"type": "text", "text": "[screenshot removed to save context]"}
+                    for b in inner
+                ]
 
     return system, result
 

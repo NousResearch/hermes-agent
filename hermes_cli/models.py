@@ -142,6 +142,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
     ],
+    # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
+    # provider_model_ids fallback when /v1/models is unavailable.
+    "openai": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "gpt-4o-mini",
+    ],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [
         "copilot-acp",
@@ -1748,6 +1760,17 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
+    if normalized == "openai":
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if api_key:
+            base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+            base = base_raw or "https://api.openai.com/v1"
+            try:
+                live = fetch_api_models(api_key, base)
+                if live:
+                    return live
+            except Exception:
+                pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

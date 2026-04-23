@@ -360,6 +360,7 @@ AUTHOR_MAP = {
     "brian@tiuxo.com": "brianclemens",
     "25944632+yudaiyan@users.noreply.github.com": "yudaiyan",
     "chayton@sina.com": "ycbai",
+    "longsizhuo@gmail.com": "longsizhuo",
 }
 
 

@@ -348,6 +348,7 @@ AUTHOR_MAP = {
     "simon@gtcl.us": "simon-gtcl",
     "suzukaze.haduki@gmail.com": "houko",
     "cliff@cigii.com": "cgarwood82",
+    "anna@oa.ke": "anna-oake",
 }
 
 

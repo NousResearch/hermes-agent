@@ -139,6 +139,8 @@ _MOA_AUTO_HINTS = (
 )
 
 _ROUTED_HISTORY_MAX_MESSAGES = 8
+# Roughly ~1500 tokens of history, leaving headroom for the wrapper text and
+# the force-routed tool's own output inside the downstream model budget.
 _ROUTED_HISTORY_MAX_CHARS = 6000
 
 

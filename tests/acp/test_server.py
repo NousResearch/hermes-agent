@@ -29,7 +29,7 @@ from acp.schema import (
     TextContentBlock,
     Usage,
 )
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import HermesACPAgent, HERMES_VERSION, _build_routed_prompt
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -446,6 +446,22 @@ class TestSessionConfiguration:
 
 
 class TestPrompt:
+    def test_build_routed_prompt_truncates_oversized_latest_message(self):
+        huge_message = "x" * 20000
+
+        routed = _build_routed_prompt(
+            "give me the answer",
+            [{"role": "assistant", "content": huge_message}],
+            max_messages=8,
+            max_chars=120,
+        )
+
+        assert "Recent conversation:" in routed
+        assert "Assistant: " in routed
+        assert "..." in routed
+        assert huge_message not in routed
+        assert routed.endswith("User: give me the answer")
+
     @pytest.mark.asyncio
     async def test_prompt_returns_refusal_for_unknown_session(self, agent):
         prompt = [TextContentBlock(type="text", text="hello")]

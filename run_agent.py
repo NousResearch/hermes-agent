@@ -6073,11 +6073,25 @@ class AIAgent:
                 for idx in sorted(tool_calls_acc):
                     tc = tool_calls_acc[idx]
                     arguments = tc["function"]["arguments"]
+                    tool_name = tc["function"]["name"] or "?"
                     if arguments and arguments.strip():
                         try:
                             json.loads(arguments)
                         except json.JSONDecodeError:
-                            has_truncated_tool_args = True
+                            # Attempt repair before flagging as truncated.
+                            # Models like GLM-5.1 via Ollama produce trailing
+                            # commas, unclosed brackets, Python None, etc.
+                            # Without repair, these hit the truncation handler
+                            # and kill the session.  _repair_tool_call_arguments
+                            # returns "{}" for unrepairable args, which is far
+                            # better than a crashed session.
+                            repaired = _repair_tool_call_arguments(arguments, tool_name)
+                            if repaired != "{}":
+                                # Successfully repaired — use the fixed args
+                                arguments = repaired
+                            else:
+                                # Unrepairable — flag for truncation handling
+                                has_truncated_tool_args = True
                     mock_tool_calls.append(SimpleNamespace(
                         id=tc["id"],
                         type=tc["type"],

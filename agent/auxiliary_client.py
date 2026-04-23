@@ -1993,6 +1993,39 @@ def resolve_provider_client(
                        "directly supported", provider)
         return None, None
 
+    elif pconfig.auth_type == "aws_sdk":
+        # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via
+        # boto3's credential chain (IAM roles, SSO, env vars, instance metadata).
+        try:
+            from agent.bedrock_adapter import has_aws_credentials, resolve_bedrock_region
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+        except ImportError:
+            logger.warning("resolve_provider_client: bedrock requested but "
+                           "boto3 or anthropic SDK not installed")
+            return None, None
+
+        if not has_aws_credentials():
+            logger.debug("resolve_provider_client: bedrock requested but "
+                         "no AWS credentials found")
+            return None, None
+
+        region = resolve_bedrock_region()
+        default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        try:
+            real_client = build_anthropic_bedrock_client(region)
+        except ImportError as exc:
+            logger.warning("resolve_provider_client: cannot create Bedrock "
+                           "client: %s", exc)
+            return None, None
+        client = AnthropicAuxiliaryClient(
+            real_client, final_model, api_key="aws-sdk",
+            base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
+        )
+        logger.debug("resolve_provider_client: bedrock (%s, %s)", final_model, region)
+        return (_to_async_client(client, final_model) if async_mode
+                else (client, final_model))
+
     elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
         # OAuth providers — route through their specific try functions
         if provider == "nous":

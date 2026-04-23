@@ -443,11 +443,21 @@ hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
 hermes import <zipfile> [options]
 ```
 
-Restore a previously created Hermes backup into your Hermes home directory.
+Restore a previously created Hermes backup into your Hermes home directory. Files are overlaid onto your current Hermes home — existing files are skipped unless `--force` is used.
 
 | Option | Description |
 |--------|-------------|
 | `-f`, `--force` | Overwrite existing files without confirmation. |
+
+:::warning
+Stop the gateway before importing to avoid conflicts with running processes.
+:::
+
+### Examples
+```bash
+hermes import ~/hermes-backup-20260423.zip           # Restore, skip existing files
+hermes import ~/hermes-backup-20260423.zip --force   # Restore, overwrite existing files
+```
 
 ## `hermes logs`
 

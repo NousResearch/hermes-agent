@@ -3,7 +3,10 @@
 import builtins
 import importlib
 import logging
+import os
 import sys
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -30,6 +33,16 @@ from agent.prompt_builder import (
     WSL_ENVIRONMENT_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_skill_dirs(monkeypatch):
+    prompt_dirs = lambda: [Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "skills"]
+    monkeypatch.setitem(build_skills_system_prompt.__globals__, "get_runtime_skills_dirs", prompt_dirs)
+    import agent.prompt_builder as prompt_builder_module
+    prompt_builder_module.clear_skills_system_prompt_cache(clear_snapshot=True)
+    yield
+    prompt_builder_module.clear_skills_system_prompt_cache(clear_snapshot=True)
 
 
 # =========================================================================
@@ -266,6 +279,25 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_builds_index_with_project_local_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        project_skills = tmp_path / "repo" / ".hermes" / "skills"
+        local_skills = tmp_path / "skills"
+        skill_dir = project_skills / "coding" / "project-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: project-debug\ndescription: Debug project-specific issues\n---\n"
+        )
+
+        with patch(
+            "agent.prompt_builder.get_runtime_skills_dirs",
+            return_value=[project_skills.resolve(), local_skills.resolve()],
+        ):
+            result = build_skills_system_prompt()
+
+        assert "project-debug" in result
+        assert "Debug project-specific issues" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
@@ -371,6 +403,60 @@ class TestBuildSkillsSystemPrompt:
 
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
+
+    def test_project_local_skill_overrides_home_skill_in_prompt(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_skill = tmp_path / "skills" / "tools" / "shared-skill"
+        project_skill = tmp_path / "repo" / ".hermes" / "skills" / "tools" / "shared-skill"
+        local_skill.mkdir(parents=True)
+        project_skill.mkdir(parents=True)
+        (local_skill / "SKILL.md").write_text(
+            "---\nname: shared-skill\ndescription: Home description\n---\n"
+        )
+        (project_skill / "SKILL.md").write_text(
+            "---\nname: shared-skill\ndescription: Project description\n---\n"
+        )
+
+        with patch(
+            "agent.prompt_builder.get_runtime_skills_dirs",
+            return_value=[(tmp_path / "repo" / ".hermes" / "skills").resolve(), (tmp_path / "skills").resolve()],
+        ):
+            result = build_skills_system_prompt()
+
+        assert "shared-skill: Project description" in result
+        assert "shared-skill: Home description" not in result
+
+    def test_runtime_skill_dirs_change_invalidates_cached_prompt(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        project_a = tmp_path / "repo-a" / ".hermes" / "skills" / "tools" / "alpha-skill"
+        project_b = tmp_path / "repo-b" / ".hermes" / "skills" / "tools" / "beta-skill"
+        local_skills = tmp_path / "skills"
+        project_a.mkdir(parents=True)
+        project_b.mkdir(parents=True)
+        local_skills.mkdir(parents=True)
+        (project_a / "SKILL.md").write_text(
+            "---\nname: alpha-skill\ndescription: Alpha description\n---\n"
+        )
+        (project_b / "SKILL.md").write_text(
+            "---\nname: beta-skill\ndescription: Beta description\n---\n"
+        )
+
+        with patch(
+            "agent.prompt_builder.get_runtime_skills_dirs",
+            return_value=[(tmp_path / "repo-a" / ".hermes" / "skills").resolve(), local_skills.resolve()],
+        ):
+            first = build_skills_system_prompt()
+
+        with patch(
+            "agent.prompt_builder.get_runtime_skills_dirs",
+            return_value=[(tmp_path / "repo-b" / ".hermes" / "skills").resolve(), local_skills.resolve()],
+        ):
+            second = build_skills_system_prompt()
+
+        assert "alpha-skill" in first
+        assert "beta-skill" not in first
+        assert "beta-skill" in second
+        assert "alpha-skill" not in second
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

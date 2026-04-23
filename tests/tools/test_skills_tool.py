@@ -44,6 +44,17 @@ description: Description for {name}.
     return skill_dir
 
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_skill_dirs(monkeypatch):
+    import agent.skill_utils as skill_utils
+
+    monkeypatch.setattr(
+        skill_utils,
+        "get_runtime_skills_dirs",
+        lambda cwd=None: [skills_tool_module.SKILLS_DIR, *skill_utils.get_external_skills_dirs()],
+    )
+
+
 # ---------------------------------------------------------------------------
 # _parse_frontmatter
 # ---------------------------------------------------------------------------
@@ -204,6 +215,26 @@ class TestFindAllSkills:
         assert "skill-a" in names
         assert "skill-b" in names
 
+    def test_project_local_skills_found_first(self, tmp_path):
+        project_dir = tmp_path / "repo" / ".hermes" / "skills"
+        local_dir = tmp_path / "local-skills"
+        _make_skill(project_dir, "project-only")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_runtime_skills_dirs",
+                return_value=[project_dir.resolve(), local_dir.resolve()],
+            ),
+        ):
+            skills = _find_all_skills()
+
+        assert len(skills) == 1
+        assert skills[0]["name"] == "project-only"
+        assert skills[0]["source"] == "project-local-hermes"
+        assert skills[0]["scope"] == "project-local"
+        assert skills[0]["source_dir"] == str(project_dir.resolve())
+
     def test_empty_directory(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skills = _find_all_skills()
@@ -255,6 +286,26 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    def test_project_local_takes_precedence_over_local_with_same_name(self, tmp_path):
+        project_dir = tmp_path / "repo" / ".hermes" / "skills"
+        local_dir = tmp_path / "local-skills"
+        _make_skill(project_dir, "shared-skill", body="Project body.")
+        _make_skill(local_dir, "shared-skill", body="Local body.")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_runtime_skills_dirs",
+                return_value=[project_dir.resolve(), local_dir.resolve()],
+            ),
+        ):
+            skills = _find_all_skills()
+
+        assert len(skills) == 1
+        assert skills[0]["name"] == "shared-skill"
+        assert skills[0]["source"] == "project-local-hermes"
+        assert skills[0]["source_dir"] == str(project_dir.resolve())
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -278,6 +329,26 @@ class TestSkillsList:
             raw = skills_list()
         result = json.loads(raw)
         assert result["count"] == 2
+
+    def test_lists_project_local_source_metadata(self, tmp_path):
+        project_dir = tmp_path / "repo" / ".hermes" / "skills"
+        local_dir = tmp_path / "local-skills"
+        _make_skill(project_dir, "alpha")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_runtime_skills_dirs",
+                return_value=[project_dir.resolve(), local_dir.resolve()],
+            ),
+        ):
+            raw = skills_list()
+
+        result = json.loads(raw)
+        assert result["count"] == 1
+        assert result["skills"][0]["source"] == "project-local-hermes"
+        assert result["skills"][0]["scope"] == "project-local"
+        assert result["skills"][0]["source_dir"] == str(project_dir.resolve())
 
     def test_category_filter(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -303,6 +374,26 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
+
+    def test_view_project_local_skill_before_local(self, tmp_path):
+        project_dir = tmp_path / "repo" / ".hermes" / "skills"
+        local_dir = tmp_path / "local-skills"
+        _make_skill(project_dir, "my-skill", body="Project version.")
+        _make_skill(local_dir, "my-skill", body="Local version.")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_runtime_skills_dirs",
+                return_value=[project_dir.resolve(), local_dir.resolve()],
+            ),
+        ):
+            raw = skill_view("my-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Project version." in result["content"]
+        assert result["skill_dir"] == str((project_dir / "my-skill").resolve())
 
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

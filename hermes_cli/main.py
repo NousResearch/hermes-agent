@@ -7642,6 +7642,21 @@ Examples:
     )
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
 
+    skills_recommend = skills_subparsers.add_parser(
+        "recommend", help="Recommend skills for a project"
+    )
+    skills_recommend.add_argument("path", nargs="?", default=".", help="Project path (default: current directory)")
+    skills_recommend.add_argument(
+        "--source",
+        default="all",
+        choices=["all", "official"],
+        help="Filter recommendations by source (default: all)",
+    )
+    skills_recommend.add_argument("--limit", type=int, default=20, help="Max results per section")
+    skills_recommend.add_argument("--json", action="store_true", help="Print JSON output")
+    skills_recommend.add_argument("--install", action="store_true", help="Install recommended remote skills")
+    skills_recommend.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompts during install")
+
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
     skills_install.add_argument(
         "identifier", help="Skill identifier (e.g. openai/skills/skill-creator)"
@@ -7666,7 +7681,7 @@ Examples:
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument(
-        "--source", default="all", choices=["all", "hub", "builtin", "local"]
+        "--source", default="all", choices=["all", "hub", "builtin", "local", "project-local"]
     )
 
     skills_check = skills_subparsers.add_parser(

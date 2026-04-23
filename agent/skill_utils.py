@@ -168,6 +168,82 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+# ── Runtime cwd / repo helpers ───────────────────────────────────────────
+
+
+def resolve_runtime_cwd(cwd: Path | str | None = None) -> Path:
+    """Resolve the active runtime cwd for session-scoped project inspection."""
+    if cwd is not None:
+        return Path(cwd).expanduser().resolve()
+
+    terminal_cwd = os.getenv("TERMINAL_CWD")
+    if terminal_cwd:
+        return Path(terminal_cwd).expanduser().resolve()
+
+    return Path(os.getcwd()).resolve()
+
+
+
+def find_git_root(start: Path | str) -> Optional[Path]:
+    """Walk *start* and its parents looking for a ``.git`` directory."""
+    current = Path(start).expanduser().resolve()
+    for parent in [current, *current.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+
+def get_project_local_skills_dirs(cwd: Path | str | None = None) -> List[Path]:
+    """Return project-local skill dirs from nearest cwd ancestor to git root.
+
+    Search order at each level is ``.hermes/skills`` first, then
+    ``.agents/skills``. If no git root is found, only the current directory is
+    inspected.
+    """
+    start = resolve_runtime_cwd(cwd)
+    stop_at = find_git_root(start)
+
+    directories = [start] if stop_at is None else [start, *start.parents]
+    result: List[Path] = []
+    seen: Set[Path] = set()
+
+    for directory in directories:
+        for rel in (".hermes/skills", ".agents/skills"):
+            candidate = directory / rel
+            if not candidate.is_dir():
+                continue
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            result.append(resolved)
+        if stop_at is not None and directory == stop_at:
+            break
+
+    return result
+
+
+
+def get_runtime_skills_dirs(cwd: Path | str | None = None) -> List[Path]:
+    """Return runtime skill directories with project-local precedence first."""
+    ordered: List[Path] = []
+    seen: Set[Path] = set()
+
+    for path in [
+        *get_project_local_skills_dirs(cwd),
+        get_skills_dir(),
+        *get_external_skills_dirs(),
+    ]:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(resolved)
+
+    return ordered
+
+
 # ── External skills directories ──────────────────────────────────────────
 
 

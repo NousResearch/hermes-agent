@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_recommend, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -45,6 +45,19 @@ _ALL_THREE_SKILLS = [
     {"name": "local-skill", "category": "x", "description": "local"},
 ]
 
+_ALL_FOUR_SKILLS = [
+    {"name": "hub-skill", "category": "x", "description": "hub"},
+    {"name": "builtin-skill", "category": "x", "description": "builtin"},
+    {"name": "local-skill", "category": "x", "description": "local", "scope": "local", "source": "local"},
+    {
+        "name": "project-skill",
+        "category": "x",
+        "description": "project",
+        "scope": "project-local",
+        "source": "project-local-hermes",
+    },
+]
+
 _BUILTIN_MANIFEST = {"builtin-skill": "abc123"}
 
 
@@ -62,11 +75,34 @@ def three_source_env(monkeypatch, hub_env):
     return hub_env
 
 
+@pytest.fixture()
+def four_source_env(monkeypatch, hub_env):
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([_HUB_ENTRY]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: list(_ALL_FOUR_SKILLS))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_BUILTIN_MANIFEST))
+
+    return hub_env
+
+
 def _capture(source_filter: str = "all") -> str:
     """Run do_list into a string buffer and return the output."""
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None)
     do_list(source_filter=source_filter, console=console)
+    return sink.getvalue()
+
+
+def _capture_recommend(monkeypatch, payload, *, as_json=False, source="all") -> str:
+    import tools.skills_recommend as recommend_mod
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    monkeypatch.setattr(recommend_mod, "recommend_skills", lambda path='.', source_filter='all', limit=20: payload)
+    do_recommend(path=".", source=source, as_json=as_json, console=console)
     return sink.getvalue()
 
 
@@ -154,6 +190,22 @@ def test_do_list_filter_builtin(three_source_env):
     assert "local-skill" not in output
 
 
+def test_do_list_distinguishes_project_local(four_source_env):
+    output = _capture()
+
+    assert "project-skill" in output
+    assert "1 hub-installed, 1 builtin, 1 local, 1 project-local" in output
+
+
+def test_do_list_filter_project_local(four_source_env):
+    output = _capture(source_filter="project-local")
+
+    assert "project-skill" in output
+    assert "builtin-skill" not in output
+    assert "hub-skill" not in output
+    assert "local-skill" not in output
+
+
 def test_do_check_reports_available_updates(monkeypatch):
     output = _capture_check(monkeypatch, [
         {"name": "hub-skill", "source": "skills.sh", "status": "update_available"},
@@ -179,6 +231,112 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+def test_do_recommend_renders_grouped_sections(monkeypatch):
+    payload = {
+        "detected": {"technologies": ["docker"], "combos": [], "root": "/tmp/repo"},
+        "available": [
+            {
+                "name": "project-skill",
+                "identifier": "project-skill",
+                "source": "project-local-hermes",
+                "state": "available",
+                "matched_on": ["project-local"],
+                "reason": "Already available in this project.",
+                "score": 100,
+            }
+        ],
+        "official": [
+            {
+                "name": "docker-management",
+                "identifier": "official/devops/docker-management",
+                "source": "official",
+                "trust_level": "builtin",
+                "state": "installable",
+                "matched_on": ["docker"],
+                "reason": "Matched docker.",
+                "score": 50,
+            }
+        ],
+        "third_party": [
+            {
+                "name": "community-docker",
+                "identifier": "hub/docker",
+                "source": "github",
+                "trust_level": "trusted",
+                "state": "installable",
+                "matched_on": ["docker"],
+                "reason": "Matched docker.",
+                "score": 40,
+            }
+        ],
+    }
+
+    output = _capture_recommend(monkeypatch, payload)
+
+    assert "Already available in this project" in output
+    assert "Official Hermes optional skills" in output
+    assert "Third-party skills" in output
+    assert "project-skill" in output
+    assert "official/devops/docker-management" in output
+    assert "hub/docker" in output
+
+
+def test_do_recommend_json_output(monkeypatch):
+    payload = {
+        "detected": {"technologies": ["docker"], "combos": [], "root": "/tmp/repo"},
+        "available": [],
+        "official": [],
+        "third_party": [],
+    }
+
+    output = _capture_recommend(monkeypatch, payload, as_json=True)
+
+    assert '"technologies": ["docker"]' in output
+
+
+def test_handle_skills_slash_recommend_json(monkeypatch):
+    import tools.skills_recommend as recommend_mod
+
+    payload = {
+        "detected": {"technologies": ["docker"], "combos": [], "root": "/tmp/repo"},
+        "available": [],
+        "official": [],
+        "third_party": [],
+    }
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    monkeypatch.setattr(recommend_mod, "recommend_skills", lambda path='.', source_filter='all', limit=20: payload)
+
+    handle_skills_slash("/skills recommend . --json", console=console)
+
+    assert '"technologies": ["docker"]' in sink.getvalue()
+
+
+def test_handle_skills_slash_recommend_install_skips_confirm(monkeypatch):
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_recommend as recommend_mod
+
+    payload = {
+        "detected": {"technologies": ["docker"], "combos": [], "root": "/tmp/repo"},
+        "available": [],
+        "official": [{"identifier": "official/devops/docker-management"}],
+        "third_party": [],
+    }
+    calls = []
+    monkeypatch.setattr(recommend_mod, "recommend_skills", lambda path='.', source_filter='all', limit=20: payload)
+    monkeypatch.setattr(
+        cli_hub,
+        "do_install",
+        lambda identifier, category="", force=False, skip_confirm=False, console=None: calls.append(
+            {"identifier": identifier, "skip_confirm": skip_confirm}
+        ),
+    )
+
+    handle_skills_slash("/skills recommend . --install", console=Console(file=StringIO(), force_terminal=False, color_system=None))
+
+    assert calls == [{"identifier": "official/devops/docker-management", "skip_confirm": True}]
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():

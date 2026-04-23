@@ -600,7 +600,7 @@ def inspect_skill(identifier: str) -> Optional[dict]:
 
 
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
-    """List installed skills, distinguishing hub, builtin, and local skills."""
+    """List installed skills, distinguishing hub, builtin, local, and project-local."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
@@ -622,6 +622,7 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     hub_count = 0
     builtin_count = 0
     local_count = 0
+    project_local_count = 0
 
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
@@ -638,9 +639,14 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
             source_display = "builtin"
             trust = "builtin"
             builtin_count += 1
+        elif skill.get("scope") == "project-local":
+            source_type = "project-local"
+            source_display = skill.get("source", "project-local")
+            trust = "local"
+            project_local_count += 1
         else:
             source_type = "local"
-            source_display = "local"
+            source_display = skill.get("source", "local")
             trust = "local"
             local_count += 1
 
@@ -653,8 +659,58 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
 
     c.print(table)
     c.print(
-        f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local[/]\n"
+        f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local, {project_local_count} project-local[/]\n"
     )
+
+
+
+def do_recommend(path: str = ".", source: str = "all", limit: int = 20,
+                 install: bool = False, as_json: bool = False,
+                 skip_confirm: bool = False,
+                 console: Optional[Console] = None) -> None:
+    """Recommend skills for a project path based on stack detection."""
+    from tools.skills_recommend import recommend_skills
+
+    c = console or _console
+    result = recommend_skills(path, source_filter=source, limit=limit)
+
+    if as_json:
+        c.print(json.dumps(result, ensure_ascii=False))
+        return
+
+    detected = result.get("detected", {})
+    technologies = ", ".join(detected.get("technologies", [])) or "none"
+    combos = ", ".join(detected.get("combos", [])) or "none"
+    c.print(f"\n[bold]Project:[/] {detected.get('root', path)}")
+    c.print(f"[dim]Technologies:[/] {technologies}")
+    c.print(f"[dim]Combos:[/] {combos}\n")
+
+    sections = [
+        ("Already available in this project", result.get("available", [])),
+        ("Official Hermes optional skills", result.get("official", [])),
+        ("Third-party skills", result.get("third_party", [])),
+    ]
+
+    for title, items in sections:
+        c.print(f"[bold]{title}[/]")
+        if not items:
+            c.print("[dim]  (none)[/]\n")
+            continue
+        for item in items:
+            identifier = item.get("identifier", item.get("name", ""))
+            matched_on = ", ".join(item.get("matched_on", []))
+            reason = item.get("reason", "")
+            c.print(f"  - [cyan]{item.get('name', identifier)}[/] — {identifier}")
+            if matched_on:
+                c.print(f"    [dim]matched on:[/] {matched_on}")
+            if reason:
+                c.print(f"    [dim]{reason}[/]")
+        c.print()
+
+    if install:
+        installable = [*result.get("official", []), *result.get("third_party", [])]
+        for item in installable:
+            do_install(item["identifier"], force=False, skip_confirm=skip_confirm, console=c)
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -1121,6 +1177,15 @@ def skills_command(args) -> None:
         do_browse(page=args.page, page_size=args.size, source=args.source)
     elif action == "search":
         do_search(args.query, source=args.source, limit=args.limit)
+    elif action == "recommend":
+        do_recommend(
+            path=getattr(args, "path", "."),
+            source=getattr(args, "source", "all"),
+            limit=getattr(args, "limit", 20),
+            install=getattr(args, "install", False),
+            as_json=getattr(args, "json", False),
+            skip_confirm=getattr(args, "yes", False),
+        )
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False))
@@ -1173,10 +1238,11 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     """
     Parse and dispatch `/skills <subcommand> [args]` from the chat interface.
 
-    Examples:
+        /skills browse
         /skills search kubernetes
+        /skills recommend .
         /skills install openai/skills/skill-creator
-        /skills install openai/skills/skill-creator --force
+
         /skills inspect openai/skills/skill-creator
         /skills list
         /skills list --source hub
@@ -1250,6 +1316,33 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                 query_parts.append(args[i])
                 i += 1
         do_search(" ".join(query_parts), source=source, limit=limit, console=c)
+
+    elif action == "recommend":
+        target_path = "."
+        source = "all"
+        limit = 20
+        as_json = "--json" in args
+        install = "--install" in args
+        positional = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--source" and i + 1 < len(args):
+                source = args[i + 1]
+                i += 2
+            elif args[i] == "--limit" and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] in {"--json", "--install"}:
+                i += 1
+            else:
+                positional.append(args[i])
+                i += 1
+        if positional:
+            target_path = positional[0]
+        do_recommend(path=target_path, source=source, limit=limit, install=install, as_json=as_json, skip_confirm=True, console=c)
 
     elif action == "install":
         if not args:
@@ -1369,9 +1462,10 @@ def _print_skills_help(console: Console) -> None:
         "[bold]Skills Hub Commands:[/]\n\n"
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
+        "  [cyan]recommend[/] [path]            Recommend skills for the current project\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
-        "  [cyan]list[/] [--source hub|builtin|local] List installed skills\n"
+        "  [cyan]list[/] [--source hub|builtin|local|project-local] List installed skills\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"

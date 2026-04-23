@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_plan_path,
@@ -38,6 +39,17 @@ description: Description for {name}.
     return skill_dir
 
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_skill_dirs(monkeypatch):
+    import agent.skill_utils as skill_utils
+
+    monkeypatch.setattr(
+        skill_utils,
+        "get_runtime_skills_dirs",
+        lambda cwd=None: [skills_tool_module.SKILLS_DIR, *skill_utils.get_external_skills_dirs()],
+    )
+
+
 class TestScanSkillCommands:
     def test_finds_skills(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -45,6 +57,23 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
+
+    def test_project_local_skills_register_commands(self, tmp_path):
+        project_dir = tmp_path / "repo" / ".hermes" / "skills"
+        local_dir = tmp_path / "local-skills"
+        _make_skill(project_dir, "project-skill")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_runtime_skills_dirs",
+                return_value=[project_dir.resolve(), local_dir.resolve()],
+            ),
+        ):
+            result = scan_skill_commands()
+
+        assert "/project-skill" in result
+        assert result["/project-skill"]["skill_dir"] == str((project_dir / "project-skill").resolve())
 
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -100,6 +129,24 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
+
+    def test_project_local_takes_precedence_over_local_with_same_name(self, tmp_path):
+        project_dir = tmp_path / "repo" / ".hermes" / "skills"
+        local_dir = tmp_path / "local-skills"
+        _make_skill(project_dir, "shared-skill", body="Project version.")
+        _make_skill(local_dir, "shared-skill", body="Local version.")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_runtime_skills_dirs",
+                return_value=[project_dir.resolve(), local_dir.resolve()],
+            ),
+        ):
+            result = scan_skill_commands()
+
+        assert "/shared-skill" in result
+        assert result["/shared-skill"]["skill_dir"] == str((project_dir / "shared-skill").resolve())
 
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):

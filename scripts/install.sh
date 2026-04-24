@@ -782,10 +782,42 @@ clone_repo() {
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+
+            # HTTPS clone with progress output + stall detection + retries.
+            # - --progress forces git to stream progress even when stdout is
+            #   redirected (happens with `curl | bash`), so users actually see
+            #   something instead of a frozen terminal.
+            # - GIT_HTTP_LOW_SPEED_LIMIT/TIME aborts the clone if throughput
+            #   drops below 1 KB/s for 30 seconds — prevents the install from
+            #   hanging indefinitely on flaky networks.
+            # - Up to 3 attempts with exponential backoff (5s, 15s).
+            local https_ok=false
+            local attempt
+            for attempt in 1 2 3; do
+                if [ "$attempt" -gt 1 ]; then
+                    local backoff=$(( (attempt - 1) * 10 + 5 ))
+                    log_warn "HTTPS clone attempt $((attempt - 1)) failed; retrying in ${backoff}s..."
+                    rm -rf "$INSTALL_DIR" 2>/dev/null
+                    sleep "$backoff"
+                fi
+                if GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30 \
+                   GIT_TERMINAL_PROMPT=0 \
+                   git clone --progress --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    https_ok=true
+                    break
+                fi
+            done
+
+            if [ "$https_ok" = true ]; then
                 log_success "Cloned via HTTPS"
             else
-                log_error "Failed to clone repository"
+                rm -rf "$INSTALL_DIR" 2>/dev/null
+                log_error "Failed to clone repository after 3 attempts"
+                log_info "This usually means a slow or blocked network connection to github.com."
+                log_info "You can clone manually and re-run the installer:"
+                log_info "  git clone $REPO_URL_HTTPS $INSTALL_DIR"
+                log_info "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+                log_info "Or set a proxy first:  export https_proxy=http://your-proxy:port"
                 exit 1
             fi
         fi

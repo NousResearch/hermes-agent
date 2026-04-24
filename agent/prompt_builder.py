@@ -901,9 +901,14 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
+    soul_path = get_hermes_home() / "knowledge" / "facts" / "SOUL.md"
     if not soul_path.exists():
-        return None
+        # Fallback to old location for backward compatibility during transition
+        old_path = get_hermes_home() / "SOUL.md"
+        if old_path.exists():
+            soul_path = old_path
+        else:
+            return None
     try:
         content = soul_path.read_text(encoding="utf-8").strip()
         if not content:

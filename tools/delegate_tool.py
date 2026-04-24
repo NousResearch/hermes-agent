@@ -680,7 +680,13 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "acp_command": acp_command,
+            "acp_args": acp_args,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -935,26 +941,48 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config by merging runtime and persistent config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    ``cli.CLI_CONFIG`` is often populated at process startup and may contain
+    default-but-empty delegation keys (for example ``model: ''`` while still
+    including ``default_toolsets``). Treating any non-empty dict as authoritative
+    causes stale runtime defaults to mask the real values from ~/.hermes/config.yaml.
+
+    Merge both sources per-key instead:
+    - runtime CLI config wins when a key is explicitly populated
+    - persistent config fills any empty runtime values
+
+    This keeps live CLI overrides working while allowing updated persistent
+    delegation.model / delegation.provider values to propagate into delegate_task.
     """
+    runtime_cfg = {}
+    persistent_cfg = {}
+
     try:
         from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
+        runtime_cfg = dict(CLI_CONFIG.get("delegation", {}) or {})
     except Exception:
-        pass
+        runtime_cfg = {}
+
     try:
         from hermes_cli.config import load_config
         full = load_config()
-        return full.get("delegation", {})
+        persistent_cfg = dict(full.get("delegation", {}) or {})
     except Exception:
+        persistent_cfg = {}
+
+    if not runtime_cfg and not persistent_cfg:
         return {}
+
+    merged = dict(persistent_cfg)
+    merged.update(runtime_cfg)
+
+    for key, value in persistent_cfg.items():
+        runtime_value = runtime_cfg.get(key)
+        if runtime_value in (None, "", [], {}):
+            merged[key] = value
+
+    return merged
 
 
 # ---------------------------------------------------------------------------

@@ -1437,6 +1437,8 @@ class AIAgent:
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
+        self._memory_write_origin = "assistant_tool"
+        self._memory_write_context = "foreground"
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
@@ -3075,7 +3077,10 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        parent_session_id=self.session_id,
                     )
+                    review_agent._memory_write_origin = "background_review"
+                    review_agent._memory_write_context = "background_review"
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
                     review_agent._user_profile_enabled = self._user_profile_enabled
@@ -3123,6 +3128,32 @@ class AIAgent:
 
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
+
+    def _build_memory_write_metadata(
+        self,
+        *,
+        write_origin: Optional[str] = None,
+        execution_context: Optional[str] = None,
+        task_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build provenance metadata for external memory-provider mirrors."""
+        metadata: Dict[str, Any] = {
+            "write_origin": write_origin or getattr(self, "_memory_write_origin", "assistant_tool"),
+            "execution_context": (
+                execution_context
+                or getattr(self, "_memory_write_context", "foreground")
+            ),
+            "session_id": self.session_id or "",
+            "parent_session_id": self._parent_session_id or "",
+            "platform": self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            "tool_name": "memory",
+        }
+        if task_id:
+            metadata["task_id"] = task_id
+        if tool_call_id:
+            metadata["tool_call_id"] = tool_call_id
+        return {k: v for k, v in metadata.items() if v not in (None, "")}
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
@@ -7812,6 +7843,19 @@ class AIAgent:
                             old_text=args.get("old_text"),
                             store=self._memory_store,
                         )
+                        if self._memory_manager and args.get("action") in ("add", "replace"):
+                            try:
+                                self._memory_manager.on_memory_write(
+                                    args.get("action", ""),
+                                    flush_target,
+                                    args.get("content", ""),
+                                    metadata=self._build_memory_write_metadata(
+                                        write_origin="memory_flush",
+                                        execution_context="flush_memories",
+                                    ),
+                                )
+                            except Exception:
+                                pass
                         if not self.quiet_mode:
                             print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                     except Exception as e:
@@ -8043,6 +8087,10 @@ class AIAgent:
                         function_args.get("action", ""),
                         target,
                         function_args.get("content", ""),
+                        metadata=self._build_memory_write_metadata(
+                            task_id=effective_task_id,
+                            tool_call_id=tool_call_id,
+                        ),
                     )
                 except Exception:
                     pass
@@ -8554,6 +8602,10 @@ class AIAgent:
                             function_args.get("action", ""),
                             target,
                             function_args.get("content", ""),
+                            metadata=self._build_memory_write_metadata(
+                                task_id=effective_task_id,
+                                tool_call_id=getattr(tool_call, "id", None),
+                            ),
                         )
                     except Exception:
                         pass

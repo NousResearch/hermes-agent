@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import inspect
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -312,7 +313,39 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    @staticmethod
+    def _provider_memory_write_metadata_mode(provider: MemoryProvider) -> str:
+        """Return how to pass metadata to a provider's memory-write hook."""
+        try:
+            signature = inspect.signature(provider.on_memory_write)
+        except (TypeError, ValueError):
+            return "keyword"
+
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return "keyword"
+        if "metadata" in signature.parameters:
+            return "keyword"
+
+        accepted = [
+            p for p in params
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        ]
+        if len(accepted) >= 4:
+            return "positional"
+        return "legacy"
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Notify external providers when the built-in memory tool writes.
 
         Skips the builtin provider itself (it's the source of the write).
@@ -321,7 +354,15 @@ class MemoryManager:
             if provider.name == "builtin":
                 continue
             try:
-                provider.on_memory_write(action, target, content)
+                metadata_mode = self._provider_memory_write_metadata_mode(provider)
+                if metadata_mode == "keyword":
+                    provider.on_memory_write(
+                        action, target, content, metadata=dict(metadata or {})
+                    )
+                elif metadata_mode == "positional":
+                    provider.on_memory_write(action, target, content, dict(metadata or {}))
+                else:
+                    provider.on_memory_write(action, target, content)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_memory_write failed: %s",

@@ -829,15 +829,32 @@ def _probe_config_health(cfg: dict) -> str:
     drop nested settings. Returns warning or ''."""
     if not isinstance(cfg, dict):
         return ""
+    warnings: list[str] = []
     null_keys = sorted(k for k, v in cfg.items() if v is None)
     if not null_keys:
-        return ""
-    keys = ", ".join(f"`{k}`" for k in null_keys)
-    return (
-        f"config.yaml has empty section(s): {keys}. "
-        f"Remove the line(s) or set them to `{{}}` — "
-        f"empty sections silently drop nested settings."
-    )
+        pass
+    else:
+        keys = ", ".join(f"`{k}`" for k in null_keys)
+        warnings.append(
+            f"config.yaml has empty section(s): {keys}. "
+            f"Remove the line(s) or set them to `{{}}` — "
+            f"empty sections silently drop nested settings."
+        )
+    display_cfg = cfg.get("display")
+    agent_cfg = cfg.get("agent")
+    if isinstance(display_cfg, dict):
+        personality = str(display_cfg.get("personality", "") or "").strip().lower()
+        if (
+            personality
+            and personality not in {"default", "none", "neutral"}
+            and isinstance(agent_cfg, dict)
+            and agent_cfg.get("personalities") is None
+        ):
+            warnings.append(
+                "`display.personality` is set but `agent.personalities` is empty/null; "
+                "personality overlay will be skipped."
+            )
+    return " ".join(warnings).strip()
 
 
 def _session_info(agent) -> dict:
@@ -1134,16 +1151,16 @@ def _resolve_personality_prompt(cfg: dict) -> str:
     try:
         from cli import load_cli_config
 
-        personalities = (load_cli_config().get("agent") or {}).get("personalities", {})
+        personalities = (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
     except Exception:
         try:
             from hermes_cli.config import load_config as _load_full_cfg
 
-            personalities = (_load_full_cfg().get("agent") or {}).get(
-                "personalities", {}
+            personalities = (
+                (_load_full_cfg().get("agent") or {}).get("personalities", {}) or {}
             )
         except Exception:
-            personalities = (cfg.get("agent") or {}).get("personalities", {})
+            personalities = (cfg.get("agent") or {}).get("personalities", {}) or {}
     pval = personalities.get(name)
     if pval is None:
         return ""

@@ -943,6 +943,113 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     assert "inspect the repository" in (assistant_message.content or "")
 
 
+def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
+    """Harmony-style `to=functions.foo` leaked into assistant content with no
+    structured function_call items must be treated as incomplete so the
+    continuation path can re-elicit a proper tool call. This is the
+    Taiwan-embassy-email (Discord bug report) failure mode: child agent
+    produces a confident-looking summary, tool_trace is empty because no
+    tools actually ran, parent can't audit the claim.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    leaked_content = (
+        "I'll check the official page directly.\n"
+        "to=functions.exec_command {\"cmd\": \"curl https://example.test\"}\n"
+        "assistant to=functions.exec_command {\"stdout\": \"mailto:foo@example.test\"}\n"
+        "Extracted: foo@example.test"
+    )
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=leaked_content)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    # Content is scrubbed so the parent never surfaces the leaked text as a
+    # summary. tool_calls stays empty because no structured function_call
+    # item existed.
+    assert (assistant_message.content or "") == ""
+    assert assistant_message.tool_calls == []
+
+
+def test_normalize_codex_response_ignores_tool_call_text_when_real_tool_call_present(monkeypatch):
+    """If the model emitted BOTH a structured function_call AND some text that
+    happens to contain `to=functions.*` (unlikely but possible), trust the
+    structured call — don't wipe content that came alongside a real tool use.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Running the command via to=functions.exec_command now.",
+                )],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.tool_calls  # real call preserved
+    assert "Running the command" in (assistant_message.content or "")
+
+
+def test_normalize_codex_response_no_leak_passes_through(monkeypatch):
+    """Sanity: normal assistant content that doesn't contain the leak pattern
+    is returned verbatim with finish_reason=stop."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Here is the answer with no leak.",
+                )],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Here is the answer with no leak."
+    assert assistant_message.tool_calls == []
+
+
 def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(monkeypatch):
     agent = _build_agent(monkeypatch)
     observed = {}

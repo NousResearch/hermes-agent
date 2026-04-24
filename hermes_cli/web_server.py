@@ -47,6 +47,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from hermes_constants import is_wsl
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -2789,9 +2790,60 @@ def _mount_plugin_api_routes():
 
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
-
 mount_spa(app)
 
+# ---------------------------------------------------------------------------
+# Browser opening helper
+# ---------------------------------------------------------------------------
+
+def _open_browser(url: str) -> bool:
+    """Open *url* in the user's default browser, with WSL awareness.
+
+    Returns True when we believe a browser was launched, False otherwise.
+    In WSL (where xdg-open usually fails), delegates to the Windows host
+    via ``cmd.exe /c start`` or PowerShell to avoid stderr spam.
+    On failure, prints the URL so the user can open it manually.
+    """
+    import webbrowser
+
+    opened = False
+
+    # WSL: no Linux browser available, but Windows host browser works.
+    # Use Windows-side opening to avoid xdg-open spamming stderr.
+    if is_wsl():
+        try:
+            with open(os.devnull, "w") as devnull:
+                # Try cmd.exe first (WSL1 and WSL2 both have it)
+                opened = subprocess.call(
+                    ["cmd.exe", "/c", "start", "", url],
+                    stdout=devnull,
+                    stderr=devnull,
+                ) == 0
+                if not opened:
+                    # Fallback to PowerShell
+                    opened = subprocess.call(
+                        ["powershell.exe", "-Command", f"Start-Process '{url}'"],
+                        stdout=devnull,
+                        stderr=devnull,
+                    ) == 0
+        except Exception:
+            opened = False
+
+    if not opened:
+        try:
+            opened = webbrowser.open(url)
+        except Exception:
+            opened = False
+
+    if not opened:
+        print(f"  Open the dashboard manually: {url}")
+
+    return opened
+
+
+# ---------------------------------------------------------------------------
+# Server startup
+# ---------------------------------------------------------------------------
 
 def start_server(
     host: str = "127.0.0.1",
@@ -2820,11 +2872,9 @@ def start_server(
     app.state.bound_host = host
 
     if open_browser:
-        import webbrowser
-
         def _open():
             time.sleep(1.0)
-            webbrowser.open(f"http://{host}:{port}")
+            _open_browser(f"http://{host}:{port}")
 
         threading.Thread(target=_open, daemon=True).start()
 

@@ -1677,3 +1677,80 @@ class TestDashboardPluginManifestExtensions:
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
         entry = next(p for p in plugins if p["name"] == "mixed-slots")
         assert entry["slots"] == ["sidebar", "header-right"]
+
+
+# ---------------------------------------------------------------------------
+# Dashboard browser-opening behaviour (issue #14897)
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardBrowserOpen:
+    """Tests for _open_browser() WSL awareness and fallback behaviour."""
+
+    def test_wsl_uses_cmd_exe_when_available(self, monkeypatch):
+        """In WSL, try Windows cmd.exe first to avoid xdg-open noise."""
+        from hermes_cli import web_server
+
+        calls = []
+        def _fake_call(cmd, **kwargs):
+            calls.append(cmd)
+            return 0
+
+        monkeypatch.setattr("subprocess.call", _fake_call)
+        monkeypatch.setattr(web_server, "is_wsl", lambda: True)
+        monkeypatch.setattr("webbrowser.open", lambda _u: False)
+
+        result = web_server._open_browser("http://127.0.0.1:9119")
+
+        assert result is True
+        assert calls[0] == ["cmd.exe", "/c", "start", "", "http://127.0.0.1:9119"]
+
+    def test_wsl_falls_back_to_powershell(self, monkeypatch):
+        """In WSL, fall back to PowerShell when cmd.exe fails."""
+        from hermes_cli import web_server
+
+        calls = []
+        def _fake_call(cmd, **kwargs):
+            calls.append(cmd)
+            return 1 if cmd[0] == "cmd.exe" else 0
+
+        monkeypatch.setattr("subprocess.call", _fake_call)
+        monkeypatch.setattr(web_server, "is_wsl", lambda: True)
+        monkeypatch.setattr("webbrowser.open", lambda _u: False)
+
+        result = web_server._open_browser("http://127.0.0.1:9119")
+
+        assert result is True
+        assert calls[0][0] == "cmd.exe"
+        assert calls[1][0] == "powershell.exe"
+
+    def test_non_wsl_uses_webbrowser(self, monkeypatch):
+        """On regular Linux/macOS, use webbrowser.open directly."""
+        from hermes_cli import web_server
+
+        wb_calls = []
+        def _fake_webbrowser_open(url):
+            wb_calls.append(url)
+            return True
+
+        monkeypatch.setattr(web_server, "is_wsl", lambda: False)
+        monkeypatch.setattr("webbrowser.open", _fake_webbrowser_open)
+
+        result = web_server._open_browser("http://127.0.0.1:9119")
+
+        assert result is True
+        assert wb_calls == ["http://127.0.0.1:9119"]
+
+    def test_all_methods_fail_prints_manual_url(self, monkeypatch, capsys):
+        """If every browser-opening method fails, print the manual URL."""
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "is_wsl", lambda: False)
+        monkeypatch.setattr("webbrowser.open", lambda _u: False)
+
+        result = web_server._open_browser("http://127.0.0.1:9119")
+
+        assert result is False
+        captured = capsys.readouterr()
+        assert "Open the dashboard manually" in captured.out
+        assert "http://127.0.0.1:9119" in captured.out

@@ -2663,6 +2663,39 @@ def _run_single_child(
             logger.debug("Failed to close child agent after delegation")
 
 
+_SECRET_LIKE_KEYS = frozenset({
+    "api_key",
+    "authorization",
+    "password",
+    "secret",
+    "token",
+    "access_token",
+    "refresh_token",
+})
+
+
+def _strip_secret_values(value: Any) -> Any:
+    """Return a deep copy of value with secret-like fields removed.
+
+    Persistent task launch specs are durable state, may be shown in task-tool
+    output, and may be copied into logs/backups. They should never contain raw
+    provider credentials.
+    """
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_str = str(key).lower()
+            if any(marker in key_str for marker in _SECRET_LIKE_KEYS):
+                continue
+            cleaned[key] = _strip_secret_values(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_strip_secret_values(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_secret_values(item) for item in value)
+    return copy.deepcopy(value)
+
+
 def _build_persistent_launch_spec(
     *,
     goal: str,
@@ -2692,14 +2725,14 @@ def _build_persistent_launch_spec(
         "model": creds.get("model") or getattr(parent_agent, "model", None),
         "provider": creds.get("provider") or getattr(parent_agent, "provider", None),
         "base_url": creds.get("base_url") or getattr(parent_agent, "base_url", None),
-        "api_key": creds.get("api_key") or parent_api_key,
+        "api_key_ref": "runtime-env-or-credential-pool",
         "api_mode": creds.get("api_mode") or getattr(parent_agent, "api_mode", None),
         "acp_command": acp_command,
         "acp_args": list(acp_args or []),
         "fallback_model": copy.deepcopy(fallback_model),
         "max_iterations": max_iterations,
         "wave1_overlay_prompt": wave1_overlay_prompt,
-        "delegate_resolution": dict(resolved_inputs or {}),
+        "delegate_resolution": _strip_secret_values(resolved_inputs or {}),
         "parent_enabled_toolsets": list(getattr(parent_agent, "enabled_toolsets", None) or []),
         "parent_valid_tool_names": sorted(getattr(parent_agent, "valid_tool_names", set()) or []),
         "platform": getattr(parent_agent, "platform", None),
@@ -2717,7 +2750,7 @@ def _build_persistent_launch_spec(
 def _build_persistent_parent_agent(launch_spec: Dict[str, Any]):
     parent = SimpleNamespace()
     parent.base_url = launch_spec.get("base_url")
-    parent.api_key = launch_spec.get("api_key")
+    parent.api_key = None
     parent.provider = launch_spec.get("provider")
     parent.api_mode = launch_spec.get("api_mode")
     parent.model = launch_spec.get("model")
@@ -2821,7 +2854,7 @@ def run_persistent_delegate_task(task_id: str, store_root: Optional[str] = None)
             parent_agent=parent,
             override_provider=launch_spec.get("provider"),
             override_base_url=launch_spec.get("base_url"),
-            override_api_key=launch_spec.get("api_key"),
+            override_api_key=None,
             override_api_mode=launch_spec.get("api_mode"),
             override_acp_command=launch_spec.get("acp_command"),
             override_acp_args=launch_spec.get("acp_args"),
@@ -3766,19 +3799,6 @@ DELEGATE_TASK_SCHEMA = {
             "background": {
                 "type": "boolean",
                 "description": "Launch the delegated task as a persistent background task using Hermes process_registry and return immediately with task/process IDs.",
-            },
-            "role": {
-                "type": "string",
-                "enum": ["leaf", "orchestrator"],
-                "description": (
-                    "Role of the child agent. 'leaf' (default) = focused "
-                    "worker, cannot delegate further. 'orchestrator' = can "
-                    "use delegate_task to spawn its own workers. Requires "
-                    "delegation.max_spawn_depth >= 2 in config; ignored "
-                    "(treated as 'leaf') when the child would exceed "
-                    "max_spawn_depth or when "
-                    "delegation.orchestrator_enabled=false."
-                ),
             },
             "acp_command": {
                 "type": "string",

@@ -50,6 +50,7 @@ from hermes_constants import get_hermes_home
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.timeouts import get_provider_request_timeout
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -13713,6 +13714,22 @@ class AIAgent:
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < active_iteration_limit
 
+        if final_response and not interrupted:
+            named_role_completion_error = self._evaluate_named_role_completion_gate(messages)
+            gate_error = named_role_completion_error or self._evaluate_task_contract_completion_gate(messages)
+            if gate_error:
+                final_response = gate_error
+                completed = False
+                # Keep persisted/session/plugin message history aligned with the
+                # authoritative gated response instead of saving the pre-gate
+                # success as if the turn completed normally.
+                for _msg in reversed(messages):
+                    if isinstance(_msg, dict) and _msg.get("role") == "assistant" and not _msg.get("tool_calls"):
+                        _msg["content"] = gate_error
+                        break
+                else:
+                    messages.append({"role": "assistant", "content": gate_error})
+
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)
 
@@ -13765,17 +13782,6 @@ class AIAgent:
             )
         else:
             logger.info(_diag_msg, *_diag_args)
-
-        if final_response and not interrupted:
-            named_role_completion_error = self._evaluate_named_role_completion_gate(messages)
-            if named_role_completion_error:
-                final_response = named_role_completion_error
-                completed = False
-            else:
-                task_contract_completion_error = self._evaluate_task_contract_completion_gate(messages)
-                if task_contract_completion_error:
-                    final_response = task_contract_completion_error
-                    completed = False
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.

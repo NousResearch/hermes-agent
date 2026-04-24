@@ -318,6 +318,17 @@ class TestNamedAgentValidationAndStatusOutput:
         assert "disabled via disabled_agents" in rendered
         assert "subagent-only; leading @ invocation allowed, default parent-agent selection blocked" in rendered
 
+    def test_unknown_named_agent_reports_suggestion_without_name_error(self):
+        try:
+            describe_named_agent("oracl", config={"agents": {}})
+        except KeyError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("unknown named agent should raise KeyError")
+
+        assert "Unknown named agent" in message
+        assert "oracle" in message
+
 
 class TestConfigIssueDataclass:
     """ConfigIssue should be a proper dataclass."""

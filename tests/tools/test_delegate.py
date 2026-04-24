@@ -34,6 +34,7 @@ from tools.delegate_tool import (
     check_delegate_requirements,
     delegate_task,
     _build_child_agent,
+    _build_persistent_launch_spec,
     _build_child_system_prompt,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
@@ -82,8 +83,49 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("max_iterations", props)
         self.assertIn("agent", props)
         self.assertIn("agent", props["tasks"]["items"]["properties"])
-        self.assertIn("role", props)
+        self.assertNotIn("role", props)  # nested/orchestrator delegation is not exposed in this runtime path
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+    def test_persistent_launch_spec_does_not_store_raw_api_keys(self):
+        parent = _make_mock_parent()
+        parent.api_key = "parent-secret-key"
+        parent.reasoning_config = None
+        parent.max_tokens = None
+        parent.prefill_messages = None
+        parent.session_id = None
+        parent.acp_command = None
+        parent.acp_args = []
+        spec = _build_persistent_launch_spec(
+            goal="do work",
+            context="context",
+            toolsets=["terminal"],
+            enabled_tools=["read_file"],
+            resolved_inputs={
+                "runtime_credentials": {"api_key": "resolved-secret", "provider": "openai"},
+                "nested": [{"token": "hidden", "safe": "ok"}],
+            },
+            creds={
+                "model": "gpt-test",
+                "provider": "openai",
+                "base_url": "https://example.test/v1",
+                "api_key": "child-secret-key",
+                "api_mode": "chat_completions",
+            },
+            max_iterations=3,
+            parent_agent=parent,
+            acp_command=None,
+            acp_args=None,
+            wave1_overlay_prompt=None,
+            fallback_model=None,
+        )
+
+        serialized = json.dumps(spec)
+        self.assertNotIn("parent-secret-key", serialized)
+        self.assertNotIn("child-secret-key", serialized)
+        self.assertNotIn("resolved-secret", serialized)
+        self.assertNotIn("hidden", serialized)
+        self.assertNotIn("api_key", spec)
+        self.assertEqual(spec["api_key_ref"], "runtime-env-or-credential-pool")
 
 
 class TestChildSystemPrompt(unittest.TestCase):

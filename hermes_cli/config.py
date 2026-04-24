@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import difflib
 import logging
 import os
 import platform

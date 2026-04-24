@@ -45,7 +45,7 @@ from tools.environments.local import _find_shell, _sanitize_subprocess_env
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_agent.cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 

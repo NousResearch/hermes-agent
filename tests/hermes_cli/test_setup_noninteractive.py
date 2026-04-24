@@ -4,7 +4,7 @@ from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from hermes_cli.config import DEFAULT_CONFIG, load_config, save_config
+from hermes_agent.cli.config import DEFAULT_CONFIG, load_config, save_config
 
 
 def _make_setup_args(**overrides):
@@ -37,12 +37,12 @@ class TestNonInteractiveSetup:
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""
-        from hermes_cli.main import cmd_setup
+        from hermes_agent.cli.main import cmd_setup
 
         args = _make_setup_args(non_interactive=True)
 
         with (
-            patch("hermes_cli.setup.run_setup_wizard") as mock_run_setup,
+            patch("hermes_agent.cli.setup.run_setup_wizard") as mock_run_setup,
             patch("sys.stdin") as mock_stdin,
         ):
             mock_stdin.isatty.return_value = False
@@ -52,12 +52,12 @@ class TestNonInteractiveSetup:
 
     def test_cmd_setup_defers_no_tty_handling_to_setup_wizard(self):
         """Bare `hermes setup` should reach setup.py, which prints headless guidance."""
-        from hermes_cli.main import cmd_setup
+        from hermes_agent.cli.main import cmd_setup
 
         args = _make_setup_args(non_interactive=False)
 
         with (
-            patch("hermes_cli.setup.run_setup_wizard") as mock_run_setup,
+            patch("hermes_agent.cli.setup.run_setup_wizard") as mock_run_setup,
             patch("sys.stdin") as mock_stdin,
         ):
             mock_stdin.isatty.return_value = False
@@ -67,15 +67,15 @@ class TestNonInteractiveSetup:
 
     def test_non_interactive_flag_skips_wizard(self, capsys):
         """--non-interactive should print guidance and not enter the wizard."""
-        from hermes_cli.setup import run_setup_wizard
+        from hermes_agent.cli.setup import run_setup_wizard
 
         args = _make_setup_args(non_interactive=True)
 
         with (
-            patch("hermes_cli.setup.ensure_hermes_home"),
-            patch("hermes_cli.setup.load_config", return_value={}),
-            patch("hermes_cli.setup.get_hermes_home", return_value="/tmp/.hermes"),
-            patch("hermes_cli.auth.get_active_provider", side_effect=AssertionError("wizard continued")),
+            patch("hermes_agent.cli.setup.ensure_hermes_home"),
+            patch("hermes_agent.cli.setup.load_config", return_value={}),
+            patch("hermes_agent.cli.setup.get_hermes_home", return_value="/tmp/.hermes"),
+            patch("hermes_agent.cli.auth.get_active_provider", side_effect=AssertionError("wizard continued")),
             patch("builtins.input", side_effect=AssertionError("input should not be called")),
         ):
             run_setup_wizard(args)
@@ -85,15 +85,15 @@ class TestNonInteractiveSetup:
 
     def test_no_tty_skips_wizard(self, capsys):
         """When stdin has no TTY, the setup wizard should print guidance and return."""
-        from hermes_cli.setup import run_setup_wizard
+        from hermes_agent.cli.setup import run_setup_wizard
 
         args = _make_setup_args(non_interactive=False)
 
         with (
-            patch("hermes_cli.setup.ensure_hermes_home"),
-            patch("hermes_cli.setup.load_config", return_value={}),
-            patch("hermes_cli.setup.get_hermes_home", return_value="/tmp/.hermes"),
-            patch("hermes_cli.auth.get_active_provider", side_effect=AssertionError("wizard continued")),
+            patch("hermes_agent.cli.setup.ensure_hermes_home"),
+            patch("hermes_agent.cli.setup.load_config", return_value={}),
+            patch("hermes_agent.cli.setup.get_hermes_home", return_value="/tmp/.hermes"),
+            patch("hermes_agent.cli.auth.get_active_provider", side_effect=AssertionError("wizard continued")),
             patch("sys.stdin") as mock_stdin,
             patch("builtins.input", side_effect=AssertionError("input should not be called")),
         ):
@@ -105,7 +105,7 @@ class TestNonInteractiveSetup:
 
     def test_reset_flag_rewrites_config_before_noninteractive_exit(self, tmp_path, monkeypatch, capsys):
         """--reset should rewrite config.yaml even when the wizard cannot run interactively."""
-        from hermes_cli.setup import run_setup_wizard
+        from hermes_agent.cli.setup import run_setup_wizard
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cfg = load_config()
@@ -125,13 +125,13 @@ class TestNonInteractiveSetup:
 
     def test_chat_first_run_headless_skips_setup_prompt(self, capsys):
         """Bare `hermes` should not prompt for input when no provider exists and stdin is headless."""
-        from hermes_cli.main import cmd_chat
+        from hermes_agent.cli.main import cmd_chat
 
         args = _make_chat_args()
 
         with (
-            patch("hermes_cli.main._has_any_provider_configured", return_value=False),
-            patch("hermes_cli.main.cmd_setup") as mock_setup,
+            patch("hermes_agent.cli.main._has_any_provider_configured", return_value=False),
+            patch("hermes_agent.cli.main.cmd_setup") as mock_setup,
             patch("sys.stdin") as mock_stdin,
             patch("builtins.input", side_effect=AssertionError("input should not be called")),
         ):
@@ -146,7 +146,7 @@ class TestNonInteractiveSetup:
 
     def test_returning_user_terminal_menu_choice_dispatches_terminal_section(self, tmp_path):
         """Returning-user menu should map Terminal Backend to the terminal setup, not TTS."""
-        from hermes_cli import setup as setup_mod
+        from hermes_agent.cli import setup as setup_mod
 
         args = _make_setup_args()
         config = {}
@@ -167,7 +167,7 @@ class TestNonInteractiveSetup:
                 "get_env_value",
                 side_effect=lambda key: "sk-test" if key == "OPENROUTER_API_KEY" else "",
             ),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("hermes_agent.cli.auth.get_active_provider", return_value=None),
             patch.object(setup_mod, "prompt_choice", return_value=3),
             patch.object(
                 setup_mod,
@@ -191,7 +191,7 @@ class TestNonInteractiveSetup:
 
     def test_returning_user_menu_does_not_show_separator_rows(self, tmp_path):
         """Returning-user menu should only show selectable actions."""
-        from hermes_cli import setup as setup_mod
+        from hermes_agent.cli import setup as setup_mod
 
         args = _make_setup_args()
         captured = {}
@@ -211,7 +211,7 @@ class TestNonInteractiveSetup:
                 "get_env_value",
                 side_effect=lambda key: "sk-test" if key == "OPENROUTER_API_KEY" else "",
             ),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("hermes_agent.cli.auth.get_active_provider", return_value=None),
             patch.object(setup_mod, "prompt_choice", side_effect=fake_prompt_choice),
         ):
             setup_mod.run_setup_wizard(args)
@@ -231,7 +231,7 @@ class TestNonInteractiveSetup:
 
     def test_main_accepts_tts_setup_section(self, monkeypatch):
         """`hermes setup tts` should parse and dispatch like other setup sections."""
-        from hermes_cli import main as main_mod
+        from hermes_agent.cli import main as main_mod
 
         received = {}
 

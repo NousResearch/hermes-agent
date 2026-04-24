@@ -62,7 +62,7 @@ def _guard_agent_created_enabled() -> bool:
     on via `hermes config set skills.guard_agent_created true`.
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.cli.config import load_config
         cfg = load_config()
         return bool(cfg.get("skills", {}).get("guard_agent_created", False))
     except Exception:

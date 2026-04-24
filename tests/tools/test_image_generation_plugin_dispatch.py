@@ -34,7 +34,7 @@ class TestPluginDispatch:
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
         from agent import image_gen_registry as registry_module
-        from hermes_cli import plugins as plugins_module
+        from hermes_agent.cli import plugins as plugins_module
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
@@ -54,7 +54,7 @@ class TestPluginDispatch:
 
     def test_dispatch_reports_missing_registered_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
-        from hermes_cli import plugins as plugins_module
+        from hermes_agent.cli import plugins as plugins_module
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("image_gen:\n  provider: missing-codex\n")
@@ -71,7 +71,7 @@ class TestPluginDispatch:
 
     def test_dispatch_force_refreshes_plugins_when_provider_initially_missing(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
-        from hermes_cli import plugins as plugins_module
+        from hermes_agent.cli import plugins as plugins_module
         from agent import image_gen_registry as registry_module
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

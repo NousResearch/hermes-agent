@@ -499,13 +499,13 @@ class TestVoiceInHelp:
 
     def test_voice_in_help_output(self):
         """The gateway help text includes /voice (generated from registry)."""
-        from hermes_cli.commands import gateway_help_lines
+        from hermes_agent.cli.commands import gateway_help_lines
         help_text = "\n".join(gateway_help_lines())
         assert "/voice" in help_text
 
     def test_voice_is_known_command(self):
         """The /voice command is in GATEWAY_KNOWN_COMMANDS."""
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        from hermes_agent.cli.commands import GATEWAY_KNOWN_COMMANDS
         assert "voice" in GATEWAY_KNOWN_COMMANDS
 
 

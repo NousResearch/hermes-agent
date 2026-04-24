@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from agent import shell_hooks
-from hermes_cli import hooks as hooks_cli
+from hermes_agent.cli import hooks as hooks_cli
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +45,7 @@ def _run(sub_args: SimpleNamespace) -> str:
 
 class TestHooksList:
     def test_empty_config(self, tmp_path):
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_agent.cli.config.load_config", return_value={}):
             out = _run(SimpleNamespace(hooks_action="list"))
         assert "No shell hooks configured" in out
 
@@ -67,7 +67,7 @@ class TestHooksList:
         # Approve one of the two so we can see both states in the output
         shell_hooks._record_approval("pre_tool_call", str(script))
 
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="list"))
 
         assert "[pre_tool_call]" in out
@@ -93,7 +93,7 @@ class TestHooksTest:
             f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
         )
         cfg = {"hooks": {"subagent_stop": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             _run(SimpleNamespace(
                 hooks_action="test", event="subagent_stop",
                 for_tool=None, payload_file=None,
@@ -126,7 +126,7 @@ class TestHooksTest:
                 ],
             },
         }
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(
                 hooks_action="test", event="pre_tool_call",
                 for_tool="terminal", payload_file=None,
@@ -145,7 +145,7 @@ class TestHooksTest:
                 ],
             }
         }
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(
                 hooks_action="test", event="pre_tool_call",
                 for_tool="web_search", payload_file=None,
@@ -153,7 +153,7 @@ class TestHooksTest:
         assert "No shell hooks" in out
 
     def test_unknown_event(self):
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_agent.cli.config.load_config", return_value={}):
             out = _run(SimpleNamespace(
                 hooks_action="test", event="bogus_event",
                 for_tool=None, payload_file=None,
@@ -191,14 +191,14 @@ class TestHooksDoctor:
         script.write_text("#!/usr/bin/env bash\nprintf '{}\\n'\n")
         # No chmod — intentionally not executable
         cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "not executable" in out.lower()
 
     def test_flags_unallowlisted(self, tmp_path):
         script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
         cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "not allowlisted" in out.lower()
 
@@ -209,7 +209,7 @@ class TestHooksDoctor:
         )
         shell_hooks._record_approval("on_session_start", str(script))
         cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "not valid JSON" in out
 
@@ -232,7 +232,7 @@ class TestHooksDoctor:
         }))
 
         cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "modified since approval" in out
 
@@ -240,7 +240,7 @@ class TestHooksDoctor:
         script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
         shell_hooks._record_approval("on_session_start", str(script))
         cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "All shell hooks look healthy" in out
 
@@ -257,7 +257,7 @@ class TestHooksDoctor:
             f"#!/usr/bin/env bash\ntouch {sentinel}\nprintf '{{}}\\n'\n",
         )
         cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
 
         assert not sentinel.exists(), (

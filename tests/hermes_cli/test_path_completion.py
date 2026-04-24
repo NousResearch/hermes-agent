@@ -7,7 +7,7 @@ import pytest
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import to_plain_text
 
-from hermes_cli.commands import SlashCommandCompleter, _file_size_label
+from hermes_agent.cli.commands import SlashCommandCompleter, _file_size_label
 
 
 def _display_names(completions):

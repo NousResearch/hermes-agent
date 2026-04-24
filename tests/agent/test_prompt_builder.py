@@ -29,7 +29,7 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
-from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from hermes_agent.cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
 
 # =========================================================================

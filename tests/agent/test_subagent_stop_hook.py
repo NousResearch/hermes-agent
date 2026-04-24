@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.delegate_tool import delegate_task
-from hermes_cli import plugins
+from hermes_agent.cli import plugins
 
 
 def _make_parent(depth: int = 0, session_id: str = "parent-1"):

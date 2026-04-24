@@ -3,7 +3,7 @@
 import os
 from unittest.mock import patch
 
-from hermes_cli.model_switch import list_authenticated_providers
+from hermes_agent.cli.model_switch import list_authenticated_providers
 
 
 # Minimum set of models that must be present for opencode-go no matter

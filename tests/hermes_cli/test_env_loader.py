@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_agent.cli.env_loader import load_hermes_dotenv
 
 
 def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):

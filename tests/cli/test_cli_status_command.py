@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
-from hermes_cli.commands import resolve_command
+from hermes_agent.cli.commands import resolve_command
 
 
 def _make_cli():

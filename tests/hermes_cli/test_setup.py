@@ -5,10 +5,10 @@ import types
 
 import pytest
 
-from hermes_cli.auth import get_active_provider
-from hermes_cli.config import load_config, save_config
-from hermes_cli import setup as setup_mod
-from hermes_cli.setup import setup_model_provider
+from hermes_agent.cli.auth import get_active_provider
+from hermes_agent.cli.config import load_config, save_config
+from hermes_agent.cli import setup as setup_mod
+from hermes_agent.cli.setup import setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -166,7 +166,7 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
 
-    import hermes_cli.gateway as gateway_mod
+    import hermes_agent.cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -204,7 +204,7 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
 
-    import hermes_cli.gateway as gateway_mod
+    import hermes_agent.cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -331,7 +331,7 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("named custom flow should not run")),
     )
 
-    from hermes_cli.main import select_provider_and_model
+    from hermes_agent.cli.main import select_provider_and_model
 
     select_provider_and_model()
 
@@ -394,7 +394,7 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
         ),
     )
 
-    from hermes_cli.setup import setup_terminal_backend
+    from hermes_agent.cli.setup import setup_terminal_backend
 
     setup_terminal_backend(config)
 
@@ -437,7 +437,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     )
     monkeypatch.setitem(sys.modules, "swe_rex", object())
 
-    from hermes_cli.setup import setup_terminal_backend
+    from hermes_agent.cli.setup import setup_terminal_backend
 
     setup_terminal_backend(config)
 
@@ -446,7 +446,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
 
 def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):
-    from hermes_cli import setup as setup_mod
+    from hermes_agent.cli import setup as setup_mod
 
     monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/local/bin/hermes" if name == "hermes" else None)
 
@@ -454,7 +454,7 @@ def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):
 
 
 def test_resolve_hermes_chat_argv_falls_back_to_module(monkeypatch):
-    from hermes_cli import setup as setup_mod
+    from hermes_agent.cli import setup as setup_mod
 
     monkeypatch.setattr(setup_mod.shutil, "which", lambda _name: None)
     monkeypatch.setattr(setup_mod.importlib.util, "find_spec", lambda name: object() if name == "hermes_cli" else None)
@@ -463,7 +463,7 @@ def test_resolve_hermes_chat_argv_falls_back_to_module(monkeypatch):
 
 
 def test_offer_launch_chat_execs_fresh_process(monkeypatch):
-    from hermes_cli import setup as setup_mod
+    from hermes_agent.cli import setup as setup_mod
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
@@ -483,7 +483,7 @@ def test_offer_launch_chat_execs_fresh_process(monkeypatch):
 
 
 def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys):
-    from hermes_cli import setup as setup_mod
+    from hermes_agent.cli import setup as setup_mod
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)

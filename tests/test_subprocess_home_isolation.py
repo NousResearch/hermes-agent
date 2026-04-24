@@ -156,7 +156,7 @@ class TestProfileBootstrap:
     """Verify new profiles get a home/ subdirectory."""
 
     def test_profile_dirs_includes_home(self):
-        from hermes_cli.profiles import _PROFILE_DIRS
+        from hermes_agent.cli.profiles import _PROFILE_DIRS
         assert "home" in _PROFILE_DIRS
 
     def test_create_profile_bootstraps_home_dir(self, tmp_path, monkeypatch):
@@ -166,7 +166,7 @@ class TestProfileBootstrap:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(home))
 
-        from hermes_cli.profiles import create_profile
+        from hermes_agent.cli.profiles import create_profile
         profile_dir = create_profile("testbot", no_alias=True)
         assert (profile_dir / "home").is_dir()
 

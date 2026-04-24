@@ -2,7 +2,7 @@ import sys
 
 
 def test_top_level_skills_flag_defaults_to_chat(monkeypatch):
-    import hermes_cli.main as main_mod
+    import hermes_agent.cli.main as main_mod
 
     captured = {}
 
@@ -26,7 +26,7 @@ def test_top_level_skills_flag_defaults_to_chat(monkeypatch):
 
 
 def test_chat_subcommand_accepts_skills_flag(monkeypatch):
-    import hermes_cli.main as main_mod
+    import hermes_agent.cli.main as main_mod
 
     captured = {}
 
@@ -50,7 +50,7 @@ def test_chat_subcommand_accepts_skills_flag(monkeypatch):
 
 
 def test_chat_subcommand_accepts_image_flag(monkeypatch):
-    import hermes_cli.main as main_mod
+    import hermes_agent.cli.main as main_mod
 
     captured = {}
 
@@ -74,7 +74,7 @@ def test_chat_subcommand_accepts_image_flag(monkeypatch):
 
 
 def test_continue_worktree_and_skills_flags_work_together(monkeypatch):
-    import hermes_cli.main as main_mod
+    import hermes_agent.cli.main as main_mod
 
     captured = {}
 

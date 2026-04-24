@@ -135,7 +135,7 @@ def _load_config_files() -> List[Dict[str, str]]:
 
     result: List[Dict[str, str]] = []
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.cli.config import read_raw_config
         hermes_home = _resolve_hermes_home()
         cfg = read_raw_config()
         cred_files = cfg.get("terminal", {}).get("credential_files")

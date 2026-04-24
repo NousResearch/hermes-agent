@@ -43,7 +43,7 @@ class TestHandleFunctionCall:
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
-            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+            patch("hermes_agent.cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
             result = handle_function_call(
                 "web_search",

@@ -30,7 +30,7 @@ MAX_SUMMARY_TOKENS = 10000
 def _get_session_search_max_concurrency(default: int = 3) -> int:
     """Read auxiliary.session_search.max_concurrency with sane bounds."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.cli.config import load_config
         config = load_config()
     except ImportError:
         return default

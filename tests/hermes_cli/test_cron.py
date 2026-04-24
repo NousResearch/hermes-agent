@@ -5,7 +5,7 @@ from argparse import Namespace
 import pytest
 
 from hermes_agent.cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_agent.cli.cron import cron_command
 
 
 @pytest.fixture()

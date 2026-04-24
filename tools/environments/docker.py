@@ -91,7 +91,7 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
-        from hermes_cli.config import load_env
+        from hermes_agent.cli.config import load_env
 
         return load_env() or {}
     except Exception:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.logs import (
+from hermes_agent.cli.logs import (
     LOG_FILES,
     _extract_level,
     _extract_logger_name,

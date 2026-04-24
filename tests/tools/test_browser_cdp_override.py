@@ -110,7 +110,7 @@ class TestGetCdpOverride:
         response.raise_for_status.return_value = None
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
-        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"cdp_url": HTTP_URL}}), \
+        with patch("hermes_agent.cli.config.read_raw_config", return_value={"browser": {"cdp_url": HTTP_URL}}), \
              patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
             resolved = browser_tool._get_cdp_override()
 

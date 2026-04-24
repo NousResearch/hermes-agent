@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch, call
 
-import hermes_cli.gateway as gateway
+import hermes_agent.cli.gateway as gateway
 
 
 class TestSystemdLingerStatus:

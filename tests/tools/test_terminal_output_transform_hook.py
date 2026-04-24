@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import hermes_cli.plugins as plugins_mod
+import hermes_agent.cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
 
 

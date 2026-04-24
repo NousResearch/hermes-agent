@@ -1,4 +1,4 @@
-from hermes_cli import setup as setup_mod
+from hermes_agent.cli import setup as setup_mod
 
 
 def test_prompt_choice_uses_curses_helper(monkeypatch):

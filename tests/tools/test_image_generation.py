@@ -268,7 +268,7 @@ class TestGptQualityPinnedToMedium:
     def test_config_quality_setting_is_ignored(self, image_tool):
         """Even if a user manually edits config.yaml and adds quality_setting,
         the payload must still use medium. No code path reads that field."""
-        with patch("hermes_cli.config.load_config",
+        with patch("hermes_agent.cli.config.load_config",
                    return_value={"image_gen": {"quality_setting": "high"}}):
             p = image_tool._build_fal_payload("fal-ai/gpt-image-1.5", "hi", "square")
         assert p["quality"] == "medium"
@@ -307,32 +307,32 @@ class TestGptQualityPinnedToMedium:
 class TestModelResolution:
 
     def test_no_config_falls_back_to_default(self, image_tool):
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_agent.cli.config.load_config", return_value={}):
             mid, meta = image_tool._resolve_fal_model()
         assert mid == "fal-ai/flux-2/klein/9b"
 
     def test_valid_config_model_is_used(self, image_tool):
-        with patch("hermes_cli.config.load_config",
+        with patch("hermes_agent.cli.config.load_config",
                    return_value={"image_gen": {"model": "fal-ai/flux-2-pro"}}):
             mid, meta = image_tool._resolve_fal_model()
         assert mid == "fal-ai/flux-2-pro"
         assert meta["upscale"] is True  # flux-2-pro keeps backward-compat upscaling
 
     def test_unknown_model_falls_back_to_default_with_warning(self, image_tool, caplog):
-        with patch("hermes_cli.config.load_config",
+        with patch("hermes_agent.cli.config.load_config",
                    return_value={"image_gen": {"model": "fal-ai/nonexistent-9000"}}):
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/flux-2/klein/9b"
 
     def test_env_var_fallback_when_no_config(self, image_tool, monkeypatch):
         monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_agent.cli.config.load_config", return_value={}):
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/z-image/turbo"
 
     def test_config_wins_over_env_var(self, image_tool, monkeypatch):
         monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")
-        with patch("hermes_cli.config.load_config",
+        with patch("hermes_agent.cli.config.load_config",
                    return_value={"image_gen": {"model": "fal-ai/nano-banana-pro"}}):
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/nano-banana-pro"

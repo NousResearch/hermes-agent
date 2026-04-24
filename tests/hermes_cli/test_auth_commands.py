@@ -41,7 +41,7 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.cli.auth_commands import auth_add_command
 
     class _Args:
         provider = "openrouter"
@@ -76,7 +76,7 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.cli.auth_commands import auth_add_command
 
     class _Args:
         provider = "anthropic"
@@ -122,7 +122,7 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.cli.auth_commands import auth_add_command
 
     class _Args:
         provider = "nous"
@@ -199,7 +199,7 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.cli.auth_commands import auth_add_command
 
     class _Args:
         provider = "nous"
@@ -245,7 +245,7 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.cli.auth_commands import auth_add_command
 
     class _Args:
         provider = "openai-codex"
@@ -301,7 +301,7 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     class _Args:
         provider = "anthropic"
@@ -349,7 +349,7 @@ def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     class _Args:
         provider = "openai-codex"
@@ -404,7 +404,7 @@ def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatc
         },
     )
 
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     class _Args:
         provider = "openai-codex"
@@ -441,7 +441,7 @@ def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
         },
     )
 
-    from hermes_cli.auth_commands import auth_reset_command
+    from hermes_agent.cli.auth_commands import auth_reset_command
 
     class _Args:
         provider = "anthropic"
@@ -493,7 +493,7 @@ def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch
         },
     )
 
-    from hermes_cli.auth import clear_provider_auth
+    from hermes_agent.cli.auth import clear_provider_auth
 
     assert clear_provider_auth("anthropic") is True
 
@@ -505,7 +505,7 @@ def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch
 
 
 def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
-    from hermes_cli.auth_commands import auth_list_command
+    from hermes_agent.cli.auth_commands import auth_list_command
 
     class _Entry:
         id = "cred-1"
@@ -542,7 +542,7 @@ def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
 
 
 def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
-    from hermes_cli.auth_commands import auth_list_command
+    from hermes_agent.cli.auth_commands import auth_list_command
 
     class _Entry:
         id = "cred-1"
@@ -574,7 +574,7 @@ def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
 
 
 def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
-    from hermes_cli.auth_commands import auth_list_command
+    from hermes_agent.cli.auth_commands import auth_list_command
 
     class _Entry:
         id = "cred-1"
@@ -643,7 +643,7 @@ def test_auth_remove_env_seeded_clears_env_var(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     class _Args:
         provider = "openrouter"
@@ -692,7 +692,7 @@ def test_auth_remove_env_seeded_does_not_resurrect(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     class _Args:
         provider = "openrouter"
@@ -735,7 +735,7 @@ def test_auth_remove_manual_entry_does_not_touch_env(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     class _Args:
         provider = "openrouter"
@@ -776,7 +776,7 @@ def test_auth_remove_claude_code_suppresses_reseed(tmp_path, monkeypatch):
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
 
     from types import SimpleNamespace
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
     auth_remove_command(SimpleNamespace(provider="anthropic", target="1"))
 
     updated = json.loads((hermes_home / "auth.json").read_text())
@@ -790,7 +790,7 @@ def test_unsuppress_credential_source_clears_marker(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
-    from hermes_cli.auth import suppress_credential_source, unsuppress_credential_source, is_source_suppressed
+    from hermes_agent.cli.auth import suppress_credential_source, unsuppress_credential_source, is_source_suppressed
 
     suppress_credential_source("openai-codex", "device_code")
     assert is_source_suppressed("openai-codex", "device_code") is True
@@ -809,7 +809,7 @@ def test_unsuppress_credential_source_returns_false_when_absent(tmp_path, monkey
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
-    from hermes_cli.auth import unsuppress_credential_source
+    from hermes_agent.cli.auth import unsuppress_credential_source
 
     assert unsuppress_credential_source("openai-codex", "device_code") is False
     assert unsuppress_credential_source("nonexistent", "whatever") is False
@@ -820,7 +820,7 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
-    from hermes_cli.auth import (
+    from hermes_agent.cli.auth import (
         suppress_credential_source,
         unsuppress_credential_source,
         is_source_suppressed,
@@ -868,7 +868,7 @@ def test_auth_remove_codex_device_code_suppresses_reseed(tmp_path, monkeypatch):
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
 
     from types import SimpleNamespace
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
 
@@ -915,7 +915,7 @@ def test_auth_remove_codex_manual_source_suppresses_reseed(tmp_path, monkeypatch
     (hermes_home / "auth.json").write_text(json.dumps(auth_store))
 
     from types import SimpleNamespace
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
 
@@ -957,7 +957,7 @@ def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
         },
     )
 
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.cli.auth_commands import auth_add_command
 
     class _Args:
         provider = "openai-codex"
@@ -1046,7 +1046,7 @@ def test_auth_remove_env_seeded_suppresses_shell_exported_var(tmp_path, monkeypa
     )
 
     from types import SimpleNamespace
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
     auth_remove_command(SimpleNamespace(provider="xai", target="1"))
 
     # Suppression marker written
@@ -1098,7 +1098,7 @@ def test_auth_remove_env_seeded_dotenv_only_no_shell_hint(tmp_path, monkeypatch,
     )
 
     from types import SimpleNamespace
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth_commands import auth_remove_command
     auth_remove_command(SimpleNamespace(provider="deepseek", target="1"))
 
     out = capsys.readouterr().out
@@ -1127,8 +1127,8 @@ def test_auth_add_clears_env_suppression_for_provider(tmp_path, monkeypatch):
     )
 
     from types import SimpleNamespace
-    from hermes_cli.auth import is_source_suppressed
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.cli.auth import is_source_suppressed
+    from hermes_agent.cli.auth_commands import auth_add_command
 
     assert is_source_suppressed("xai", "env:XAI_API_KEY") is True
     auth_add_command(SimpleNamespace(
@@ -1228,7 +1228,7 @@ def test_seed_from_singletons_respects_copilot_suppression(tmp_path, monkeypatch
     }))
 
     # Stub resolve_copilot_token to return a live token
-    import hermes_cli.copilot_auth as ca
+    import hermes_agent.cli.copilot_auth as ca
     monkeypatch.setattr(ca, "resolve_copilot_token", lambda: ("ghp_fake", "gh auth token"))
 
     from agent.credential_pool import _seed_from_singletons
@@ -1251,7 +1251,7 @@ def test_seed_from_singletons_respects_qwen_suppression(tmp_path, monkeypatch):
         "suppressed_sources": {"qwen-oauth": ["qwen-cli"]},
     }))
 
-    import hermes_cli.auth as ha
+    import hermes_agent.cli.auth as ha
     monkeypatch.setattr(ha, "resolve_qwen_runtime_credentials", lambda **kw: {
         "api_key": "tok", "source": "qwen-cli", "base_url": "https://q",
     })
@@ -1396,8 +1396,8 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     )
 
     from types import SimpleNamespace
-    from hermes_cli.auth import is_source_suppressed
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth import is_source_suppressed
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
 
@@ -1428,8 +1428,8 @@ def test_auth_add_clears_all_suppressions_including_non_env(tmp_path, monkeypatc
     )
 
     from types import SimpleNamespace
-    from hermes_cli.auth import is_source_suppressed
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.cli.auth import is_source_suppressed
+    from hermes_agent.cli.auth_commands import auth_add_command
 
     auth_add_command(SimpleNamespace(
         provider="copilot", auth_type="api_key",
@@ -1469,8 +1469,8 @@ def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, mon
     )
 
     from types import SimpleNamespace
-    from hermes_cli.auth import is_source_suppressed
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.cli.auth import is_source_suppressed
+    from hermes_agent.cli.auth_commands import auth_remove_command
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
     assert is_source_suppressed("openai-codex", "device_code")

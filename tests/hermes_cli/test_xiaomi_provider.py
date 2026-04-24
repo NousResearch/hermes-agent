@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from hermes_cli.auth import (
+from hermes_agent.cli.auth import (
     PROVIDER_REGISTRY,
     resolve_provider,
     get_api_key_provider_status,
@@ -59,12 +59,12 @@ class TestXiaomiAliases:
         assert resolve_provider(alias) == "xiaomi"
 
     def test_normalize_provider_models_py(self):
-        from hermes_cli.models import normalize_provider
+        from hermes_agent.cli.models import normalize_provider
         assert normalize_provider("mimo") == "xiaomi"
         assert normalize_provider("xiaomi-mimo") == "xiaomi"
 
     def test_normalize_provider_providers_py(self):
-        from hermes_cli.providers import normalize_provider
+        from hermes_agent.cli.providers import normalize_provider
         assert normalize_provider("mimo") == "xiaomi"
         assert normalize_provider("xiaomi-mimo") == "xiaomi"
 
@@ -142,7 +142,7 @@ class TestXiaomiModelCatalog:
         names are data that changes with upstream releases and doesn't
         belong in tests.
         """
-        from hermes_cli.models import _PROVIDER_MODELS
+        from hermes_agent.cli.models import _PROVIDER_MODELS
         assert "xiaomi" in _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["xiaomi"]) >= 1
 
@@ -187,21 +187,21 @@ class TestXiaomiNormalization:
     """Model name normalization — Xiaomi is a direct provider."""
 
     def test_vendor_prefix_mapping(self):
-        from hermes_cli.model_normalize import _VENDOR_PREFIXES
+        from hermes_agent.cli.model_normalize import _VENDOR_PREFIXES
         assert _VENDOR_PREFIXES.get("mimo") == "xiaomi"
 
     def test_matching_prefix_strip(self):
         """xiaomi/mimo-v2-pro should normalize to mimo-v2-pro for direct API."""
-        from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
+        from hermes_agent.cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
         assert "xiaomi" in _MATCHING_PREFIX_STRIP_PROVIDERS
 
     def test_normalize_strips_provider_prefix(self):
-        from hermes_cli.model_normalize import normalize_model_for_provider
+        from hermes_agent.cli.model_normalize import normalize_model_for_provider
         result = normalize_model_for_provider("xiaomi/mimo-v2-pro", "xiaomi")
         assert result == "mimo-v2-pro"
 
     def test_normalize_bare_name_unchanged(self):
-        from hermes_cli.model_normalize import normalize_model_for_provider
+        from hermes_agent.cli.model_normalize import normalize_model_for_provider
         result = normalize_model_for_provider("mimo-v2-pro", "xiaomi")
         assert result == "mimo-v2-pro"
 
@@ -245,7 +245,7 @@ class TestXiaomiProvidersModule:
     """Test Xiaomi in the unified providers module."""
 
     def test_overlay_exists(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
+        from hermes_agent.cli.providers import HERMES_OVERLAYS
         assert "xiaomi" in HERMES_OVERLAYS
         overlay = HERMES_OVERLAYS["xiaomi"]
         assert overlay.transport == "openai_chat"
@@ -253,18 +253,18 @@ class TestXiaomiProvidersModule:
         assert not overlay.is_aggregator
 
     def test_alias_resolves(self):
-        from hermes_cli.providers import normalize_provider
+        from hermes_agent.cli.providers import normalize_provider
         assert normalize_provider("mimo") == "xiaomi"
         assert normalize_provider("xiaomi-mimo") == "xiaomi"
 
     def test_label(self):
-        from hermes_cli.providers import get_label
+        from hermes_agent.cli.providers import get_label
         assert get_label("xiaomi") == "Xiaomi MiMo"
 
     def test_get_provider(self):
         pdef = None
         try:
-            from hermes_cli.providers import get_provider
+            from hermes_agent.cli.providers import get_provider
             pdef = get_provider("xiaomi")
         except Exception:
             pass
@@ -302,7 +302,7 @@ class TestXiaomiDoctor:
     """Verify hermes doctor recognizes Xiaomi env vars."""
 
     def test_provider_env_hints(self):
-        from hermes_cli.doctor import _PROVIDER_ENV_HINTS
+        from hermes_agent.cli.doctor import _PROVIDER_ENV_HINTS
         assert "XIAOMI_API_KEY" in _PROVIDER_ENV_HINTS
 
 
@@ -315,7 +315,7 @@ class TestXiaomiAgentInit:
         importlib.import_module("run_agent")
 
     def test_api_mode_is_chat_completions(self):
-        from hermes_cli.providers import HERMES_OVERLAYS, TRANSPORT_TO_API_MODE
+        from hermes_agent.cli.providers import HERMES_OVERLAYS, TRANSPORT_TO_API_MODE
         overlay = HERMES_OVERLAYS["xiaomi"]
         api_mode = TRANSPORT_TO_API_MODE[overlay.transport]
         assert api_mode == "chat_completions"

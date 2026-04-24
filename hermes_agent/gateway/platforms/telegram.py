@@ -868,7 +868,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # gateway command there automatically adds it to the Telegram menu.
             try:
                 from telegram import BotCommand
-                from hermes_cli.commands import telegram_menu_commands
+                from hermes_agent.cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented
                 # payload size limit.  Skill descriptions are truncated to 40
                 # chars in telegram_menu_commands() to fit 100 commands safely.
@@ -1323,7 +1323,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            from hermes_cli.providers import get_label
+            from hermes_agent.cli.providers import get_label
         except ImportError:
             def get_label(slug):
                 return slug
@@ -1431,7 +1431,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         try:
-            from hermes_cli.providers import get_label
+            from hermes_agent.cli.providers import get_label
         except ImportError:
             def get_label(slug):
                 return slug

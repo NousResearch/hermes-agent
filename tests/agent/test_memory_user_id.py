@@ -160,11 +160,11 @@ class TestMem0UserIdScoping:
 
     def test_gateway_user_id_overrides_default(self):
         """When user_id is passed via kwargs, it should override the config default."""
-        from plugins.memory.mem0 import Mem0MemoryProvider
+        from hermes_agent.plugins.memory.mem0 import Mem0MemoryProvider
 
         provider = Mem0MemoryProvider()
         # Mock _load_config to return a config with default user_id
-        with patch("plugins.memory.mem0._load_config", return_value={
+        with patch("hermes_agent.plugins.memory.mem0._load_config", return_value={
             "api_key": "test-key",
             "user_id": "hermes-user",
             "agent_id": "hermes",
@@ -176,10 +176,10 @@ class TestMem0UserIdScoping:
 
     def test_no_user_id_falls_back_to_config(self):
         """Without user_id in kwargs, should use config default."""
-        from plugins.memory.mem0 import Mem0MemoryProvider
+        from hermes_agent.plugins.memory.mem0 import Mem0MemoryProvider
 
         provider = Mem0MemoryProvider()
-        with patch("plugins.memory.mem0._load_config", return_value={
+        with patch("hermes_agent.plugins.memory.mem0._load_config", return_value={
             "api_key": "test-key",
             "user_id": "custom-default",
             "agent_id": "hermes",
@@ -191,10 +191,10 @@ class TestMem0UserIdScoping:
 
     def test_no_user_id_no_config_uses_hermes_user(self):
         """Without user_id or config override, should default to 'hermes-user'."""
-        from plugins.memory.mem0 import Mem0MemoryProvider
+        from hermes_agent.plugins.memory.mem0 import Mem0MemoryProvider
 
         provider = Mem0MemoryProvider()
-        with patch("plugins.memory.mem0._load_config", return_value={
+        with patch("hermes_agent.plugins.memory.mem0._load_config", return_value={
             "api_key": "test-key",
             "agent_id": "hermes",
             "rerank": True,
@@ -205,12 +205,12 @@ class TestMem0UserIdScoping:
 
     def test_different_users_get_different_ids(self):
         """Two providers initialized with different user_ids should be scoped differently."""
-        from plugins.memory.mem0 import Mem0MemoryProvider
+        from hermes_agent.plugins.memory.mem0 import Mem0MemoryProvider
 
         p1 = Mem0MemoryProvider()
         p2 = Mem0MemoryProvider()
 
-        with patch("plugins.memory.mem0._load_config", return_value={
+        with patch("hermes_agent.plugins.memory.mem0._load_config", return_value={
             "api_key": "test-key",
             "user_id": "hermes-user",
             "agent_id": "hermes",
@@ -234,7 +234,7 @@ class TestHonchoUserIdScoping:
 
     def test_gateway_user_id_is_passed_as_runtime_peer(self):
         """Gateway user_id should scope Honcho sessions without mutating config peer_name."""
-        from plugins.memory.honcho import HonchoMemoryProvider
+        from hermes_agent.plugins.memory.honcho import HonchoMemoryProvider
 
         provider = HonchoMemoryProvider()
 
@@ -276,7 +276,7 @@ class TestHonchoUserIdScoping:
 
     def test_session_manager_prefers_runtime_user_id_over_config_peer_name(self):
         """Session manager should isolate gateway users even when config peer_name is static."""
-        from plugins.memory.honcho.session import HonchoSessionManager
+        from hermes_agent.plugins.memory.honcho.session import HonchoSessionManager
 
         mock_cfg = MagicMock()
         mock_cfg.peer_name = "static-user"
@@ -308,7 +308,7 @@ class TestHonchoUserIdScoping:
 
     def test_no_user_id_preserves_config_peer_name(self):
         """Without user_id, the config peer_name should be preserved."""
-        from plugins.memory.honcho import HonchoMemoryProvider
+        from hermes_agent.plugins.memory.honcho import HonchoMemoryProvider
 
         provider = HonchoMemoryProvider()
 

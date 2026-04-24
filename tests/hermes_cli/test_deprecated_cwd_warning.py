@@ -11,7 +11,7 @@ class TestDeprecatedCwdWarning:
         monkeypatch.setenv("MESSAGING_CWD", "/some/path")
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.cli.config import warn_deprecated_cwd_env_vars
         warn_deprecated_cwd_env_vars(config={})
 
         captured = capsys.readouterr()
@@ -23,7 +23,7 @@ class TestDeprecatedCwdWarning:
         monkeypatch.setenv("TERMINAL_CWD", "/project")
         monkeypatch.delenv("MESSAGING_CWD", raising=False)
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.cli.config import warn_deprecated_cwd_env_vars
         # config has placeholder cwd → TERMINAL_CWD likely from .env
         warn_deprecated_cwd_env_vars(config={"terminal": {"cwd": "."}})
 
@@ -35,7 +35,7 @@ class TestDeprecatedCwdWarning:
         monkeypatch.setenv("TERMINAL_CWD", "/project")
         monkeypatch.delenv("MESSAGING_CWD", raising=False)
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.cli.config import warn_deprecated_cwd_env_vars
         # config has explicit cwd → TERMINAL_CWD could be from config bridge
         warn_deprecated_cwd_env_vars(config={"terminal": {"cwd": "/project"}})
 
@@ -46,7 +46,7 @@ class TestDeprecatedCwdWarning:
         monkeypatch.delenv("MESSAGING_CWD", raising=False)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.cli.config import warn_deprecated_cwd_env_vars
         warn_deprecated_cwd_env_vars(config={})
 
         captured = capsys.readouterr()
@@ -56,7 +56,7 @@ class TestDeprecatedCwdWarning:
         monkeypatch.setenv("MESSAGING_CWD", "/msg/path")
         monkeypatch.setenv("TERMINAL_CWD", "/term/path")
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.cli.config import warn_deprecated_cwd_env_vars
         warn_deprecated_cwd_env_vars(config={})
 
         captured = capsys.readouterr()

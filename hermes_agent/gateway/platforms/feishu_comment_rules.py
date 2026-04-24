@@ -351,7 +351,7 @@ def _main() -> int:
     import sys
 
     try:
-        from hermes_cli.env_loader import load_hermes_dotenv
+        from hermes_agent.cli.env_loader import load_hermes_dotenv
         load_hermes_dotenv()
     except Exception:
         pass

@@ -11,7 +11,7 @@ import tempfile
 
 import pytest
 
-from hermes_cli.config import _check_non_ascii_credential
+from hermes_agent.cli.config import _check_non_ascii_credential
 
 
 class TestCheckNonAsciiCredential:
@@ -54,7 +54,7 @@ class TestEnvLoaderSanitization:
     """Tests for _sanitize_loaded_credentials in env_loader."""
 
     def test_strips_non_ascii_from_api_key(self, monkeypatch):
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
+        from hermes_agent.cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
 
         _WARNED_KEYS.discard("OPENROUTER_API_KEY")
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-proj-abcʋdef")
@@ -62,7 +62,7 @@ class TestEnvLoaderSanitization:
         assert os.environ["OPENROUTER_API_KEY"] == "sk-proj-abcdef"
 
     def test_strips_non_ascii_from_token(self, monkeypatch):
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
+        from hermes_agent.cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
 
         _WARNED_KEYS.discard("DISCORD_BOT_TOKEN")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tokénvalue")
@@ -70,7 +70,7 @@ class TestEnvLoaderSanitization:
         assert os.environ["DISCORD_BOT_TOKEN"] == "toknvalue"
 
     def test_ignores_non_credential_vars(self, monkeypatch):
-        from hermes_cli.env_loader import _sanitize_loaded_credentials
+        from hermes_agent.cli.env_loader import _sanitize_loaded_credentials
 
         monkeypatch.setenv("MY_UNICODE_VAR", "héllo wörld")
         _sanitize_loaded_credentials()
@@ -78,7 +78,7 @@ class TestEnvLoaderSanitization:
         assert os.environ["MY_UNICODE_VAR"] == "héllo wörld"
 
     def test_ascii_credentials_untouched(self, monkeypatch):
-        from hermes_cli.env_loader import _sanitize_loaded_credentials
+        from hermes_agent.cli.env_loader import _sanitize_loaded_credentials
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-allascii123")
         _sanitize_loaded_credentials()
@@ -90,7 +90,7 @@ class TestEnvLoaderSanitization:
         Users must be told when a copy-paste artifact was removed so they
         can re-copy the key if authentication fails.
         """
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
+        from hermes_agent.cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
 
         _WARNED_KEYS.discard("GOOGLE_API_KEY")
         monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy\u200babcdef")  # ZWSP mid-key
@@ -104,7 +104,7 @@ class TestEnvLoaderSanitization:
 
     def test_warning_fires_only_once_per_key(self, monkeypatch, capsys):
         """Repeated loads (user env + project env) must not double-warn."""
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
+        from hermes_agent.cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
 
         _WARNED_KEYS.discard("GEMINI_API_KEY")
         monkeypatch.setenv("GEMINI_API_KEY", "AIza\u028bbad")
@@ -124,7 +124,7 @@ class TestEnvLoaderSanitization:
         This is intentional — they're valid ASCII for HTTP headers even if the
         provider rejects them. Documents the scope of the sanitizer.
         """
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
+        from hermes_agent.cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
 
         _WARNED_KEYS.clear()
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant\x1bapi-key")

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from hermes_cli.main import _session_browse_picker
+from hermes_agent.cli.main import _session_browse_picker
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -391,14 +391,14 @@ class TestSessionBrowseArgparse:
 
     def test_browse_subcommand_exists(self):
         """hermes sessions browse should be parseable."""
-        from hermes_cli.main import main as _main_entry
+        from hermes_agent.cli.main import main as _main_entry
 
         # We can't run main(), but we can import and test the parser setup
         # by checking that argparse doesn't error on "sessions browse"
         import argparse
         # Re-create the parser portion
         # Instead, let's just verify the import works and the function exists
-        from hermes_cli.main import _session_browse_picker
+        from hermes_agent.cli.main import _session_browse_picker
         assert callable(_session_browse_picker)
 
     def test_browse_default_limit_is_50(self):

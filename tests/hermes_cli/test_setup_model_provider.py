@@ -1,15 +1,15 @@
 """Regression tests for interactive setup provider/model persistence.
 
 Since setup_model_provider delegates to select_provider_and_model()
-from hermes_cli.main, these tests mock the delegation point and verify
+from hermes_agent.cli.main, these tests mock the delegation point and verify
 that the setup wizard correctly syncs config from disk after the call.
 """
 
 from __future__ import annotations
 
-from hermes_cli.config import load_config, save_config, save_env_value
-from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
-from hermes_cli.setup import _print_setup_summary, setup_model_provider
+from hermes_agent.cli.config import load_config, save_config, save_env_value
+from hermes_agent.cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from hermes_agent.cli.setup import _print_setup_summary, setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -147,8 +147,8 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
         return False
 
     # Patch directly on the module objects to ensure local imports pick them up.
-    import hermes_cli.main as _main_mod
-    import hermes_cli.setup as _setup_mod
+    import hermes_agent.cli.main as _main_mod
+    import hermes_agent.cli.setup as _setup_mod
     import agent.credential_pool as _pool_mod
     import agent.auxiliary_client as _aux_mod
 

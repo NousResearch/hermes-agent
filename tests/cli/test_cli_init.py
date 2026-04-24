@@ -298,7 +298,7 @@ class TestRootLevelProviderOverride:
 
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.cli.config import _normalize_root_model_keys
 
         config = {
             "provider": "opencode-go",
@@ -317,7 +317,7 @@ class TestRootLevelProviderOverride:
 
     def test_normalize_root_model_keys_does_not_override_existing(self):
         """Existing model.provider is never overridden by root-level key."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.cli.config import _normalize_root_model_keys
 
         config = {
             "provider": "stale-provider",

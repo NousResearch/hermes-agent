@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.config import _normalize_custom_provider_entry
+from hermes_agent.cli.config import _normalize_custom_provider_entry
 
 
 class TestNormalizeCustomProviderEntry:

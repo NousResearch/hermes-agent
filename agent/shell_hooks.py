@@ -177,7 +177,7 @@ def register_from_config(
     registered: List[ShellHookSpec] = []
 
     # Import lazily — avoids circular imports at module-load time.
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
 
@@ -243,7 +243,7 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     Malformed entries warn-and-skip — we never raise from config parsing
     because a broken hook must not crash the agent.
     """
-    from hermes_cli.plugins import VALID_HOOKS
+    from hermes_agent.cli.plugins import VALID_HOOKS
 
     if not isinstance(hooks_cfg, dict):
         return []

@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from hermes_cli.models import (
+from hermes_agent.cli.models import (
     copilot_model_api_mode,
     fetch_github_model_catalog,
     curated_models_for_provider,
@@ -40,8 +40,8 @@ def _validate(model, provider="openrouter", api_models=FAKE_API_MODELS, **kw):
         "suggested_base_url": None,
         "used_fallback": False,
     }
-    with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
-         patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+    with patch("hermes_agent.cli.models.fetch_api_models", return_value=api_models), \
+         patch("hermes_agent.cli.models.probe_api_models", return_value=probe_payload):
         return validate_requested_model(model, provider, **kw)
 
 
@@ -211,18 +211,18 @@ class TestProviderModelIds:
             assert provider_model_ids("stepfun") == ["step-3.5-flash", "step-3-agent-lite"]
 
     def test_copilot_prefers_live_catalog(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
-             patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
+        with patch("hermes_agent.cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
+             patch("hermes_agent.cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot") == ["gpt-5.4", "claude-sonnet-4.6"]
 
     def test_copilot_acp_reuses_copilot_catalog(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
-             patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
+        with patch("hermes_agent.cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
+             patch("hermes_agent.cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
     def test_copilot_acp_falls_back_to_copilot_defaults(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", side_effect=Exception("no token")), \
-             patch("hermes_cli.models._fetch_github_models", return_value=None):
+        with patch("hermes_agent.cli.auth.resolve_api_key_provider_credentials", side_effect=Exception("no token")), \
+             patch("hermes_agent.cli.models._fetch_github_models", return_value=None):
             ids = provider_model_ids("copilot-acp")
 
         assert "gpt-5.4" in ids
@@ -236,7 +236,7 @@ class TestFetchApiModels:
         assert fetch_api_models("key", None) is None
 
     def test_returns_none_on_network_error(self):
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=Exception("timeout")):
+        with patch("hermes_agent.cli.models.urllib.request.urlopen", side_effect=Exception("timeout")):
             assert fetch_api_models("key", "https://example.com/v1") is None
 
     def test_probe_api_models_tries_v1_fallback(self):
@@ -258,7 +258,7 @@ class TestFetchApiModels:
                 return _Resp()
             raise Exception("404")
 
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+        with patch("hermes_agent.cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
             probe = probe_api_models("key", "http://localhost:8000")
 
         assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
@@ -277,7 +277,7 @@ class TestFetchApiModels:
             def read(self):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
+        with patch("hermes_agent.cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
             probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
 
         assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
@@ -296,7 +296,7 @@ class TestFetchApiModels:
             def read(self):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with patch("hermes_agent.cli.models.urllib.request.urlopen", return_value=_Resp()):
             catalog = fetch_github_model_catalog("gh-token")
 
         assert catalog is not None
@@ -524,7 +524,7 @@ class TestValidateApiFallback:
 
     def test_unknown_provider_soft_accepted_when_api_down(self):
         # No catalog for unknown providers — soft-accept with a Note.
-        with patch("hermes_cli.models.provider_model_ids", return_value=[]):
+        with patch("hermes_agent.cli.models.provider_model_ids", return_value=[]):
             result = _validate("some-model", provider="totally-unknown", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
@@ -564,7 +564,7 @@ class TestValidateCodexAutoCorrection:
         """gpt5.3-codex (missing dash) auto-corrects to gpt-5.3-codex."""
         codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex",
                         "gpt-5.2-codex", "gpt-5.1-codex-max"]
-        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+        with patch("hermes_agent.cli.models.provider_model_ids", return_value=codex_models):
             result = validate_requested_model("gpt5.3-codex", "openai-codex")
         assert result["accepted"] is True
         assert result["recognized"] is True
@@ -574,7 +574,7 @@ class TestValidateCodexAutoCorrection:
     def test_exact_match_no_correction(self):
         """Exact model name does not trigger auto-correction."""
         codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
-        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+        with patch("hermes_agent.cli.models.provider_model_ids", return_value=codex_models):
             result = validate_requested_model("gpt-5.3-codex", "openai-codex")
         assert result["accepted"] is True
         assert result["recognized"] is True
@@ -584,7 +584,7 @@ class TestValidateCodexAutoCorrection:
     def test_very_different_name_falls_to_suggestions(self):
         """Names too different for auto-correction are rejected with a suggestion list."""
         codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
-        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+        with patch("hermes_agent.cli.models.provider_model_ids", return_value=codex_models):
             result = validate_requested_model("totally-wrong", "openai-codex")
         assert result["accepted"] is False
         assert result["recognized"] is False

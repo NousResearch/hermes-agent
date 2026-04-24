@@ -6,7 +6,7 @@ import pytest
 from argparse import Namespace
 from pathlib import Path
 
-from hermes_cli.webhook import (
+from hermes_agent.cli.webhook import (
     webhook_command,
     _load_subscriptions,
     _save_subscriptions,
@@ -177,7 +177,7 @@ class TestWebhookEnabledGate:
             "hermes_cli.webhook._is_webhook_enabled",
             lambda: bool({}.get("enabled")),
         )
-        import hermes_cli.webhook as wh_mod
+        import hermes_agent.cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is False
 
     def test_real_check_enabled(self, monkeypatch):
@@ -185,5 +185,5 @@ class TestWebhookEnabledGate:
             "hermes_cli.webhook._is_webhook_enabled",
             lambda: True,
         )
-        import hermes_cli.webhook as wh_mod
+        import hermes_agent.cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is True

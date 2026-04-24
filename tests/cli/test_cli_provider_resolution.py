@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.auth import AuthError
-from hermes_cli import main as hermes_main
+from hermes_agent.cli.auth import AuthError
+from hermes_agent.cli import main as hermes_main
 
 
 # ---------------------------------------------------------------------------
@@ -603,18 +603,18 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_auto_provider_name_localhost():
-    from hermes_cli.main import _auto_provider_name
+    from hermes_agent.cli.main import _auto_provider_name
     assert _auto_provider_name("http://localhost:11434/v1") == "Local (localhost:11434)"
     assert _auto_provider_name("http://127.0.0.1:1234/v1") == "Local (127.0.0.1:1234)"
 
 
 def test_auto_provider_name_runpod():
-    from hermes_cli.main import _auto_provider_name
+    from hermes_agent.cli.main import _auto_provider_name
     assert "RunPod" in _auto_provider_name("https://xyz.runpod.io/v1")
 
 
 def test_auto_provider_name_remote():
-    from hermes_cli.main import _auto_provider_name
+    from hermes_agent.cli.main import _auto_provider_name
     result = _auto_provider_name("https://api.together.xyz/v1")
     assert result == "Api.together.xyz"
 
@@ -622,7 +622,7 @@ def test_auto_provider_name_remote():
 def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     """When a display name is passed, it should appear in the saved entry."""
     import yaml
-    from hermes_cli.main import _save_custom_provider
+    from hermes_agent.cli.main import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.dump({}))

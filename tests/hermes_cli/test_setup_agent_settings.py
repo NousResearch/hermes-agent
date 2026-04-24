@@ -1,6 +1,6 @@
 """Tests for agent-settings copy in the interactive setup wizard."""
 
-from hermes_cli.setup import setup_agent_settings
+from hermes_agent.cli.setup import setup_agent_settings
 
 
 def test_setup_agent_settings_uses_displayed_max_iterations_value(tmp_path, monkeypatch, capsys):

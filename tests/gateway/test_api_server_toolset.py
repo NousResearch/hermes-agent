@@ -62,7 +62,7 @@ class TestHermesApiServerToolset:
 
 class TestApiServerPlatformConfig:
     def test_platforms_dict_includes_api_server(self):
-        from hermes_cli.tools_config import PLATFORMS
+        from hermes_agent.cli.tools_config import PLATFORMS
         assert "api_server" in PLATFORMS
         assert PLATFORMS["api_server"]["default_toolset"] == "hermes-api-server"
 

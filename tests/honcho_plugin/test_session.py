@@ -4,11 +4,11 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from plugins.memory.honcho.session import (
+from hermes_agent.plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
-from plugins.memory.honcho import HonchoMemoryProvider
+from hermes_agent.plugins.memory.honcho import HonchoMemoryProvider
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +368,7 @@ class TestPeerLookupHelpers:
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):
         """anyOf/oneOf/allOf breaks Anthropic and Fireworks APIs — schema must be plain object."""
-        from plugins.memory.honcho import CONCLUDE_SCHEMA
+        from hermes_agent.plugins.memory.honcho import CONCLUDE_SCHEMA
         params = CONCLUDE_SCHEMA["parameters"]
         assert params["type"] == "object"
         assert "conclusion" in params["properties"]
@@ -542,7 +542,7 @@ class TestToolsModeInitBehavior:
     def _make_provider_with_config(self, recall_mode="tools", init_on_session_start=False,
                                     peer_name=None, user_id=None):
         """Create a HonchoMemoryProvider with mocked config and dependencies."""
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         cfg = HonchoClientConfig(
             api_key="test-key",
@@ -566,9 +566,9 @@ class TestToolsModeInitBehavior:
         if user_id:
             init_kwargs["user_id"] = user_id
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager) as mock_manager_cls, \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager) as mock_manager_cls, \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-001", **init_kwargs)
 
@@ -634,7 +634,7 @@ class TestPerSessionMigrateGuard:
 
     def _make_provider_with_strategy(self, strategy, init_on_session_start=True):
         """Create a HonchoMemoryProvider and track migrate_memory_files calls."""
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
         from unittest.mock import patch, MagicMock
 
         cfg = HonchoClientConfig(
@@ -652,9 +652,9 @@ class TestPerSessionMigrateGuard:
         mock_session.messages = []  # empty = new session → triggers migration path
         mock_manager.get_or_create.return_value = mock_session
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-001")
 
@@ -733,7 +733,7 @@ class TestChunkMessage:
 class TestTruncateToBudget:
     def test_truncates_oversized_context(self):
         """Text exceeding context_tokens budget is truncated at a word boundary."""
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         provider = HonchoMemoryProvider()
         provider._config = HonchoClientConfig(context_tokens=10)
@@ -746,7 +746,7 @@ class TestTruncateToBudget:
 
     def test_no_truncation_within_budget(self):
         """Text within budget passes through unchanged."""
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         provider = HonchoMemoryProvider()
         provider._config = HonchoClientConfig(context_tokens=1000)
@@ -756,7 +756,7 @@ class TestTruncateToBudget:
 
     def test_no_truncation_when_context_tokens_none(self):
         """When context_tokens is None (explicit opt-out), no truncation."""
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         provider = HonchoMemoryProvider()
         provider._config = HonchoClientConfig(context_tokens=None)
@@ -766,7 +766,7 @@ class TestTruncateToBudget:
 
     def test_context_tokens_cap_bounds_prefetch(self):
         """With an explicit token budget, oversized prefetch is bounded."""
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         provider = HonchoMemoryProvider()
         provider._config = HonchoClientConfig(context_tokens=1200)
@@ -787,7 +787,7 @@ class TestTruncateToBudget:
 class TestDialecticInputGuard:
     def test_long_query_truncated(self):
         """Queries exceeding dialectic_max_input_chars are truncated."""
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         cfg = HonchoClientConfig(dialectic_max_input_chars=100)
         mgr = HonchoSessionManager(config=cfg)
@@ -844,7 +844,7 @@ class TestDialecticCadenceDefaults:
     def _make_provider(cfg_extra=None):
         """Create a HonchoMemoryProvider with mocked dependencies."""
         from unittest.mock import patch, MagicMock
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
         if cfg_extra:
@@ -856,9 +856,9 @@ class TestDialecticCadenceDefaults:
         mock_session.messages = []
         mock_manager.get_or_create.return_value = mock_session
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-001")
 
@@ -915,7 +915,7 @@ class TestDialecticDepth:
     @staticmethod
     def _make_provider(cfg_extra=None):
         from unittest.mock import patch, MagicMock
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
         if cfg_extra:
@@ -927,9 +927,9 @@ class TestDialecticDepth:
         mock_session.messages = []
         mock_manager.get_or_create.return_value = mock_session
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-001")
 
@@ -1080,7 +1080,7 @@ class TestTrivialPromptHeuristic:
     @staticmethod
     def _make_provider():
         from unittest.mock import patch, MagicMock
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         cfg = HonchoClientConfig(api_key="test-key", enabled=True, recall_mode="hybrid")
         provider = HonchoMemoryProvider()
@@ -1089,9 +1089,9 @@ class TestTrivialPromptHeuristic:
         mock_session.messages = []
         mock_manager.get_or_create.return_value = mock_session
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-trivial")
         _settle_prewarm(provider)
@@ -1140,7 +1140,7 @@ class TestDialecticCadenceAdvancesOnSuccess:
     @staticmethod
     def _make_provider():
         from unittest.mock import patch, MagicMock
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         cfg = HonchoClientConfig(
             api_key="test-key", enabled=True, recall_mode="hybrid", dialectic_depth=1,
@@ -1151,9 +1151,9 @@ class TestDialecticCadenceAdvancesOnSuccess:
         mock_session.messages = []
         mock_manager.get_or_create.return_value = mock_session
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-session-retry")
         _settle_prewarm(provider)
@@ -1223,7 +1223,7 @@ class TestSessionStartDialecticPrewarm:
     @staticmethod
     def _make_provider(cfg_extra=None, dialectic_result="prewarm synthesis"):
         from unittest.mock import patch, MagicMock
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
         if cfg_extra:
@@ -1236,9 +1236,9 @@ class TestSessionStartDialecticPrewarm:
         mock_manager.pop_context_result.return_value = None
         mock_manager.dialectic_query.return_value = dialectic_result
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-prewarm")
         return provider
@@ -1295,7 +1295,7 @@ class TestDialecticLiveness:
     @staticmethod
     def _make_provider(cfg_extra=None):
         from unittest.mock import patch, MagicMock
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid", timeout=2.0)
         if cfg_extra:
@@ -1308,9 +1308,9 @@ class TestDialecticLiveness:
         mock_manager.pop_context_result.return_value = None
         mock_manager.dialectic_query.return_value = ""  # default: silent
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-liveness")
         _settle_prewarm(provider)
@@ -1437,7 +1437,7 @@ class TestDialecticLifecycleSmoke:
     @staticmethod
     def _make_provider(cfg_extra=None):
         from unittest.mock import patch, MagicMock
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         defaults = dict(
             api_key="test-key", enabled=True, recall_mode="hybrid",
@@ -1455,9 +1455,9 @@ class TestDialecticLifecycleSmoke:
         mock_manager.get_prefetch_context.return_value = None
         mock_manager.pop_context_result.return_value = None
 
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             return provider, mock_manager, cfg
 
@@ -1489,9 +1489,9 @@ class TestDialecticLifecycleSmoke:
         mgr.dialectic_query.side_effect = lambda *a, **kw: next(responses)
 
         # ---- init: prewarm fires ----
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mgr), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mgr), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="smoke-test")
 
@@ -1576,7 +1576,7 @@ class TestReasoningHeuristic:
     @staticmethod
     def _make_provider(cfg_extra=None):
         from unittest.mock import patch, MagicMock
-        from plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
 
         defaults = dict(
             api_key="test-key", enabled=True, recall_mode="hybrid",
@@ -1589,9 +1589,9 @@ class TestReasoningHeuristic:
         provider = HonchoMemoryProvider()
         mock_manager = MagicMock()
         mock_manager.get_or_create.return_value = MagicMock(messages=[])
-        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
-             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
-             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+        with patch("hermes_agent.plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_agent.plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_agent.plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
             provider.initialize(session_id="test-heuristic")
         _settle_prewarm(provider)
@@ -1656,8 +1656,8 @@ class TestSetPeerCardNoneGuard:
     """set_peer_card must return None (not raise) when peer ID cannot be resolved."""
 
     def _make_manager(self):
-        from plugins.memory.honcho.client import HonchoClientConfig
-        from plugins.memory.honcho.session import HonchoSessionManager
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.session import HonchoSessionManager
 
         cfg = HonchoClientConfig(api_key="test-key", enabled=True)
         mgr = HonchoSessionManager.__new__(HonchoSessionManager)
@@ -1700,8 +1700,8 @@ class TestGetSessionContextFallback:
     """get_session_context fallback must honour the peer param when honcho_session is absent."""
 
     def _make_manager_with_session(self, user_peer_id="user-peer", assistant_peer_id="ai-peer"):
-        from plugins.memory.honcho.client import HonchoClientConfig
-        from plugins.memory.honcho.session import HonchoSessionManager
+        from hermes_agent.plugins.memory.honcho.client import HonchoClientConfig
+        from hermes_agent.plugins.memory.honcho.session import HonchoSessionManager
 
         cfg = HonchoClientConfig(api_key="test-key", enabled=True)
         mgr = HonchoSessionManager.__new__(HonchoSessionManager)

@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.model_switch import switch_model
+from hermes_agent.cli.model_switch import switch_model
 
 
 _MOCK_VALIDATION = {
@@ -46,8 +46,8 @@ def _run_opencode_switch(
     """
     effective_runtime_base = runtime_base_url or current_base_url
     with (
-        patch("hermes_cli.model_switch.resolve_alias", return_value=None),
-        patch("hermes_cli.model_switch.list_provider_models", return_value=[]),
+        patch("hermes_agent.cli.model_switch.resolve_alias", return_value=None),
+        patch("hermes_agent.cli.model_switch.list_provider_models", return_value=[]),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             return_value={
@@ -60,9 +60,9 @@ def _run_opencode_switch(
             "hermes_cli.models.validate_requested_model",
             return_value=_MOCK_VALIDATION,
         ),
-        patch("hermes_cli.model_switch.get_model_info", return_value=None),
-        patch("hermes_cli.model_switch.get_model_capabilities", return_value=None),
-        patch("hermes_cli.models.detect_provider_for_model", return_value=None),
+        patch("hermes_agent.cli.model_switch.get_model_info", return_value=None),
+        patch("hermes_agent.cli.model_switch.get_model_capabilities", return_value=None),
+        patch("hermes_agent.cli.models.detect_provider_for_model", return_value=None),
     ):
         return switch_model(
             raw_input=raw_input,

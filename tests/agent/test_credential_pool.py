@@ -1088,7 +1088,7 @@ def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
-    from hermes_cli.auth import AuthError
+    from hermes_agent.cli.auth import AuthError
 
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_qwen_runtime_credentials",

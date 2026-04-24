@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import textwrap
 
-from hermes_cli.timeouts import (
+from hermes_agent.cli.timeouts import (
     get_provider_request_timeout,
     get_provider_stale_timeout,
 )
@@ -188,9 +188,9 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     _write_config(tmp_path, "")
     # Clear the cached config load
     import importlib
-    from hermes_cli import config as cfg_mod
+    from hermes_agent.cli import config as cfg_mod
     importlib.reload(cfg_mod)
-    from hermes_cli import timeouts as to_mod
+    from hermes_agent.cli import timeouts as to_mod
     importlib.reload(to_mod)
     import run_agent as ra_mod
     importlib.reload(ra_mod)
@@ -245,9 +245,9 @@ def test_resolved_api_call_stale_timeout_priority(monkeypatch, tmp_path):
 
     _write_config(tmp_path, "")
     import importlib
-    from hermes_cli import config as cfg_mod
+    from hermes_agent.cli import config as cfg_mod
     importlib.reload(cfg_mod)
-    from hermes_cli import timeouts as to_mod
+    from hermes_agent.cli import timeouts as to_mod
     importlib.reload(to_mod)
     import run_agent as ra_mod
     importlib.reload(ra_mod)

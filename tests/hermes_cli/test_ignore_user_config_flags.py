@@ -228,7 +228,7 @@ class TestArgparseFlagsRegistered:
 
         We invoke the real argparse tree builder from hermes_cli.main.
         """
-        import hermes_cli.main as hm
+        import hermes_agent.cli.main as hm
 
         # hm has a helper that builds the argparse tree inside main().
         # We can extract it by catching the SystemExit on --help.

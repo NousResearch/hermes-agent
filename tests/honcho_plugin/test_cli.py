@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
-        import plugins.memory.honcho.cli as honcho_cli
+        import hermes_agent.plugins.memory.honcho.cli as honcho_cli
 
         cfg_path = tmp_path / "honcho.json"
         cfg_path.write_text("{}")

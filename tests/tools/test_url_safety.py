@@ -222,7 +222,7 @@ class TestGlobalAllowPrivateUrls:
     def test_default_is_false(self, monkeypatch):
         """Toggle defaults to False when no env var or config is set."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
-        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+        with patch("hermes_agent.cli.config.read_raw_config", side_effect=Exception("no config")):
             assert _global_allow_private_urls() is False
 
     def test_env_var_true(self, monkeypatch):
@@ -249,28 +249,28 @@ class TestGlobalAllowPrivateUrls:
         """security.allow_private_urls in config enables the toggle."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
         cfg = {"security": {"allow_private_urls": True}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is True
 
     def test_config_browser_fallback(self, monkeypatch):
         """browser.allow_private_urls works as legacy fallback."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
         cfg = {"browser": {"allow_private_urls": True}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is True
 
     def test_config_security_takes_precedence_over_browser(self, monkeypatch):
         """security section is checked before browser section."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
         cfg = {"security": {"allow_private_urls": True}, "browser": {"allow_private_urls": False}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is True
 
     def test_env_var_overrides_config(self, monkeypatch):
         """Env var takes priority over config."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
         cfg = {"security": {"allow_private_urls": True}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+        with patch("hermes_agent.cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is False
 
     def test_result_is_cached(self, monkeypatch):

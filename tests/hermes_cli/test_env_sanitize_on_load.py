@@ -12,7 +12,7 @@ def test_load_env_sanitizes_concatenated_lines():
     contained multiple tokens on a single line, causing the bot token
     to be duplicated 8 times.
     """
-    from hermes_cli.config import load_env
+    from hermes_agent.cli.config import load_env
 
     token = "8356550917:AAGGEkzg06Hrc3Hjb3Sa1jkGVDOdU_lYy2Q"
     # Simulate concatenated line: TOKEN=xxx followed immediately by another key
@@ -25,7 +25,7 @@ def test_load_env_sanitizes_concatenated_lines():
         env_path = Path(f.name)
 
     try:
-        with patch("hermes_cli.config.get_env_path", return_value=env_path):
+        with patch("hermes_agent.cli.config.get_env_path", return_value=env_path):
             result = load_env()
         assert result.get("TELEGRAM_BOT_TOKEN") == token, (
             f"Token should be exactly '{token}', got '{result.get('TELEGRAM_BOT_TOKEN')}'"
@@ -37,7 +37,7 @@ def test_load_env_sanitizes_concatenated_lines():
 
 def test_load_env_normal_file_unchanged():
     """A well-formed .env file should be parsed identically."""
-    from hermes_cli.config import load_env
+    from hermes_agent.cli.config import load_env
 
     content = (
         "TELEGRAM_BOT_TOKEN=mytoken123\n"
@@ -54,7 +54,7 @@ def test_load_env_normal_file_unchanged():
         env_path = Path(f.name)
 
     try:
-        with patch("hermes_cli.config.get_env_path", return_value=env_path):
+        with patch("hermes_agent.cli.config.get_env_path", return_value=env_path):
             result = load_env()
         assert result["TELEGRAM_BOT_TOKEN"] == "mytoken123"
         assert result["ANTHROPIC_API_KEY"] == "sk-ant-key"
@@ -65,7 +65,7 @@ def test_load_env_normal_file_unchanged():
 
 def test_env_loader_sanitizes_before_dotenv():
     """Verify env_loader._sanitize_env_file_if_needed fixes corrupted files."""
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+    from hermes_agent.cli.env_loader import _sanitize_env_file_if_needed
 
     token = "8356550917:AAGGEkzg06Hrc3Hjb3Sa1jkGVDOdU_lYy2Q"
     corrupted = f"TELEGRAM_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test\n"

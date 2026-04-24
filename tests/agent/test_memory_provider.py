@@ -377,14 +377,14 @@ class TestPluginMemoryDiscovery:
 
     def test_discover_finds_providers(self):
         """discover_memory_providers returns available providers."""
-        from plugins.memory import discover_memory_providers
+        from hermes_agent.plugins.memory import discover_memory_providers
         providers = discover_memory_providers()
         names = [name for name, _, _ in providers]
         assert "holographic" in names  # always available (no external deps)
 
     def test_load_provider_by_name(self):
         """load_memory_provider returns a working provider instance."""
-        from plugins.memory import load_memory_provider
+        from hermes_agent.plugins.memory import load_memory_provider
         p = load_memory_provider("holographic")
         assert p is not None
         assert p.name == "holographic"
@@ -392,7 +392,7 @@ class TestPluginMemoryDiscovery:
 
     def test_load_nonexistent_returns_none(self):
         """load_memory_provider returns None for unknown names."""
-        from plugins.memory import load_memory_provider
+        from hermes_agent.plugins.memory import load_memory_provider
         assert load_memory_provider("nonexistent_provider") is None
 
 
@@ -426,7 +426,7 @@ class TestUserInstalledProviderDiscovery:
 
     def test_discover_finds_user_plugins(self, tmp_path, monkeypatch):
         """discover_memory_providers() includes user-installed plugins."""
-        from plugins.memory import discover_memory_providers, _get_user_plugins_dir
+        from hermes_agent.plugins.memory import discover_memory_providers, _get_user_plugins_dir
         self._make_user_memory_plugin(tmp_path, "myexternal")
         monkeypatch.setattr(
             "plugins.memory._get_user_plugins_dir",
@@ -439,7 +439,7 @@ class TestUserInstalledProviderDiscovery:
 
     def test_load_user_plugin(self, tmp_path, monkeypatch):
         """load_memory_provider() can load from $HERMES_HOME/plugins/."""
-        from plugins.memory import load_memory_provider
+        from hermes_agent.plugins.memory import load_memory_provider
         self._make_user_memory_plugin(tmp_path, "myexternal")
         monkeypatch.setattr(
             "plugins.memory._get_user_plugins_dir",
@@ -452,7 +452,7 @@ class TestUserInstalledProviderDiscovery:
 
     def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
         """Bundled provider wins when user plugin has the same name."""
-        from plugins.memory import load_memory_provider, discover_memory_providers
+        from hermes_agent.plugins.memory import load_memory_provider, discover_memory_providers
         # Create user plugin named "holographic" (same as bundled)
         plugin_dir = tmp_path / "plugins" / "holographic"
         plugin_dir.mkdir(parents=True)
@@ -483,7 +483,7 @@ class TestUserInstalledProviderDiscovery:
 
     def test_non_memory_user_plugins_excluded(self, tmp_path, monkeypatch):
         """User plugins that don't reference MemoryProvider are skipped."""
-        from plugins.memory import discover_memory_providers
+        from hermes_agent.plugins.memory import discover_memory_providers
         plugin_dir = tmp_path / "plugins" / "notmemory"
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
@@ -952,7 +952,7 @@ class TestHonchoCadenceTracking:
 
     def test_turn_count_updates_on_turn_start(self):
         """on_turn_start sets _turn_count, enabling cadence math."""
-        from plugins.memory.honcho import HonchoMemoryProvider
+        from hermes_agent.plugins.memory.honcho import HonchoMemoryProvider
         p = HonchoMemoryProvider()
         assert p._turn_count == 0
         p.on_turn_start(1, "hello")
@@ -962,7 +962,7 @@ class TestHonchoCadenceTracking:
 
     def test_queue_prefetch_respects_dialectic_cadence(self):
         """With dialecticCadence=3, dialectic should skip turns 2 and 3."""
-        from plugins.memory.honcho import HonchoMemoryProvider
+        from hermes_agent.plugins.memory.honcho import HonchoMemoryProvider
         p = HonchoMemoryProvider()
         p._dialectic_cadence = 3
         p._recall_mode = "context"
@@ -993,7 +993,7 @@ class TestHonchoCadenceTracking:
 
     def test_injection_frequency_first_turn_with_1indexed(self):
         """injection_frequency='first-turn' must inject on turn 1 (1-indexed)."""
-        from plugins.memory.honcho import HonchoMemoryProvider
+        from hermes_agent.plugins.memory.honcho import HonchoMemoryProvider
         p = HonchoMemoryProvider()
         p._injection_frequency = "first-turn"
 

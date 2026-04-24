@@ -8,7 +8,7 @@ class TestGetDefaultModelForProvider:
     """Unit tests for hermes_cli.models.get_default_model_for_provider."""
 
     def test_known_provider_returns_first_model(self):
-        from hermes_cli.models import get_default_model_for_provider
+        from hermes_agent.cli.models import get_default_model_for_provider
         result = get_default_model_for_provider("openai-codex")
         # Should return first model from _PROVIDER_MODELS["openai-codex"]
         assert result
@@ -16,18 +16,18 @@ class TestGetDefaultModelForProvider:
 
     def test_openrouter_returns_empty(self):
         """OpenRouter uses dynamic model fetch, no static catalog entry."""
-        from hermes_cli.models import get_default_model_for_provider
+        from hermes_agent.cli.models import get_default_model_for_provider
         # OpenRouter is not in _PROVIDER_MODELS — it uses live fetching
         result = get_default_model_for_provider("openrouter")
         assert result == ""
 
     def test_unknown_provider_returns_empty(self):
-        from hermes_cli.models import get_default_model_for_provider
+        from hermes_agent.cli.models import get_default_model_for_provider
         assert get_default_model_for_provider("nonexistent-provider") == ""
 
     def test_custom_provider_returns_empty(self):
         """Custom provider has no model catalog — should return empty."""
-        from hermes_cli.models import get_default_model_for_provider
+        from hermes_agent.cli.models import get_default_model_for_provider
         # Custom providers don't have entries in _PROVIDER_MODELS
         assert get_default_model_for_provider("some-random-custom") == ""
 

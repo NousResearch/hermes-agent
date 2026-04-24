@@ -14,7 +14,7 @@ future update to the detection logic lives in one place.
 
 from __future__ import annotations
 
-from hermes_cli.runtime_provider import _detect_api_mode_for_url
+from hermes_agent.cli.runtime_provider import _detect_api_mode_for_url
 
 
 class TestCodexResponsesDetection:

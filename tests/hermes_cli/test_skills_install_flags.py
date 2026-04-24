@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 def test_cli_skills_install_yes_sets_skip_confirm(monkeypatch):
     """--yes should set skip_confirm=True but NOT force."""
-    from hermes_cli.main import main
+    from hermes_agent.cli.main import main
 
     captured = {}
 
@@ -38,7 +38,7 @@ def test_cli_skills_install_yes_sets_skip_confirm(monkeypatch):
 
 def test_cli_skills_install_y_alias(monkeypatch):
     """-y should behave the same as --yes."""
-    from hermes_cli.main import main
+    from hermes_agent.cli.main import main
 
     captured = {}
 
@@ -61,7 +61,7 @@ def test_cli_skills_install_y_alias(monkeypatch):
 
 def test_cli_skills_install_force_sets_force(monkeypatch):
     """--force should set force=True but NOT yes."""
-    from hermes_cli.main import main
+    from hermes_agent.cli.main import main
 
     captured = {}
 
@@ -84,7 +84,7 @@ def test_cli_skills_install_force_sets_force(monkeypatch):
 
 def test_cli_skills_install_force_and_yes_together(monkeypatch):
     """--force --yes should set both flags."""
-    from hermes_cli.main import main
+    from hermes_agent.cli.main import main
 
     captured = {}
 
@@ -107,7 +107,7 @@ def test_cli_skills_install_force_and_yes_together(monkeypatch):
 
 def test_cli_skills_install_no_flags(monkeypatch):
     """Without flags, both force and yes should be False."""
-    from hermes_cli.main import main
+    from hermes_agent.cli.main import main
 
     captured = {}
 

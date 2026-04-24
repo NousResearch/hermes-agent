@@ -191,24 +191,24 @@ class TestMinimaxApiMode:
     """
 
     def test_minimax_returns_anthropic_messages(self):
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.cli.providers import determine_api_mode
         assert determine_api_mode("minimax") == "anthropic_messages"
 
     def test_minimax_cn_returns_anthropic_messages(self):
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.cli.providers import determine_api_mode
         assert determine_api_mode("minimax-cn") == "anthropic_messages"
 
     def test_minimax_with_url_also_works(self):
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.cli.providers import determine_api_mode
         # Even with explicit base_url, provider lookup takes priority
         assert determine_api_mode("minimax", "https://api.minimax.io/anthropic") == "anthropic_messages"
 
     def test_anthropic_still_returns_anthropic_messages(self):
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.cli.providers import determine_api_mode
         assert determine_api_mode("anthropic") == "anthropic_messages"
 
     def test_openai_returns_chat_completions(self):
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.cli.providers import determine_api_mode
         # Sanity check: standard providers are unaffected
         result = determine_api_mode("deepseek")
         assert result == "chat_completions"

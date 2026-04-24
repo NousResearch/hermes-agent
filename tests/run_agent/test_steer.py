@@ -281,7 +281,7 @@ class TestSteerCommandRegistry:
         """The /steer slash command must be registered so it reaches all
         platforms (CLI, gateway, TUI autocomplete, Telegram/Slack menus).
         """
-        from hermes_cli.commands import resolve_command, ACTIVE_SESSION_BYPASS_COMMANDS
+        from hermes_agent.cli.commands import resolve_command, ACTIVE_SESSION_BYPASS_COMMANDS
 
         cmd = resolve_command("steer")
         assert cmd is not None
@@ -295,7 +295,7 @@ class TestSteerCommandRegistry:
         handler. Otherwise it would be queued as user text and only
         delivered at turn end — defeating the whole point.
         """
-        from hermes_cli.commands import ACTIVE_SESSION_BYPASS_COMMANDS, should_bypass_active_session
+        from hermes_agent.cli.commands import ACTIVE_SESSION_BYPASS_COMMANDS, should_bypass_active_session
 
         assert "steer" in ACTIVE_SESSION_BYPASS_COMMANDS
         assert should_bypass_active_session("steer") is True

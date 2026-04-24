@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_agent.cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -41,7 +41,7 @@ def test_setup_wizard_codex_import_resolves():
     """Regression test for #712: setup.py must import the correct function name."""
     # This mirrors the exact import used in hermes_cli/setup.py line 873.
     # A prior bug had 'get_codex_models' (wrong) instead of 'get_codex_model_ids'.
-    from hermes_cli.codex_models import get_codex_model_ids as setup_import
+    from hermes_agent.cli.codex_models import get_codex_model_ids as setup_import
     assert callable(setup_import)
 
 
@@ -69,7 +69,7 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
 
 
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
-    from hermes_cli.main import _model_flow_openai_codex
+    from hermes_agent.cli.main import _model_flow_openai_codex
 
     captured = {}
 

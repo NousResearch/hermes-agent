@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_cli.plugins import (
+from hermes_agent.cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -92,7 +92,7 @@ class TestMemoryPluginCliDiscovery:
             "    subparser.add_argument('--other')\n"
         )
 
-        import plugins.memory as pm
+        import hermes_agent.plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         mod_key = "plugins.memory.testplugin.cli"
         sys.modules.pop(mod_key, None)
@@ -122,7 +122,7 @@ class TestMemoryPluginCliDiscovery:
             "def register_cli(subparser):\n    pass\n"
         )
 
-        import plugins.memory as pm
+        import hermes_agent.plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
         monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: None)
@@ -140,7 +140,7 @@ class TestMemoryPluginCliDiscovery:
         (plugin_dir / "__init__.py").write_text("pass\n")
         (plugin_dir / "cli.py").write_text("def some_other_fn():\n    pass\n")
 
-        import plugins.memory as pm
+        import hermes_agent.plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
         monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "noplugin")
@@ -158,7 +158,7 @@ class TestMemoryPluginCliDiscovery:
         plugin_dir.mkdir()
         (plugin_dir / "__init__.py").write_text("pass\n")
 
-        import plugins.memory as pm
+        import hermes_agent.plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
         monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "nocli")
@@ -179,7 +179,7 @@ class TestMemoryPluginCliDiscovery:
 class TestProviderCollectorCliNoop:
     def test_register_cli_command_is_noop(self):
         """_ProviderCollector.register_cli_command is a no-op (doesn't crash)."""
-        from plugins.memory import _ProviderCollector
+        from hermes_agent.plugins.memory import _ProviderCollector
 
         collector = _ProviderCollector()
         collector.register_cli_command(

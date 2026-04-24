@@ -9,7 +9,7 @@ custom/unknown providers in ``resolve_custom_provider``.
 
 from __future__ import annotations
 
-from hermes_cli.providers import determine_api_mode
+from hermes_agent.cli.providers import determine_api_mode
 
 
 class TestOpenAIHostHardening:

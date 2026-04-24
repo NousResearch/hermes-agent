@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from hermes_cli.status import show_status
+from hermes_agent.cli.status import show_status
 
 
 def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
@@ -15,9 +15,9 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
-    from hermes_cli import status as status_mod
-    import hermes_cli.auth as auth_mod
-    import hermes_cli.gateway as gateway_mod
+    from hermes_agent.cli import status as status_mod
+    import hermes_agent.cli.auth as auth_mod
+    import hermes_agent.cli.gateway as gateway_mod
 
     monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
     monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")

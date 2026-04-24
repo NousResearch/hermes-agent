@@ -4,7 +4,7 @@ from argparse import Namespace
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
-from hermes_cli import setup as setup_mod
+from hermes_agent.cli import setup as setup_mod
 
 
 # ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ class TestOfferOpenclawMigration:
 
     def test_skips_when_no_openclaw_dir(self, tmp_path):
         """Should return False immediately when ~/.openclaw does not exist."""
-        with patch("hermes_cli.setup.Path.home", return_value=tmp_path):
+        with patch("hermes_agent.cli.setup.Path.home", return_value=tmp_path):
             assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
 
     def test_skips_when_migration_script_missing(self, tmp_path):
@@ -25,7 +25,7 @@ class TestOfferOpenclawMigration:
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_agent.cli.setup.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", tmp_path / "nonexistent.py"),
         ):
             assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
@@ -37,7 +37,7 @@ class TestOfferOpenclawMigration:
         script = tmp_path / "openclaw_to_hermes.py"
         script.write_text("# placeholder")
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_agent.cli.setup.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=False),
         ):
@@ -69,7 +69,7 @@ class TestOfferOpenclawMigration:
         script.write_text("# placeholder")
 
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_agent.cli.setup.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             # Both prompts answered Yes: preview offer + proceed confirmation
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
@@ -139,7 +139,7 @@ class TestOfferOpenclawMigration:
         prompt_responses = iter([True, False])
 
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_agent.cli.setup.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", side_effect=prompt_responses),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
@@ -176,7 +176,7 @@ class TestOfferOpenclawMigration:
         script.write_text("# placeholder")
 
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_agent.cli.setup.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
@@ -202,7 +202,7 @@ class TestOfferOpenclawMigration:
         script.write_text("# placeholder")
 
         with (
-            patch("hermes_cli.setup.Path.home", return_value=tmp_path),
+            patch("hermes_agent.cli.setup.Path.home", return_value=tmp_path),
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
@@ -245,7 +245,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", return_value=""),
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("hermes_agent.cli.auth.get_active_provider", return_value=None),
             # User presses Enter to start
             patch("builtins.input", return_value=""),
             # Select "Full setup" (index 1) so we exercise the full path
@@ -283,7 +283,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", return_value=""),
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("hermes_agent.cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "prompt_choice", return_value=1),
             patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
@@ -316,7 +316,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", return_value=""),
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("hermes_agent.cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "prompt_choice", return_value=1),
             patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
@@ -346,7 +346,7 @@ class TestSetupWizardOpenclawIntegration:
                 "get_env_value",
                 side_effect=lambda k: "sk-xxx" if k == "OPENROUTER_API_KEY" else "",
             ),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("hermes_agent.cli.auth.get_active_provider", return_value=None),
             # Returning user picks "Exit"
             patch.object(setup_mod, "prompt_choice", return_value=9),
             patch.object(
@@ -613,7 +613,7 @@ class TestSetupWizardSkipsConfiguredSections:
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", side_effect=env_side),
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("hermes_agent.cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "prompt_choice", return_value=1),
             # Migration succeeds and flips the env_side flag

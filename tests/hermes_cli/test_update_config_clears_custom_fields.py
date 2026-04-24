@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import yaml
 
-from hermes_cli.auth import _update_config_for_provider
-from hermes_cli.config import get_config_path
+from hermes_agent.cli.auth import _update_config_for_provider
+from hermes_agent.cli.config import get_config_path
 
 
 def _read_model_cfg() -> dict:

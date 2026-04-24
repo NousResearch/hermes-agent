@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import config as hermes_config
-from hermes_cli import main as hermes_main
+from hermes_agent.cli import config as hermes_config
+from hermes_agent.cli import main as hermes_main
 
 
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):

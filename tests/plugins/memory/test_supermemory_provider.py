@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from plugins.memory.supermemory import (
+from hermes_agent.plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
     _format_prefetch_context,

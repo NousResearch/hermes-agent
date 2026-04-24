@@ -4,9 +4,9 @@ import os
 import pytest
 from unittest.mock import patch, MagicMock
 
-from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider, resolve_api_key_provider_credentials
-from hermes_cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIASES, normalize_provider
-from hermes_cli.model_normalize import normalize_model_for_provider
+from hermes_agent.cli.auth import PROVIDER_REGISTRY, resolve_provider, resolve_api_key_provider_credentials
+from hermes_agent.cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIASES, normalize_provider
+from hermes_agent.cli.model_normalize import normalize_model_for_provider
 from agent.model_metadata import _URL_TO_PROVIDER, _PROVIDER_PREFIXES
 from agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models
 
@@ -95,7 +95,7 @@ class TestOllamaCloudCredentials:
 
     def test_runtime_ollama_cloud(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_API_KEY", "ollama-key")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="ollama-cloud")
         assert result["provider"] == "ollama-cloud"
         assert result["api_mode"] == "chat_completions"
@@ -116,7 +116,7 @@ class TestOllamaCloudModelCatalog:
 
     def test_provider_model_ids_returns_dynamic_models(self, tmp_path, monkeypatch):
         """provider_model_ids('ollama-cloud') should call fetch_ollama_cloud_models()."""
-        from hermes_cli.models import provider_model_ids
+        from hermes_agent.cli.models import provider_model_ids
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -129,7 +129,7 @@ class TestOllamaCloudModelCatalog:
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
+        with patch("hermes_agent.cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = provider_model_ids("ollama-cloud", force_refresh=True)
 
@@ -142,7 +142,7 @@ class TestOllamaCloudModelCatalog:
 class TestOllamaCloudModelPicker:
     def test_ollama_cloud_shows_model_count(self, tmp_path, monkeypatch):
         """Ollama Cloud should show non-zero model count in provider picker."""
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_agent.cli.model_switch import list_authenticated_providers
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -155,7 +155,7 @@ class TestOllamaCloudModelPicker:
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
+        with patch("hermes_agent.cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             providers = list_authenticated_providers(current_provider="ollama-cloud")
 
@@ -165,7 +165,7 @@ class TestOllamaCloudModelPicker:
 
     def test_ollama_cloud_not_shown_without_creds(self, monkeypatch):
         """Ollama Cloud should not appear without credentials."""
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_agent.cli.model_switch import list_authenticated_providers
 
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
 
@@ -179,7 +179,7 @@ class TestOllamaCloudModelPicker:
 class TestOllamaCloudMergedDiscovery:
     def test_merges_live_and_models_dev(self, tmp_path, monkeypatch):
         """Live API models appear first, models.dev additions fill gaps."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -193,7 +193,7 @@ class TestOllamaCloudMergedDiscovery:
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b", "glm-5"]), \
+        with patch("hermes_agent.cli.models.fetch_api_models", return_value=["qwen3.5:397b", "glm-5"]), \
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
@@ -206,7 +206,7 @@ class TestOllamaCloudMergedDiscovery:
 
     def test_falls_back_to_models_dev_without_api_key(self, tmp_path, monkeypatch):
         """Without API key, only models.dev results are returned."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
@@ -225,12 +225,12 @@ class TestOllamaCloudMergedDiscovery:
 
     def test_uses_disk_cache(self, tmp_path, monkeypatch):
         """Second call returns cached results without hitting APIs."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["model-a"]) as mock_api, \
+        with patch("hermes_agent.cli.models.fetch_api_models", return_value=["model-a"]) as mock_api, \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             first = fetch_ollama_cloud_models(force_refresh=True)
             assert first == ["model-a"]
@@ -243,12 +243,12 @@ class TestOllamaCloudMergedDiscovery:
 
     def test_force_refresh_bypasses_cache(self, tmp_path, monkeypatch):
         """force_refresh=True always hits the API even with fresh cache."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["model-a"]) as mock_api, \
+        with patch("hermes_agent.cli.models.fetch_api_models", return_value=["model-a"]) as mock_api, \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             fetch_ollama_cloud_models(force_refresh=True)
             fetch_ollama_cloud_models(force_refresh=True)
@@ -256,7 +256,7 @@ class TestOllamaCloudMergedDiscovery:
 
     def test_stale_cache_used_on_total_failure(self, tmp_path, monkeypatch):
         """If both API and models.dev fail, stale cache is returned."""
-        from hermes_cli.models import fetch_ollama_cloud_models, _save_ollama_cloud_cache
+        from hermes_agent.cli.models import fetch_ollama_cloud_models, _save_ollama_cloud_cache
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -273,7 +273,7 @@ class TestOllamaCloudMergedDiscovery:
         with open(cache_path, "w") as f:
             json.dump(data, f)
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+        with patch("hermes_agent.cli.models.fetch_api_models", return_value=None), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
@@ -281,7 +281,7 @@ class TestOllamaCloudMergedDiscovery:
 
     def test_empty_on_total_failure_no_cache(self, tmp_path, monkeypatch):
         """Returns empty list when everything fails and no cache exists."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
@@ -374,27 +374,27 @@ class TestOllamaCloudAgentInit:
 
 class TestOllamaCloudProvidersNew:
     def test_overlay_exists(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
+        from hermes_agent.cli.providers import HERMES_OVERLAYS
         assert "ollama-cloud" in HERMES_OVERLAYS
         overlay = HERMES_OVERLAYS["ollama-cloud"]
         assert overlay.transport == "openai_chat"
         assert overlay.base_url_env_var == "OLLAMA_BASE_URL"
 
     def test_alias_resolves(self):
-        from hermes_cli.providers import normalize_provider as np
+        from hermes_agent.cli.providers import normalize_provider as np
         assert np("ollama") == "custom"  # bare "ollama" = local
         assert np("ollama-cloud") == "ollama-cloud"
 
     def test_label_override(self):
-        from hermes_cli.providers import _LABEL_OVERRIDES
+        from hermes_agent.cli.providers import _LABEL_OVERRIDES
         assert _LABEL_OVERRIDES.get("ollama-cloud") == "Ollama Cloud"
 
     def test_get_label(self):
-        from hermes_cli.providers import get_label
+        from hermes_agent.cli.providers import get_label
         assert get_label("ollama-cloud") == "Ollama Cloud"
 
     def test_get_provider(self):
-        from hermes_cli.providers import get_provider
+        from hermes_agent.cli.providers import get_provider
         pdef = get_provider("ollama-cloud")
         assert pdef is not None
         assert pdef.id == "ollama-cloud"

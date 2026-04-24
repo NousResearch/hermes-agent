@@ -1819,7 +1819,7 @@ def delegate_task(
     # child was closed.
     _parent_session_id = getattr(parent_agent, "session_id", None)
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_agent.cli.plugins import invoke_hook as _invoke_hook
     except Exception:
         _invoke_hook = None
     for entry in results:
@@ -1946,7 +1946,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     # Provider is configured — resolve full credentials
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested=configured_provider)
     except Exception as exc:
@@ -1992,7 +1992,7 @@ def _load_config() -> dict:
     except Exception:
         pass
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.cli.config import load_config
 
         full = load_config()
         return full.get("delegation", {})

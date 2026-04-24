@@ -2,7 +2,7 @@
 
 import os
 import pytest
-from hermes_cli.config import _expand_env_vars, load_config
+from hermes_agent.cli.config import _expand_env_vars, load_config
 from unittest.mock import patch as mock_patch
 
 

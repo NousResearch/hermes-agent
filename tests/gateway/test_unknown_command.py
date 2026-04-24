@@ -304,7 +304,7 @@ async def test_command_hook_fires_for_plugin_registered_command(monkeypatch):
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
     # Stub plugin command lookup so is_gateway_known_command() recognizes /metricas.
-    from hermes_cli import plugins as _plugins_mod
+    from hermes_agent.cli import plugins as _plugins_mod
 
     monkeypatch.setattr(
         _plugins_mod,
@@ -352,7 +352,7 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
-    from hermes_cli import plugins as _plugins_mod
+    from hermes_agent.cli import plugins as _plugins_mod
 
     monkeypatch.setattr(
         _plugins_mod,

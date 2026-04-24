@@ -1,7 +1,7 @@
 """Tests for hermes_cli/tips.py — random tip display at session start."""
 
 import pytest
-from hermes_cli.tips import TIPS, get_random_tip
+from hermes_agent.cli.tips import TIPS, get_random_tip
 
 
 class TestTipsCorpus:
@@ -59,7 +59,7 @@ class TestTipIntegrationInCLI:
 
     def test_tip_import_works(self):
         """The import used in cli.py must succeed."""
-        from hermes_cli.tips import get_random_tip
+        from hermes_agent.cli.tips import get_random_tip
         assert callable(get_random_tip)
 
     def test_tip_display_format(self):

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import plugins.image_gen.openai as openai_plugin
+import hermes_agent.plugins.image_gen.openai as openai_plugin
 
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()

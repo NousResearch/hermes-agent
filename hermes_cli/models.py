@@ -42,7 +42,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-sonnet-4.5",     ""),
     ("anthropic/claude-haiku-4.5",      ""),
     ("openrouter/elephant-alpha",       "free"),
-    ("openai/gpt-5.4",                  ""),
+    ("openai/gpt-5.5",                  ""),
     ("openai/gpt-5.4-mini",             ""),
     ("xiaomi/mimo-v2.5-pro",             ""),
     ("xiaomi/mimo-v2.5",                 ""),
@@ -65,7 +65,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("arcee-ai/trinity-large-preview:free", "free"),
     ("arcee-ai/trinity-large-thinking",  ""),
-    ("openai/gpt-5.4-pro",              ""),
+    ("openai/gpt-5.5-pro",              ""),
     ("openai/gpt-5.4-nano",             ""),
 ]
 
@@ -120,7 +120,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
-        "openai/gpt-5.4",
+        "openai/gpt-5.5",
         "openai/gpt-5.4-mini",
         "openai/gpt-5.3-codex",
         "google/gemini-3-pro-preview",
@@ -139,7 +139,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "x-ai/grok-4.20-beta",
         "nvidia/nemotron-3-super-120b-a12b",
         "arcee-ai/trinity-large-thinking",
-        "openai/gpt-5.4-pro",
+        "openai/gpt-5.5-pro",
         "openai/gpt-5.4-nano",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and

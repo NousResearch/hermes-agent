@@ -199,6 +199,7 @@ AUTHOR_MAP = {
     "satelerd@gmail.com": "satelerd",
     "dan@danlynn.com": "danklynn",
     "mattmaximo@hotmail.com": "MattMaximo",
+    "MatthewRHardwick@gmail.com": "mrhwick",
     "149063006+j3ffffff@users.noreply.github.com": "j3ffffff",
     "A-FdL-Prog@users.noreply.github.com": "A-FdL-Prog",
     "l0hde@users.noreply.github.com": "l0hde",

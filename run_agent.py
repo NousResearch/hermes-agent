@@ -7530,12 +7530,13 @@ class AIAgent:
             return
 
         # То же самое для DeepSeek thinking-моделей через kilo gateway:
-        # если у assistant есть tool_calls, но reasoning_content отсутствует
-        # (например, сессия приехала с Codex API, где reasoning хранился в
-        # зашифрованном codex_reasoning_items и был срезан на пути к kilo),
-        # DeepSeek ответит 400. Пустая строка "" DeepSeek не устраивает
-        # (falsy — gateway игнорирует поле), поэтому подставляем один символ.
-        if self._needs_deepseek_thinking_tool_merge() and source_msg.get("tool_calls"):
+        # kilo срезает reasoning_content/reasoning/reasoning_details при
+        # форварде в upstream DeepSeek (truthy-check в removeChatCompletionsReasoning).
+        # DeepSeek thinking-модели (v3.2+) отдают 400, если в истории есть
+        # tool-результат и любой последующий assistant-ход без reasoning_content —
+        # как с tool_calls, так и без (обычный assistant-text).
+        # Пустая строка "" gateway дропает (falsy), поэтому подставляем один символ.
+        if self._needs_deepseek_thinking_tool_merge():
             api_msg["reasoning_content"] = "."
 
     @staticmethod
@@ -7624,56 +7625,49 @@ class AIAgent:
 
     @classmethod
     def _merge_post_tool_text_into_tool(cls, api_messages: list) -> list:
-        """Сливает user/assistant-text сообщения, идущие после ПОСЛЕДНЕГО tool-результата,
-        прямо в content этого tool-результата, и удаляет их из списка.
+        """Сливает КАЖДОЕ user-сообщение, идущее после tool-результата,
+        внутрь content ближайшего предыдущего tool-сообщения — и удаляет
+        его из списка.
 
-        Только если после последнего tool нет новых assistant+tool_calls (то есть нет
-        ещё одного tool-round). Иначе возвращает список без изменений, чтобы не
-        портить структуру.
+        Покрывает и trailing user после последнего tool, и user-сообщения
+        между tool-циклами (новый пользовательский ввод в продолжающейся
+        сессии), включая случай, когда между tool и user есть assistant-text
+        (kilo всё равно ломается, если user идёт после tool в истории).
+
+        E2E-тесты через kilo показали, что DeepSeek thinking-модели отдают
+        400 "reasoning_content in the thinking mode must be passed back
+        to the API" при ЛЮБОМ user-сообщении, идущем после tool в истории.
+
+        assistant-text-сообщения между tool и user остаются на своих местах —
+        они kilo не мешают.
+
+        Первый user в диалоге (до появления любого tool) НЕ трогается.
 
         Возвращает новый список (копию). Входной список не мутирует.
         """
         if not api_messages:
             return api_messages
 
-        last_tool_idx = None
-        for i in range(len(api_messages) - 1, -1, -1):
-            if api_messages[i].get("role") == "tool":
-                last_tool_idx = i
-                break
-        if last_tool_idx is None:
-            return api_messages
-
-        trailing = api_messages[last_tool_idx + 1:]
-        if not trailing:
-            return api_messages
-
-        # Не трогаем, если после последнего tool есть ещё один tool-round.
-        for m in trailing:
-            if m.get("role") == "assistant" and m.get("tool_calls"):
-                return api_messages
-            if m.get("role") == "tool":
-                return api_messages
-
-        merge_chunks = []
-        for m in trailing:
-            role = m.get("role")
-            text = cls._extract_text_from_content(m.get("content"))
-            if not text:
-                continue
-            prefix = "[user]" if role == "user" else "[assistant]" if role == "assistant" else f"[{role}]"
-            merge_chunks.append(f"{prefix}\n{text}")
-
-        if not merge_chunks:
-            # Нечего сливать, но всё равно обрезаем trailing — они пустые
-            return api_messages[: last_tool_idx + 1]
-
-        result = [m.copy() for m in api_messages[: last_tool_idx + 1]]
-        tool_msg = result[last_tool_idx]
-        base = tool_msg.get("content")
-        base_text = cls._extract_text_from_content(base) if base else ""
-        merged_text = (base_text + "\n\n" if base_text else "") + "\n\n".join(merge_chunks)
-        tool_msg["content"] = merged_text
+        result = []
+        last_tool_idx_in_result = None  # индекс последнего tool в формируемом result
+        for msg in api_messages:
+            role = msg.get("role")
+            if role == "tool":
+                result.append(msg.copy() if isinstance(msg, dict) else msg)
+                last_tool_idx_in_result = len(result) - 1
+            elif role == "user" and last_tool_idx_in_result is not None:
+                # Слить этот user в ближайший предыдущий tool-результат.
+                prev = result[last_tool_idx_in_result]
+                prev_text = cls._extract_text_from_content(prev.get("content")) or ""
+                user_text = cls._extract_text_from_content(msg.get("content"))
+                if user_text:
+                    joined = prev_text + ("\n\n" if prev_text else "") + "[user]\n" + user_text
+                    prev_copy = prev.copy()
+                    prev_copy["content"] = joined
+                    result[last_tool_idx_in_result] = prev_copy
+                # иначе — пустой user, просто выкидываем
+            else:
+                result.append(msg.copy() if isinstance(msg, dict) else msg)
         return result
 
     def flush_memories(self, messages: list = None, min_turns: int = None):

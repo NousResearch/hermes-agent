@@ -87,7 +87,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/sessions` | Modal session picker — preview, title, token totals, resume inline |
 | `/model` | Modal model picker grouped by provider, with cost hints |
 | `/skin` | Live preview — theme change applies as you browse |
-| `/details` | Toggle verbose tool-call details in the transcript |
+| `/details` | Toggle verbose tool-call details (global or per-section) |
 | `/usage` | Rich token / cost / context panel |
 
 Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).
@@ -114,13 +114,26 @@ A handful of keys tune the TUI surface specifically:
 
 ```yaml
 display:
-  skin: default          # any built-in or custom skin
+  skin: default              # any built-in or custom skin
   personality: helpful
-  details_mode: compact  # or "verbose" — default tool-call detail level
-  mouse_tracking: true   # disable if your terminal conflicts with mouse reporting
+  details_mode: collapsed    # hidden | collapsed | expanded — global accordion default
+  sections:                  # optional: per-section overrides (any subset)
+    thinking: expanded       # always open
+    tools: expanded          # always open
+    activity: hidden         # never show errors/warnings/info panel
+  mouse_tracking: true       # disable if your terminal conflicts with mouse reporting
 ```
 
-`/details on` / `/details off` / `/details cycle` toggle this at runtime.
+Runtime toggles:
+
+- `/details [hidden|collapsed|expanded|cycle]` — set the global mode
+- `/details <section> [hidden|collapsed|expanded|reset]` — override one section
+  (sections: `thinking`, `tools`, `subagents`, `activity`)
+
+Per-section overrides take precedence over the global `details_mode`. With
+`activity: hidden`, errors/warnings are suppressed entirely (the floating-alert
+fallback that normally surfaces under `details_mode: hidden` is also silenced
+when activity is explicitly hidden).
 
 ## Sessions
 

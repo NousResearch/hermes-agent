@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 
-import { resolveDetailsMode } from '../domain/details.js'
+import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   ConfigFullResponse,
@@ -46,6 +46,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
     inlineDiffs: d.inline_diffs !== false,
+    sections: resolveSections(d.sections),
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),

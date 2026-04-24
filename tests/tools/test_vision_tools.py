@@ -16,6 +16,7 @@ from tools.vision_tools import (
     _determine_mime_type,
     _image_to_base64_data_url,
     _resize_image_for_vision,
+    _resolve_sandbox_path_to_host,
     _is_image_size_error,
     _MAX_BASE64_BYTES,
     _RESIZE_TARGET_BYTES,
@@ -918,3 +919,134 @@ class TestIsImageSizeError:
 
     def test_empty_message(self):
         assert not _is_image_size_error(Exception(""))
+
+
+# ---------------------------------------------------------------------------
+# _resolve_sandbox_path_to_host — sandbox-to-host path translation
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSandboxPathToHost:
+    """Verify sandbox/container paths are translated to host paths."""
+
+    def test_relative_dot_slash_resolved_via_terminal_cwd(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", "/home/user/project")
+        result = _resolve_sandbox_path_to_host("./screenshot.png")
+        assert result == "/home/user/project/screenshot.png"
+
+    def test_relative_parent_resolved_via_terminal_cwd(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", "/home/user/project")
+        result = _resolve_sandbox_path_to_host("../other/file.png")
+        assert "/other/file.png" in result
+
+    def test_bare_filename_resolved_via_terminal_cwd(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", "/home/user/project")
+        result = _resolve_sandbox_path_to_host("screenshot.png")
+        assert result == "/home/user/project/screenshot.png"
+
+    def test_relative_without_terminal_cwd_returns_unchanged(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        result = _resolve_sandbox_path_to_host("./screenshot.png")
+        assert result == "./screenshot.png"
+
+    def test_bare_filename_without_terminal_cwd_returns_unchanged(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        result = _resolve_sandbox_path_to_host("screenshot.png")
+        assert result == "screenshot.png"
+
+    def test_workspace_path_resolved_via_terminal_cwd(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", "/home/user/project")
+        with patch("hermes_cli.config.load_config", return_value={
+            "terminal": {
+                "docker_mount_cwd_to_workspace": True,
+                "docker_volumes": [],
+            }
+        }):
+            result = _resolve_sandbox_path_to_host("/workspace/screenshot.png")
+        assert result == "/home/user/project/screenshot.png"
+
+    def test_workspace_root_resolved(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", "/home/user/project")
+        with patch("hermes_cli.config.load_config", return_value={
+            "terminal": {
+                "docker_mount_cwd_to_workspace": True,
+                "docker_volumes": [],
+            }
+        }):
+            result = _resolve_sandbox_path_to_host("/workspace")
+        assert result == "/home/user/project"
+
+    def test_workspace_not_resolved_when_mount_cwd_disabled(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", "/home/user/project")
+        with patch("hermes_cli.config.load_config", return_value={
+            "terminal": {
+                "docker_mount_cwd_to_workspace": False,
+                "docker_volumes": [],
+            }
+        }):
+            result = _resolve_sandbox_path_to_host("/workspace/screenshot.png")
+        assert result == "/workspace/screenshot.png"
+
+    def test_docker_volume_path_resolved(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "terminal": {
+                "docker_volumes": ["/Users/me/Documents:/documents"],
+                "docker_mount_cwd_to_workspace": False,
+            }
+        }):
+            result = _resolve_sandbox_path_to_host("/documents/file.png")
+        assert result == "/Users/me/Documents/file.png"
+
+    def test_docker_volume_exact_match(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "terminal": {
+                "docker_volumes": ["/Users/me/Documents:/documents"],
+                "docker_mount_cwd_to_workspace": False,
+            }
+        }):
+            result = _resolve_sandbox_path_to_host("/documents")
+        assert result == "/Users/me/Documents"
+
+    def test_docker_volume_no_false_prefix_match(self):
+        """Ensure /documents-extra does not match /documents volume."""
+        with patch("hermes_cli.config.load_config", return_value={
+            "terminal": {
+                "docker_volumes": ["/Users/me/Documents:/documents"],
+                "docker_mount_cwd_to_workspace": False,
+            }
+        }):
+            result = _resolve_sandbox_path_to_host("/documents-extra/file.png")
+        assert result == "/documents-extra/file.png"
+
+    def test_multiple_volumes_first_match_wins(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "terminal": {
+                "docker_volumes": [
+                    "/Users/me/Projects:/projects",
+                    "/Users/me/Data:/data",
+                ],
+                "docker_mount_cwd_to_workspace": False,
+            }
+        }):
+            result = _resolve_sandbox_path_to_host("/data/images/cat.png")
+        assert result == "/Users/me/Data/images/cat.png"
+
+    def test_host_absolute_path_returned_unchanged(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "terminal": {
+                "docker_volumes": [],
+                "docker_mount_cwd_to_workspace": False,
+            }
+        }):
+            result = _resolve_sandbox_path_to_host("/Users/me/real/path.png")
+        assert result == "/Users/me/real/path.png"
+
+    def test_config_load_failure_returns_unchanged(self):
+        with patch("hermes_cli.config.load_config", side_effect=Exception("no config")):
+            result = _resolve_sandbox_path_to_host("/workspace/file.png")
+        assert result == "/workspace/file.png"
+
+    def test_spaces_in_path_handled(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/me/My Projects/app")
+        result = _resolve_sandbox_path_to_host("./screenshot.png")
+        assert result == "/Users/me/My Projects/app/screenshot.png"

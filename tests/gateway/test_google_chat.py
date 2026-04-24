@@ -95,13 +95,120 @@ class TestGoogleChatFormatMessage:
         content = "Hello, world!"
         assert self.adapter.format_message(content) == content
 
-    def test_bold_and_italic_preserved(self):
-        content = "**bold** and *italic* and `code`"
-        assert self.adapter.format_message(content) == content
+    def test_empty_content(self):
+        assert self.adapter.format_message("") == ""
+        assert self.adapter.format_message(None) is None
 
-    def test_regular_links_preserved(self):
-        content = "[click](https://example.com)"
-        assert self.adapter.format_message(content) == content
+    # ── Markdown → Google Chat conversion ──
+
+    def test_double_asterisk_bold_to_single(self):
+        assert self.adapter.format_message("**bold**") == "*bold*"
+
+    def test_bold_italic_conversion(self):
+        assert self.adapter.format_message("***both***") == "*_both_*"
+
+    def test_single_asterisk_preserved(self):
+        """Single asterisks (already Chat-native bold) should not be changed."""
+        content = "*already bold*"
+        result = self.adapter.format_message(content)
+        assert "*already bold*" in result
+
+    def test_headers_converted_to_bold(self):
+        assert self.adapter.format_message("# Title") == "*Title*"
+        assert self.adapter.format_message("## Subtitle") == "*Subtitle*"
+        assert self.adapter.format_message("### Deep") == "*Deep*"
+
+    def test_multiline_headers(self):
+        content = "# First\nSome text\n## Second"
+        result = self.adapter.format_message(content)
+        assert "*First*" in result
+        assert "Some text" in result
+        assert "*Second*" in result
+
+    def test_markdown_links_to_chat_format(self):
+        content = "[click here](https://example.com)"
+        result = self.adapter.format_message(content)
+        assert result == "<https://example.com|click here>"
+
+    def test_links_with_complex_urls(self):
+        content = "[docs](https://example.com/path?q=1&b=2)"
+        result = self.adapter.format_message(content)
+        assert "<https://example.com/path?q=1&b=2|docs>" in result
+
+    # ── Code block protection ──
+
+    def test_code_block_not_transformed(self):
+        content = "```python\n**not bold**\n```"
+        result = self.adapter.format_message(content)
+        assert "**not bold**" in result  # unchanged inside code block
+
+    def test_inline_code_not_transformed(self):
+        content = "Use `**bold**` for emphasis"
+        result = self.adapter.format_message(content)
+        assert "`**bold**`" in result  # unchanged inside backticks
+
+    def test_mixed_code_and_text(self):
+        content = "**bold** and `code` and **more bold**"
+        result = self.adapter.format_message(content)
+        assert "*bold*" in result
+        assert "`code`" in result
+        assert "*more bold*" in result
+
+    # ── Unicode sanitization ──
+
+    def test_variation_selector_stripped(self):
+        """VS16 (U+FE0F) should be stripped — primary tofu cause."""
+        content = "Perfect \u2714\ufe0f, go ahead!"
+        result = self.adapter.format_message(content)
+        assert "\ufe0f" not in result
+        assert "Perfect" in result
+        assert "go ahead!" in result
+
+    def test_zwj_stripped(self):
+        """Zero-Width Joiner should be stripped."""
+        content = "Hello\u200dworld"
+        result = self.adapter.format_message(content)
+        assert "\u200d" not in result
+        assert "Helloworld" in result
+
+    def test_zero_width_space_stripped(self):
+        content = "Hello\u200bworld"
+        result = self.adapter.format_message(content)
+        assert "\u200b" not in result
+
+    def test_bom_stripped(self):
+        content = "\ufeffHello"
+        result = self.adapter.format_message(content)
+        assert "\ufeff" not in result
+        assert "Hello" in result
+
+    def test_standard_emoji_preserved(self):
+        """Standard emoji (no modifiers) should NOT be stripped."""
+        content = "Hello 👋 world 🚀"
+        result = self.adapter.format_message(content)
+        assert "👋" in result
+        assert "🚀" in result
+
+    def test_double_spaces_collapsed(self):
+        """Stripping invisible chars shouldn't leave double spaces."""
+        content = "Hello \u200b world"
+        result = self.adapter.format_message(content)
+        assert "  " not in result
+
+    # ── Combined scenarios ──
+
+    def test_full_message_formatting(self):
+        """Realistic LLM output with multiple formatting issues."""
+        content = (
+            "## Summary\n"
+            "**Important**: Check [the docs](https://example.com)\n"
+            "Here's some `code` that matters."
+        )
+        result = self.adapter.format_message(content)
+        assert "*Summary*" in result
+        assert "*Important*" in result
+        assert "<https://example.com|the docs>" in result
+        assert "`code`" in result
 
 
 class TestGoogleChatTruncateMessage:

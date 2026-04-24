@@ -424,12 +424,15 @@ PLATFORM_HINTS = {
     ),
     "google_chat": (
         "You are on Google Chat, a workspace-oriented messaging platform. "
-        "Google Chat supports plain-text and a subset of simple formatting "
-        "(bold with *asterisks*, italic with _underscores_, code with `backticks`). "
-        "Full Markdown (headers, tables, links) is NOT rendered. Keep messages "
-        "concise and well-structured with short paragraphs. Messages are capped "
-        "at 4,096 characters — longer responses are split automatically. "
-        "Images can be sent via image cards but native file uploads are limited."
+        "Google Chat uses its own lightweight formatting — NOT standard Markdown. "
+        "Use *single asterisks* for bold, _underscores_ for italic, "
+        "~single tilde~ for strikethrough, and `backticks` for code. "
+        "Double asterisks (**) and headers (# Title) are NOT rendered — "
+        "they appear as literal characters. "
+        "For links, use <URL|display text> syntax (NOT [text](url)). "
+        "Keep messages concise and well-structured with short paragraphs. "
+        "Messages are capped at 4,096 characters — longer responses are "
+        "split automatically."
     ),
 }
 

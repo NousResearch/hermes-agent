@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -409,6 +410,106 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Outbound: Hermes → Google Chat
     # ------------------------------------------------------------------
+
+    # Invisible Unicode codepoints that render as tofu (□) in Google
+    # Chat's restricted font stack.  Variation Selectors control
+    # text-vs-emoji presentation but Chat ignores them and often shows
+    # a blank box.  Zero-width characters are invisible glue used in
+    # ZWJ sequences (family/flag composites) and bidirectional text.
+    _INVISIBLE_RE = re.compile(
+        "["
+        "\u200b"          # Zero-Width Space
+        "\u200c"          # Zero-Width Non-Joiner
+        "\u200d"          # Zero-Width Joiner (ZWJ)
+        "\u200e\u200f"    # LTR / RTL marks
+        "\u2060"          # Word Joiner
+        "\ufeff"          # BOM / Zero-Width No-Break Space
+        "\ufe00-\ufe0f"  # Variation Selectors 1-16 (VS1–VS16)
+        "\U000e0100-\U000e01ef"  # Variation Selectors 17-256
+        "]"
+    )
+
+    def format_message(self, content: str) -> str:
+        """Convert standard Markdown to Google Chat's formatting dialect.
+
+        Google Chat supports a limited subset of inline formatting:
+        ``*bold*``, ``_italic_``, ``~strikethrough~``, and code fences.
+        Standard Markdown constructs (``**bold**``, ``# headers``,
+        ``[text](url)``) are not rendered and need conversion.
+
+        Additionally, certain invisible Unicode codepoints (Zero-Width
+        Joiner, Variation Selectors, etc.) render as tofu (□) in
+        Google Chat's restricted font stack.  These are stripped so the
+        output reads cleanly across web, desktop, and mobile clients.
+        """
+        if not content:
+            return content
+
+        text = content
+
+        # ── 1. Protect code blocks and inline code from transformation ──
+        placeholders: dict[str, str] = {}
+        counter = [0]
+
+        def _ph(value: str) -> str:
+            key = f"\x00GC{counter[0]}\x00"
+            counter[0] += 1
+            placeholders[key] = value
+            return key
+
+        # Fenced code blocks (```...```)
+        text = re.sub(
+            r"(```(?:[^\n]*\n)?[\s\S]*?```)",
+            lambda m: _ph(m.group(0)),
+            text,
+        )
+        # Inline code (`...`)
+        text = re.sub(r"(`[^`]+`)", lambda m: _ph(m.group(0)), text)
+
+        # ── 2. Markdown → Google Chat formatting ──
+
+        # Headers (## Title) → *Title* (bold, since Chat has no headers)
+        text = re.sub(
+            r"^#{1,6}\s+(.+)$",
+            lambda m: _ph(f"*{m.group(1).strip()}*"),
+            text,
+            flags=re.MULTILINE,
+        )
+
+        # Bold+italic: ***text*** → *_text_*
+        text = re.sub(
+            r"\*\*\*(.+?)\*\*\*",
+            lambda m: _ph(f"*_{m.group(1)}_*"),
+            text,
+        )
+
+        # Bold: **text** → *text* (Chat uses single asterisks)
+        text = re.sub(
+            r"\*\*(.+?)\*\*",
+            lambda m: _ph(f"*{m.group(1)}*"),
+            text,
+        )
+
+        # Markdown links: [text](url) → <url|text>
+        # Google Chat uses Slack-style angle-bracket links.
+        text = re.sub(
+            r"\[([^\]]+)\]\(([^)]+)\)",
+            lambda m: _ph(f"<{m.group(2)}|{m.group(1)}>"),
+            text,
+        )
+
+        # ── 3. Strip invisible Unicode that renders as tofu ──
+        text = self._INVISIBLE_RE.sub("", text)
+
+        # Clean up leftover artifacts: double spaces from stripped chars,
+        # orphaned punctuation preceded only by whitespace on a line.
+        text = re.sub(r"  +", " ", text)
+
+        # ── 4. Restore protected regions ──
+        for key, value in placeholders.items():
+            text = text.replace(key, value)
+
+        return text
 
     async def send(
         self,

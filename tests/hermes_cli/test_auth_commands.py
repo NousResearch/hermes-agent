@@ -504,6 +504,91 @@ def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch
     assert "openrouter" in payload.get("credential_pool", {})
 
 
+def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, monkeypatch, capsys):
+    """`hermes logout --provider openai-codex` must still clear model.provider.
+
+    Users can end up with auth.json already cleared but config.yaml still set to
+    openai-codex.  Previously logout reported no auth state and left the agent
+    pinned to the Codex provider.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider="openai-codex"))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+    assert "base_url: https://openrouter.ai/api/v1" in config_text
+
+
+def test_logout_defaults_to_configured_codex_when_no_active_provider(tmp_path, monkeypatch, capsys):
+    """Bare `hermes logout` should target configured Codex if auth has no active provider."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider=None))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+
+
+def test_logout_clears_stale_active_codex_without_provider_credentials(tmp_path, monkeypatch, capsys):
+    """Logout must clear active_provider even when provider credential payloads are gone."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {},
+            "credential_pool": {},
+        },
+    )
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider=None))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    assert auth_payload.get("active_provider") is None
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+
+
 def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
     from hermes_cli.auth_commands import auth_list_command
 

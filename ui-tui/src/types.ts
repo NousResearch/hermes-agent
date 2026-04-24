@@ -116,6 +116,14 @@ export type Role = 'assistant' | 'system' | 'tool' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
+// Per-section overrides on top of the global DetailsMode.  Each missing key
+// falls back to the global mode; an explicit value overrides for that one
+// section only — so users can keep the accordion collapsed by default while
+// auto-expanding tools, or hide the activity panel entirely without touching
+// thinking/tools/subagents.
+export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
+export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
+
 export interface McpServerStatus {
   connected: boolean
   name: string

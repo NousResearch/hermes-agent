@@ -1,7 +1,7 @@
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -10,7 +10,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
-import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
+import type { DetailsMode, Msg, PanelSection, SectionName } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -57,7 +57,8 @@ export const coreCommands: SlashCommand[] = [
       sections.push(
         {
           rows: [
-            ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
+            ['/details [hidden|collapsed|expanded|cycle]', 'set global agent detail visibility mode'],
+            ['/details <section> [hidden|collapsed|expanded|reset]', 'override one section (thinking/tools/subagents/activity)'],
             ['/fortune [random|daily]', 'show a random or daily local fortune']
           ],
           title: 'TUI'
@@ -140,7 +141,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['detail'],
-    help: 'control agent detail visibility',
+    help: 'control agent detail visibility (global or per-section)',
     name: 'details',
     run: (arg, ctx) => {
       const { gateway, transcript, ui } = ctx
@@ -154,9 +155,14 @@ export const coreCommands: SlashCommand[] = [
             }
 
             const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
-
             patchUiState({ detailsMode: mode })
-            transcript.sys(`details: ${mode}`)
+
+            const overrides = SECTION_NAMES
+              .filter(s => ui.sections[s])
+              .map(s => `${s}=${ui.sections[s]}`)
+              .join(' ')
+
+            transcript.sys(`details: ${mode}${overrides ? `  (${overrides})` : ''}`)
           })
           .catch(() => {
             if (!ctx.stale()) {
@@ -167,10 +173,46 @@ export const coreCommands: SlashCommand[] = [
         return
       }
 
-      const mode = arg.trim().toLowerCase()
+      const tokens = arg.trim().toLowerCase().split(/\s+/)
+
+      // Per-section override: `/details <section> <mode>`
+      if (tokens.length >= 2 && isSectionName(tokens[0])) {
+        const section = tokens[0] as SectionName
+        const action = tokens[1] ?? ''
+
+        if (action === 'reset' || action === 'clear' || action === 'default') {
+          const { [section]: _drop, ...rest } = ui.sections
+          patchUiState({ sections: rest })
+          gateway
+            .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${section}`, value: '' })
+            .catch(() => {})
+          transcript.sys(`details ${section}: reset`)
+
+          return
+        }
+
+        const sectionMode = parseDetailsMode(action)
+
+        if (!sectionMode) {
+          return transcript.sys('usage: /details <section> [hidden|collapsed|expanded|reset]')
+        }
+
+        patchUiState({ sections: { ...ui.sections, [section]: sectionMode } })
+        gateway
+          .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${section}`, value: sectionMode })
+          .catch(() => {})
+        transcript.sys(`details ${section}: ${sectionMode}`)
+
+        return
+      }
+
+      // Global mode (existing behavior).
+      const mode = tokens[0] ?? ''
 
       if (!DETAIL_MODES.has(mode)) {
-        return transcript.sys('usage: /details [hidden|collapsed|expanded|cycle]')
+        return transcript.sys(
+          'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
+        )
       }
 
       const next = mode === 'cycle' || mode === 'toggle' ? nextDetailsMode(ui.detailsMode) : (mode as DetailsMode)

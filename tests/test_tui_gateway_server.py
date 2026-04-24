@@ -160,6 +160,71 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     assert saved["display"]["tui_statusbar"] == "bottom"
 
 
+def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "details_mode.activity", "value": "hidden"},
+        }
+    )
+
+    assert resp["result"] == {"key": "details_mode.activity", "value": "hidden"}
+    saved = yaml.safe_load(cfg_path.read_text())
+    assert saved["display"]["sections"] == {"activity": "hidden"}
+
+
+def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch):
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {"display": {"sections": {"activity": "hidden", "tools": "expanded"}}}
+        )
+    )
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "details_mode.activity", "value": ""},
+        }
+    )
+
+    assert resp["result"] == {"key": "details_mode.activity", "value": ""}
+    saved = yaml.safe_load(cfg_path.read_text())
+    assert saved["display"]["sections"] == {"tools": "expanded"}
+
+
+def test_config_set_section_rejects_unknown_section_or_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    bad_section = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "details_mode.bogus", "value": "hidden"},
+        }
+    )
+    assert bad_section["error"]["code"] == 4002
+
+    bad_mode = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "details_mode.tools", "value": "maximised"},
+        }
+    )
+    assert bad_mode["error"]["code"] == 4002
+
+
 def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)

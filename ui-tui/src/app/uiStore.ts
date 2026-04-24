@@ -12,6 +12,7 @@ const buildUiState = (): UiState => ({
   detailsMode: 'collapsed',
   info: null,
   inlineDiffs: true,
+  sections: {},
   showCost: false,
   showReasoning: false,
   sid: null,

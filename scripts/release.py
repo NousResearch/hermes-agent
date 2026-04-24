@@ -48,6 +48,7 @@ AUTHOR_MAP = {
     "jefferson@heimdallstrategy.com": "Mind-Dragon",
     "130918800+devorun@users.noreply.github.com": "devorun",
     "maks.mir@yahoo.com": "say8hi",
+    "web3blind@users.noreply.github.com": "web3blind",
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",

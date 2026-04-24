@@ -120,6 +120,14 @@ def mdx_escape_body(body: str) -> str:
                 elif ch == "}":
                     out.append("&#125;")
                 elif ch == "<":
+                    # Preserve full HTML comments (e.g. ascii-guard ignore markers) — they
+                    # are not HTML tags, so the tag regex below would escape the leading <.
+                    if text[i:].startswith("<!--"):
+                        end = text.find("-->", i)
+                        if end != -1:
+                            out.append(text[i : end + 3])
+                            i = end + 3
+                            continue
                     # Look ahead to see if this is a valid HTML-ish tag.
                     # If it looks like a tag name then alnum/-/_ chars, leave it.
                     # Otherwise escape.

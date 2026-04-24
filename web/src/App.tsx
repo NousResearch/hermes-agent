@@ -58,19 +58,28 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
+import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
-/** Built-in route → page component. Used for routing and for plugin `tab.path` / `tab.override` resolution. */
-const BUILTIN_ROUTES: Record<string, ComponentType> = {
+const CHAT_NAV_ITEM: NavItem = {
+  path: "/chat",
+  labelKey: "chat",
+  label: "Chat",
+  icon: Terminal,
+};
+
+/** Built-in routes except /chat (only with `hermes dashboard --tui`). */
+const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
@@ -82,7 +91,7 @@ const BUILTIN_ROUTES: Record<string, ComponentType> = {
   "/docs": DocsPage,
 };
 
-const BUILTIN_NAV: NavItem[] = [
+const BUILTIN_NAV_REST: NavItem[] = [
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -167,7 +176,10 @@ function buildNavItems(builtIn: NavItem[], manifests: PluginManifest[]): NavItem
   return items;
 }
 
-function buildRoutes(manifests: PluginManifest[]): Array<{
+function buildRoutes(
+  builtinRoutes: Record<string, ComponentType>,
+  manifests: PluginManifest[],
+): Array<{
   key: string;
   path: string;
   element: ReactNode;
@@ -189,7 +201,7 @@ function buildRoutes(manifests: PluginManifest[]): Array<{
     element: ReactNode;
   }> = [];
 
-  for (const [path, Component] of Object.entries(BUILTIN_ROUTES)) {
+  for (const [path, Component] of Object.entries(builtinRoutes)) {
     const om = byOverride.get(path);
     if (om) {
       routes.push({
@@ -204,7 +216,7 @@ function buildRoutes(manifests: PluginManifest[]): Array<{
 
   for (const m of addons) {
     if (m.tab.hidden) continue;
-    if (BUILTIN_ROUTES[m.tab.path]) continue;
+    if (builtinRoutes[m.tab.path]) continue;
     routes.push({
       key: `plugin:${m.name}`,
       path: m.tab.path,
@@ -214,7 +226,7 @@ function buildRoutes(manifests: PluginManifest[]): Array<{
 
   for (const m of manifests) {
     if (!m.tab.hidden) continue;
-    if (BUILTIN_ROUTES[m.tab.path] || m.tab.override) continue;
+    if (builtinRoutes[m.tab.path] || m.tab.override) continue;
     routes.push({
       key: `plugin:hidden:${m.name}`,
       path: m.tab.path,
@@ -233,12 +245,32 @@ export default function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
+  const normalizedPath = pathname.replace(/\/$/, "") || "/";
+  const isChatRoute = normalizedPath === "/chat";
+  const embeddedChat = isDashboardEmbeddedChatEnabled();
+
+  const builtinRoutes = useMemo(
+    () => ({
+      ...BUILTIN_ROUTES_CORE,
+      ...(embeddedChat ? { "/chat": ChatPage } : {}),
+    }),
+    [embeddedChat],
+  );
+
+  const builtinNav = useMemo(
+    () =>
+      embeddedChat ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST] : BUILTIN_NAV_REST,
+    [embeddedChat],
+  );
 
   const navItems = useMemo(
-    () => buildNavItems(BUILTIN_NAV, manifests),
-    [manifests],
+    () => buildNavItems(builtinNav, manifests),
+    [builtinNav, manifests],
   );
-  const routes = useMemo(() => buildRoutes(manifests), [manifests]);
+  const routes = useMemo(
+    () => buildRoutes(builtinRoutes, manifests),
+    [builtinRoutes, manifests],
+  );
   const pluginTabMeta = useMemo(
     () =>
       manifests
@@ -465,8 +497,9 @@ export default function App() {
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 "px-3 sm:px-6",
-                "pt-2 sm:pt-4 lg:pt-6",
-                "pb-4 sm:pb-8",
+                isChatRoute
+                  ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
+                  : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
@@ -474,7 +507,7 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  isDocsRoute && "min-h-0 flex flex-1 flex-col",
+                  (isDocsRoute || isChatRoute) && "min-h-0 flex flex-1 flex-col",
                 )}
               >
                 <Routes>

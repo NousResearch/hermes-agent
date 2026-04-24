@@ -53,6 +53,7 @@ export interface Translations {
     brand: string;
     brandShort: string;
     closeNavigation: string;
+    closeModelTools: string;
     footer: {
       org: string;
     };
@@ -67,6 +68,7 @@ export interface Translations {
     };
     nav: {
       analytics: string;
+      chat: string;
       config: string;
       cron: string;
       documentation: string;
@@ -75,6 +77,8 @@ export interface Translations {
       sessions: string;
       skills: string;
     };
+    modelToolsSheetSubtitle: string;
+    modelToolsSheetTitle: string;
     navigation: string;
     openDocumentation: string;
     openNavigation: string;
@@ -132,6 +136,7 @@ export interface Translations {
     confirmDeleteMessage: string;
     sessionDeleted: string;
     failedToDelete: string;
+    resumeInChat: string;
     previousPage: string;
     nextPage: string;
     roles: {

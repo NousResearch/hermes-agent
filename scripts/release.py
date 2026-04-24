@@ -440,6 +440,10 @@ AUTHOR_MAP = {
     "topcheer@me.com": "topcheer",
     "walli@tencent.com": "walli",
     "zhuofengwang@tencent.com": "Zhuofeng-Wang",
+    # April 2026 salvage-PR batch (#14920, #14986, #14966)
+    "mrunmayeerane17@gmail.com": "mrunmayee17",
+    "69489633+camaragon@users.noreply.github.com": "camaragon",
+    "shamork@outlook.com": "shamork",
     # no-github-match — keep as display names
     "clio-agent@sisyphuslabs.ai": "Sisyphus",
     "marco@rutimka.de": "Marco Rutsch",

@@ -7625,6 +7625,12 @@ class AIAgent:
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
+            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
+                # DeepSeek thinking mode requires reasoning_content on every
+                # assistant tool-call message. Without it, replaying the
+                # persisted message causes HTTP 400. Include empty string
+                # as a defensive compatibility fallback (refs #15250).
+                msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
@@ -7700,6 +7706,22 @@ class AIAgent:
 
         return msg
 
+    def _needs_deepseek_tool_reasoning(self) -> bool:
+        """Return True when the current provider is DeepSeek thinking mode.
+
+        Used to decide whether to store reasoning_content on tool-call
+        assistant messages. DeepSeek V4 thinking mode requires this field
+        on every assistant tool-call turn; omitting it causes HTTP 400
+        when the message is replayed in a subsequent API request (#15250).
+        """
+        provider = (self.provider or "").lower()
+        model = (self.model or "").lower()
+        return (
+            provider == "deepseek"
+            or "deepseek" in model
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
         """Copy provider-facing reasoning fields onto an API replay message."""
         if source_msg.get("role") != "assistant":
@@ -7715,13 +7737,17 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        kimi_requires_reasoning = (
-            self.provider in {"kimi-coding", "kimi-coding-cn"}
+        provider = (self.provider or "").lower()
+        model = (self.model or "").lower()
+        needs_tool_reasoning_echo = (
+            provider in {"kimi-coding", "kimi-coding-cn", "deepseek"}
+            or "deepseek" in model
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
         )
-        if kimi_requires_reasoning and source_msg.get("tool_calls"):
+        if needs_tool_reasoning_echo and source_msg.get("tool_calls"):
             api_msg["reasoning_content"] = ""
 
     @staticmethod
@@ -9095,6 +9121,7 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
+                self._copy_reasoning_content_for_api(msg, api_msg)
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
                 if _needs_sanitize:

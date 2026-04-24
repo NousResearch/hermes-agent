@@ -78,11 +78,85 @@ import math
 import os
 import re
 import shutil
+import sys
 import threading
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Stdio subprocess stderr redirection
+# ---------------------------------------------------------------------------
+#
+# The MCP SDK's ``stdio_client(server, errlog=sys.stderr)`` defaults the
+# subprocess stderr stream to the parent process's real stderr, i.e. the
+# user's TTY.  That means any MCP server we spawn at startup (FastMCP
+# banners, slack-mcp-server JSON startup logs, etc.) writes directly onto
+# the terminal while prompt_toolkit / Rich is rendering the TUI — which
+# corrupts the display and can hang the session.
+#
+# Instead we redirect every stdio MCP subprocess's stderr into a shared
+# per-profile log file (~/.hermes/logs/mcp-stderr.log), tagged with the
+# server name so individual servers remain debuggable.
+#
+# Fallback is os.devnull if opening the log file fails for any reason.
+
+_mcp_stderr_log_fh: Optional[Any] = None
+_mcp_stderr_log_lock = threading.Lock()
+
+
+def _get_mcp_stderr_log() -> Any:
+    """Return a shared append-mode file handle for MCP subprocess stderr.
+
+    Opened once per process and reused for every stdio server.  Must have a
+    real OS-level file descriptor (``fileno()``) because asyncio's subprocess
+    machinery wires the child's stderr directly to that fd.  Falls back to
+    ``/dev/null`` if opening the log file fails.
+    """
+    global _mcp_stderr_log_fh
+    with _mcp_stderr_log_lock:
+        if _mcp_stderr_log_fh is not None:
+            return _mcp_stderr_log_fh
+        try:
+            from hermes_constants import get_hermes_home
+            log_dir = get_hermes_home() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / "mcp-stderr.log"
+            # Line-buffered so server output lands on disk promptly; errors=
+            # "replace" tolerates garbled binary output from misbehaving
+            # servers.
+            fh = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
+            # Sanity-check: confirm a real fd is available before we commit.
+            fh.fileno()
+            _mcp_stderr_log_fh = fh
+        except Exception as exc:  # pragma: no cover — best-effort fallback
+            logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
+            try:
+                _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
+            except Exception:
+                # Last resort: the real stderr.  Not ideal for TUI users but
+                # it matches pre-fix behavior.
+                _mcp_stderr_log_fh = sys.stderr
+        return _mcp_stderr_log_fh
+
+
+def _write_stderr_log_header(server_name: str) -> None:
+    """Write a human-readable session marker before launching a server.
+
+    Gives operators a way to find each server's output in the shared
+    ``mcp-stderr.log`` file without needing per-line prefixes (which would
+    require a pipe + reader thread and complicate shutdown).
+    """
+    fh = _get_mcp_stderr_log()
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        fh.write(f"\n===== [{ts}] starting MCP server '{server_name}' =====\n")
+        fh.flush()
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
@@ -962,7 +1036,13 @@ class MCPServerTask:
 
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
-        async with stdio_client(server_params) as (read_stream, write_stream):
+        # Redirect subprocess stderr into a shared log file so MCP servers
+        # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
+        # the user's TTY and corrupt the TUI.  Preserves debuggability via
+        # ~/.hermes/logs/mcp-stderr.log.
+        _write_stderr_log_header(self.name)
+        _errlog = _get_mcp_stderr_log()
+        async with stdio_client(server_params, errlog=_errlog) as (read_stream, write_stream):
             # Capture the newly spawned subprocess PID for force-kill cleanup.
             new_pids = _snapshot_child_pids() - pids_before
             if new_pids:

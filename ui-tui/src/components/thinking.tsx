@@ -1,5 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
-import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
@@ -874,18 +874,22 @@ export const ToolTrail = memo(function ToolTrail({
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
-  // ── Hidden: errors/warnings only ──────────────────────────────
+  // ── Backstop: floating alerts when every panel is hidden ─────────
   //
-  // When the global details_mode is 'hidden' (or all sections are individually
-  // hidden), the accordion collapses entirely.  Errors/warnings still float
-  // as inline alerts UNLESS the activity section is explicitly hidden — that
-  // override means "I don't want to see meta at all", so respect it.
+  // Per-section overrides win over the global details_mode (they're computed
+  // by sectionMode), so we only collapse to nothing when EVERY section is
+  // resolved to hidden — that way `details_mode: hidden` + `sections.tools:
+  // expanded` still renders the tools panel.  When all panels are hidden
+  // AND ambient errors/warnings exist, surface them as a compact inline
+  // backstop so quiet-mode users aren't blind to failures.
 
-  if (detailsMode === 'hidden') {
-    if (visible.activity === 'hidden') {
-      return null
-    }
+  const allHidden =
+    visible.thinking === 'hidden' &&
+    visible.tools === 'hidden' &&
+    visible.subagents === 'hidden' &&
+    visible.activity === 'hidden'
 
+  if (allHidden) {
     const alerts = activity.filter(i => i.tone !== 'info').slice(-2)
 
     return alerts.length ? (

@@ -17,10 +17,12 @@ const THINKING_FALLBACK: Record<string, DetailsMode> = {
   truncated: 'collapsed'
 }
 
-const norm = (v: unknown) => String(v ?? '').trim().toLowerCase()
+const norm = (v: unknown) =>
+  String(v ?? '')
+    .trim()
+    .toLowerCase()
 
-export const parseDetailsMode = (v: unknown): DetailsMode | null =>
-  MODES.find(m => m === norm(v)) ?? null
+export const parseDetailsMode = (v: unknown): DetailsMode | null => MODES.find(m => m === norm(v)) ?? null
 
 export const isSectionName = (v: unknown): v is SectionName =>
   typeof v === 'string' && (SECTION_NAMES as readonly string[]).includes(v)
@@ -42,11 +44,7 @@ export const resolveSections = (raw: unknown): SectionVisibility =>
 
 // Effective mode for one section: explicit override → SECTION_DEFAULTS → global.
 // Single source of truth for "is this section open by default / rendered at all".
-export const sectionMode = (
-  name: SectionName,
-  global: DetailsMode,
-  sections?: SectionVisibility
-): DetailsMode => sections?.[name] ?? SECTION_DEFAULTS[name] ?? global
+export const sectionMode = (name: SectionName, global: DetailsMode, sections?: SectionVisibility): DetailsMode =>
+  sections?.[name] ?? SECTION_DEFAULTS[name] ?? global
 
-export const nextDetailsMode = (m: DetailsMode): DetailsMode =>
-  MODES[(MODES.indexOf(m) + 1) % MODES.length]!
+export const nextDetailsMode = (m: DetailsMode): DetailsMode => MODES[(MODES.indexOf(m) + 1) % MODES.length]!

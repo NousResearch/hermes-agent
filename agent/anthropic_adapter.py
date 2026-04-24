@@ -1010,12 +1010,13 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
     - Strips 'anthropic/' prefix (OpenRouter format, case-insensitive)
-    - Converts dots to hyphens in version numbers (OpenRouter uses dots,
-      Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
-      preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
     - Preserves Bedrock model IDs (``anthropic.claude-opus-4-7``) and
       regional inference profiles (``us.anthropic.claude-*``) whose dots
       are namespace separators, not version separators.
+    - Converts dots to hyphens for Claude models only (OpenRouter uses dots,
+      Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6).  Non-Claude
+      models on third-party Anthropic-compatible endpoints keep their dots
+      intact (#14528), unless preserve_dots is True.
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
@@ -1026,9 +1027,11 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
         # These must not be converted to hyphens.  See issue #12295.
         if _is_bedrock_model_id(model):
             return model
-        # OpenRouter uses dots for version separators (claude-opus-4.6),
-        # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
-        model = model.replace(".", "-")
+        # Only convert dots for Claude models — non-Claude models
+        # (llama3.2-vision, qwen3.5-plus) on Anthropic-compatible
+        # endpoints must keep their dots (#14528).
+        if "claude" in model.lower():
+            model = model.replace(".", "-")
     return model
 
 

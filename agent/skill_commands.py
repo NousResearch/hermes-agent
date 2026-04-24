@@ -1,15 +1,13 @@
-"""Shared slash command helpers for skills and built-in prompt-style modes.
+"""Shared slash command helpers for skills.
 
 Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
-can invoke skills via /skill-name commands and prompt-only built-ins like
-/plan.
+can invoke skills via /skill-name commands.
 """
 
 import json
 import logging
 import re
 import subprocess
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -18,7 +16,6 @@ from hermes_constants import display_hermes_home
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
-_PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -126,27 +123,6 @@ def _expand_inline_shell(
         return _run_inline_shell(cmd, skill_dir, timeout)
 
     return _INLINE_SHELL_RE.sub(_replace, content)
-
-
-def build_plan_path(
-    user_instruction: str = "",
-    *,
-    now: datetime | None = None,
-) -> Path:
-    """Return the default workspace-relative markdown path for a /plan invocation.
-
-    Relative paths are intentional: file tools are task/backend-aware and resolve
-    them against the active working directory for local, docker, ssh, modal,
-    daytona, and similar terminal backends. That keeps the plan with the active
-    workspace instead of the Hermes host's global home directory.
-    """
-    slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
-    slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
-    if slug:
-        slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")
-    slug = slug or "conversation-plan"
-    timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
-    return Path(".hermes") / "plans" / f"{timestamp}-{slug}.md"
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:

@@ -4600,9 +4600,14 @@ class AIAgent:
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
         if "http_client" not in client_kwargs:
-            keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
-            if keepalive_http is not None:
-                client_kwargs["http_client"] = keepalive_http
+            base_url = str(client_kwargs.get("base_url", "") or "")
+            # Skip TCP keepalives for local endpoints.  Keepalive socket options
+            # can cause HTTP 502 errors with local LLM servers (llama.cpp,
+            # Ollama, vLLM) that don't expect or handle them (#14916).
+            if not is_local_endpoint(base_url):
+                keepalive_http = self._build_keepalive_http_client()
+                if keepalive_http is not None:
+                    client_kwargs["http_client"] = keepalive_http
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",

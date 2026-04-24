@@ -34,6 +34,7 @@ This starter kit now packages the proof line, not just the kickoff gap, so the s
 - `scripts/emit-workflow-approval-trigger.sh` — posting-state-aware nudge/approval packet for the repeated fork-workflow approval stall; prints `WORKFLOW_APPROVAL_TRIGGER_ALREADY_POSTED` when the maintainer request is already live so automation does not mistake a reference-only packet for a fresh action
 - `scripts/sync-reviewer-handoff-baseline.sh` — keeps `latest-reviewer-handoff.md` aligned to the live PR head/base before state-change detection; polls GitHub mergeability before writing so the handoff does not regress to first-response `mergeability unknown` noise
 - `scripts/refresh-upstream-blocker-packet.sh` — one-command refresh that syncs the reviewer handoff, reruns the state-change detector, PR monitor, CI interpreter, and approval trigger together, then emits a consolidated blocker packet from the same live PR state; prints `UPSTREAM_BLOCKER_PACKET_UNCHANGED` when the blocker signature is materially identical to the previous latest packet so cron can distinguish revalidation from a real transition; unchanged runs restore prior `latest-*` files and delete just-created timestamped component artifacts so approval-wait cron passes do not dirty the workspace with no-movement files
+- `scripts/verify-unchanged-refresh-hygiene.sh` — proof harness for the external-wait loop breaker; snapshots canonical `latest-*` hashes and timestamped artifact names, runs the one-command refresh, and proves an unchanged blocker refresh leaves no local artifact churn behind
 - `scripts/validate-artifact-consistency.sh` — fail-closed consistency check that requires every canonical blocker artifact to record the same live head/base pair before the packet is trusted
 - `artifacts/latest-current-gap-report.md` — most recent proof packet emitted by the gap verifier
 - `artifacts/latest-broken-state-roundtrip.md` — canonical blocked-state proof packet with before/after doctor output
@@ -57,6 +58,7 @@ bash starter-kits/delegation-readiness-doctor/scripts/emit-workflow-approval-bri
 bash starter-kits/delegation-readiness-doctor/scripts/emit-workflow-approval-state-change.sh
 bash starter-kits/delegation-readiness-doctor/scripts/emit-workflow-approval-trigger.sh
 bash starter-kits/delegation-readiness-doctor/scripts/refresh-upstream-blocker-packet.sh
+bash starter-kits/delegation-readiness-doctor/scripts/verify-unchanged-refresh-hygiene.sh
 ```
 
 Historical kickoff verifier:

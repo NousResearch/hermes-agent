@@ -1006,10 +1006,16 @@ class ContextCompressor(ContextEngine):
         (API keys, tokens, passwords) from leaking into the summary that
         gets sent to the auxiliary model and persisted across compactions.
         """
+        # Strip MEDIA directives before sending to the summarizer — if they
+        # leak into the summary, the downstream model may re-emit them as
+        # active directives on the next turn (#14665).
+        _MEDIA_RE = re.compile(r'MEDIA:\S+')
+
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
             content = redact_sensitive_text(msg.get("content") or "")
+            content = _MEDIA_RE.sub("[media attachment]", content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":

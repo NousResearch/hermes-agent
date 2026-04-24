@@ -64,7 +64,7 @@ Shows whether tokens are present and when the access token expires. Refresh is a
 
 ## Using it
 
-Once logged in, the agent has access to 9 Spotify tools. You talk to the agent naturally — it picks the right tool and action.
+Once logged in, the agent has access to 7 Spotify tools. You talk to the agent naturally — it picks the right tool and action. For the best behavior, the agent loads a companion skill that teaches canonical usage patterns (single-search-then-play, when not to preflight `get_state`, etc.).
 
 ```
 > play some miles davis
@@ -82,12 +82,12 @@ Once logged in, the agent has access to 9 Spotify tools. You talk to the agent n
 All playback-mutating actions accept an optional `device_id` to target a specific device. If omitted, Spotify uses the currently active device.
 
 #### `spotify_playback`
-Control and inspect playback.
+Control and inspect playback, plus fetch recently played history.
 
 | Action | Purpose | Premium? |
 |--------|---------|----------|
 | `get_state` | Full playback state (track, device, progress, shuffle/repeat) | No |
-| `get_currently_playing` | Just the current track | No |
+| `get_currently_playing` | Just the current track (returns empty on 204 — see below) | No |
 | `play` | Start/resume playback. Optional: `context_uri`, `uris`, `offset`, `position_ms` | Yes |
 | `pause` | Pause playback | Yes |
 | `next` / `previous` | Skip track | Yes |
@@ -95,6 +95,7 @@ Control and inspect playback.
 | `set_repeat` | `state` = `track` / `context` / `off` | Yes |
 | `set_shuffle` | `state` = `true` / `false` | Yes |
 | `set_volume` | `volume_percent` = 0-100 | Yes |
+| `recently_played` | Last played tracks. Optional `limit`, `before`, `after` (Unix ms) | No |
 
 #### `spotify_devices`
 | Action | Purpose |
@@ -127,18 +128,16 @@ Search the catalog. `query` is required. Optional: `types` (array of `track` / `
 | `get` | Album metadata | `album_id` |
 | `tracks` | Album track list | `album_id` |
 
-#### `spotify_saved_tracks` / `spotify_saved_albums`
+#### `spotify_library`
+Unified access to saved tracks and saved albums. Pick the collection with the `kind` arg.
+
 | Action | Purpose |
 |--------|---------|
 | `list` | Paginated library listing |
 | `save` | Add `ids` / `uris` to library |
 | `remove` | Remove `ids` / `uris` from library |
 
-#### `spotify_activity`
-| Action | Purpose | Premium? |
-|--------|---------|----------|
-| `now_playing` | Currently playing (returns empty on 204 — see below) | No |
-| `recently_played` | Last played tracks. Optional `limit`, `before`, `after` (Unix ms) | No |
+Required: `kind` = `tracks` or `albums`, plus `action`.
 
 ### Feature matrix: Free vs Premium
 
@@ -147,14 +146,12 @@ Read-only tools work on Free accounts. Anything that mutates playback or the que
 | Works on Free | Premium required |
 |---------------|------------------|
 | `spotify_search` (all) | `spotify_playback` — play, pause, next, previous, seek, set_repeat, set_shuffle, set_volume |
-| `spotify_playback` — get_state, get_currently_playing | `spotify_queue` — add |
+| `spotify_playback` — get_state, get_currently_playing, recently_played | `spotify_queue` — add |
 | `spotify_devices` — list | `spotify_devices` — transfer |
 | `spotify_queue` — get | |
 | `spotify_playlists` (all) | |
 | `spotify_albums` (all) | |
-| `spotify_saved_tracks` (all) | |
-| `spotify_saved_albums` (all) | |
-| `spotify_activity` (all) | |
+| `spotify_library` (all) | |
 
 ## Sign out
 
@@ -172,7 +169,7 @@ To revoke the app on Spotify's side, visit [Apps connected to your account](http
 
 **`403 Forbidden — Premium required`** — You're on a Free account trying to use a playback-mutating action. See the feature matrix above.
 
-**`204 No Content` on `now_playing`** — nothing is currently playing on any device. This is Spotify's normal response, not an error; Hermes surfaces it as an explanatory empty result.
+**`204 No Content` on `get_currently_playing`** — nothing is currently playing on any device. This is Spotify's normal response, not an error; Hermes surfaces it as an explanatory empty result (`is_playing: false`).
 
 **`INVALID_CLIENT: Invalid redirect URI`** — the redirect URI in your Spotify app settings doesn't match what Hermes is using. The default is `http://127.0.0.1:43827/spotify/callback`. Either add that to your app's allowed redirect URIs, or set `HERMES_SPOTIFY_REDIRECT_URI` in `~/.hermes/.env` to whatever you registered.
 

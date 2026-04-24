@@ -28,6 +28,7 @@ import { Select, SelectOption } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useI18n } from "@/i18n";
+import { registerSlot, PluginSlot } from "./slots";
 
 // ---------------------------------------------------------------------------
 // Plugin registry — plugins call register() to add their component.
@@ -75,6 +76,7 @@ declare global {
     __HERMES_PLUGIN_SDK__: unknown;
     __HERMES_PLUGINS__: {
       register: typeof registerPlugin;
+      registerSlot: typeof registerSlot;
     };
   }
 }
@@ -82,6 +84,7 @@ declare global {
 export function exposePluginSDK() {
   window.__HERMES_PLUGINS__ = {
     register: registerPlugin,
+    registerSlot,
   };
 
   window.__HERMES_PLUGIN_SDK__ = {
@@ -118,6 +121,7 @@ export function exposePluginSDK() {
       Tabs,
       TabsList,
       TabsTrigger,
+      PluginSlot,
     },
 
     // Utilities

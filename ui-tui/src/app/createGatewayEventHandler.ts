@@ -51,6 +51,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
+  const { setInput } = ctx.composer
+  const { submitRef } = ctx.submission
+  const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
 
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
@@ -261,6 +264,57 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'voice.status': {
+        // Continuous VAD loop reports its internal state so the status bar
+        // can show listening / transcribing / idle without polling.
+        const state = String(ev.payload?.state ?? '')
+
+        if (state === 'listening') {
+          setVoiceRecording(true)
+          setVoiceProcessing(false)
+        } else if (state === 'transcribing') {
+          setVoiceRecording(false)
+          setVoiceProcessing(true)
+        } else {
+          setVoiceRecording(false)
+          setVoiceProcessing(false)
+        }
+
+        return
+      }
+
+      case 'voice.transcript': {
+        // CLI parity: the 3-strikes silence detector flipped off automatically.
+        // Mirror that on the UI side and tell the user why the mode is off.
+        if (ev.payload?.no_speech_limit) {
+          setVoiceEnabled(false)
+          setVoiceRecording(false)
+          setVoiceProcessing(false)
+          sys('voice: no speech detected 3 times, continuous mode stopped')
+
+          return
+        }
+
+        const text = String(ev.payload?.text ?? '').trim()
+
+        if (!text) {
+          return
+        }
+
+        // CLI parity: _pending_input.put(transcript) unconditionally feeds
+        // the transcript to the agent as its next turn — draft handling
+        // doesn't apply because voice-mode users are speaking, not typing.
+        //
+        // We can't branch on composer input from inside a setInput updater
+        // (React strict mode double-invokes it, duplicating the submit).
+        // Just clear + defer submit so the cleared input is committed before
+        // submit reads it.
+        setInput('')
+        setTimeout(() => submitRef.current(text), 0)
+
+        return
+      }
+
       case 'gateway.start_timeout': {
         const { cwd, python } = ev.payload ?? {}
         const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
@@ -331,10 +385,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        // Keep inline diffs attached to the assistant completion body so
-        // they render in the same message flow, not as a standalone system
-        // artifact that can look out-of-place around tool rows.
-        turnController.queueInlineDiff(inlineDiffText)
+        // Anchor the diff to where the edit happened in the turn — between
+        // the narration that preceded the tool call and whatever the agent
+        // streams afterwards. The previous end-merge put the diff at the
+        // bottom of the final message even when the edit fired mid-turn,
+        // which read as "the agent wrote this after saying that".
+        turnController.pushInlineDiffSegment(inlineDiffText)
 
         return
       }

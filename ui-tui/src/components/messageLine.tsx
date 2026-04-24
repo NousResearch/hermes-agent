@@ -81,11 +81,16 @@ export const MessageLine = memo(function MessageLine({
     return <Text {...(body ? { color: body } : {})}>{msg.text}</Text>
   })()
 
+  // Diff segments (emitted by pushInlineDiffSegment between narration
+  // segments) need a blank line on both sides so the patch doesn't butt up
+  // against the prose around it.
+  const isDiffSegment = msg.kind === 'diff'
+
   return (
     <Box
       flexDirection="column"
-      marginBottom={msg.role === 'user' ? 1 : 0}
-      marginTop={msg.role === 'user' || msg.kind === 'slash' ? 1 : 0}
+      marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
+      marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment ? 1 : 0}
     >
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>

@@ -44,6 +44,18 @@ description: Description for {name}.
     return skill_dir
 
 
+def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Path:
+    """Create a category symlink under skills_dir pointing outside the tree."""
+    external_category = linked_root / category
+    external_category.mkdir(parents=True, exist_ok=True)
+    symlink_path = skills_dir / category
+    try:
+        symlink_path.symlink_to(external_category, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+    return external_category
+
+
 # ---------------------------------------------------------------------------
 # _parse_frontmatter
 # ---------------------------------------------------------------------------
@@ -255,6 +267,20 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            skills = _find_all_skills()
+
+        assert [s["name"] for s in skills] == ["knowledge-brain"]
+        assert skills[0]["category"] == "linked"
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -287,6 +313,23 @@ class TestSkillsList:
         result = json.loads(raw)
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
+
+    def test_category_filter_finds_symlinked_category(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skills_list(category="linked")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["categories"] == ["linked"]
+        assert result["skills"][0]["name"] == "knowledge-brain"
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +431,35 @@ class TestSkillView:
             raw = skill_view("active-skill")
         result = json.loads(raw)
         assert result["success"] is True
+
+    def test_view_finds_skill_in_symlinked_category_dir(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skill_view("knowledge-brain")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "knowledge-brain"
+
+    def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "zeta", category="z-cat")
+            _make_skill(tmp_path, "alpha", category="a-cat")
+            _make_skill(tmp_path, "beta", category="a-cat")
+
+            list_result = json.loads(skills_list())
+            view_result = json.loads(skill_view("missing-skill"))
+
+        assert view_result["success"] is False
+        assert view_result["available_skills"] == [
+            skill["name"] for skill in list_result["skills"]
+        ]
 
 
 class TestSkillViewSecureSetupOnLoad:

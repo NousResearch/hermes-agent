@@ -673,6 +673,100 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
 
+    def _make_run_job_patches(self, tmp_path):
+        """Common patches for run_job tests."""
+        fake_db = MagicMock()
+        return fake_db, [
+            patch("cron.scheduler._hermes_home", tmp_path),
+            patch("cron.scheduler._resolve_origin", return_value=None),
+            patch("dotenv.load_dotenv"),
+            patch("hermes_state.SessionDB", return_value=fake_db),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "api_key": "test-key",
+                    "base_url": "https://example.invalid/v1",
+                    "provider": "openrouter",
+                    "api_mode": "chat_completions",
+                },
+            ),
+        ]
+
+    def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
+        job = {
+            "id": "toolset-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["web", "terminal", "file"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
+
+    def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
+        """When a job has no explicit enabled_toolsets, the scheduler now
+        resolves them from ``hermes tools`` platform config for ``cron``
+        (PR #14xxx — blanket fix for Norbert's surprise ``moa`` run).
+
+        The legacy "pass None → AIAgent loads full default" path is still
+        reachable, but only when ``_get_platform_tools`` raises (safety net
+        for any unexpected config shape).
+        """
+        job = {
+            "id": "no-toolset-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        # Resolution happened — not None, is a list.
+        assert isinstance(kwargs["enabled_toolsets"], list)
+        # The cron default is _HERMES_CORE_TOOLS with _DEFAULT_OFF_TOOLSETS
+        # (``moa``, ``homeassistant``, ``rl``) removed. The most important
+        # invariant: ``moa`` is NOT in the default cron toolset, so a cron
+        # run cannot accidentally spin up frontier models.
+        assert "moa" not in kwargs["enabled_toolsets"]
+
+    def test_run_job_per_job_toolsets_win_over_platform_config(self, tmp_path):
+        """Per-job enabled_toolsets (via cronjob tool) always take precedence
+        over the platform-level ``hermes tools`` config."""
+        job = {
+            "id": "override-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["terminal"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        # Even if the user has ``hermes tools`` configured to enable web+file
+        # for cron, the per-job override wins.
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch(
+                 "hermes_cli.tools_config._get_platform_tools",
+                 return_value={"web", "file"},
+             ):
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["enabled_toolsets"] == ["terminal"]
+
     def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
         """Empty final_response should stay empty for delivery logic (issue #2234).
 

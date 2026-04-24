@@ -361,6 +361,15 @@ DEFAULT_CONFIG = {
         # to finish, then interrupts any remaining runs after the timeout.
         # 0 = no drain, interrupt immediately.
         "restart_drain_timeout": 60,
+        # Max app-level retry attempts for API errors (connection drops,
+        # provider timeouts, 5xx, etc.) before the agent surfaces the
+        # failure.  The OpenAI SDK already does its own low-level retries
+        # (max_retries=2 default) for transient network errors; this is
+        # the Hermes-level retry loop that wraps the whole call.  Lower
+        # this to 1 if you use fallback providers and want fast failover
+        # on flaky primaries; raise it if you prefer to tolerate longer
+        # provider hiccups on a single provider.
+        "api_max_retries": 3,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -375,7 +384,11 @@ DEFAULT_CONFIG = {
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
-        "gateway_notify_interval": 600,
+        # Lower values mean faster feedback on slow tasks but more chat
+        # noise; 180s is a compromise that catches spinning weak-model runs
+        # (60+ tool iterations with tiny output) before users assume the
+        # bot is dead and /restart.
+        "gateway_notify_interval": 180,
     },
     
     "terminal": {
@@ -728,6 +741,10 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
+                                       # no ceiling). High-reasoning models on large tasks
+                                       # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
+                                       # raise if children time out before producing output.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling

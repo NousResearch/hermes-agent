@@ -183,8 +183,16 @@ def _resolve_runtime_from_pool_entry(
     requested_provider: str,
     model_cfg: Optional[Dict[str, Any]] = None,
     pool: Optional[CredentialPool] = None,
+    target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     model_cfg = model_cfg or _get_model_config()
+    # When the caller is resolving for a specific target model (e.g. a /model
+    # mid-session switch), prefer that over the persisted model.default. This
+    # prevents api_mode being computed from a stale config default that no
+    # longer matches the model actually being used — the bug that caused
+    # opencode-zen /v1 to be stripped for chat_completions requests when
+    # config.default was still a Claude model.
+    effective_model = (target_model or model_cfg.get("default") or "")
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"
@@ -230,7 +238,7 @@ def _resolve_runtime_from_pool_entry(
             api_mode = configured_mode
         elif provider in ("opencode-zen", "opencode-go"):
             from hermes_cli.models import opencode_model_api_mode
-            api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
+            api_mode = opencode_model_api_mode(provider, effective_model)
         else:
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
             # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
@@ -724,8 +732,18 @@ def resolve_runtime_provider(
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve runtime provider credentials for agent execution."""
+    """Resolve runtime provider credentials for agent execution.
+
+    target_model: Optional override for model_cfg.get("default") when
+    computing provider-specific api_mode (e.g. OpenCode Zen/Go where different
+    models route through different API surfaces). Callers performing an
+    explicit mid-session model switch should pass the new model here so
+    api_mode is derived from the model they are switching TO, not the stale
+    persisted default. Other callers can leave it None to preserve existing
+    behavior (api_mode derived from config).
+    """
     requested_provider = resolve_requested_provider(requested)
 
     custom_runtime = _resolve_named_custom_runtime(
@@ -807,6 +825,7 @@ def resolve_runtime_provider(
                 requested_provider=requested_provider,
                 model_cfg=model_cfg,
                 pool=pool,
+                target_model=target_model,
             )
 
     if provider == "nous":
@@ -1025,7 +1044,11 @@ def resolve_runtime_provider(
                 api_mode = configured_mode
             elif provider in ("opencode-zen", "opencode-go"):
                 from hermes_cli.models import opencode_model_api_mode
-                api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
+                # Prefer the target_model from the caller (explicit mid-session
+                # switch) over the stale model.default; see _resolve_runtime_from_pool_entry
+                # for the same rationale.
+                _effective = target_model or model_cfg.get("default", "")
+                api_mode = opencode_model_api_mode(provider, _effective)
             else:
                 # Auto-detect Anthropic-compatible endpoints by URL convention
                 # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)

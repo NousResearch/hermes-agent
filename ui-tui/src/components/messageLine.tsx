@@ -1,7 +1,7 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
 import { memo } from 'react'
 
-import { SECTION_NAMES, sectionMode } from '../domain/details.js'
+import { sectionMode } from '../domain/details.js'
 import { LONG_MSG } from '../config/limits.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
@@ -21,13 +21,19 @@ export const MessageLine = memo(function MessageLine({
   sections,
   t
 }: MessageLineProps) {
-  if (msg.kind === 'trail' && msg.tools?.length) {
-    // Per-section overrides win over the global mode, so don't pre-empt on
-    // `detailsMode === 'hidden'` — only skip when EVERY section is hidden,
-    // matching ToolTrail's own internal short-circuit.
-    const anyVisible = SECTION_NAMES.some(s => sectionMode(s, detailsMode, sections) !== 'hidden')
+  // Per-section overrides win over the global mode, so resolve each section
+  // we might consume here once and gate visibility on the *content-bearing*
+  // sections only — never on the global mode.  A `trail` message feeds Tool
+  // calls + Activity; an assistant message with thinking/tools metadata
+  // feeds Thinking + Tool calls.  Gating on every section would let
+  // `thinking` (expanded by default) keep an empty wrapper alive when only
+  // `tools` is hidden — exactly the empty-Box bug Copilot caught.
+  const thinkingMode = sectionMode('thinking', detailsMode, sections)
+  const toolsMode = sectionMode('tools', detailsMode, sections)
+  const activityMode = sectionMode('activity', detailsMode, sections)
 
-    return anyVisible ? (
+  if (msg.kind === 'trail' && msg.tools?.length) {
+    return toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
       <Box flexDirection="column" marginTop={1}>
         <ToolTrail detailsMode={detailsMode} sections={sections} t={t} trail={msg.tools} />
       </Box>
@@ -56,7 +62,10 @@ export const MessageLine = memo(function MessageLine({
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
   const thinking = msg.thinking?.trim() ?? ''
-  const showDetails = detailsMode !== 'hidden' && (Boolean(msg.tools?.length) || Boolean(thinking))
+
+  const showDetails =
+    (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) ||
+    (thinkingMode !== 'hidden' && Boolean(thinking))
 
   const content = (() => {
     if (msg.kind === 'slash') {

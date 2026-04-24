@@ -11169,23 +11169,31 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.status import write_pid_file, remove_pid_file, get_running_pid
     _current_pid = get_running_pid()
     if _current_pid is not None and _current_pid != os.getpid():
-        logger.error(
+        message = (
             "Another gateway instance (PID %d) started during our startup. "
-            "Exiting to avoid double-running.", _current_pid
+            "Exiting to avoid double-running."
         )
+        if replace:
+            logger.info(message, _current_pid)
+            return True
+        logger.error(message, _current_pid)
         return False
     if not acquire_gateway_runtime_lock():
-        logger.error(
-            "Gateway runtime lock is already held by another instance. Exiting."
-        )
+        message = "Gateway runtime lock is already held by another instance. Exiting."
+        if replace:
+            logger.info(message)
+            return True
+        logger.error(message)
         return False
     try:
         write_pid_file()
     except FileExistsError:
         release_gateway_runtime_lock()
-        logger.error(
-            "PID file race lost to another gateway instance. Exiting."
-        )
+        message = "PID file race lost to another gateway instance. Exiting."
+        if replace:
+            logger.info(message)
+            return True
+        logger.error(message)
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)

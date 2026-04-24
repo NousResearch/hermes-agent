@@ -301,6 +301,121 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
 
 
 @pytest.mark.asyncio
+async def test_start_gateway_replace_loser_exits_cleanly_when_peer_wins_startup(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _RunnerThatMustNotStart:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            raise AssertionError("racing loser must not start platform adapters")
+
+        async def stop(self):
+            return None
+
+    calls = {"get_running_pid": 0}
+
+    def _mock_get_running_pid():
+        calls["get_running_pid"] += 1
+        return None if calls["get_running_pid"] == 1 else 4242
+
+    monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerThatMustNotStart)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_loser_exits_cleanly_when_runtime_lock_held(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _RunnerThatMustNotStart:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            raise AssertionError("racing loser must not start platform adapters")
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: False)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerThatMustNotStart)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_loser_exits_cleanly_when_pid_file_race_lost(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _RunnerThatMustNotStart:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            raise AssertionError("racing loser must not start platform adapters")
+
+        async def stop(self):
+            return None
+
+    released = {"runtime_lock": False}
+
+    def _raise_file_exists():
+        raise FileExistsError("simulated concurrent pid writer")
+
+    def _release_runtime_lock():
+        released["runtime_lock"] = True
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", _raise_file_exists)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", _release_runtime_lock)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerThatMustNotStart)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is True
+    assert released["runtime_lock"] is True
+
+
+@pytest.mark.asyncio
 async def test_start_gateway_replace_clears_marker_on_permission_denied(
     monkeypatch, tmp_path
 ):

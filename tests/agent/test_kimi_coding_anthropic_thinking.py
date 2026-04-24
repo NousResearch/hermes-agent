@@ -113,3 +113,33 @@ class TestKimiCodingSkipsAnthropicThinking:
             base_url="https://api.kimi.com/v1",
         )
         assert "thinking" in kwargs
+
+
+class TestKimiCodingClientHeaders:
+    """build_anthropic_client must set Coding-Agent headers for Kimi /coding."""
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.kimi.com/coding",
+            "https://api.kimi.com/coding/v1",
+            "https://api.kimi.com/coding/anthropic",
+        ],
+    )
+    def test_kimi_coding_endpoint_sets_coding_agent_headers(self, base_url: str) -> None:
+        from agent.anthropic_adapter import build_anthropic_client
+
+        client = build_anthropic_client(api_key="sk-test", base_url=base_url)
+        headers = client.default_headers
+        assert headers["User-Agent"] == "claude-code/0.1.0"
+        assert headers["X-Client-Name"] == "kimi-cli"
+
+    def test_non_kimi_endpoint_does_not_set_kimi_headers(self) -> None:
+        """MiniMax and other third-party endpoints must not get Kimi headers."""
+        from agent.anthropic_adapter import build_anthropic_client
+
+        client = build_anthropic_client(
+            api_key="sk-test", base_url="https://api.minimax.io/anthropic"
+        )
+        headers = client.default_headers
+        assert "X-Client-Name" not in headers

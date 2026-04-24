@@ -81,3 +81,24 @@ def test_unknown_base_url_clears_default_headers(mock_openai):
     agent._apply_client_headers_for_base_url("https://api.example.com/v1")
 
     assert "default_headers" not in agent._client_kwargs
+
+
+@patch("run_agent.OpenAI")
+def test_kimi_coding_base_url_applies_coding_agent_headers(mock_openai):
+    """Kimi's /coding endpoint requires both User-Agent and X-Client-Name
+    to be recognized as a valid Coding Agent."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://api.kimi.com/coding/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["User-Agent"] == "claude-code/0.1.0"
+    assert headers["X-Client-Name"] == "kimi-cli"

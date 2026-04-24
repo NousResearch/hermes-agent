@@ -203,12 +203,36 @@ def _get_command_timeout() -> int:
 
 
 def _get_vision_model() -> Optional[str]:
-    """Model for browser_vision (screenshot analysis — multimodal)."""
+    """Model for browser_vision (screenshot analysis — multimodal).
+
+    Returns None when config.yaml specifies auxiliary.vision.model so that
+    the centralized auxiliary client resolves routing.  Falls back to the
+    AUXILIARY_VISION_MODEL env var only when config doesn't set a model.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        if cfg.get("auxiliary", {}).get("vision", {}).get("model"):
+            return None
+    except Exception:
+        logger.warning("Could not read config for vision model resolution; falling back to env var")
     return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
 
 
 def _get_extraction_model() -> Optional[str]:
-    """Model for page snapshot text summarization — same as web_extract."""
+    """Model for page snapshot text summarization — same as web_extract.
+
+    Returns None when config.yaml specifies auxiliary.web_extract.model so
+    that the centralized auxiliary client resolves routing.  Falls back to
+    the AUXILIARY_WEB_EXTRACT_MODEL env var only when config doesn't set a model.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        if cfg.get("auxiliary", {}).get("web_extract", {}).get("model"):
+            return None
+    except Exception:
+        logger.warning("Could not read config for extraction model resolution; falling back to env var")
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 

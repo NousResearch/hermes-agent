@@ -210,11 +210,12 @@ class TestHandleVisionAnalyze:
             assert "Fully describe and explain" in full_prompt
 
     def test_uses_auxiliary_vision_model_env(self):
-        """AUXILIARY_VISION_MODEL env var should override DEFAULT_VISION_MODEL."""
+        """AUXILIARY_VISION_MODEL env var should be used when config doesn't specify a model."""
         with (
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
+            patch("hermes_cli.config.read_raw_config", return_value={}),
             patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "custom/model-v1"}),
         ):
             mock_tool.return_value = json.dumps({"result": "ok"})
@@ -232,6 +233,7 @@ class TestHandleVisionAnalyze:
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
+            patch("hermes_cli.config.read_raw_config", return_value={}),
             patch.dict(os.environ, {}, clear=False),
         ):
             # Ensure AUXILIARY_VISION_MODEL is not set
@@ -246,6 +248,44 @@ class TestHandleVisionAnalyze:
             # With no AUXILIARY_VISION_MODEL set, model should be None
             # (the centralized call_llm router picks the default)
             assert model is None
+
+    def test_config_model_overrides_env_var(self):
+        """config.yaml auxiliary.vision.model should beat AUXILIARY_VISION_MODEL env var."""
+        cfg = {"auxiliary": {"vision": {"model": "config/model-from-yaml"}}}
+        with (
+            patch(
+                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            ) as mock_tool,
+            patch("hermes_cli.config.read_raw_config", return_value=cfg),
+            patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "env/should-be-ignored"}),
+        ):
+            mock_tool.return_value = json.dumps({"result": "ok"})
+            coro = _handle_vision_analyze(
+                {"image_url": "https://example.com/img.png", "question": "test"}
+            )
+            coro.close()
+            call_args = mock_tool.call_args
+            model = call_args[0][2]
+            # Config specifies a model → must pass None so centralized client routes it
+            assert model is None
+
+    def test_config_read_failure_falls_back_to_env(self):
+        """If read_raw_config raises, fall back to env var gracefully."""
+        with (
+            patch(
+                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            ) as mock_tool,
+            patch("hermes_cli.config.read_raw_config", side_effect=OSError("disk error")),
+            patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "fallback/model"}),
+        ):
+            mock_tool.return_value = json.dumps({"result": "ok"})
+            coro = _handle_vision_analyze(
+                {"image_url": "https://example.com/img.png", "question": "test"}
+            )
+            coro.close()
+            call_args = mock_tool.call_args
+            model = call_args[0][2]
+            assert model == "fallback/model"
 
     def test_empty_args_graceful(self):
         """Missing keys should default to empty strings, not raise."""

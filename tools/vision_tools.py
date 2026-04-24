@@ -787,7 +787,19 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    # If config.yaml specifies auxiliary.vision.model, let the centralized
+    # auxiliary client resolve it — do NOT override with the env var.
+    # Only fall back to the env var when config doesn't specify a model.
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        if cfg.get("auxiliary", {}).get("vision", {}).get("model"):
+            model = None
+        else:
+            model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    except Exception:
+        logger.warning("Could not read config for vision model resolution; falling back to env var")
+        model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return vision_analyze_tool(image_url, full_prompt, model)
 
 

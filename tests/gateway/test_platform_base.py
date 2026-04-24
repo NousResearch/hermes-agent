@@ -410,6 +410,22 @@ class TestTruncateMessage:
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
 
+
+    def test_chunk_indicator_does_not_share_closing_fence_line(self):
+        adapter = self._adapter()
+        msg = "Intro\n```python\n" + ("print('hello')\n" * 500) + "```\nOutro"
+        chunks = adapter.truncate_message(msg, max_length=2000)
+        assert len(chunks) > 1
+
+        for chunk in chunks[:-1]:
+            lines = chunk.splitlines()
+            fence_lines = [line for line in lines if line.strip().startswith("```")]
+            assert fence_lines, "Expected a code fence in split code chunk"
+            # Closing fence must be a clean fence line. If the chunk indicator is
+            # appended as ``` (1/N), Discord does not treat it as a closing fence.
+            assert any(line.strip() == "```" for line in fence_lines), chunk[-120:]
+            assert not any(line.strip().startswith("``` (") for line in fence_lines), chunk[-120:]
+
     def test_each_chunk_under_max_length(self):
         adapter = self._adapter()
         msg = "word " * 500

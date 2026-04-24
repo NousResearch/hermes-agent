@@ -13933,9 +13933,9 @@ def main():
                     else s.get("preview", "")[:48]
                 )
                 if has_titles:
-                    title = (s.get("title") or "—")[:30]
+                    title = s.get("title") or "—"
                     sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    print(f"{title}  {preview:<28} {last_active:<13} {sid}")
                 else:
                     sid = s["id"]
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")

@@ -499,6 +499,7 @@ AUTHOR_MAP = {
     "zhangxicen@example.com": "zhangxicen",
     "codex@openai.invalid": "teknium1",
     "screenmachine@gmail.com": "teknium1",
+    "chenzeshi@live.com": "chen1749144759",
 }
 
 

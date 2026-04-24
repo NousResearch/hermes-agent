@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Iterable
 
 from agent.auxiliary_client import call_llm
 from agent.context_engine import ContextEngine
@@ -62,6 +62,29 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+_PROTECTED_TOOL_ALIAS_MAP = {
+    "delegate": "delegate_task",
+    "delegate_task": "delegate_task",
+    "task": "delegate_task",
+    "todowrite": "todo",
+    "todo_write": "todo",
+    "todoread": "todo",
+    "todo_read": "todo",
+    "todo": "todo",
+    "lsp_rename": "lsp_rename",
+    "session_read": "session_read",
+    "session_write": "session_write",
+    "session_search": "session_search",
+}
+_DEFAULT_PROTECTED_TOOLS = frozenset({
+    "delegate_task",
+    "todo",
+    "lsp_rename",
+    "session_read",
+    "session_write",
+    "session_search",
+})
 
 
 def _content_text_for_contains(content: Any) -> str:
@@ -332,6 +355,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        protected_tools: Optional[Iterable[str]] = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -343,6 +367,7 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        self.protected_tools = self._normalize_protected_tools(protected_tools)
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -389,6 +414,26 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
+
+    @classmethod
+    def _normalize_tool_name(cls, tool_name: Any) -> str:
+        name = str(tool_name or "").strip()
+        if not name:
+            return ""
+        return _PROTECTED_TOOL_ALIAS_MAP.get(name, name)
+
+    @classmethod
+    def _normalize_protected_tools(cls, tool_names: Optional[Iterable[str]]) -> set[str]:
+        names = _DEFAULT_PROTECTED_TOOLS if tool_names is None else tool_names
+        normalized: set[str] = set()
+        for tool_name in names:
+            normalized_name = cls._normalize_tool_name(tool_name)
+            if normalized_name:
+                normalized.add(normalized_name)
+        return normalized or set(_DEFAULT_PROTECTED_TOOLS)
+
+    def _is_protected_tool(self, tool_name: Any) -> bool:
+        return self._normalize_tool_name(tool_name) in self.protected_tools
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -458,11 +503,12 @@ class ContextCompressor(ContextEngine):
                     if isinstance(tc, dict):
                         cid = tc.get("id", "")
                         fn = tc.get("function", {})
-                        call_id_to_tool[cid] = (fn.get("name", "unknown"), fn.get("arguments", ""))
+                        tool_name = self._normalize_tool_name(fn.get("name", "unknown")) or "unknown"
+                        call_id_to_tool[cid] = (tool_name, fn.get("arguments", ""))
                     else:
                         cid = getattr(tc, "id", "") or ""
                         fn = getattr(tc, "function", None)
-                        name = getattr(fn, "name", "unknown") if fn else "unknown"
+                        name = self._normalize_tool_name(getattr(fn, "name", "unknown") if fn else "unknown") or "unknown"
                         args_str = getattr(fn, "arguments", "") if fn else ""
                         call_id_to_tool[cid] = (name, args_str)
 
@@ -498,6 +544,10 @@ class ContextCompressor(ContextEngine):
             msg = result[i]
             if msg.get("role") != "tool":
                 continue
+            call_id = msg.get("tool_call_id", "")
+            tool_name, _tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            if self._is_protected_tool(tool_name):
+                continue
             content = msg.get("content") or ""
             # Skip multimodal content (list of content blocks)
             if isinstance(content, list):
@@ -517,6 +567,10 @@ class ContextCompressor(ContextEngine):
             msg = result[i]
             if msg.get("role") != "tool":
                 continue
+            call_id = msg.get("tool_call_id", "")
+            tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            if self._is_protected_tool(tool_name):
+                continue
             content = msg.get("content", "")
             # Skip multimodal content (list of content blocks)
             if isinstance(content, list):
@@ -528,8 +582,6 @@ class ContextCompressor(ContextEngine):
                 continue
             # Only prune if the content is substantial (>200 chars)
             if len(content) > 200:
-                call_id = msg.get("tool_call_id", "")
-                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
                 summary = _summarize_tool_result(tool_name, tool_args, content)
                 result[i] = {**msg, "content": summary}
                 pruned += 1
@@ -550,6 +602,10 @@ class ContextCompressor(ContextEngine):
             modified = False
             for tc in msg["tool_calls"]:
                 if isinstance(tc, dict):
+                    tool_name = self._normalize_tool_name(tc.get("function", {}).get("name", ""))
+                    if self._is_protected_tool(tool_name):
+                        new_tcs.append(tc)
+                        continue
                     args = tc.get("function", {}).get("arguments", "")
                     if len(args) > 500:
                         new_args = _truncate_tool_call_args_json(args)
@@ -561,6 +617,27 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "tool_calls": new_tcs}
 
         return result, pruned
+
+    def prune_only(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Prune old unprotected tool context without full summarization."""
+        tokens = current_tokens if current_tokens is not None else self.last_prompt_tokens
+        if tokens < self.threshold_tokens:
+            return messages, False
+
+        pruned_messages, pruned_count = self._prune_old_tool_results(
+            messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=self.tail_token_budget,
+        )
+        changed = pruned_count > 0 and pruned_messages != messages
+        if changed:
+            self.last_prompt_tokens = estimate_messages_tokens_rough(pruned_messages)
+            self.last_completion_tokens = 0
+        return pruned_messages, changed
 
     # ------------------------------------------------------------------
     # Summarization

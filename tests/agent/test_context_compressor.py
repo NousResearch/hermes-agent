@@ -1,5 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -53,6 +55,112 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
+
+class TestProtectedToolPruning:
+    def test_prune_only_preserves_protected_tool_output_while_pruning_old_unprotected_result(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            compressor = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.80,
+                protect_first_n=1,
+                protect_last_n=2,
+                protected_tools=["delegate"],
+                quiet_mode=True,
+            )
+
+        protected_output = "delegated result " + ("x" * 400)
+        read_output = "file contents " + ("y" * 400)
+        messages = [
+            {"role": "system", "content": "system"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-read",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({"path": "/tmp/file.txt", "offset": 1}),
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-read", "content": read_output},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-delegate",
+                        "type": "function",
+                        "function": {
+                            "name": "delegate_task",
+                            "arguments": json.dumps({"goal": "Investigate bug"}),
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-delegate", "content": protected_output},
+            {"role": "user", "content": "latest task"},
+            {"role": "assistant", "content": "working"},
+        ]
+
+        pruned, changed = compressor.prune_only(messages, current_tokens=90000)
+
+        assert changed is True
+        assert pruned[2]["content"].startswith("[read_file] read /tmp/file.txt")
+        assert pruned[4]["content"] == protected_output
+
+    def test_prune_only_does_not_truncate_protected_assistant_tool_call_args(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            compressor = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.80,
+                protect_first_n=1,
+                protect_last_n=2,
+                protected_tools=["task"],
+                quiet_mode=True,
+            )
+
+        long_text = "A" * 1200
+        protected_args = json.dumps({"goal": long_text})
+        unprotected_args = json.dumps({"path": "/tmp/out.txt", "content": long_text})
+        messages = [
+            {"role": "system", "content": "system"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-write",
+                        "type": "function",
+                        "function": {"name": "write_file", "arguments": unprotected_args},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-write", "content": "write result " + ("z" * 300)},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-task",
+                        "type": "function",
+                        "function": {"name": "delegate_task", "arguments": protected_args},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-task", "content": "delegate result " + ("q" * 300)},
+            {"role": "user", "content": "latest task"},
+            {"role": "assistant", "content": "working"},
+        ]
+
+        pruned, changed = compressor.prune_only(messages, current_tokens=90000)
+
+        assert changed is True
+        assert pruned[1]["tool_calls"][0]["function"]["arguments"] != unprotected_args
+        assert pruned[3]["tool_calls"][0]["function"]["arguments"] == protected_args
 
 
 class TestCompress:

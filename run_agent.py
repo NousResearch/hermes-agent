@@ -1714,6 +1714,7 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                protected_tools=compression_protected_tools,
             )
             if compression_threshold_tokens is not None:
                 self.context_compressor.threshold_tokens = compression_threshold_tokens
@@ -10214,52 +10215,72 @@ class AIAgent:
                 )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
-                logger.info(
-                    "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
-                    f"{_preflight_tokens:,}",
-                    f"{self.context_compressor.threshold_tokens:,}",
-                    self.model,
-                    f"{self.context_compressor.context_length:,}",
+                pruned_messages, pruned_only = self.context_compressor.prune_only(
+                    messages,
+                    current_tokens=_preflight_tokens,
                 )
-                if not self.quiet_mode:
-                    self._safe_print(
-                        f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                        f">= {self.context_compressor.threshold_tokens:,} threshold"
-                    )
-                # May need multiple passes for very large sessions with small
-                # context windows (each pass summarises the middle N turns).
-                for _pass in range(3):
-                    _orig_len = len(messages)
-                    messages, active_system_prompt = self._compress_context(
-                        messages, system_message, approx_tokens=_preflight_tokens,
-                        task_id=effective_task_id,
-                    )
-                    if len(messages) >= _orig_len:
-                        break  # Cannot compress further
-                    # Compression created a new session — clear the history
-                    # reference so _flush_messages_to_session_db writes ALL
-                    # compressed messages to the new session's SQLite, not
-                    # skipping them because conversation_history is still the
-                    # pre-compression length.
+                if pruned_only:
+                    messages = list(pruned_messages)
                     conversation_history = None
-                    # Fix: reset retry counters after compression so the model
-                    # gets a fresh budget on the compressed context.  Without
-                    # this, pre-compression retries carry over and the model
-                    # hits "(empty)" immediately after compression-induced
-                    # context loss.
-                    self._empty_content_retries = 0
-                    self._thinking_prefill_retries = 0
-                    self._last_content_with_tools = None
-                    self._last_content_tools_all_housekeeping = False
-                    self._mute_post_response = False
-                    # Re-estimate after compression
                     _preflight_tokens = estimate_request_tokens_rough(
                         messages,
                         system_prompt=active_system_prompt or "",
                         tools=self._get_runtime_scoped_tools() or None,
                     )
-                    if _preflight_tokens < self.context_compressor.threshold_tokens:
-                        break  # Under threshold
+
+                if _preflight_tokens < self.context_compressor.threshold_tokens:
+                    logger.info(
+                        "Preflight prune-only reduced context below threshold: ~%s < %s",
+                        f"{_preflight_tokens:,}",
+                        f"{self.context_compressor.threshold_tokens:,}",
+                    )
+                else:
+                    logger.info(
+                        "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
+                        f"{_preflight_tokens:,}",
+                        f"{self.context_compressor.threshold_tokens:,}",
+                        self.model,
+                        f"{self.context_compressor.context_length:,}",
+                    )
+                    if not self.quiet_mode:
+                        self._safe_print(
+                            f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
+                            f">= {self.context_compressor.threshold_tokens:,} threshold"
+                        )
+                    # May need multiple passes for very large sessions with small
+                    # context windows (each pass summarises the middle N turns).
+                    for _pass in range(3):
+                        _orig_len = len(messages)
+                        messages, active_system_prompt = self._compress_context(
+                            messages, system_message, approx_tokens=_preflight_tokens,
+                            task_id=effective_task_id,
+                        )
+                        if len(messages) >= _orig_len:
+                            break  # Cannot compress further
+                        # Compression created a new session — clear the history
+                        # reference so _flush_messages_to_session_db writes ALL
+                        # compressed messages to the new session's SQLite, not
+                        # skipping them because conversation_history is still the
+                        # pre-compression length.
+                        conversation_history = None
+                        # Fix: reset retry counters after compression so the model
+                        # gets a fresh budget on the compressed context.  Without
+                        # this, pre-compression retries carry over and the model
+                        # hits "(empty)" immediately after compression-induced
+                        # context loss.
+                        self._empty_content_retries = 0
+                        self._thinking_prefill_retries = 0
+                        self._last_content_with_tools = None
+                        self._last_content_tools_all_housekeeping = False
+                        self._mute_post_response = False
+                        # Re-estimate after compression
+                        _preflight_tokens = estimate_request_tokens_rough(
+                            messages,
+                            system_prompt=active_system_prompt or "",
+                            tools=self._get_runtime_scoped_tools() or None,
+                        )
+                        if _preflight_tokens < self.context_compressor.threshold_tokens:
+                            break  # Under threshold
 
         # Plugin hook: pre_llm_call
         # Fired once per turn before the tool-calling loop.  Plugins can
@@ -12632,16 +12653,30 @@ class AIAgent:
                         _real_tokens = estimate_messages_tokens_rough(messages)
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
-                        self._safe_print("  ⟳ compacting context…")
-                        messages, active_system_prompt = self._compress_context(
-                            messages, system_message,
-                            approx_tokens=self.context_compressor.last_prompt_tokens,
-                            task_id=effective_task_id,
+                        pruned_messages, pruned_only = _compressor.prune_only(
+                            messages,
+                            current_tokens=_real_tokens,
                         )
-                        # Compression created a new session — clear history so
-                        # _flush_messages_to_session_db writes compressed messages
-                        # to the new session (see preflight compression comment).
-                        conversation_history = None
+                        if pruned_only:
+                            messages = list(pruned_messages)
+                            conversation_history = None
+                            _real_tokens = estimate_request_tokens_rough(
+                                messages,
+                                system_prompt=active_system_prompt or "",
+                                tools=self._get_runtime_scoped_tools() or None,
+                            )
+
+                        if _compressor.should_compress(_real_tokens):
+                            self._safe_print("  ⟳ compacting context…")
+                            messages, active_system_prompt = self._compress_context(
+                                messages, system_message,
+                                approx_tokens=self.context_compressor.last_prompt_tokens,
+                                task_id=effective_task_id,
+                            )
+                            # Compression created a new session — clear history so
+                            # _flush_messages_to_session_db writes compressed messages
+                            # to the new session (see preflight compression comment).
+                            conversation_history = None
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages

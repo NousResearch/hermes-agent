@@ -27,6 +27,7 @@ Usage:
 
 import os
 import re
+import hashlib
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -276,6 +277,41 @@ DEFAULT_READ_LIMIT = 500
 DEFAULT_SEARCH_OFFSET = 0
 DEFAULT_SEARCH_LIMIT = 50
 
+_HASHLINE_RE = re.compile(r'^(?P<number>\s*\d+)#(?P<anchor>[0-9a-fA-F]{8})\|(?P<content>.*)$')
+
+
+def _hashline_edit_enabled() -> bool:
+    return os.environ.get("HERMES_HASHLINE_EDIT", "").strip() == "1"
+
+
+def _visible_line_content(line: str) -> str:
+    if len(line) > MAX_LINE_LENGTH:
+        return line[:MAX_LINE_LENGTH] + "... [truncated]"
+    return line
+
+
+def _hashline_anchor_for_content(line: str) -> str:
+    return hashlib.sha256(line.encode("utf-8")).hexdigest()[:8]
+
+
+def _is_truncated_hashline_content(line: str) -> bool:
+    return line.endswith("... [truncated]")
+
+
+def _parse_hashline(line: str) -> tuple[int, str, str] | None:
+    match = _HASHLINE_RE.match(line)
+    if not match:
+        return None
+    return (
+        int(match.group("number")),
+        match.group("anchor").lower(),
+        match.group("content"),
+    )
+
+
+def _contains_hashline_prefix(text: str) -> bool:
+    return any(_parse_hashline(line) is not None for line in text.splitlines())
+
 
 def _coerce_int(value: Any, default: int) -> int:
     """Best-effort integer coercion for tool pagination inputs."""
@@ -414,14 +450,113 @@ class ShellFileOperations(FileOperations):
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
         """Add line numbers to content in LINE_NUM|CONTENT format."""
-        lines = content.split('\n')
+        lines = content.splitlines()
         numbered = []
         for i, line in enumerate(lines, start=start_line):
-            # Truncate long lines
-            if len(line) > MAX_LINE_LENGTH:
-                line = line[:MAX_LINE_LENGTH] + "... [truncated]"
-            numbered.append(f"{i:6d}|{line}")
+            visible_line = _visible_line_content(line)
+            if _hashline_edit_enabled():
+                numbered.append(f"{i:6d}#{_hashline_anchor_for_content(line)}|{visible_line}")
+            else:
+                numbered.append(f"{i:6d}|{visible_line}")
         return '\n'.join(numbered)
+
+    def _validate_and_strip_hashline_block(self, text: str, current_content: str, path: str) -> tuple[str, Optional[str]]:
+        if not _hashline_edit_enabled() or not text:
+            return text, None
+
+        current_lines = current_content.splitlines()
+        normalized_lines = []
+        for raw_line in text.splitlines():
+            parsed = _parse_hashline(raw_line)
+            if parsed is None:
+                normalized_lines.append(raw_line)
+                continue
+
+            line_number, anchor, anchored_content = parsed
+            if _is_truncated_hashline_content(anchored_content):
+                return "", (
+                    f"Hashline anchor for {path} targets a truncated line at line {line_number}. "
+                    "Re-read a narrower range or use a raw edit target before retrying."
+                )
+            if line_number < 1 or line_number > len(current_lines):
+                return "", (
+                    f"Hashline anchor for {path} is stale at line {line_number}. "
+                    "The file changed; re-read it and retry the edit."
+                )
+
+            visible_current = _visible_line_content(current_lines[line_number - 1])
+            current_anchor = _hashline_anchor_for_content(current_lines[line_number - 1])
+            if current_anchor != anchor or visible_current != anchored_content:
+                return "", (
+                    f"Hashline anchor for {path} is stale at line {line_number}. "
+                    "The file changed; re-read it and retry the edit."
+                )
+
+            normalized_lines.append(anchored_content)
+
+        trailing_newline = "\n" if text.endswith("\n") else ""
+        return "\n".join(normalized_lines) + trailing_newline, None
+
+    def _normalize_hashline_patch(self, patch_content: str) -> tuple[str, Optional[str]]:
+        if not _hashline_edit_enabled() or not patch_content:
+            return patch_content, None
+
+        normalized_lines = []
+        current_path = None
+        current_content = None
+        current_lines = None
+        file_cache: Dict[str, tuple[str, list[str]]] = {}
+
+        for line in patch_content.splitlines():
+            update_match = re.match(r'\*\*\*\s*Update\s+File:\s*(.+)', line)
+            if update_match:
+                current_path = update_match.group(1).strip()
+                current_content = None
+                current_lines = None
+                normalized_lines.append(line)
+                continue
+
+            if line.startswith("*** ") and not update_match:
+                current_path = None
+                current_content = None
+                current_lines = None
+                normalized_lines.append(line)
+                continue
+
+            if current_path and line[:1] in {" ", "-"}:
+                parsed = _parse_hashline(line[1:])
+                if parsed is not None:
+                    if current_path not in file_cache:
+                        read_result = self.read_file_raw(current_path)
+                        if read_result.error:
+                            return "", f"Failed to read file: {current_path}"
+                        file_cache[current_path] = (read_result.content, read_result.content.splitlines())
+                    current_content, current_lines = file_cache[current_path]
+                    line_number, anchor, anchored_content = parsed
+                    if _is_truncated_hashline_content(anchored_content):
+                        return "", (
+                            f"Hashline anchor for {current_path} targets a truncated line at line {line_number}. "
+                            "Re-read a narrower range or use a raw edit target before retrying."
+                        )
+                    if line_number < 1 or line_number > len(current_lines):
+                        return "", (
+                            f"Hashline anchor for {current_path} is stale at line {line_number}. "
+                            "The file changed; re-read it and retry the patch."
+                        )
+                    visible_current = _visible_line_content(current_lines[line_number - 1])
+                    current_anchor = _hashline_anchor_for_content(current_lines[line_number - 1])
+                    if current_anchor != anchor or visible_current != anchored_content:
+                        return "", (
+                            f"Hashline anchor for {current_path} is stale at line {line_number}. "
+                            "The file changed; re-read it and retry the patch."
+                        )
+                    normalized_lines.append(f"{line[0]}{anchored_content}")
+                    continue
+
+            normalized_lines.append(line)
+
+        trailing_newline = "\n" if patch_content.endswith("\n") else ""
+        return "\n".join(normalized_lines) + trailing_newline, None
     
     def _expand_path(self, path: str) -> str:
         """
@@ -698,6 +833,14 @@ class ShellFileOperations(FileOperations):
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
+        if _hashline_edit_enabled() and _contains_hashline_prefix(content):
+            return WriteResult(
+                error=(
+                    "Hashline-prefixed content is only valid for anchored edits, not whole-file writes. "
+                    "Re-read the file and write plain content without LINE#HASH| prefixes."
+                )
+            )
+
         # Create parent directories
         parent = os.path.dirname(path)
         dirs_created = False
@@ -763,7 +906,10 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to read file: {path}")
         
         content = read_result.stdout
-        
+        old_string, hashline_error = self._validate_and_strip_hashline_block(old_string, content, path)
+        if hashline_error:
+            return PatchResult(error=hashline_error)
+
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
@@ -833,6 +979,10 @@ class ShellFileOperations(FileOperations):
         Returns:
             PatchResult with changes made
         """
+        patch_content, hashline_error = self._normalize_hashline_patch(patch_content)
+        if hashline_error:
+            return PatchResult(error=hashline_error)
+
         # Import patch parser
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
         

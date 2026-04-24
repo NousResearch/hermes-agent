@@ -3,7 +3,8 @@
 import os
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+import subprocess
 
 from tools.file_operations import (
     _is_write_denied,
@@ -22,6 +23,28 @@ from tools.file_operations import (
     normalize_read_pagination,
     normalize_search_pagination,
 )
+
+
+class LocalShellEnv:
+    """Tiny local terminal-env shim for ShellFileOperations integration tests."""
+
+    def __init__(self, cwd: str):
+        self.cwd = cwd
+
+    def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd or self.cwd,
+            input=stdin_data,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+        return {
+            "output": completed.stdout + completed.stderr,
+            "returncode": completed.returncode,
+        }
 
 
 # =========================================================================
@@ -466,3 +489,86 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+class TestHashlinePatchEditing:
+    def test_patch_replace_accepts_valid_hashline_old_string(self, tmp_path):
+        file_path = tmp_path / "sample.txt"
+        file_path.write_text("alpha\nbeta\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        with patch.dict(os.environ, {"HERMES_HASHLINE_EDIT": "1"}, clear=False):
+            anchored_old = ops.read_file(str(file_path), offset=1, limit=1).content
+            result = ops.patch_replace(str(file_path), anchored_old, "ALPHA")
+
+        assert result.success is True
+        assert result.error is None
+        assert file_path.read_text(encoding="utf-8") == "ALPHA\nbeta\n"
+
+    def test_patch_replace_rejects_stale_hashline_old_string(self, tmp_path):
+        file_path = tmp_path / "sample.txt"
+        file_path.write_text("alpha\nbeta\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        with patch.dict(os.environ, {"HERMES_HASHLINE_EDIT": "1"}, clear=False):
+            anchored_old = ops.read_file(str(file_path), offset=1, limit=1).content
+            file_path.write_text("omega\nbeta\n", encoding="utf-8")
+            result = ops.patch_replace(str(file_path), anchored_old, "ALPHA")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "re-read" in result.error.lower() or "reread" in result.error.lower()
+
+    def test_patch_v4a_accepts_valid_hashline_context_and_remove_lines(self, tmp_path):
+        file_path = tmp_path / "sample.txt"
+        file_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        with patch.dict(os.environ, {"HERMES_HASHLINE_EDIT": "1"}, clear=False):
+            anchored = ops.read_file(str(file_path), offset=1, limit=3).content.splitlines()
+            patch_text = "\n".join([
+                "*** Begin Patch",
+                f"*** Update File: {file_path}",
+                "@@ sample @@",
+                f" {anchored[0]}",
+                f"-{anchored[1]}",
+                "+BETA",
+                f" {anchored[2]}",
+                "*** End Patch",
+            ])
+            result = ops.patch_v4a(patch_text)
+
+        assert result.success is True
+        assert result.error is None
+        assert file_path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+
+    def test_patch_replace_rejects_truncated_hashline_old_string(self, tmp_path):
+        file_path = tmp_path / "sample.txt"
+        long_line = "a" * (MAX_LINE_LENGTH + 20)
+        file_path.write_text(long_line + "\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        with patch.dict(os.environ, {"HERMES_HASHLINE_EDIT": "1"}, clear=False):
+            anchored_old = ops.read_file(str(file_path), offset=1, limit=1).content
+            result = ops.patch_replace(str(file_path), anchored_old, "SHORT")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "truncated line" in result.error.lower()
+
+    def test_hashline_anchor_detects_change_beyond_visible_truncation(self, tmp_path):
+        file_path = tmp_path / "sample.txt"
+        original = "a" * (MAX_LINE_LENGTH + 20)
+        changed = original[:MAX_LINE_LENGTH + 10] + "b" + original[MAX_LINE_LENGTH + 11:]
+        file_path.write_text(original + "\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        with patch.dict(os.environ, {"HERMES_HASHLINE_EDIT": "1"}, clear=False):
+            anchored_old = ops.read_file(str(file_path), offset=1, limit=1).content
+            file_path.write_text(changed + "\n", encoding="utf-8")
+            result = ops.patch_replace(str(file_path), anchored_old, "SHORT")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "truncated line" in result.error.lower() or "stale" in result.error.lower()
+

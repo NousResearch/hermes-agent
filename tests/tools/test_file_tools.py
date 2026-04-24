@@ -59,6 +59,28 @@ class TestReadFileHandler:
         mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 1, 1)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_redacted_hashline_read_strips_hash_anchors(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        original = "     1#deadbeef|api_key = SECRET"
+        redacted = "     1#deadbeef|api_key = [REDACTED]"
+        result_obj.content = original
+        result_obj.to_dict.return_value = {"content": original, "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+
+        with (
+            patch.dict("os.environ", {"HERMES_HASHLINE_EDIT": "1"}, clear=False),
+            patch("tools.file_tools.redact_sensitive_text", return_value=redacted),
+        ):
+            result = json.loads(read_file_tool("/tmp/test.txt"))
+
+        assert result["content"] == "     1|api_key = [REDACTED]"
+        assert "#deadbeef|" not in result["content"]
+
+    @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 
@@ -103,6 +125,14 @@ class TestWriteFileHandler:
             result = json.loads(write_file_tool("/tmp/out.txt", "data"))
         assert result["error"] == "boom"
         assert any("write_file error" in r.getMessage() for r in caplog.records)
+
+    @patch.dict("os.environ", {"HERMES_HASHLINE_EDIT": "1"}, clear=False)
+    def test_rejects_hashline_prefixed_payload_when_enabled(self):
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool("/tmp/out.txt", "     1#deadbeef|hello\n"))
+        assert "error" in result
+        assert "hashline" in result["error"].lower()
 
 
 class TestPatchHandler:

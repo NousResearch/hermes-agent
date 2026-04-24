@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,8 @@ from tools.file_operations import (
     ShellFileOperations,
     normalize_read_pagination,
     normalize_search_pagination,
+    _hashline_edit_enabled,
+    _contains_hashline_prefix,
 )
 from tools import file_state
 from agent.redact import redact_sensitive_text
@@ -78,6 +81,25 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     # fd aliases
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
+
+_HASHLINE_PREFIX_RE = re.compile(r"^(?P<number>\s*\d+)#[0-9a-fA-F]{8}\|(?P<content>.*)$")
+
+
+def _degrade_hashlines_to_line_numbers(content: str) -> str:
+    """Strip hash anchors while preserving line-numbered content.
+
+    If redaction changes a hashlined read, the hashes no longer describe the
+    exact visible text shown to the model. Keep the read useful but remove the
+    anchors so a later edit cannot fail as a false stale hashline edit.
+    """
+    lines = []
+    for line in content.splitlines():
+        match = _HASHLINE_PREFIX_RE.match(line)
+        if match:
+            lines.append(f"{match.group('number')}|{match.group('content')}")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _resolve_path(filepath: str, task_id: str = "default") -> Path:
@@ -440,6 +462,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
+                "hashline_anchors": {},
             })
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
@@ -504,7 +527,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content)
+            original_content = result.content
+            redacted_content = redact_sensitive_text(original_content)
+            if (
+                redacted_content != original_content
+                and _hashline_edit_enabled()
+                and _contains_hashline_prefix(original_content)
+            ):
+                redacted_content = _degrade_hashlines_to_line_numbers(redacted_content)
+            result.content = redacted_content
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -538,6 +569,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["dedup"] = {}
             if "read_fingerprints" not in task_data:
                 task_data["read_fingerprints"] = {}
+            if "hashline_anchors" not in task_data:
+                task_data["hashline_anchors"] = {}
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -563,6 +596,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     "partial": _partial or _read_raced or _track_fp is None,
                     "read_raced": _read_raced,
                 }
+                if _hashline_edit_enabled() and isinstance(result_dict.get("content"), str):
+                    task_data["hashline_anchors"][resolved_str] = {
+                        "offset": offset,
+                        "limit": limit,
+                        "content": result_dict["content"],
+                    }
             except OSError:
                 pass  # Can't stat — skip tracking for this entry
 
@@ -779,6 +818,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    if _hashline_edit_enabled() and _contains_hashline_prefix(content):
+        return tool_error(
+            "Hashline-prefixed content is only valid for anchored edits. "
+            "Re-read the file and write plain content without LINE#HASH| prefixes."
+        )
     try:
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness
@@ -928,8 +972,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             if "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
-                    "old_string not found. Use read_file to verify the current "
-                    "content, or search_files to locate the text."
+                    "[Hint: old_string not found. Use read_file to verify the current "
+                    "content, or search_files to locate the text.]"
                 )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:

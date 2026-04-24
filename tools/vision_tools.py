@@ -43,6 +43,74 @@ from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_sandbox_path_to_host(path_str: str) -> str:
+    """Translate a sandbox/container path to a host path.
+
+    When the agent runs tools inside a Docker sandbox, file-discovery tools
+    (search_files, terminal) return container-local paths such as
+    ``/workspace/screenshot.png`` or ``./screenshot.png``.  The vision tool,
+    however, runs on the *host* where those paths do not exist.
+
+    Resolution strategy (first match wins):
+    1. Relative paths (``./foo``) are resolved against ``TERMINAL_CWD`` which
+       the WebUI sets to the host workspace directory.
+    2. Absolute sandbox paths are mapped using ``docker_volumes`` from
+       ``config.yaml`` (reversed: container prefix -> host prefix).
+    3. ``/workspace/...`` is mapped to ``TERMINAL_CWD`` when
+       ``docker_mount_cwd_to_workspace`` is enabled in config.
+    4. If nothing matches, the original string is returned unchanged.
+    """
+    # -- 1. Relative paths ------------------------------------------------
+    if path_str.startswith("./") or path_str.startswith("../"):
+        host_cwd = os.environ.get("TERMINAL_CWD", "")
+        if host_cwd:
+            resolved = str(Path(host_cwd) / path_str)
+            logger.debug("vision sandbox-resolve: relative %s -> %s", path_str, resolved)
+            return resolved
+
+    if not path_str.startswith("/"):
+        # Not absolute, not explicitly relative -- treat as relative too
+        host_cwd = os.environ.get("TERMINAL_CWD", "")
+        if host_cwd:
+            resolved = str(Path(host_cwd) / path_str)
+            logger.debug("vision sandbox-resolve: bare-relative %s -> %s", path_str, resolved)
+            return resolved
+        return path_str
+
+    # -- Load docker config once (best-effort) ----------------------------
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+
+    terminal_cfg = cfg.get("terminal", {})
+    docker_volumes = terminal_cfg.get("docker_volumes", [])
+    mount_cwd = terminal_cfg.get("docker_mount_cwd_to_workspace", False)
+
+    # -- 2. Explicit docker_volumes (container:host reversed) -------------
+    for vol in docker_volumes:
+        parts = vol.split(":")
+        if len(parts) >= 2:
+            host_prefix = parts[0]
+            container_prefix = parts[1]
+            if path_str == container_prefix or path_str.startswith(container_prefix + "/"):
+                resolved = host_prefix + path_str[len(container_prefix):]
+                logger.debug("vision sandbox-resolve: volume %s -> %s", path_str, resolved)
+                return resolved
+
+    # -- 3. /workspace -> TERMINAL_CWD -----------------------------------
+    if mount_cwd and (path_str == "/workspace" or path_str.startswith("/workspace/")):
+        host_cwd = os.environ.get("TERMINAL_CWD", "")
+        if host_cwd:
+            suffix = path_str[len("/workspace"):]
+            resolved = host_cwd + suffix
+            logger.debug("vision sandbox-resolve: /workspace %s -> %s", path_str, resolved)
+            return resolved
+
+    return path_str
+
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
 # Configurable HTTP download timeout for _download_image().
@@ -471,6 +539,10 @@ async def vision_analyze_tool(
         resolved_url = image_url
         if resolved_url.startswith("file://"):
             resolved_url = resolved_url[len("file://"):]
+        # Translate sandbox/container paths to host paths so vision
+        # (which runs on the host) can find files discovered by
+        # sandbox-side tools like search_files and terminal.
+        resolved_url = _resolve_sandbox_path_to_host(resolved_url)
         local_path = Path(os.path.expanduser(resolved_url))
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download

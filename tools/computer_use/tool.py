@@ -74,7 +74,7 @@ _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
-    "drag", "scroll", "type", "key", "focus_app",
+    "drag", "scroll", "type", "key", "set_value", "focus_app",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -387,6 +387,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.key(args.get("keys", ""))
         return _maybe_follow_capture(backend, res, capture_after)
 
+    if action == "set_value":
+        value = args.get("value")
+        if value is None:
+            return json.dumps({"error": "set_value requires `value`"})
+        res = backend.set_value(value=str(value), element=args.get("element"))
+        return _maybe_follow_capture(backend, res, capture_after)
+
     return json.dumps({"error": f"unknown action {action!r}"})
 
 
@@ -416,12 +423,17 @@ def _capture_response(cap: CaptureResult) -> Any:
     summary = "\n".join(summary_lines)
 
     if cap.png_b64 and cap.mode != "ax":
+        # Detect actual image format from base64 magic bytes so the MIME type
+        # matches what the data contains (cua-driver may return JPEG or PNG).
+        # JPEG: base64 starts with /9j/   PNG: starts with iVBOR
+        _b64_prefix = cap.png_b64[:8]
+        _mime = "image/jpeg" if _b64_prefix.startswith("/9j/") else "image/png"
         return {
             "_multimodal": True,
             "content": [
                 {"type": "text", "text": summary},
                 {"type": "image_url",
-                 "image_url": {"url": f"data:image/png;base64,{cap.png_b64}"}},
+                 "image_url": {"url": f"data:{_mime};base64,{cap.png_b64}"}},
             ],
             "text_summary": summary,
             "meta": {"mode": cap.mode, "width": cap.width, "height": cap.height,

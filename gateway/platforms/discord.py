@@ -3212,7 +3212,7 @@ class DiscordAdapter(BasePlatformAdapter):
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if not (channel_ids & allowed_channels):
+                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
 

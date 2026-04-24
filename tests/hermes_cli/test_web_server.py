@@ -1707,6 +1707,7 @@ class TestPtyWebSocket:
         # Avoid exec'ing the actual TUI in tests: every test below installs
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
 
@@ -1718,6 +1719,15 @@ class TestPtyWebSocket:
 
         q = {"token": tok, **params}
         return f"/api/pty?{urlencode(q)}"
+
+    def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
+        monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with self.client.websocket_connect(self._url()):
+                pass
+        assert exc.value.code == 4403
 
     def test_rejects_missing_token(self, monkeypatch):
         monkeypatch.setattr(

@@ -46,6 +46,7 @@ import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@/hooks/useToast";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -258,6 +259,7 @@ function SessionRow({
   isExpanded,
   onToggle,
   onDelete,
+  resumeInChatEnabled,
 }: {
   session: SessionInfo;
   snippet?: string;
@@ -265,6 +267,7 @@ function SessionRow({
   isExpanded: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  resumeInChatEnabled: boolean;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -350,19 +353,21 @@ function SessionRow({
           <Badge variant="outline" className="text-[10px]">
             {session.source ?? "local"}
           </Badge>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-success"
-            aria-label={t.sessions.resumeInChat}
-            title={t.sessions.resumeInChat}
-            onClick={(e) => {
-              e.stopPropagation();
-              navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
-            }}
-          >
-            <Play className="h-3.5 w-3.5" />
-          </Button>
+          {resumeInChatEnabled && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-success"
+              aria-label={t.sessions.resumeInChat}
+              title={t.sessions.resumeInChat}
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+              }}
+            >
+              <Play className="h-3.5 w-3.5" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -422,6 +427,7 @@ export default function SessionsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
+  const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
 
   useLayoutEffect(() => {
     if (loading) {
@@ -786,6 +792,7 @@ export default function SessionsPage() {
                   setExpandedId((prev) => (prev === s.id ? null : s.id))
                 }
                 onDelete={() => sessionDelete.requestDelete(s.id)}
+                resumeInChatEnabled={resumeInChatEnabled}
               />
             ))}
           </div>

@@ -542,6 +542,7 @@ const sidebars: SidebarsConfig = {
         'guides/use-mcp-with-hermes',
         'guides/use-soul-with-hermes',
         'guides/use-voice-mode-with-hermes',
+        'guides/seedance-reference-to-video',
         'guides/build-a-hermes-plugin',
         'guides/automate-with-cron',
         'guides/automation-templates',

@@ -107,12 +107,14 @@ class TeeTransport:
         self._secondaries = secondaries
 
     def write(self, obj: dict) -> bool:
+        # Primary first so a slow sidecar (WS publisher) never delays Ink/stdio.
+        ok = self._primary.write(obj)
         for sec in self._secondaries:
             try:
                 sec.write(obj)
             except Exception:
                 pass
-        return self._primary.write(obj)
+        return ok
 
     def close(self) -> None:
         try:

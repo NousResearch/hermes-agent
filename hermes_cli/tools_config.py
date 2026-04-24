@@ -373,7 +373,7 @@ TOOL_CATEGORIES = {
                     {"key": "HERMES_SPOTIFY_CLIENT_ID", "prompt": "Spotify app client_id",
                      "url": "https://developer.spotify.com/dashboard"},
                     {"key": "HERMES_SPOTIFY_REDIRECT_URI", "prompt": "Redirect URI (must be allow-listed in your Spotify app)",
-                     "default": "http://127.0.0.1:8888/callback"},
+                     "default": "http://127.0.0.1:43827/spotify/callback"},
                 ],
             },
         ],

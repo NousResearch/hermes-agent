@@ -86,3 +86,53 @@ def test_auth_spotify_status_command_reports_logged_in(capsys, monkeypatch: pyte
     output = capsys.readouterr().out
     assert "spotify: logged in" in output
     assert "client_id: spotify-client" in output
+
+
+
+def test_spotify_interactive_setup_persists_client_id(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    """The wizard writes HERMES_SPOTIFY_CLIENT_ID to .env and returns the value."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda prompt="": "wizard-client-123")
+    # Prevent actually opening the browser during tests.
+    monkeypatch.setattr(auth_mod, "webbrowser", SimpleNamespace(open=lambda *_a, **_k: False))
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: True)
+
+    result = auth_mod._spotify_interactive_setup(
+        redirect_uri_hint=auth_mod.DEFAULT_SPOTIFY_REDIRECT_URI,
+    )
+    assert result == "wizard-client-123"
+
+    env_path = tmp_path / ".env"
+    assert env_path.exists()
+    env_text = env_path.read_text()
+    assert "HERMES_SPOTIFY_CLIENT_ID=wizard-client-123" in env_text
+    # Default redirect URI should NOT be persisted.
+    assert "HERMES_SPOTIFY_REDIRECT_URI" not in env_text
+
+    # Docs URL should appear in wizard output so users can find the guide.
+    output = capsys.readouterr().out
+    assert auth_mod.SPOTIFY_DOCS_URL in output
+
+
+def test_spotify_interactive_setup_empty_aborts(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty input aborts cleanly instead of persisting an empty client_id."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    monkeypatch.setattr(auth_mod, "webbrowser", SimpleNamespace(open=lambda *_a, **_k: False))
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: True)
+
+    with pytest.raises(SystemExit):
+        auth_mod._spotify_interactive_setup(
+            redirect_uri_hint=auth_mod.DEFAULT_SPOTIFY_REDIRECT_URI,
+        )
+
+    env_path = tmp_path / ".env"
+    if env_path.exists():
+        assert "HERMES_SPOTIFY_CLIENT_ID" not in env_path.read_text()

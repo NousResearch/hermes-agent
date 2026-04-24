@@ -126,6 +126,20 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+# GPT-5.5 is currently exposed through ChatGPT/Codex with a smaller effective
+# agent-usable window than the larger native/advertised GPT-5 family windows.
+# Keep compaction and preflight budgeting fail-closed until a larger window is
+# explicitly verified and configured.
+OPENAI_CODEX_GPT55_EFFECTIVE_CONTEXT = 272_000
+
+
+def _is_openai_codex_gpt55(model: str, provider: str = "", base_url: str = "") -> bool:
+    model_lower = (model or "").strip().lower()
+    if model_lower not in {"gpt-5.5", "gpt-5.5-codex"}:
+        return False
+    provider_lower = (provider or "").strip().lower()
+    return provider_lower == "openai-codex" or base_url_host_matches(base_url, "chatgpt.com")
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -146,8 +160,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenAI — GPT-5 family (most have 400k; specific overrides first)
     # Source: https://developers.openai.com/api/docs/models
     # GPT-5.5 (launched Apr 23 2026). 400k is the fallback for providers we
-    # can't probe live. ChatGPT Codex OAuth actually caps lower (272k as of
-    # Apr 2026) and is resolved via _resolve_codex_oauth_context_length().
+    # can't probe live. ChatGPT/Codex OAuth is guarded separately at 272k until
+    # a larger effective window is explicitly verified.
     "gpt-5.5": 400000,
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
@@ -1237,6 +1251,11 @@ def get_model_context_length(
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
+
+    # GPT-5.5 on ChatGPT/Codex currently has a 272k effective cap for agent
+    # budgeting even if cache/discovery sources advertise a larger native window.
+    if _is_openai_codex_gpt55(model, provider=provider, base_url=base_url):
+        return OPENAI_CODEX_GPT55_EFFECTIVE_CONTEXT
 
     # 1. Check persistent cache (model+provider)
     if base_url:

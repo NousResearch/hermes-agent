@@ -244,9 +244,9 @@ class TestCodexOAuthContextLength:
                     "(models.dev leakage?)"
                 )
 
-    def test_live_probe_overrides_fallback(self):
+    def test_live_probe_overrides_fallback_for_non_gpt55_codex_models(self):
         """When a token is provided, the live /models probe is preferred
-        and its context_window drives the result."""
+        for Codex models that do not have an explicit temporary cap."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -273,7 +273,7 @@ class TestCodexOAuthContextLength:
                 api_key="fake-token",
                 provider="openai-codex",
             )
-        assert ctx_55 == 300_000
+        assert ctx_55 == 272_000
         assert ctx_54 == 400_000
 
     def test_probe_failure_falls_back_to_hardcoded(self):
@@ -319,12 +319,10 @@ class TestCodexOAuthContextLength:
             "leaked outside openai-codex provider"
         )
 
-    def test_stale_codex_cache_over_400k_is_invalidated(self, tmp_path, monkeypatch):
-        """Pre-PR #14935 builds cached gpt-5.5 at 1.05M (from models.dev)
-        before the Codex-aware branch existed. Upgrading users keep that
-        stale entry on disk and the cache-first lookup returns it forever.
-        Codex OAuth caps at 272k for every slug, so any cached Codex
-        entry >= 400k must be dropped and re-resolved via the live probe.
+    def test_stale_codex_cache_over_400k_is_bypassed_by_gpt55_cap(self, tmp_path, monkeypatch):
+        """Pre-PR builds may have cached gpt-5.5 at 1.05M from catalog
+        metadata. The explicit GPT-5.5 Codex cap must bypass both stale cache
+        and live probe metadata so compaction stays fail-closed at 272k.
         """
         from agent import model_metadata as mm
 
@@ -341,13 +339,7 @@ class TestCodexOAuthContextLength:
             other_key: 128_000,     # unrelated, must survive
         }}))
 
-        fake_response = MagicMock()
-        fake_response.status_code = 200
-        fake_response.json.return_value = {
-            "models": [{"slug": "gpt-5.5", "context_window": 272_000}]
-        }
-
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata.requests.get") as mock_get, \
              patch("agent.model_metadata.save_context_length") as mock_save:
             ctx = mm.get_model_context_length(
                 model="gpt-5.5",
@@ -356,12 +348,12 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
 
-        assert ctx == 272_000, f"Stale entry should have been re-resolved to 272k, got {ctx}"
-        # Live save was called with the fresh value
-        mock_save.assert_called_with("gpt-5.5", base_url, 272_000)
-        # The stale entry was removed from disk; unrelated entries survived
+        assert ctx == 272_000, f"Stale entry should be bypassed by GPT-5.5 cap, got {ctx}"
+        mock_get.assert_not_called()
+        mock_save.assert_not_called()
+        # The stale entry may remain on disk, but it is no longer consulted for GPT-5.5 Codex.
         remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
-        assert stale_key not in remaining, "Stale entry was not invalidated from the cache file"
+        assert remaining.get(stale_key) == 1_050_000
         assert remaining.get(other_key) == 128_000, "Unrelated cache entries must not be touched"
 
     def test_fresh_codex_cache_under_400k_is_respected(self, tmp_path, monkeypatch):
@@ -428,6 +420,25 @@ class TestGetModelContextLength:
     def test_fallback_to_defaults(self, mock_fetch):
         mock_fetch.return_value = {}
         assert get_model_context_length("anthropic/claude-sonnet-4") == 200000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.models_dev.lookup_models_dev_context")
+    @patch("agent.model_metadata.get_cached_context_length")
+    def test_gpt55_codex_uses_safe_effective_context_cap(self, mock_cache, mock_models_dev, mock_fetch):
+        """GPT-5.5 Codex must fail closed to the current 272k effective cap.
+
+        Discovery/cache sources may advertise a larger native context window;
+        compaction should not budget against that until explicitly lifted.
+        """
+        mock_cache.return_value = 1_050_000
+        mock_models_dev.return_value = 1_050_000
+        mock_fetch.return_value = {"gpt-5.5": {"context_length": 1_050_000}}
+
+        assert get_model_context_length(
+            "gpt-5.5",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+        ) == 272_000
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_unknown_model_returns_first_probe_tier(self, mock_fetch):

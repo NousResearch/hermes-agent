@@ -11312,6 +11312,11 @@ def main():
         action="store_true",
         help="Skip warn-only dependency preflight after creating the job",
     )
+    cron_create.add_argument(
+        "--strict-preflight",
+        action="store_true",
+        help="Exit non-zero after create if dependency preflight has hard failures",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -11384,6 +11389,11 @@ def main():
         "--skip-preflight",
         action="store_true",
         help="Skip warn-only dependency preflight after editing the job",
+    )
+    cron_edit.add_argument(
+        "--strict-preflight",
+        action="store_true",
+        help="Exit non-zero after edit if dependency preflight has hard failures",
     )
 
     # lifecycle actions

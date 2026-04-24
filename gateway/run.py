@@ -308,6 +308,15 @@ def _normalize_whatsapp_identifier(value: str) -> str:
     )
 
 
+def _resolve_pdf_ingest_scripts_dir() -> Path:
+    """Return the repo skill scripts directory for KB PDF ingest, with legacy fallback."""
+    project_root = Path(__file__).resolve().parents[1]
+    repo_skill_dir = project_root / "skills" / "productivity" / "docling-kb-pdf-ingest" / "scripts"
+    if repo_skill_dir.exists():
+        return repo_skill_dir
+    return _hermes_home / "scripts"
+
+
 def _expand_whatsapp_auth_aliases(identifier: str) -> set:
     """Resolve WhatsApp phone/LID aliases using bridge session mapping files."""
     normalized = _normalize_whatsapp_identifier(identifier)
@@ -3127,6 +3136,79 @@ class GatewayRunner:
             return "ignore"
 
         return "pair"
+
+    @staticmethod
+    def _is_auto_ingest_pdf_drop(event: MessageEvent, source: SessionSource) -> bool:
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return False
+        if event.message_type != MessageType.DOCUMENT or not event.media_urls:
+            return False
+        for i, path in enumerate(event.media_urls):
+            mtype = event.media_types[i] if i < len(event.media_types) else ""
+            if mtype == "application/pdf" or str(path).lower().endswith(".pdf"):
+                return True
+        return False
+
+    async def _auto_ingest_pdf_drop(self, event: MessageEvent, source: SessionSource) -> Optional[str]:
+        if not self._is_auto_ingest_pdf_drop(event, source):
+            return None
+
+        pdf_path = None
+        for i, path in enumerate(event.media_urls):
+            mtype = event.media_types[i] if i < len(event.media_types) else ""
+            if mtype == "application/pdf" or str(path).lower().endswith(".pdf"):
+                pdf_path = path
+                break
+        if not pdf_path:
+            return None
+
+        adapter = self.adapters.get(source.platform)
+        metadata = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+        if adapter:
+            await adapter.send(source.chat_id, "Received PDF. Staging and parsing now.", metadata=metadata)
+
+        def _run_ingest() -> dict[str, Any]:
+            scripts_dir = str(_resolve_pdf_ingest_scripts_dir())
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from telegram_pdf_drop_ingest import ingest_telegram_pdf
+            return ingest_telegram_pdf(
+                cached_path=Path(pdf_path),
+                chat_id=str(source.chat_id or ""),
+                message_id=str(event.message_id or ""),
+                original_filename=Path(pdf_path).name,
+                caption=event.text or "",
+            )
+
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(None, _run_ingest)
+        except Exception as exc:
+            logger.exception("Telegram PDF auto-ingest failed for %s", pdf_path)
+            return f"PDF received, but ingest failed: {exc}"
+
+        status = result.get("status", "unknown")
+        parser_selected = result.get("parser_selected", "unknown")
+        route_reason = result.get("route_reason", "unknown")
+        record_id = result.get("record_id") or result.get("source_id") or "unknown"
+        staged_path = result.get("staged_path") or result.get("staging_path") or pdf_path
+
+        if status == "skipped_duplicate":
+            return (
+                f"PDF ingested already.\n"
+                f"record_id: {record_id}\n"
+                f"parser: {parser_selected}\n"
+                f"route_reason: {route_reason}\n"
+                f"staged_path: {staged_path}"
+            )
+
+        return (
+            f"PDF received and ingested.\n"
+            f"record_id: {record_id}\n"
+            f"parser: {parser_selected}\n"
+            f"route_reason: {route_reason}\n"
+            f"staged_path: {staged_path}"
+        )
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -4046,6 +4128,10 @@ class GatewayRunner:
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview,
         )
+
+        _pdf_auto_ingest_result = await self._auto_ingest_pdf_drop(event, source)
+        if _pdf_auto_ingest_result is not None:
+            return _pdf_auto_ingest_result
 
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)

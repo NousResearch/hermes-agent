@@ -26,6 +26,7 @@ import hmac
 import json
 import logging
 import os
+import queue as _queue
 import socket as _socket
 import re
 import sqlite3
@@ -53,6 +54,12 @@ from tools.memory_tool import MemoryStore
 from tools.skills_tool import skill_view, skills_categories, skills_list
 
 logger = logging.getLogger(__name__)
+
+CHAT_STREAM_HEARTBEAT_SECONDS = 15.0
+
+
+def _encode_dashboard_sse(event_name: str, payload: Dict[str, Any]) -> bytes:
+    return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
@@ -1511,7 +1518,22 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_event_loop()
         try:
             while True:
-                frame = await loop.run_in_executor(None, stream_q.get)
+                try:
+                    frame = await loop.run_in_executor(
+                        None,
+                        lambda: stream_q.get(timeout=CHAT_STREAM_HEARTBEAT_SECONDS),
+                    )
+                except _queue.Empty:
+                    if not stream_state.get("active"):
+                        break
+                    await response.write(_encode_dashboard_sse("heartbeat", {
+                        "stream_id": stream_id,
+                        "session_id": stream_state.get("session_id"),
+                        "run_id": stream_state.get("run_id"),
+                        "active": True,
+                        "elapsed_seconds": int(time.time() - float(stream_state.get("created_at") or time.time())),
+                    }))
+                    continue
                 if frame is None:
                     break
                 await response.write(frame)

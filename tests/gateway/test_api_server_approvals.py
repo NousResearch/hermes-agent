@@ -1,5 +1,6 @@
 """Approval-gate coverage for the API-server dashboard chat routes."""
 
+import asyncio
 import json
 import time
 from unittest.mock import patch
@@ -168,6 +169,41 @@ async def test_session_chat_start_returns_stream_id_that_can_be_attached():
             final_status = await cli.get(f"/api/chat/stream/status?stream_id={stream_id}")
             final_payload = await final_status.json()
             assert final_payload["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_backend_owned_stream_sends_heartbeat_while_agent_is_quiet(monkeypatch):
+    import threading
+    from gateway.platforms import api_server as api_server_module
+
+    monkeypatch.setattr(api_server_module, "CHAT_STREAM_HEARTBEAT_SECONDS", 0.05, raising=False)
+    adapter = _make_adapter()
+    app = _create_app(adapter)
+    release_event = threading.Event()
+    fake_agent = _SlowFakeAgent(release_event)
+
+    with (
+        patch.object(adapter, "_get_session_db", return_value=_FakeSessionDb()),
+        patch.object(adapter, "_create_agent", return_value=fake_agent),
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            started = await cli.post(
+                "/api/sessions/sess-heartbeat/chat/start",
+                json={"message": "run quietly for a while"},
+            )
+            stream_id = (await started.json())["stream_id"]
+            attached = await cli.get(f"/api/chat/stream?stream_id={stream_id}")
+
+            blocks = []
+            try:
+                for _ in range(4):
+                    block = await asyncio.wait_for(attached.content.readuntil(b"\n\n"), timeout=1)
+                    blocks.append(block.decode())
+            finally:
+                release_event.set()
+                attached.close()
+
+    assert any("event: heartbeat" in block for block in blocks)
 
 
 @pytest.mark.asyncio

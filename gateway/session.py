@@ -241,6 +241,19 @@ def build_session_context_prompt(
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
+    lines.append("")
+    lines.append("**Runtime self-awareness:** Conversation sessions are isolated, but you have a shared runtime.")
+    lines.append(
+        "When the user asks what you are doing, why you posted or messaged something, "
+        "what sessions are active, or whether a cron or another session caused behavior, "
+        "call `self_state` before answering."
+    )
+    lines.append(
+        "`self_state` is the first source for this runtime evidence. Do not inspect "
+        "~/.hermes files, session DBs, logs, or cron files with terminal as a substitute "
+        "until after `self_state` has been tried and found insufficient."
+    )
+
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
     # when group_sessions_per_user=False), multiple users contribute to the same

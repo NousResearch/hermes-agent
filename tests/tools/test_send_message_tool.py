@@ -65,6 +65,38 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_policy_block_skips_send(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        from gateway.agent_actor import GateDecision
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.agent_actor.evaluate_send_message_policy", return_value=GateDecision(
+                 allowed=False,
+                 policy="autonomous_public_rebroadcast_guard",
+                 reason="blocked",
+                 event_id="evt-blocked",
+             )), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:1495468809216327702",
+                        "message": "market digest",
+                    }
+                )
+            )
+
+        assert result["blocked"] is True
+        assert result["policy"] == "autonomous_public_rebroadcast_guard"
+        send_mock.assert_not_awaited()
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

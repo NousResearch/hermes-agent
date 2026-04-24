@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
@@ -31,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -91,10 +92,115 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS agent_identities (
+    person_id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    platform_user_id TEXT NOT NULL,
+    display_name TEXT,
+    authority TEXT,
+    payload_json TEXT,
+    first_seen_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    UNIQUE(platform, platform_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    session_id TEXT,
+    session_key TEXT,
+    actor_id TEXT,
+    actor_kind TEXT,
+    source TEXT,
+    person_id TEXT,
+    sender_user_id TEXT,
+    sender_name TEXT,
+    chat_type TEXT,
+    audience_type TEXT,
+    event_type TEXT NOT NULL,
+    event_subtype TEXT,
+    status TEXT,
+    parent_event_id TEXT,
+    root_event_id TEXT,
+    correlation_id TEXT,
+    platform TEXT,
+    platform_chat_id TEXT,
+    platform_thread_id TEXT,
+    platform_message_id TEXT,
+    platform_update_id TEXT,
+    tool_name TEXT,
+    tool_call_id TEXT,
+    directive_id TEXT,
+    supersedes_directive_id TEXT,
+    content TEXT,
+    payload_json TEXT,
+    error_json TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS agent_event_links (
+    from_event_id TEXT NOT NULL,
+    to_event_id TEXT NOT NULL,
+    link_type TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (from_event_id, to_event_id, link_type)
+);
+
+CREATE TABLE IF NOT EXISTS agent_directives (
+    directive_id TEXT PRIMARY KEY,
+    directive_scope TEXT NOT NULL,
+    directive_key TEXT NOT NULL,
+    session_id TEXT,
+    session_key TEXT,
+    actor_id TEXT,
+    issuer_person_id TEXT,
+    issuer_platform TEXT,
+    issuer_user_id TEXT,
+    status TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_event_id TEXT NOT NULL,
+    supersedes_directive_id TEXT,
+    superseded_by_directive_id TEXT,
+    directive_type TEXT,
+    priority INTEGER DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    superseded_at REAL,
+    completed_at REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_agent_identities_platform_user
+ON agent_identities(platform, platform_user_id);
+CREATE INDEX IF NOT EXISTS idx_agent_events_session_seq
+ON agent_events(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_agent_events_session_type_created
+ON agent_events(session_id, event_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_correlation
+ON agent_events(correlation_id, seq);
+CREATE INDEX IF NOT EXISTS idx_agent_events_parent
+ON agent_events(parent_event_id);
+CREATE INDEX IF NOT EXISTS idx_agent_events_root
+ON agent_events(root_event_id, seq);
+CREATE INDEX IF NOT EXISTS idx_agent_events_platform_message
+ON agent_events(platform, platform_chat_id, platform_thread_id, platform_message_id);
+CREATE INDEX IF NOT EXISTS idx_agent_events_tool_call
+ON agent_events(tool_call_id);
+CREATE INDEX IF NOT EXISTS idx_agent_events_directive
+ON agent_events(directive_id);
+CREATE INDEX IF NOT EXISTS idx_agent_events_person
+ON agent_events(person_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_event_links_to
+ON agent_event_links(to_event_id, link_type);
+CREATE INDEX IF NOT EXISTS idx_agent_directives_scope
+ON agent_directives(directive_scope, directive_key, active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_directives_one_active
+ON agent_directives(directive_scope, directive_key, COALESCE(session_key, ''), COALESCE(actor_id, ''))
+WHERE active = 1;
 """
 
 FTS_SQL = """
@@ -356,6 +462,11 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                # v9: additive agent-actor event log. Tables and indexes are
+                # created by SCHEMA_SQL above; the version bump records that
+                # this database supports the actor/directive APIs.
+                cursor.execute("UPDATE schema_version SET version = 9")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1019,6 +1130,383 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    # =========================================================================
+    # Agent actor event log
+    # =========================================================================
+
+    @staticmethod
+    def _json_dumps_or_none(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            return json.dumps(str(value), ensure_ascii=False)
+
+    def upsert_agent_identity(
+        self,
+        *,
+        platform: str,
+        platform_user_id: str,
+        display_name: str = "",
+        authority: str = "",
+        payload: Optional[Dict[str, Any]] = None,
+        person_id: Optional[str] = None,
+    ) -> str:
+        """Create/update a per-platform identity and return its person_id."""
+        platform = str(platform or "").strip()
+        platform_user_id = str(platform_user_id or "").strip()
+        if not platform or not platform_user_id:
+            raise ValueError("platform and platform_user_id are required")
+        person_id = person_id or f"{platform}:{platform_user_id}"
+        now = time.time()
+        payload_json = self._json_dumps_or_none(payload)
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO agent_identities
+                   (person_id, platform, platform_user_id, display_name, authority,
+                    payload_json, first_seen_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(platform, platform_user_id) DO UPDATE SET
+                     display_name = excluded.display_name,
+                     authority = excluded.authority,
+                     payload_json = excluded.payload_json,
+                     last_seen_at = excluded.last_seen_at""",
+                (
+                    person_id,
+                    platform,
+                    platform_user_id,
+                    display_name,
+                    authority,
+                    payload_json,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT person_id FROM agent_identities WHERE platform = ? AND platform_user_id = ?",
+                (platform, platform_user_id),
+            ).fetchone()
+            return row["person_id"] if isinstance(row, sqlite3.Row) else row[0]
+
+        return self._execute_write(_do)
+
+    def append_agent_event(
+        self,
+        *,
+        event_type: str,
+        event_subtype: str = "",
+        status: str = "",
+        event_id: Optional[str] = None,
+        session_id: str = "",
+        session_key: str = "",
+        actor_id: str = "main",
+        actor_kind: str = "agent",
+        source: str = "",
+        person_id: str = "",
+        sender_user_id: str = "",
+        sender_name: str = "",
+        chat_type: str = "",
+        audience_type: str = "",
+        parent_event_id: str = "",
+        root_event_id: str = "",
+        correlation_id: str = "",
+        platform: str = "",
+        platform_chat_id: str = "",
+        platform_thread_id: str = "",
+        platform_message_id: str = "",
+        platform_update_id: str = "",
+        tool_name: str = "",
+        tool_call_id: str = "",
+        directive_id: str = "",
+        supersedes_directive_id: str = "",
+        content: str = "",
+        payload: Optional[Dict[str, Any]] = None,
+        error: Optional[Dict[str, Any]] = None,
+        created_at: Optional[float] = None,
+    ) -> str:
+        """Append one durable agent-level event. Duplicate event_id is idempotent."""
+        event_id = event_id or uuid.uuid4().hex
+        created_at = float(created_at or time.time())
+        root_event_id = root_event_id or parent_event_id or event_id
+        payload_json = self._json_dumps_or_none(payload)
+        error_json = self._json_dumps_or_none(error)
+
+        def _do(conn):
+            conn.execute(
+                """INSERT OR IGNORE INTO agent_events (
+                    event_id, session_id, session_key, actor_id, actor_kind, source,
+                    person_id, sender_user_id, sender_name, chat_type, audience_type,
+                    event_type, event_subtype, status, parent_event_id, root_event_id,
+                    correlation_id, platform, platform_chat_id, platform_thread_id,
+                    platform_message_id, platform_update_id, tool_name, tool_call_id,
+                    directive_id, supersedes_directive_id, content, payload_json,
+                    error_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    session_id or None,
+                    session_key or None,
+                    actor_id or None,
+                    actor_kind or None,
+                    source or None,
+                    person_id or None,
+                    sender_user_id or None,
+                    sender_name or None,
+                    chat_type or None,
+                    audience_type or None,
+                    event_type,
+                    event_subtype or None,
+                    status or None,
+                    parent_event_id or None,
+                    root_event_id or None,
+                    correlation_id or None,
+                    platform or None,
+                    platform_chat_id or None,
+                    platform_thread_id or None,
+                    platform_message_id or None,
+                    platform_update_id or None,
+                    tool_name or None,
+                    tool_call_id or None,
+                    directive_id or None,
+                    supersedes_directive_id or None,
+                    content or None,
+                    payload_json,
+                    error_json,
+                    created_at,
+                    created_at,
+                ),
+            )
+            return event_id
+
+        return self._execute_write(_do)
+
+    def link_agent_events(self, from_event_id: str, to_event_id: str, link_type: str) -> None:
+        """Record a causal relationship between two agent events."""
+        if not from_event_id or not to_event_id or not link_type:
+            return
+
+        def _do(conn):
+            conn.execute(
+                """INSERT OR IGNORE INTO agent_event_links
+                   (from_event_id, to_event_id, link_type, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (from_event_id, to_event_id, link_type, time.time()),
+            )
+
+        self._execute_write(_do)
+
+    def create_or_replace_agent_directive(
+        self,
+        *,
+        directive_scope: str,
+        directive_key: str,
+        directive_type: str,
+        payload: Dict[str, Any],
+        session_id: str = "",
+        session_key: str = "",
+        actor_id: str = "main",
+        issuer_person_id: str = "",
+        issuer_platform: str = "",
+        issuer_user_id: str = "",
+        created_event_id: str = "",
+        priority: int = 0,
+    ) -> str:
+        """Create an active directive, superseding any active equivalent."""
+        directive_id = uuid.uuid4().hex
+        created_event_id = created_event_id or uuid.uuid4().hex
+        now = time.time()
+        payload_json = self._json_dumps_or_none(payload) or "{}"
+
+        def _do(conn):
+            old = conn.execute(
+                """SELECT directive_id, created_event_id FROM agent_directives
+                   WHERE directive_scope = ? AND directive_key = ?
+                     AND COALESCE(session_key, '') = COALESCE(?, '')
+                     AND COALESCE(actor_id, '') = COALESCE(?, '')
+                     AND active = 1
+                   ORDER BY created_at DESC LIMIT 1""",
+                (directive_scope, directive_key, session_key or None, actor_id or None),
+            ).fetchone()
+            old_id = old["directive_id"] if old else None
+            old_event_id = old["created_event_id"] if old else None
+
+            conn.execute(
+                """INSERT OR IGNORE INTO agent_events (
+                    event_id, session_id, session_key, actor_id, actor_kind, source,
+                    person_id, sender_user_id, event_type, event_subtype, status,
+                    platform, directive_id, supersedes_directive_id, content,
+                    payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    created_event_id,
+                    session_id or None,
+                    session_key or None,
+                    actor_id or None,
+                    "user",
+                    issuer_platform or None,
+                    issuer_person_id or None,
+                    issuer_user_id or None,
+                    "directive",
+                    "create" if old_id is None else "supersede",
+                    "active",
+                    issuer_platform or None,
+                    directive_id,
+                    old_id,
+                    payload.get("text") if isinstance(payload, dict) else None,
+                    payload_json,
+                    now,
+                    now,
+                ),
+            )
+
+            if old_id:
+                conn.execute(
+                    """UPDATE agent_directives
+                       SET active = 0, status = 'superseded',
+                           superseded_by_directive_id = ?, superseded_at = ?
+                       WHERE directive_id = ?""",
+                    (directive_id, now, old_id),
+                )
+                if old_event_id:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO agent_event_links
+                           (from_event_id, to_event_id, link_type, created_at)
+                           VALUES (?, ?, 'supersedes', ?)""",
+                        (created_event_id, old_event_id, now),
+                    )
+
+            conn.execute(
+                """INSERT INTO agent_directives (
+                    directive_id, directive_scope, directive_key, session_id,
+                    session_key, actor_id, issuer_person_id, issuer_platform,
+                    issuer_user_id, status, active, created_event_id,
+                    supersedes_directive_id, directive_type, priority,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, ?, ?)""",
+                (
+                    directive_id,
+                    directive_scope,
+                    directive_key,
+                    session_id or None,
+                    session_key or None,
+                    actor_id or None,
+                    issuer_person_id or None,
+                    issuer_platform or None,
+                    issuer_user_id or None,
+                    created_event_id,
+                    old_id,
+                    directive_type,
+                    int(priority or 0),
+                    payload_json,
+                    now,
+                ),
+            )
+            return directive_id
+
+        return self._execute_write(_do)
+
+    def list_active_agent_directives(
+        self,
+        *,
+        actor_id: str = "main",
+        directive_type: str = "",
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Return active directives for state packet/action policy use."""
+        with self._lock:
+            if directive_type:
+                cursor = self._conn.execute(
+                    """SELECT * FROM agent_directives
+                       WHERE active = 1
+                         AND COALESCE(actor_id, '') = COALESCE(?, '')
+                         AND directive_type = ?
+                       ORDER BY priority DESC, created_at DESC LIMIT ?""",
+                    (actor_id or None, directive_type, int(limit)),
+                )
+            else:
+                cursor = self._conn.execute(
+                    """SELECT * FROM agent_directives
+                       WHERE active = 1
+                         AND COALESCE(actor_id, '') = COALESCE(?, '')
+                       ORDER BY priority DESC, created_at DESC LIMIT ?""",
+                    (actor_id or None, int(limit)),
+                )
+            rows = cursor.fetchall()
+        directives = []
+        for row in rows:
+            item = dict(row)
+            if item.get("payload_json"):
+                try:
+                    item["payload"] = json.loads(item["payload_json"])
+                except Exception:
+                    item["payload"] = {}
+            directives.append(item)
+        return directives
+
+    def list_recent_agent_events(
+        self,
+        *,
+        event_type: str = "",
+        session_key: str = "",
+        person_id: str = "",
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Return recent agent events ordered newest-first."""
+        clauses = []
+        params: List[Any] = []
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if session_key:
+            clauses.append("session_key = ?")
+            params.append(session_key)
+        if person_id:
+            clauses.append("person_id = ?")
+            params.append(person_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT * FROM agent_events {where} ORDER BY seq DESC LIMIT ?",
+                params,
+            )
+            rows = cursor.fetchall()
+        events = []
+        for row in rows:
+            item = dict(row)
+            for key in ("payload_json", "error_json"):
+                if item.get(key):
+                    try:
+                        item[key[:-5]] = json.loads(item[key])
+                    except Exception:
+                        pass
+            events.append(item)
+        return events
+
+    def get_agent_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch one agent event by id."""
+        if not event_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM agent_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        for key in ("payload_json", "error_json"):
+            if item.get(key):
+                try:
+                    item[key[:-5]] = json.loads(item[key])
+                except Exception:
+                    pass
+        return item
+
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by timestamp."""
         with self._lock:
@@ -1588,4 +2076,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

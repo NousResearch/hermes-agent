@@ -402,6 +402,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        try:
+            from gateway.agent_actor import evaluate_send_message_policy
+
+            decision = evaluate_send_message_policy(
+                target_platform=platform_name,
+                target_chat_id=chat_id,
+                target_thread_id=thread_id or "",
+                message=cleaned_delivery_content,
+            )
+            if not decision.allowed:
+                msg = f"delivery blocked by {decision.policy}: {decision.reason}"
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+        except Exception as e:
+            logger.debug("Job '%s': outbound policy check failed open: %s", job["id"], e)
+
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
@@ -881,6 +898,34 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        # Apply ``model.routes`` for this cron fire. Context is always
+        # ``{platform: cron, source_kind: cron}`` — cron jobs don't carry
+        # per-source identity. Silent fallback on exception.
+        try:
+            from agent.smart_model_routing import apply_route
+            _cron_runtime = {
+                "api_key": runtime.get("api_key"),
+                "base_url": runtime.get("base_url"),
+                "provider": runtime.get("provider"),
+                "api_mode": runtime.get("api_mode"),
+                "command": runtime.get("command"),
+                "args": list(runtime.get("args") or []),
+            }
+            _cron_model_config = _cfg.get("model") if isinstance(_cfg, dict) else None
+            if not isinstance(_cron_model_config, dict):
+                _cron_model_config = None
+            model, _cron_runtime = apply_route(
+                model, _cron_runtime, _cron_model_config,
+                {"platform": "cron", "source_kind": "cron"},
+            )
+            # Fold any routed overrides back into the shared ``runtime`` dict
+            # so downstream AIAgent construction picks them up.
+            for _k in ("api_key", "base_url", "provider", "api_mode", "command", "args"):
+                if _cron_runtime.get(_k) is not None:
+                    runtime[_k] = _cron_runtime[_k]
+        except Exception as _exc:
+            logger.debug("Job '%s': apply_route failed (ignored): %s", job_id, _exc)
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None

@@ -1047,6 +1047,80 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _classify_source_kind(self, source) -> str:
+        """Classify an inbound source for ``model.routes`` ``source_kind`` match.
+
+        Returns one of ``"owner"``, ``"hub_peer"``, ``"stranger"``, or ``""``
+        when the source is absent/unclassifiable. Classification is coarse —
+        detail lives in config, not here.
+
+        * ``owner`` — DM whose chat_id matches a configured home channel.
+        * ``hub_peer`` — any inbound from the ``hub`` platform (detected by
+          platform-value string so no hard dependency on a ``Platform.HUB``
+          enum member).
+        * ``stranger`` — any other inbound.
+        """
+        if source is None:
+            return ""
+        platform = getattr(source, "platform", None)
+        if platform is None:
+            return ""
+
+        try:
+            if str(getattr(platform, "value", "")).lower() == "hub":
+                return "hub_peer"
+        except Exception:
+            pass
+
+        try:
+            from gateway.agent_actor import infer_platform_authority
+
+            if infer_platform_authority(source) == "owner":
+                return "owner"
+        except Exception:
+            pass
+
+        try:
+            cfg = getattr(self, "config", None)
+            get_hc = getattr(cfg, "get_home_channel", None) if cfg is not None else None
+            if callable(get_hc):
+                hc = get_hc(platform)
+                if hc is not None and getattr(source, "chat_type", None) == "dm":
+                    if str(getattr(source, "chat_id", "")) == str(getattr(hc, "chat_id", "")):
+                        return "owner"
+        except Exception:
+            pass
+
+        return "stranger"
+
+    # Transports where inbound events carry caller-supplied fields and the
+    # platform doesn't enforce sender identity — user_id is suppressed from
+    # the routing context for these so a spoofed value can't match a
+    # ``match: {user_id: ...}`` route.
+    _ROUTING_CTX_UNTRUSTED_IDENTITY = frozenset({"webhook", "api_server"})
+
+    def _build_routing_context(self, source) -> Dict[str, Any]:
+        """Build the context dict passed to ``apply_route`` for this source."""
+        if source is None:
+            return {}
+        platform = getattr(source, "platform", None)
+        platform_value = ""
+        try:
+            platform_value = str(getattr(platform, "value", "")).lower() if platform is not None else ""
+        except Exception:
+            platform_value = ""
+        context: Dict[str, Any] = {
+            "platform": platform_value,
+            "source_kind": self._classify_source_kind(source),
+        }
+        # Expose user_id so routes can match on per-sender identity — but
+        # only for trusted-identity transports (see class attribute above).
+        if platform_value and platform_value not in self._ROUTING_CTX_UNTRUSTED_IDENTITY:
+            uid = getattr(source, "user_id", None)
+            if uid:
+                context["user_id"] = str(uid)
+        return context
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -1118,6 +1192,25 @@ class GatewayRunner:
                     )
             except Exception:
                 pass
+
+        # Apply ``model.routes`` as the final layer. Stacks below session
+        # /model overrides (already applied above) and above base config.
+        # Supports legacy ``model.platforms.*`` and ``model.by_source.*``
+        # shorthand via the normalizer inside ``apply_route``. Silent
+        # fallback on exception — never blocks a turn.
+        try:
+            from agent.smart_model_routing import apply_route
+            model_config = None
+            if isinstance(user_config, dict):
+                _m = user_config.get("model")
+                if isinstance(_m, dict):
+                    model_config = _m
+            context = self._build_routing_context(source)
+            model, runtime_kwargs = apply_route(
+                model, runtime_kwargs, model_config, context,
+            )
+        except Exception as _exc:
+            logger.debug("apply_route failed (ignored): %s", _exc)
 
         return model, runtime_kwargs
 
@@ -4066,9 +4159,49 @@ class GatewayRunner:
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
+
+        inbound_event_id = ""
+        inbound_person_id = ""
+        inbound_authority = ""
+        actor_state_packet = ""
+        if self._session_db is not None:
+            try:
+                from gateway.agent_actor import (
+                    infer_platform_authority,
+                    maybe_record_directive_from_inbound,
+                    record_inbound_event,
+                )
+
+                inbound_authority = infer_platform_authority(source)
+                inbound_event_id, inbound_person_id = record_inbound_event(
+                    self._session_db,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    text=event.text or "",
+                    message_id=getattr(event, "message_id", "") or "",
+                    platform_update_id=str(getattr(event, "platform_update_id", "") or ""),
+                    authority=inbound_authority,
+                )
+                maybe_record_directive_from_inbound(
+                    self._session_db,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    inbound_event_id=inbound_event_id,
+                    person_id=inbound_person_id,
+                    text=event.text or "",
+                    authority=inbound_authority,
+                )
+            except Exception as _actor_exc:
+                logger.debug("Agent actor inbound recording failed: %s", _actor_exc)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(
+            context,
+            agent_event_id=inbound_event_id,
+            person_id=inbound_person_id,
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -4082,6 +4215,21 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        if self._session_db is not None:
+            try:
+                from gateway.agent_actor import build_state_packet
+
+                actor_state_packet = build_state_packet(
+                    self._session_db,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    inbound_event_id=inbound_event_id,
+                    person_id=inbound_person_id,
+                    authority=inbound_authority,
+                ).strip()
+            except Exception as _actor_exc:
+                logger.debug("Agent actor state packet failed: %s", _actor_exc)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -4516,6 +4664,7 @@ class GatewayRunner:
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
+                ephemeral_user_context=actor_state_packet or None,
                 history=history,
                 source=source,
                 session_id=session_entry.session_id,
@@ -4789,6 +4938,33 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+
+            if response and response.strip() != "NO_REPLY" and self._session_db is not None:
+                try:
+                    self._session_db.append_agent_event(
+                        event_type="outbound",
+                        event_subtype="reply",
+                        status="prepared",
+                        session_id=session_entry.session_id,
+                        session_key=session_key,
+                        actor_id="main",
+                        actor_kind="agent",
+                        source=source.platform.value if source.platform else "",
+                        person_id=inbound_person_id,
+                        sender_user_id=str(source.user_id or ""),
+                        sender_name=str(source.user_name or ""),
+                        parent_event_id=inbound_event_id,
+                        platform=source.platform.value if source.platform else "",
+                        platform_chat_id=str(source.chat_id or ""),
+                        platform_thread_id=str(source.thread_id or ""),
+                        content=(response or "").replace("\r", " ").replace("\n", " ")[:1000],
+                        payload={
+                            "api_calls": _api_calls,
+                            "response_time_seconds": round(_response_time, 3),
+                        },
+                    )
+                except Exception as _actor_exc:
+                    logger.debug("Agent actor outbound reply recording failed: %s", _actor_exc)
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
@@ -8203,7 +8379,13 @@ class GatewayRunner:
         finally:
             notify_path.unlink(missing_ok=True)
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(
+        self,
+        context: SessionContext,
+        *,
+        agent_event_id: str = "",
+        person_id: str = "",
+    ) -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -8217,10 +8399,13 @@ class GatewayRunner:
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
+            chat_type=context.source.chat_type or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            agent_event_id=agent_event_id,
+            person_id=person_id,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -9027,6 +9212,7 @@ class GatewayRunner:
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        ephemeral_user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -9088,7 +9274,10 @@ class GatewayRunner:
             if role in ("user", "assistant") and content:
                 api_messages.append({"role": role, "content": content})
 
-        api_messages.append({"role": "user", "content": message})
+        current_message = message
+        if ephemeral_user_context:
+            current_message = f"{ephemeral_user_context.strip()}\n\n{message}"
+        api_messages.append({"role": "user", "content": current_message})
 
         # HTTP headers ---------------------------------------------------
         headers: Dict[str, str] = {"Content-Type": "application/json"}
@@ -9305,6 +9494,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        ephemeral_user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -9323,6 +9513,7 @@ class GatewayRunner:
             return await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,
+                ephemeral_user_context=ephemeral_user_context,
                 history=history,
                 source=source,
                 session_id=session_id,
@@ -10147,7 +10338,13 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                run_kwargs = {
+                    "conversation_history": agent_history,
+                    "task_id": session_id,
+                }
+                if ephemeral_user_context:
+                    run_kwargs["ephemeral_user_context"] = ephemeral_user_context
+                result = agent.run_conversation(message, **run_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

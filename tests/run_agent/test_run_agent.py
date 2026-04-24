@@ -3096,6 +3096,34 @@ class TestConversationHistoryNotMutated:
         assert len(result["messages"]) > original_len
 
 
+class TestEphemeralUserContext:
+    def test_injected_into_current_user_message_not_system_or_history(self, agent):
+        agent.ephemeral_system_prompt = "Stable gateway context"
+        resp = _mock_response(content="ok", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "hello",
+                ephemeral_user_context="## Runtime State\ninbound_event_id: evt-1",
+            )
+
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        system_msg = next(msg for msg in sent_messages if msg["role"] == "system")
+        user_msg = next(msg for msg in sent_messages if msg["role"] == "user")
+
+        assert "Stable gateway context" in system_msg["content"]
+        assert "Runtime State" not in system_msg["content"]
+        assert user_msg["content"].startswith("## Runtime State\ninbound_event_id: evt-1\n\nhello")
+
+        persisted_user = next(msg for msg in result["messages"] if msg["role"] == "user")
+        assert persisted_user["content"] == "hello"
+
+
 # ---------------------------------------------------------------------------
 # _max_tokens_param consistency
 # ---------------------------------------------------------------------------

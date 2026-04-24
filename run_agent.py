@@ -8635,6 +8635,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        ephemeral_user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -8649,8 +8650,10 @@ class AIAgent:
                 When None (default), API calls use the standard non-streaming path.
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
-                synthetic prefixes.
-                    or queuing follow-up prefetch work.
+                synthetic prefixes or queued follow-up prefetch work.
+            ephemeral_user_context: API-only context prepended to the current
+                user turn. It is not persisted and does not alter the cached
+                system prompt.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -8676,6 +8679,8 @@ class AIAgent:
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
+        if isinstance(ephemeral_user_context, str):
+            ephemeral_user_context = _sanitize_surrogates(ephemeral_user_context).strip()
 
         # Strip leaked <memory-context> blocks from user input.  When Honcho's
         # saveMessages persists a turn that included injected context, the block
@@ -8686,6 +8691,8 @@ class AIAgent:
             user_message = sanitize_context(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = sanitize_context(persist_user_message)
+        if isinstance(ephemeral_user_context, str):
+            ephemeral_user_context = sanitize_context(ephemeral_user_context).strip()
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
@@ -9117,22 +9124,26 @@ class AIAgent:
                 api_msg = msg.copy()
 
                 # Inject ephemeral context into the current turn's user message.
-                # Sources: memory manager prefetch + plugin pre_llm_call hooks
-                # with target="user_message" (the default).  Both are
+                # Sources: gateway runtime state, memory manager prefetch,
+                # and plugin pre_llm_call hooks. All are
                 # API-call-time only — the original message in `messages` is
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
-                    _injections = []
+                    _prefix_injections = []
+                    _suffix_injections = []
+                    if ephemeral_user_context:
+                        _prefix_injections.append(ephemeral_user_context)
                     if _ext_prefetch_cache:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
                         if _fenced:
-                            _injections.append(_fenced)
+                            _suffix_injections.append(_fenced)
                     if _plugin_user_context:
-                        _injections.append(_plugin_user_context)
-                    if _injections:
+                        _suffix_injections.append(_plugin_user_context)
+                    if _prefix_injections or _suffix_injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                            _parts = _prefix_injections + [_base] + _suffix_injections
+                            api_msg["content"] = "\n\n".join(part for part in _parts if part)
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved

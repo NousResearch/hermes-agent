@@ -340,6 +340,12 @@ class WebhookAdapter(BasePlatformAdapter):
                     {"error": "Cannot parse body"}, status=400
                 )
 
+        # ── Built-in route: code-crab-completion ────────────────
+        # Structured handoff callback from Code Crab — handled inline
+        # (does NOT go through the normal agent processing flow).
+        if route_name == "code-crab-completion":
+            return await self._handle_code_crab_completion(payload)
+
         # Check event type filter
         event_type = (
             request.headers.get("X-GitHub-Event", "")
@@ -475,6 +481,149 @@ class WebhookAdapter(BasePlatformAdapter):
                 "delivery_id": delivery_id,
             },
             status=202,
+        )
+
+    # ------------------------------------------------------------------
+    # Built-in handler: Code Crab completion callback
+    # ------------------------------------------------------------------
+
+    async def _handle_code_crab_completion(
+        self, payload: dict
+    ) -> "web.Response":
+        """Handle a structured handoff completion callback from Code Crab.
+
+        Validates the payload, updates the handoff record, posts a concise
+        return message to the origin thread/channel, and optionally triggers
+        auto-resume for safe queued actions.
+
+        This bypasses the normal agent processing flow entirely — no prompt
+        rendering, no skill loading, no agent run.
+        """
+        from gateway.handoffs import (
+            get_handoff,
+            render_origin_message,
+            should_auto_resume,
+            update_handoff_status,
+            validate_status_transition,
+        )
+
+        handoff_id = payload.get("handoff_id")
+        status = payload.get("status")
+
+        # Validate required fields
+        if not handoff_id or not isinstance(handoff_id, str):
+            return web.json_response(
+                {"error": "Missing or invalid handoff_id"}, status=400
+            )
+        if status not in ("done", "blocked", "failed"):
+            return web.json_response(
+                {"error": f"Invalid status: {status}"}, status=400
+            )
+
+        # Look up handoff record
+        record = get_handoff(handoff_id)
+        if record is None:
+            logger.warning(
+                "[webhook] Unknown handoff_id in completion callback: %s",
+                handoff_id,
+            )
+            return web.json_response(
+                {"error": f"Unknown handoff_id: {handoff_id}"}, status=404
+            )
+
+        # Validate status transition
+        current_status = record.get("status", "requested")
+        if not validate_status_transition(current_status, status):
+            return web.json_response(
+                {
+                    "error": f"Invalid transition: {current_status} -> {status}",
+                    "current_status": current_status,
+                },
+                status=409,
+            )
+
+        # Update handoff record
+        try:
+            record = update_handoff_status(
+                handoff_id, status, callback_payload=payload
+            )
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=409)
+
+        # Post return message to origin thread/channel
+        return_message_id = None
+        origin = record.get("origin", {})
+        origin_platform = origin.get("platform", "")
+        origin_channel_id = origin.get("channel_id", "")
+
+        if origin_platform and origin_channel_id and self.gateway_runner:
+            message = render_origin_message(record)
+            try:
+                target_platform = Platform(origin_platform)
+                adapter = self.gateway_runner.adapters.get(target_platform)
+                if adapter:
+                    metadata = None
+                    if origin.get("thread_id"):
+                        metadata = {"thread_id": origin["thread_id"]}
+                    result = await adapter.send(
+                        origin_channel_id, message, metadata=metadata
+                    )
+                    if result.success:
+                        return_message_id = getattr(
+                            result, "message_id", None
+                        )
+                        logger.info(
+                            "[webhook] Posted handoff return message to %s/%s",
+                            origin_platform,
+                            origin_channel_id,
+                        )
+                    else:
+                        logger.error(
+                            "[webhook] Failed to post return message: %s",
+                            result.error,
+                        )
+                else:
+                    logger.warning(
+                        "[webhook] Origin platform %s not connected",
+                        origin_platform,
+                    )
+            except Exception as e:
+                logger.error(
+                    "[webhook] Error posting return message: %s", e
+                )
+
+        # Store return message ID
+        if return_message_id:
+            try:
+                update_handoff_status(
+                    handoff_id,
+                    status,
+                    return_message_id=str(return_message_id),
+                )
+            except ValueError:
+                pass  # Already at terminal status, ignore
+
+        # Check auto-resume
+        auto_resume = should_auto_resume(record)
+        if auto_resume:
+            logger.info(
+                "[webhook] Auto-resume eligible for %s: %s",
+                handoff_id,
+                record.get("next_action", ""),
+            )
+            # Auto-resume is logged but not executed inline — the gateway
+            # supervisor or a separate scheduler should pick this up.
+            # For now we include it in the response so callers know.
+
+        return web.json_response(
+            {
+                "status": "accepted",
+                "handoff_id": handoff_id,
+                "new_status": status,
+                "return_message_posted": return_message_id is not None,
+                "return_message_id": return_message_id,
+                "auto_resume_eligible": auto_resume,
+            }
         )
 
     # ------------------------------------------------------------------

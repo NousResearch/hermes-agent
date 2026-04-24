@@ -737,6 +737,22 @@ def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
     return cache.get(key)
 
 
+def _invalidate_cached_context_length(model: str, base_url: str) -> None:
+    """Drop a stale cache entry so it gets re-resolved on the next lookup."""
+    key = f"{model}@{base_url}"
+    cache = _load_context_cache()
+    if key not in cache:
+        return
+    del cache[key]
+    path = _get_context_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+    except Exception as e:
+        logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
+
+
 def get_next_probe_tier(current_length: int) -> Optional[int]:
     """Return the next lower probe tier, or None if already at minimum."""
     for tier in CONTEXT_PROBE_TIERS:
@@ -1205,7 +1221,21 @@ def get_model_context_length(
     if base_url:
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            return cached
+            # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
+            # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
+            # models.dev and persisted it. Codex OAuth caps at 272K for every
+            # slug, so any cached Codex entry at or above 400K is a leftover
+            # from the old resolution path. Drop it and fall through to the
+            # live /models probe in step 5 below.
+            if provider == "openai-codex" and cached >= 400_000:
+                logger.info(
+                    "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
+                    "re-resolving via live /models probe",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            else:
+                return cached
 
     # 2. Active endpoint metadata for truly custom/unknown endpoints.
     # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their

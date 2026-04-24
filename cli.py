@@ -387,6 +387,10 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
 
             "skin": "default",
+            "statusbar": {
+                "show_session_title": True,
+                "session_title_max_len": 28,
+            },
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -2179,10 +2183,29 @@ class HermesCLI:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        # Session title (pending or persisted)
+        session_title = None
+        if getattr(self, "_pending_title", None):
+            session_title = self._pending_title
+        elif getattr(self, "_session_db", None) and getattr(self, "session_id", None):
+            try:
+                session_title = self._session_db.get_session_title(self.session_id)
+            except Exception:
+                session_title = None
+        if session_title:
+            max_len = (
+                self.config.get("display", {})
+                .get("statusbar", {})
+                .get("session_title_max_len", 28)
+            )
+            if len(session_title) > max_len:
+                session_title = f"{session_title[:max_len - 3]}..."
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "session_title": session_title,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -2361,6 +2384,12 @@ class HermesCLI:
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            session_title = snapshot.get("session_title")
+            show_title = (
+                self.config.get("display", {})
+                .get("statusbar", {})
+                .get("show_session_title", True)
+            )
 
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
@@ -2377,7 +2406,10 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {snapshot['model_short']}"]
+            if show_title and session_title:
+                parts.append(f"Session: {session_title}")
+            parts.extend([context_label, percent_label])
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -2398,6 +2430,12 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            session_title = snapshot.get("session_title")
+            show_title = (
+                self.config.get("display", {})
+                .get("statusbar", {})
+                .get("show_session_title", True)
+            )
 
             if width < 52:
                 frags = [
@@ -2432,6 +2470,11 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    if show_title and session_title:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", f"Session: {session_title}"))
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
@@ -2440,7 +2483,7 @@ class HermesCLI:
                         (bar_style, percent_label),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
-                    ]
+                    ])
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:

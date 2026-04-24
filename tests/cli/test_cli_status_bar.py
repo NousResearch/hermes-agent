@@ -11,6 +11,14 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.config = {
+        "display": {
+            "statusbar": {
+                "show_session_title": True,
+                "session_title_max_len": 28,
+            },
+        },
+    }
     return cli_obj
 
 
@@ -422,3 +430,144 @@ class TestStatusBarWidthSource:
         mock_get_app.assert_not_called()
         mock_shutil.assert_not_called()
         assert len(text) > 0
+
+
+class TestStatusBarSessionTitle:
+    """Ensure session title appears in the status bar when enabled."""
+
+    def _make_cli_with_title(self, title: str | None = None, pending: bool = False):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "test-session-123"
+        if pending:
+            cli_obj._pending_title = title
+        else:
+            cli_obj._pending_title = None
+            # Mock session db
+            db = MagicMock()
+            db.get_session_title.return_value = title
+            cli_obj._session_db = db
+        return cli_obj
+
+    def test_session_title_shown_when_set(self):
+        cli_obj = _attach_agent(
+            self._make_cli_with_title("weekly-kpi-audit"),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "Session: weekly-kpi-audit" in text
+
+    def test_session_title_shown_when_pending(self):
+        cli_obj = _attach_agent(
+            self._make_cli_with_title("pending-title", pending=True),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "Session: pending-title" in text
+
+    def test_session_title_hidden_when_untitled(self):
+        cli_obj = _attach_agent(
+            self._make_cli_with_title(None),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "Session:" not in text
+
+    def test_session_title_hidden_when_disabled(self):
+        cli_obj = _attach_agent(
+            self._make_cli_with_title("secret-title"),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        cli_obj.config["display"]["statusbar"]["show_session_title"] = False
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "Session:" not in text
+
+    def test_session_title_truncated_to_config_max_len(self):
+        long_title = "a" * 50
+        cli_obj = _attach_agent(
+            self._make_cli_with_title(long_title),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        cli_obj.config["display"]["statusbar"]["session_title_max_len"] = 10
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "Session: aaaaaaa..." in text
+        assert len(text.split("Session: ")[1].split(" ")[0]) <= 10
+
+    def test_session_title_in_fragments(self):
+        from unittest.mock import MagicMock, patch
+        cli_obj = _attach_agent(
+            self._make_cli_with_title("frag-test"),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=120)
+
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+
+        flat = "".join(text for _, text in frags)
+        assert "Session: frag-test" in flat
+
+    def test_session_title_not_in_fragments_when_disabled(self):
+        from unittest.mock import MagicMock, patch
+        cli_obj = _attach_agent(
+            self._make_cli_with_title("hidden-frag"),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+        cli_obj.config["display"]["statusbar"]["show_session_title"] = False
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=120)
+
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+
+        flat = "".join(text for _, text in frags)
+        assert "Session:" not in flat

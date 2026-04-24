@@ -7,11 +7,15 @@ can invoke skills via /skill-name commands.
 import json
 import logging
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
+from agent.skill_preprocessing import (
+    expand_inline_shell as _expand_inline_shell,
+    load_skills_config as _load_skills_config,
+    substitute_template_vars as _substitute_template_vars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,111 +23,6 @@ _skill_commands: Dict[str, Dict[str, Any]] = {}
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
-
-# Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
-# Tokens that don't resolve (e.g. ${HERMES_SESSION_ID} with no session) are
-# left as-is so the user can debug them.
-_SKILL_TEMPLATE_RE = re.compile(r"\$\{(HERMES_SKILL_DIR|HERMES_SESSION_ID)\}")
-
-# Matches inline shell snippets like:  !`date +%Y-%m-%d`
-# Non-greedy, single-line only — no newlines inside the backticks.
-_INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
-
-# Cap inline-shell output so a runaway command can't blow out the context.
-_INLINE_SHELL_MAX_OUTPUT = 4000
-
-
-def _load_skills_config() -> dict:
-    """Load the ``skills`` section of config.yaml (best-effort)."""
-    try:
-        from hermes_cli.config import load_config
-
-        cfg = load_config() or {}
-        skills_cfg = cfg.get("skills")
-        if isinstance(skills_cfg, dict):
-            return skills_cfg
-    except Exception:
-        logger.debug("Could not read skills config", exc_info=True)
-    return {}
-
-
-def _substitute_template_vars(
-    content: str,
-    skill_dir: Path | None,
-    session_id: str | None,
-) -> str:
-    """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
-
-    Only substitutes tokens for which a concrete value is available —
-    unresolved tokens are left in place so the author can spot them.
-    """
-    if not content:
-        return content
-
-    skill_dir_str = str(skill_dir) if skill_dir else None
-
-    def _replace(match: re.Match) -> str:
-        token = match.group(1)
-        if token == "HERMES_SKILL_DIR" and skill_dir_str:
-            return skill_dir_str
-        if token == "HERMES_SESSION_ID" and session_id:
-            return str(session_id)
-        return match.group(0)
-
-    return _SKILL_TEMPLATE_RE.sub(_replace, content)
-
-
-def _run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
-    """Execute a single inline-shell snippet and return its stdout (trimmed).
-
-    Failures return a short ``[inline-shell error: ...]`` marker instead of
-    raising, so one bad snippet can't wreck the whole skill message.
-    """
-    try:
-        completed = subprocess.run(
-            ["bash", "-c", command],
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            timeout=max(1, int(timeout)),
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return f"[inline-shell timeout after {timeout}s: {command}]"
-    except FileNotFoundError:
-        return f"[inline-shell error: bash not found]"
-    except Exception as exc:
-        return f"[inline-shell error: {exc}]"
-
-    output = (completed.stdout or "").rstrip("\n")
-    if not output and completed.stderr:
-        output = completed.stderr.rstrip("\n")
-    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "…[truncated]"
-    return output
-
-
-def _expand_inline_shell(
-    content: str,
-    skill_dir: Path | None,
-    timeout: int,
-) -> str:
-    """Replace every !`cmd` snippet in ``content`` with its stdout.
-
-    Runs each snippet with the skill directory as CWD so relative paths in
-    the snippet work the way the author expects.
-    """
-    if "!`" not in content:
-        return content
-
-    def _replace(match: re.Match) -> str:
-        cmd = match.group(1).strip()
-        if not cmd:
-            return ""
-        return _run_inline_shell(cmd, skill_dir, timeout)
-
-    return _INLINE_SHELL_RE.sub(_replace, content)
-
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -143,7 +42,9 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         else:
             normalized = raw_identifier.lstrip("/")
 
-        loaded_skill = json.loads(skill_view(normalized, task_id=task_id))
+        loaded_skill = json.loads(
+            skill_view(normalized, task_id=task_id, preprocess=False)
+        )
     except Exception:
         return None
 

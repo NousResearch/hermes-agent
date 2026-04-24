@@ -347,6 +347,71 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_skill_view_applies_template_vars(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={"template_vars": True, "inline_shell": False},
+            ),
+        ):
+            skill_dir = _make_skill(
+                tmp_path,
+                "templated",
+                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh in ${HERMES_SESSION_ID}",
+            )
+            raw = skill_view("templated", task_id="session-123")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
+        assert "${HERMES_SKILL_DIR}" in result["raw_content"]
+
+    def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={
+                    "template_vars": True,
+                    "inline_shell": True,
+                    "inline_shell_timeout": 5,
+                },
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "dynamic",
+                body="Current date: !`printf 2026-04-24`",
+            )
+            raw = skill_view("dynamic")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Current date: 2026-04-24" in result["content"]
+        assert "!`printf 2026-04-24`" not in result["content"]
+        assert "!`printf 2026-04-24`" in result["raw_content"]
+
+    def test_skill_view_leaves_inline_shell_literal_when_disabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={"template_vars": True, "inline_shell": False},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "static",
+                body="Current date: !`printf SHOULD_NOT_RUN`",
+            )
+            raw = skill_view("static")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Current date: !`printf SHOULD_NOT_RUN`" in result["content"]
+        assert "Current date: SHOULD_NOT_RUN" not in result["content"]
+
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "other-skill")

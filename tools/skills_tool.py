@@ -743,6 +743,9 @@ def _serve_plugin_skill(
     skill_md: Path,
     namespace: str,
     bare: str,
+    *,
+    preprocess: bool = True,
+    session_id: str | None = None,
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
@@ -812,11 +815,27 @@ def _serve_plugin_skill(
     except Exception:
         banner = ""
 
+    rendered_content = content
+    if preprocess:
+        try:
+            from agent.skill_preprocessing import preprocess_skill_content
+
+            rendered_content = preprocess_skill_content(
+                content,
+                skill_md.parent,
+                session_id=session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
+            )
+
     return json.dumps(
         {
             "success": True,
             "name": f"{namespace}:{bare}",
-            "content": f"{banner}{content}" if banner else content,
+            "content": f"{banner}{rendered_content}" if banner else rendered_content,
+            "raw_content": content,
             "description": description,
             "linked_files": None,
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
@@ -825,7 +844,12 @@ def _serve_plugin_skill(
     )
 
 
-def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
+def skill_view(
+    name: str,
+    file_path: str = None,
+    task_id: str = None,
+    preprocess: bool = True,
+) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
 
@@ -834,6 +858,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             Qualified names like "plugin:skill" resolve to plugin-provided skills.
         file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
         task_id: Optional task identifier used to probe the active backend
+        preprocess: Apply configured SKILL.md template and inline shell rendering
+            to main skill content. Internal slash/preload callers disable this
+            because they render the skill message themselves.
 
     Returns:
         JSON string with skill content or error message
@@ -879,7 +906,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                         },
                         ensure_ascii=False,
                     )
-                return _serve_plugin_skill(plugin_skill_md, namespace, bare)
+                return _serve_plugin_skill(
+                    plugin_skill_md,
+                    namespace,
+                    bare,
+                    preprocess=preprocess,
+                    session_id=task_id,
+                )
 
             # Plugin exists but this specific skill is missing?
             available = pm.list_plugin_skills(namespace)
@@ -1280,13 +1313,29 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     exc_info=True,
                 )
 
+        rendered_content = content
+        if preprocess:
+            try:
+                from agent.skill_preprocessing import preprocess_skill_content
+
+                rendered_content = preprocess_skill_content(
+                    content,
+                    skill_dir,
+                    session_id=task_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not preprocess skill content for %s", skill_name, exc_info=True
+                )
+
         result = {
             "success": True,
             "name": skill_name,
             "description": frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
-            "content": content,
+            "content": rendered_content,
+            "raw_content": content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,

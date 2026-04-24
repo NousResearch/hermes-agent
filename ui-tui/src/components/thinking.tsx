@@ -392,6 +392,9 @@ function SubagentAccordion({
   const hasTools = item.tools.length > 0
   const noteRows = [...(summary ? [summary] : []), ...item.notes]
   const hasNotes = noteRows.length > 0
+  // `showChildren` only seeds the recursive `expanded` prop for nested
+  // subagents — it MUST NOT be OR-ed into the local section toggles, or
+  // expand-all permanently locks the inner chevrons open.
   const showChildren = expanded || deep
   const noteColor = statusTone === 'error' ? t.color.error : statusTone === 'warn' ? t.color.warn : t.color.dim
 
@@ -414,13 +417,13 @@ function SubagentAccordion({
               setOpenThinking(v => !v)
             }
           }}
-          open={showChildren || openThinking}
+          open={openThinking}
           t={t}
           title="Thinking"
         />
       ),
       key: 'thinking',
-      open: showChildren || openThinking,
+      open: openThinking,
       render: childRails => (
         <Thinking
           active={item.status === 'running'}
@@ -447,13 +450,13 @@ function SubagentAccordion({
               setOpenTools(v => !v)
             }
           }}
-          open={showChildren || openTools}
+          open={openTools}
           t={t}
           title="Tool calls"
         />
       ),
       key: 'tools',
-      open: showChildren || openTools,
+      open: openTools,
       render: childRails => (
         <Box flexDirection="column">
           {item.tools.map((line, index) => (
@@ -488,14 +491,14 @@ function SubagentAccordion({
               setOpenNotes(v => !v)
             }
           }}
-          open={showChildren || openNotes}
+          open={openNotes}
           t={t}
           title="Progress"
           tone={statusTone}
         />
       ),
       key: 'notes',
-      open: showChildren || openNotes,
+      open: openNotes,
       render: childRails => (
         <Box flexDirection="column">
           {noteRows.map((line, index) => (
@@ -528,14 +531,14 @@ function SubagentAccordion({
               setOpenKids(v => !v)
             }
           }}
-          open={showChildren || openKids}
+          open={openKids}
           suffix={`d${item.depth + 1} · ${aggregate.descendantCount} total`}
           t={t}
           title="Spawned"
         />
       ),
       key: 'subagents',
-      open: showChildren || openKids,
+      open: openKids,
       render: childRails => (
         <Box flexDirection="column">
           {children.map((child, i) => (
@@ -718,6 +721,13 @@ export const ToolTrail = memo(function ToolTrail({
   )
 
   const [now, setNow] = useState(() => Date.now())
+  // Local toggles own the open state once mounted.  Init from the resolved
+  // section visibility so default-expanded sections (thinking/tools) render
+  // open on first paint; the useEffect below re-syncs when the user mutates
+  // visibility at runtime via /details.  NEVER OR these against
+  // `visible.X === 'expanded'` at render time — that locks the panel open
+  // and silently breaks manual chevron clicks for default-expanded
+  // sections (regression caught after #14968).
   const [openThinking, setOpenThinking] = useState(visible.thinking === 'expanded')
   const [openTools, setOpenTools] = useState(visible.tools === 'expanded')
   const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
@@ -960,7 +970,7 @@ export const ToolTrail = memo(function ToolTrail({
           }}
         >
           <Text color={t.color.dim} dim={!thinkingLive}>
-            <Text color={t.color.amber}>{visible.thinking === 'expanded' || openThinking ? '▾ ' : '▸ '}</Text>
+            <Text color={t.color.amber}>{openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
               <Text bold color={t.color.cornsilk}>
                 Thinking
@@ -980,7 +990,7 @@ export const ToolTrail = memo(function ToolTrail({
         </Box>
       ),
       key: 'thinking',
-      open: visible.thinking === 'expanded' || openThinking,
+      open: openThinking,
       render: rails => (
         <Thinking
           active={reasoningActive}
@@ -1007,14 +1017,14 @@ export const ToolTrail = memo(function ToolTrail({
               setOpenTools(v => !v)
             }
           }}
-          open={visible.tools === 'expanded' || openTools}
+          open={openTools}
           suffix={toolTokensLabel}
           t={t}
           title="Tool calls"
         />
       ),
       key: 'tools',
-      open: visible.tools === 'expanded' || openTools,
+      open: openTools,
       render: rails => (
         <Box flexDirection="column">
           {groups.map((group, index) => {
@@ -1072,14 +1082,14 @@ export const ToolTrail = memo(function ToolTrail({
               setDeepSubagents(false)
             }
           }}
-          open={visible.subagents === 'expanded' || openSubagents}
+          open={openSubagents}
           suffix={suffix}
           t={t}
           title="Spawn tree"
         />
       ),
       key: 'subagents',
-      open: visible.subagents === 'expanded' || openSubagents,
+      open: openSubagents,
       render: renderSubagentList
     })
   }
@@ -1096,14 +1106,14 @@ export const ToolTrail = memo(function ToolTrail({
               setOpenMeta(v => !v)
             }
           }}
-          open={visible.activity === 'expanded' || openMeta}
+          open={openMeta}
           t={t}
           title="Activity"
           tone={metaTone}
         />
       ),
       key: 'meta',
-      open: visible.activity === 'expanded' || openMeta,
+      open: openMeta,
       render: rails => (
         <Box flexDirection="column">
           {meta.map((row, index) => (

@@ -4471,25 +4471,69 @@ class AIAgent:
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
 
-        1. Try lowercase
-        2. Try normalized (lowercase + hyphens/spaces -> underscores)
-        3. Try fuzzy match (difflib, cutoff=0.7)
+        Models sometimes emit variants of a tool name that differ only
+        in casing, separators, or class-like suffixes. Normalize
+        aggressively before falling back to fuzzy match:
+
+        1. Lowercase direct match.
+        2. Lowercase + hyphens/spaces -> underscores.
+        3. CamelCase -> snake_case (TodoTool -> todo_tool).
+        4. Strip trailing ``_tool`` / ``-tool`` / ``tool`` suffix that
+           Claude-style models sometimes tack on (TodoTool_tool ->
+           TodoTool -> Todo -> todo). Applied twice so double-tacked
+           suffixes like ``TodoTool_tool`` reduce all the way.
+        5. Fuzzy match (difflib, cutoff=0.7).
+
+        See #14784 for the original reports (TodoTool_tool, Patch_tool,
+        BrowserClick_tool were all returning "Unknown tool" before).
 
         Returns the repaired name if found in valid_tool_names, else None.
         """
+        import re
         from difflib import get_close_matches
 
-        # 1. Lowercase
+        if not tool_name:
+            return None
+
+        def _norm(s: str) -> str:
+            return s.lower().replace("-", "_").replace(" ", "_")
+
+        def _camel_snake(s: str) -> str:
+            return re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()
+
+        def _strip_tool_suffix(s: str) -> str | None:
+            lc = s.lower()
+            for suffix in ("_tool", "-tool", "tool"):
+                if lc.endswith(suffix):
+                    return s[: -len(suffix)].rstrip("_-")
+            return None
+
+        # Cheap fast-paths first — these cover the common case.
         lowered = tool_name.lower()
         if lowered in self.valid_tool_names:
             return lowered
-
-        # 2. Normalize
-        normalized = lowered.replace("-", "_").replace(" ", "_")
+        normalized = _norm(tool_name)
         if normalized in self.valid_tool_names:
             return normalized
 
-        # 3. Fuzzy match
+        # Build the full candidate set for class-like emissions.
+        cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
+        # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.
+        for _ in range(2):
+            extra: set[str] = set()
+            for c in cands:
+                stripped = _strip_tool_suffix(c)
+                if stripped:
+                    extra.add(stripped)
+                    extra.add(_norm(stripped))
+                    extra.add(_camel_snake(stripped))
+            cands |= extra
+
+        for c in cands:
+            if c and c in self.valid_tool_names:
+                return c
+
+        # Fuzzy match as last resort.
         matches = get_close_matches(lowered, self.valid_tool_names, n=1, cutoff=0.7)
         if matches:
             return matches[0]

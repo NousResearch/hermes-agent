@@ -1076,6 +1076,7 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=10,
+            verify=_resolve_requests_verify(),
         )
         if resp.status_code != 200:
             logger.debug(

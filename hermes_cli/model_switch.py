@@ -1242,6 +1242,18 @@ def list_authenticated_providers(
             )
             if _pair[0] and _pair[1]:
                 _section3_emitted_pairs.add(_pair)
+            # Also track the provider dict key + base URL. This covers the
+            # common case where `providers:` uses a friendly display name
+            # (e.g. "Ollama Local (WSL Bridge)") while compatibility-expanded
+            # `custom_providers:` entries use the provider slug as their name
+            # (e.g. "ollama-bridge"). Without this extra pair, /model emits
+            # two rows for the same endpoint.
+            _key_pair = (
+                str(ep_name).strip().lower(),
+                str(api_url).strip().rstrip("/").lower(),
+            )
+            if _key_pair[0] and _key_pair[1]:
+                _section3_emitted_pairs.add(_key_pair)
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named

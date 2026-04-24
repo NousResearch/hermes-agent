@@ -74,6 +74,54 @@ class TestDoctorToolAvailabilityOverrides:
         assert unavailable == [honcho_entry]
 
 
+class TestDoctorToolAvailabilityPlatformFiltering:
+    def test_hides_explicitly_disabled_configurable_toolsets(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda config, platform: {"web", "terminal", "notebooklm"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        available, unavailable = doctor._filter_doctor_tool_availability_for_platform(
+            ["web", "terminal", "mcp-notebooklm"],
+            [
+                {"name": "moa", "env_vars": ["OPENROUTER_API_KEY"], "tools": ["mixture_of_agents"]},
+                {"name": "homeassistant", "env_vars": [], "tools": ["ha_call_service"]},
+                {"name": "discord", "env_vars": ["DISCORD_BOT_TOKEN"], "tools": ["discord_send"]},
+            ],
+            {"platform_toolsets": {"cli": ["web", "terminal", "notebooklm"]}},
+        )
+
+        assert available == ["web", "terminal", "mcp-notebooklm"]
+        assert unavailable == []
+
+    def test_hides_enabled_web_api_warning_when_not_needed(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda config, platform: {"web", "terminal"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        available, unavailable = doctor._filter_doctor_tool_availability_for_platform(
+            ["terminal"],
+            [
+                {"name": "web", "env_vars": ["EXA_API_KEY"], "tools": ["web_search"]},
+                {"name": "discord", "env_vars": ["DISCORD_BOT_TOKEN"], "tools": ["discord_send"]},
+                {"name": "browser-cdp", "env_vars": [], "tools": ["browser_cdp"]},
+            ],
+            {"platform_toolsets": {"cli": ["web", "terminal"]}},
+        )
+
+        assert available == ["terminal"]
+        assert unavailable == []
+
+
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
         fake_config = SimpleNamespace(enabled=True, api_key="***")
@@ -188,6 +236,7 @@ class TestDoctorMemoryProviderSection:
             TOOLSET_REQUIREMENTS={},
         )
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
 
         # Stub auth checks to avoid real API calls
         try:
@@ -210,6 +259,7 @@ class TestDoctorMemoryProviderSection:
         # Should NOT mention Honcho or Mem0 errors
         assert "Honcho API key" not in out
         assert "Mem0" not in out
+        assert "No GITHUB_TOKEN" not in out
 
     def test_honcho_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
         # Make honcho import fail

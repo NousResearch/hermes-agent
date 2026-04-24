@@ -352,6 +352,40 @@ def test_list_authenticated_providers_no_duplicate_labels_across_schemas(monkeyp
     )
 
 
+def test_list_authenticated_providers_no_duplicate_when_user_key_and_legacy_name_differ(monkeypatch):
+    """If ``providers:`` uses a friendly display name but compatibility-expanded
+    ``custom_providers:`` uses the provider dict key as its name, /model should still
+    emit a single row for that endpoint.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="none",
+        user_providers={
+            "ollama-bridge": {
+                "name": "Ollama Local (WSL Bridge)",
+                "base_url": "http://127.0.0.1:11500/v1",
+                "default_model": "glm-5.1:cloud",
+            }
+        },
+        custom_providers=[
+            {
+                "name": "ollama-bridge",
+                "base_url": "http://127.0.0.1:11500/v1",
+                "model": "glm-5.1:cloud",
+            }
+        ],
+        max_models=50,
+    )
+
+    user_rows = [p for p in providers if p.get("source") == "user-config"]
+    assert len(user_rows) == 1, user_rows
+    assert user_rows[0]["slug"] == "ollama-bridge"
+    assert user_rows[0]["name"] == "Ollama Local (WSL Bridge)"
+    assert user_rows[0]["models"] == ["glm-5.1:cloud"]
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

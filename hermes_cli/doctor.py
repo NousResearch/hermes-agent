@@ -116,6 +116,55 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     return updated_available, updated_unavailable
 
 
+def _filter_doctor_tool_availability_for_platform(
+    available: list[str],
+    unavailable: list[dict],
+    config: dict,
+    platform: str = "cli",
+) -> tuple[list[str], list[dict]]:
+    """Hide disabled or irrelevant optional toolsets from doctor output."""
+    try:
+        from hermes_cli.tools_config import (
+            CONFIGURABLE_TOOLSETS,
+            _get_platform_tools,
+            _get_plugin_toolset_keys,
+        )
+    except Exception:
+        return available, unavailable
+
+    enabled_toolsets = _get_platform_tools(config, platform)
+    configurable_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    configurable_toolsets.update(_get_plugin_toolset_keys())
+
+    def _should_keep_available(toolset_name: str) -> bool:
+        if toolset_name in configurable_toolsets:
+            return toolset_name in enabled_toolsets
+        if toolset_name.startswith("mcp-"):
+            mcp_name = toolset_name[4:]
+            return mcp_name in enabled_toolsets or toolset_name in enabled_toolsets
+        return True
+
+    def _should_keep_unavailable(item: dict) -> bool:
+        toolset_name = item.get("name", "")
+        env_vars = item.get("missing_vars") or item.get("env_vars") or []
+        if toolset_name == "web":
+            return False
+        if toolset_name in configurable_toolsets:
+            return toolset_name in enabled_toolsets
+        if toolset_name.startswith("mcp-"):
+            mcp_name = toolset_name[4:]
+            return mcp_name in enabled_toolsets or toolset_name in enabled_toolsets
+        if toolset_name not in enabled_toolsets:
+            return False
+        if env_vars and toolset_name not in enabled_toolsets:
+            return False
+        return True
+
+    filtered_available = [toolset_name for toolset_name in available if _should_keep_available(toolset_name)]
+    filtered_unavailable = [item for item in unavailable if _should_keep_unavailable(item)]
+    return filtered_available, filtered_unavailable
+
+
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
@@ -1031,11 +1080,14 @@ def run_doctor(args):
     try:
         # Add project root to path for imports
         sys.path.insert(0, str(PROJECT_ROOT))
+        from hermes_cli.config import load_config
         from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-        
+
+        config = load_config()
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        
+        available, unavailable = _filter_doctor_tool_availability_for_platform(available, unavailable, config)
+
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
             check_ok(info.get("name", tid))
@@ -1084,8 +1136,6 @@ def run_doctor(args):
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:
         check_ok("GitHub token configured (authenticated API access)")
-    else:
-        check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
     # =========================================================================
     # Memory Provider (only check the active provider, if any)

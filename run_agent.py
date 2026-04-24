@@ -740,6 +740,11 @@ class AIAgent:
     for AI models that support function calling.
     """
 
+    _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
+        "[hermes-agent: tool call arguments were corrupted in this session and "
+        "have been dropped to keep the conversation alive. See issue #15236.]"
+    )
+
     @property
     def base_url(self) -> str:
         return self._base_url
@@ -7616,6 +7621,115 @@ class AIAgent:
         ]
         return api_msg
 
+    @staticmethod
+    def _sanitize_tool_call_arguments(
+        messages: list,
+        *,
+        logger=None,
+        session_id: str = None,
+    ) -> int:
+        """Repair corrupted assistant tool-call argument JSON in-place."""
+        log = logger or logging.getLogger(__name__)
+        if not isinstance(messages, list):
+            return 0
+
+        repaired = 0
+        marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+
+        def _prepend_marker(tool_msg: dict) -> None:
+            existing = tool_msg.get("content")
+            if isinstance(existing, str):
+                if not existing:
+                    tool_msg["content"] = marker
+                elif not existing.startswith(marker):
+                    tool_msg["content"] = f"{marker}\n{existing}"
+                return
+            if existing is None:
+                tool_msg["content"] = marker
+                return
+            try:
+                existing_text = json.dumps(existing)
+            except TypeError:
+                existing_text = str(existing)
+            tool_msg["content"] = f"{marker}\n{existing_text}"
+
+        message_index = 0
+        while message_index < len(messages):
+            msg = messages[message_index]
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                message_index += 1
+                continue
+
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list) or not tool_calls:
+                message_index += 1
+                continue
+
+            insert_at = message_index + 1
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+
+                arguments = function.get("arguments")
+                if arguments is None or arguments == "":
+                    function["arguments"] = "{}"
+                    continue
+                if isinstance(arguments, str) and not arguments.strip():
+                    function["arguments"] = "{}"
+                    continue
+                if not isinstance(arguments, str):
+                    continue
+
+                try:
+                    json.loads(arguments)
+                except json.JSONDecodeError:
+                    tool_call_id = tool_call.get("id")
+                    function_name = function.get("name", "?")
+                    preview = arguments[:80]
+                    log.warning(
+                        "Corrupted tool_call arguments repaired before request "
+                        "(session=%s, message_index=%s, tool_call_id=%s, function=%s, preview=%r)",
+                        session_id or "-",
+                        message_index,
+                        tool_call_id or "-",
+                        function_name,
+                        preview,
+                    )
+                    function["arguments"] = "{}"
+
+                    existing_tool_msg = None
+                    scan_index = message_index + 1
+                    while scan_index < len(messages):
+                        candidate = messages[scan_index]
+                        if not isinstance(candidate, dict) or candidate.get("role") != "tool":
+                            break
+                        if candidate.get("tool_call_id") == tool_call_id:
+                            existing_tool_msg = candidate
+                            break
+                        scan_index += 1
+
+                    if existing_tool_msg is None:
+                        messages.insert(
+                            insert_at,
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": marker,
+                            },
+                        )
+                        insert_at += 1
+                    else:
+                        _prepend_marker(existing_tool_msg)
+
+                    repaired += 1
+
+            message_index += 1
+
+        return repaired
+
     def _should_sanitize_tool_calls(self) -> bool:
         """Determine if tool_calls need sanitization for strict APIs.
 
@@ -9480,6 +9594,19 @@ class AIAgent:
             # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
             # However, providers like Moonshot AI require a separate 'reasoning_content' field
             # on assistant messages with tool_calls. We handle both cases here.
+            request_logger = getattr(self, "logger", None) or logging.getLogger(__name__)
+            repaired_tool_calls = self._sanitize_tool_call_arguments(
+                messages,
+                logger=request_logger,
+                session_id=self.session_id,
+            )
+            if repaired_tool_calls > 0:
+                request_logger.info(
+                    "Sanitized %s corrupted tool_call arguments before request (session=%s)",
+                    repaired_tool_calls,
+                    self.session_id or "-",
+                )
+
             api_messages = []
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()

@@ -1533,26 +1533,30 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=20) as resp:
             result = json.loads(resp.read().decode())
     except Exception as e:
-        sess["status"] = "error"
-        sess["error_message"] = f"Token exchange failed: {e}"
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = f"Token exchange failed: {e}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     access_token = result.get("access_token", "")
     refresh_token = result.get("refresh_token", "")
     expires_in = int(result.get("expires_in") or 3600)
     if not access_token:
-        sess["status"] = "error"
-        sess["error_message"] = "No access token returned"
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = "No access token returned"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     expires_at_ms = int(time.time() * 1000) + (expires_in * 1000)
     try:
         _save_anthropic_oauth_creds(access_token, refresh_token, expires_at_ms)
     except Exception as e:
-        sess["status"] = "error"
-        sess["error_message"] = f"Save failed: {e}"
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = f"Save failed: {e}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
-    sess["status"] = "approved"
+    with _oauth_sessions_lock:
+        sess["status"] = "approved"
     _log.info("oauth/pkce: anthropic login completed (session=%s)", session_id)
     return {"ok": True, "status": "approved"}
 

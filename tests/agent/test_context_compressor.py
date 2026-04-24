@@ -685,6 +685,28 @@ class TestSummaryTargetRatio:
         # 50% of 200K = 100K, which is above the 64K floor
         assert c.threshold_tokens == 100_000
 
+    def test_threshold_uses_percentage_at_exact_minimum_context(self):
+        """64K models must still compress before hitting the hard context limit."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=64_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                threshold_percent=0.70,
+            )
+        assert c.threshold_tokens == 44_800
+
+    def test_update_model_uses_percentage_at_exact_minimum_context(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                threshold_percent=0.70,
+            )
+
+        c.update_model("test", 64_000)
+
+        assert c.threshold_tokens == 44_800
+
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):

@@ -314,10 +314,7 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        self.threshold_tokens = self._compute_threshold_tokens(context_length)
 
     def __init__(
         self,
@@ -350,14 +347,7 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        self.threshold_tokens = self._compute_threshold_tokens(self.context_length)
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
@@ -378,7 +368,6 @@ class ContextCompressor(ContextEngine):
                 provider or "none", base_url or "none",
             )
         self._context_probed = False  # True after a step-down from context error
-
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
 
@@ -391,6 +380,19 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
+
+    def _compute_threshold_tokens(self, context_length: int) -> int:
+        """Return a compression threshold that never disables compression.
+
+        The 64K floor prevents premature compression on large-context models,
+        but for models at the floor itself it would otherwise push the
+        threshold to 100% and make compression unreachable.
+        """
+        percentage_threshold = int(context_length * self.threshold_percent)
+        threshold_tokens = max(percentage_threshold, MINIMUM_CONTEXT_LENGTH)
+        if threshold_tokens >= context_length:
+            return percentage_threshold
+        return threshold_tokens
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""

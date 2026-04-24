@@ -2910,9 +2910,17 @@ def extract_content_or_reasoning(response) -> str:
     import re
 
     msg = response.choices[0].message
-    content = (msg.content or "").strip()
+    raw_content = getattr(msg, "content", None)
+    if isinstance(raw_content, str):
+        content = raw_content.strip()
+    else:
+        content = raw_content
 
     if content:
+        # Preserve non-string payloads for callers that know how to coerce them
+        # (e.g. llama.cpp-style dict content), while still normalizing text.
+        if not isinstance(content, str):
+            return content
         # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
         cleaned = re.sub(
             r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>"

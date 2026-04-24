@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
@@ -171,6 +172,35 @@ class TestNonStringContent:
         # None content → empty string → standardized compaction handoff prefix added
         assert summary is not None
         assert summary == SUMMARY_PREFIX
+
+    def test_reasoning_content_used_when_message_content_is_none(self):
+        mock_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=None,
+                        reasoning="summary from reasoning",
+                        reasoning_content=None,
+                        reasoning_details=None,
+                    )
+                )
+            ]
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+
+        assert isinstance(summary, str)
+        assert summary.startswith(SUMMARY_PREFIX)
+        assert "summary from reasoning" in summary
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()

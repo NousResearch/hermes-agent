@@ -46,3 +46,31 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+
+
+def test_make_agent_tolerates_null_config_sections():
+    """Bare `agent:` / `display:` keys in ~/.hermes/config.yaml parse as
+    None. cfg.get("agent", {}) returns None (default only fires on missing
+    key), so downstream .get() chains must be guarded. Reported via Twitter
+    against the new TUI; CLI path is unaffected."""
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    null_cfg = {"agent": None, "display": None, "model": {"default": "glm-5"}}
+
+    with patch("tui_gateway.server._load_cfg", return_value=null_cfg), \
+         patch("tui_gateway.server._get_db", return_value=MagicMock()), \
+         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_runtime), \
+         patch("run_agent.AIAgent") as mock_agent:
+
+        from tui_gateway.server import _make_agent
+        _make_agent("sid-null", "key-null")
+
+        assert mock_agent.called

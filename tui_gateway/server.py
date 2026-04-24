@@ -593,13 +593,13 @@ def _coerce_statusbar(raw) -> str:
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
-    effort = str(_load_cfg().get("agent", {}).get("reasoning_effort", "") or "").strip()
+    effort = str((_load_cfg().get("agent") or {}).get("reasoning_effort", "") or "").strip()
     return parse_reasoning_effort(effort)
 
 
 def _load_service_tier() -> str | None:
     raw = (
-        str(_load_cfg().get("agent", {}).get("service_tier", "") or "").strip().lower()
+        str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
     )
     if not raw or raw in {"normal", "default", "standard", "off", "none"}:
         return None
@@ -609,11 +609,11 @@ def _load_service_tier() -> str | None:
 
 
 def _load_show_reasoning() -> bool:
-    return bool(_load_cfg().get("display", {}).get("show_reasoning", False))
+    return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
 
 
 def _load_tool_progress_mode() -> str:
-    raw = _load_cfg().get("display", {}).get("tool_progress", "all")
+    raw = (_load_cfg().get("display") or {}).get("tool_progress", "all")
     if raw is False:
         return "off"
     if raw is True:
@@ -1104,20 +1104,20 @@ def _wire_callbacks(sid: str):
 
 def _resolve_personality_prompt(cfg: dict) -> str:
     """Resolve the active personality into a system prompt string."""
-    name = (cfg.get("display", {}).get("personality", "") or "").strip().lower()
+    name = ((cfg.get("display") or {}).get("personality", "") or "").strip().lower()
     if not name or name in ("default", "none", "neutral"):
         return ""
     try:
         from cli import load_cli_config
 
-        personalities = load_cli_config().get("agent", {}).get("personalities", {})
+        personalities = (load_cli_config().get("agent") or {}).get("personalities", {})
     except Exception:
         try:
             from hermes_cli.config import load_config as _load_full_cfg
 
-            personalities = _load_full_cfg().get("agent", {}).get("personalities", {})
+            personalities = (_load_full_cfg().get("agent") or {}).get("personalities", {})
         except Exception:
-            personalities = cfg.get("agent", {}).get("personalities", {})
+            personalities = (cfg.get("agent") or {}).get("personalities", {})
     pval = personalities.get(name)
     if pval is None:
         return ""
@@ -1139,15 +1139,15 @@ def _available_personalities(cfg: dict | None = None) -> dict:
     try:
         from cli import load_cli_config
 
-        return load_cli_config().get("agent", {}).get("personalities", {}) or {}
+        return (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
     except Exception:
         try:
             from hermes_cli.config import load_config as _load_full_cfg
 
-            return _load_full_cfg().get("agent", {}).get("personalities", {}) or {}
+            return (_load_full_cfg().get("agent") or {}).get("personalities", {}) or {}
         except Exception:
             cfg = cfg or _load_cfg()
-            return cfg.get("agent", {}).get("personalities", {}) or {}
+            return (cfg.get("agent") or {}).get("personalities", {}) or {}
 
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
@@ -1257,7 +1257,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     cfg = _load_cfg()
-    system_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
+    system_prompt = (cfg.get("agent") or {}).get("system_prompt", "") or ""
     if not system_prompt:
         system_prompt = _resolve_personality_prompt(cfg)
     runtime = resolve_runtime_provider(requested=None)
@@ -2838,18 +2838,18 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
     if key == "skin":
         return _ok(
-            rid, {"value": _load_cfg().get("display", {}).get("skin", "default")}
+            rid, {"value": (_load_cfg().get("display") or {}).get("skin", "default")}
         )
     if key == "personality":
         return _ok(
-            rid, {"value": _load_cfg().get("display", {}).get("personality", "default")}
+            rid, {"value": (_load_cfg().get("display") or {}).get("personality", "default")}
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str(cfg.get("agent", {}).get("reasoning_effort", "medium") or "medium")
+        effort = str((cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium")
         display = (
             "show"
-            if bool(cfg.get("display", {}).get("show_reasoning", False))
+            if bool((cfg.get("display") or {}).get("show_reasoning", False))
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})
@@ -2857,7 +2857,7 @@ def _(rid, params: dict) -> dict:
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (
             str(
-                _load_cfg().get("display", {}).get("details_mode", "collapsed")
+                (_load_cfg().get("display") or {}).get("details_mode", "collapsed")
                 or "collapsed"
             )
             .strip()
@@ -2868,13 +2868,13 @@ def _(rid, params: dict) -> dict:
     if key == "thinking_mode":
         allowed_tm = frozenset({"collapsed", "truncated", "full"})
         cfg = _load_cfg()
-        raw = str(cfg.get("display", {}).get("thinking_mode", "") or "").strip().lower()
+        raw = str((cfg.get("display") or {}).get("thinking_mode", "") or "").strip().lower()
         if raw in allowed_tm:
             nv = raw
         else:
             dm = (
                 str(
-                    cfg.get("display", {}).get("details_mode", "collapsed")
+                    (cfg.get("display") or {}).get("details_mode", "collapsed")
                     or "collapsed"
                 )
                 .strip()
@@ -2883,7 +2883,7 @@ def _(rid, params: dict) -> dict:
             nv = "full" if dm == "expanded" else "collapsed"
         return _ok(rid, {"value": nv})
     if key == "compact":
-        on = bool(_load_cfg().get("display", {}).get("tui_compact", False))
+        on = bool((_load_cfg().get("display") or {}).get("tui_compact", False))
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "statusbar":
         display = _load_cfg().get("display")
@@ -3721,7 +3721,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             _apply_personality_to_session(sid, session, new_prompt)
         elif name == "prompt" and agent:
             cfg = _load_cfg()
-            new_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
+            new_prompt = (cfg.get("agent") or {}).get("system_prompt", "") or ""
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:

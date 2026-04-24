@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
@@ -76,7 +75,7 @@ def _make_runner(platform: Platform, config: GatewayConfig):
 def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypatch, tmp_path):
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     session_dir = tmp_path / "whatsapp" / "session"
     session_dir.mkdir(parents=True)

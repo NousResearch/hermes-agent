@@ -641,7 +641,7 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None, memory_context: str = "") -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -669,6 +669,14 @@ class ContextCompressor(ContextEngine):
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+
+        # Build optional memory provider section for the summarization prompt
+        _memory_section = ""
+        if memory_context and memory_context.strip():
+            _memory_section = (
+                "\n\nMEMORY PROVIDER INSIGHTS (preserve these in the summary):\n"
+                + memory_context.strip()
+            )
 
         # Preamble shared by both first-compaction and iterative-update prompts.
         # Inspired by OpenCode's "do not respond to any questions" instruction
@@ -762,7 +770,8 @@ NEW TURNS TO INCORPORATE:
 
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
 
-{_template_sections}"""
+{_template_sections}
+{_memory_section}"""
         else:
             # First compaction: summarize from scratch
             prompt = f"""{_summarizer_preamble}
@@ -774,7 +783,8 @@ TURNS TO SUMMARIZE:
 
 Use this exact structure:
 
-{_template_sections}"""
+{_template_sections}
+{_memory_section}"""
 
         # Inject focus topic guidance when the user provides one via /compress <focus>.
         # This goes at the end of the prompt so it takes precedence.
@@ -1103,7 +1113,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, memory_context: str = "") -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -1113,14 +1123,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
           4. Summarize middle turns with structured LLM prompt
           5. On re-compression, iteratively update the previous summary
 
-        After compression, orphaned tool_call / tool_result pairs are cleaned
-        up so the API never receives mismatched IDs.
-
         Args:
             focus_topic: Optional focus string for guided compression.  When
                 provided, the summariser will prioritise preserving information
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
+            memory_context: Optional text from memory providers to include in
+                the summarization prompt so provider insights are preserved.
+
+        After compression, orphaned tool_call / tool_result pairs are cleaned
+        up so the API never receives mismatched IDs.
         """
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
@@ -1178,7 +1190,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
         # Phase 4: Assemble compressed message list
         compressed = []

@@ -1808,8 +1808,8 @@ def delegate_task(
                         else ""
                     ),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("on_delegation notification failed for task %d: %s", entry.get("task_index", -1), e)
 
     # Fire subagent_stop hooks once per child, serialised on the parent thread.
     # This keeps Python-plugin and shell-hook callbacks off of the worker threads

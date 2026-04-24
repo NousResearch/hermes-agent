@@ -413,9 +413,14 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    # Normalize repeat: coerce strings like "once" to int, treat invalid/0/negative as None
+    if repeat is not None:
+        try:
+            repeat = int(repeat)
+        except (TypeError, ValueError):
+            repeat = None
+        if repeat is not None and repeat <= 0:
+            repeat = None
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

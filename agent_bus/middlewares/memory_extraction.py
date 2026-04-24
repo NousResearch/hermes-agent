@@ -252,26 +252,18 @@ class MemoryExtractionMiddleware(BaseMiddleware):
         logger.info("memory-extract: thread=%s added=%d total=%d", thread_id, added, len(existing))
 
     def _llm_extract(self, thread_id: str, messages: list[dict[str, Any]]) -> list[Fact]:
-        """Extract facts via Anthropic SDK if available, else return [].
+        """Extract facts via LLM. Tries backends in order, stops at first success.
 
-        Uses minimal prompt that asks Claude to emit a JSON array of facts.
-        Degrades silently (log-only) on any error — caller falls back to
-        heuristic extractor.
+        Backends (controlled by HERMES_AUTO_MEMORY_BACKEND):
+          codex     — subprocess-call `codex exec` (free w/ user's subscription)
+          anthropic — Anthropic SDK (requires API key)
+          auto      — try codex first, fall back to anthropic (default)
+
+        Degrades silently on any error — caller falls back to heuristic.
         """
-        try:
-            import anthropic  # type: ignore
-        except ImportError:
-            logger.debug("anthropic SDK not installed — LLM extract skipped")
-            return []
-
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            logger.debug("ANTHROPIC_API_KEY missing — LLM extract skipped")
-            return []
-
-        # Build a compact conversation text
+        # Build prompt once, reused by all backends
         lines: list[str] = []
-        for m in messages[-30:]:  # last 30 only, avoid blowing context
+        for m in messages[-30:]:
             role = m.get("role", "?")
             content = m.get("content") or ""
             if isinstance(content, str) and content.strip():
@@ -279,71 +271,143 @@ class MemoryExtractionMiddleware(BaseMiddleware):
         if not lines:
             return []
 
-        model = os.environ.get("HERMES_AUTO_MEMORY_MODEL", "claude-3-5-haiku-latest")
-        prompt = (
-            "You are extracting durable facts about the user from this "
-            "conversation. Return ONLY a JSON array (no prose) of at most 5 "
-            "objects, each with keys:\n"
-            '  content (string, <160 chars, third-person statement of fact)\n'
-            '  category (one of: preference, knowledge, context, behavior, goal)\n'
-            '  confidence (float 0..1)\n'
-            "Skip anything speculative. Prefer stable traits over momentary "
-            "mentions.\n\n"
-            "Conversation:\n---\n" + "\n".join(lines) + "\n---"
+        prompt = _build_extract_prompt(lines)
+        backend = os.environ.get("HERMES_AUTO_MEMORY_BACKEND", "auto").lower()
+
+        tried: list[str] = []
+        raw = ""
+        source_tag = ""
+
+        if backend in ("codex", "auto"):
+            tried.append("codex")
+            raw, source_tag = _extract_via_codex(prompt)
+            if raw:
+                return _parse_facts(raw, source_tag, thread_id)
+
+        if backend in ("anthropic", "auto"):
+            tried.append("anthropic")
+            raw, source_tag = _extract_via_anthropic(prompt)
+            if raw:
+                return _parse_facts(raw, source_tag, thread_id)
+
+        logger.debug("LLM extract: all backends silent (tried=%s)", tried)
+        return []
+
+
+# ---- Backend: Codex CLI ----
+def _extract_via_codex(prompt: str) -> tuple[str, str]:
+    """Call `codex exec --sandbox read-only` with the prompt. Uses user's
+    codex subscription — no API key, no per-call cost.
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+
+    if not _shutil.which("codex"):
+        logger.debug("codex CLI not on PATH — skipping codex backend")
+        return "", ""
+
+    model = os.environ.get("HERMES_AUTO_MEMORY_MODEL", "gpt-5")
+    timeout_sec = int(os.environ.get("HERMES_AUTO_MEMORY_TIMEOUT", "60"))
+    try:
+        proc = _sp.run(
+            ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", prompt],
+            capture_output=True, text=True, timeout=timeout_sec,
         )
+    except _sp.TimeoutExpired:
+        logger.warning("codex extract timed out after %ss", timeout_sec)
+        return "", ""
+    except Exception as exc:
+        logger.warning("codex extract subprocess failed: %s", exc)
+        return "", ""
 
+    if proc.returncode != 0:
+        logger.debug("codex returncode=%d stderr=%s", proc.returncode, (proc.stderr or "")[:200])
+        return "", ""
+
+    return proc.stdout or "", f"codex:{model}"
+
+
+# ---- Backend: Anthropic SDK ----
+def _extract_via_anthropic(prompt: str) -> tuple[str, str]:
+    try:
+        import anthropic  # type: ignore
+    except ImportError:
+        logger.debug("anthropic SDK not installed — skipping anthropic backend")
+        return "", ""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        logger.debug("ANTHROPIC_API_KEY missing — skipping anthropic backend")
+        return "", ""
+    model = os.environ.get("HERMES_AUTO_MEMORY_MODEL", "claude-3-5-haiku-latest")
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text if resp.content else ""
+    except Exception as exc:
+        logger.warning("anthropic extract failed: %s", exc)
+        return "", ""
+    return raw, f"anthropic:{model}"
+
+
+# ---- Shared helpers ----
+def _build_extract_prompt(conversation_lines: list[str]) -> str:
+    return (
+        "You are extracting durable facts about the user from this "
+        "conversation. Return ONLY a JSON array (no prose, no markdown fences) "
+        "of at most 5 objects, each with keys:\n"
+        '  content (string, <160 chars, third-person statement of fact)\n'
+        '  category (one of: preference, knowledge, context, behavior, goal)\n'
+        '  confidence (float 0..1)\n'
+        "Skip anything speculative. Prefer stable traits over momentary mentions.\n\n"
+        "Conversation:\n---\n" + "\n".join(conversation_lines) + "\n---"
+    )
+
+
+def _parse_facts(raw: str, source_tag: str, thread_id: str) -> list[Fact]:
+    import json as _json
+    import re as _re
+
+    # Codex may prepend tokens/log headers; strip everything before first `[`
+    m = _re.search(r"\[[^\[\]]*(?:\[[^\]]*\][^\[\]]*)*\]", raw, _re.DOTALL)
+    if not m:
+        logger.debug("parse_facts: no JSON array in raw[:200]=%r", raw[:200])
+        return []
+    try:
+        raw_facts = _json.loads(m.group(0))
+    except _json.JSONDecodeError as exc:
+        logger.warning("parse_facts: JSON parse failed: %s", exc)
+        return []
+
+    now = time.time()
+    out: list[Fact] = []
+    for i, f in enumerate(raw_facts or []):
+        if not isinstance(f, dict):
+            continue
+        content = (f.get("content") or "").strip()
+        if not content or len(content) > 200:
+            continue
+        category = f.get("category", "context")
+        if category not in ("preference", "knowledge", "context", "behavior", "goal"):
+            category = "context"
         try:
-            client = anthropic.Anthropic(api_key=api_key)
-            resp = client.messages.create(
-                model=model,
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = resp.content[0].text if resp.content else ""
-        except Exception as exc:
-            logger.warning("LLM extract call failed: %s", exc)
-            return []
-
-        import json as _json
-        import re as _re
-
-        # Extract JSON array from response (model may wrap in fences)
-        m = _re.search(r"\[.*\]", raw, _re.DOTALL)
-        if not m:
-            logger.debug("LLM extract: no JSON array in response")
-            return []
-        try:
-            raw_facts = _json.loads(m.group(0))
-        except _json.JSONDecodeError as exc:
-            logger.warning("LLM extract: JSON parse failed: %s", exc)
-            return []
-
-        now = time.time()
-        out: list[Fact] = []
-        for i, f in enumerate(raw_facts or []):
-            if not isinstance(f, dict):
-                continue
-            content = (f.get("content") or "").strip()
-            if not content or len(content) > 200:
-                continue
-            category = f.get("category", "context")
-            if category not in ("preference", "knowledge", "context", "behavior", "goal"):
-                category = "context"
-            try:
-                confidence = float(f.get("confidence", 0.7))
-            except (TypeError, ValueError):
-                confidence = 0.7
-            confidence = max(0.0, min(1.0, confidence))
-            out.append(Fact(
-                id=f"llm-{int(now)}-{i}",
-                content=content,
-                category=category,
-                confidence=confidence,
-                created_at=now,
-                source=f"llm:{model}",
-            ))
-        logger.info("LLM extract: %d facts from %s", len(out), thread_id)
-        return out
+            confidence = float(f.get("confidence", 0.7))
+        except (TypeError, ValueError):
+            confidence = 0.7
+        confidence = max(0.0, min(1.0, confidence))
+        out.append(Fact(
+            id=f"llm-{int(now)}-{i}",
+            content=content,
+            category=category,
+            confidence=confidence,
+            created_at=now,
+            source=source_tag,
+        ))
+    logger.info("llm extract: %d facts via %s for %s", len(out), source_tag, thread_id)
+    return out
 
     # For tests
     def _flush_all(self) -> None:

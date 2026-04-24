@@ -242,19 +242,17 @@ class TestDispatchGuardrail:
 #  S4 — LLM extractor fallback behavior
 # ================================================================
 class TestLLMExtractorFallback:
-    def test_llm_no_sdk_returns_empty(self):
+    def test_anthropic_backend_no_api_key_returns_empty(self):
+        # Force anthropic-only backend with no key → must skip gracefully
         from agent_bus.middlewares.memory_extraction import MemoryExtractionMiddleware
         mw = MemoryExtractionMiddleware()
-        # If anthropic is not installed, _llm_extract returns []
-        with mock.patch.dict(os.environ, {}, clear=False):
+        with mock.patch.dict(os.environ, {"HERMES_AUTO_MEMORY_BACKEND": "anthropic"}, clear=False):
             os.environ.pop("ANTHROPIC_API_KEY", None)
-            facts = mw._llm_extract("tid", [{"role": "user", "content": "I prefer black coffee"}])
-            assert facts == []
+            assert mw._llm_extract("tid", [{"role": "user", "content": "I prefer black coffee"}]) == []
 
-    def test_llm_no_api_key_returns_empty(self):
-        # anthropic may be installed, but no key → skip
+    def test_empty_messages_return_empty(self):
         from agent_bus.middlewares.memory_extraction import MemoryExtractionMiddleware
         mw = MemoryExtractionMiddleware()
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ANTHROPIC_API_KEY", None)
-            assert mw._llm_extract("tid", [{"role": "user", "content": "hi"}]) == []
+        assert mw._llm_extract("tid", []) == []
+        # All messages with empty content → also empty
+        assert mw._llm_extract("tid", [{"role": "user", "content": ""}]) == []

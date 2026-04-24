@@ -46,6 +46,75 @@ def _ensure_middlewares_registered() -> None:
         logger.warning("middleware registration skipped: %s", exc)
 
 
+def _attach_sandbox_paths(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Enrich task row with per-thread sandbox paths for caller convenience.
+
+    Does not mutate storage — this is view-only decoration. Skipped silently
+    if sandbox module is unavailable (e.g. import fails).
+    """
+    try:
+        from agent_bus.sandbox.local import get_default_provider
+        provider = get_default_provider()
+        sb = provider.acquire(task["task_id"])
+        task = dict(task)  # copy to avoid polluting storage dict
+        task["sandbox"] = {
+            "id": sb.id,
+            "workspace_virtual": "/mnt/user-data/workspace",
+            "uploads_virtual": "/mnt/user-data/uploads",
+            "outputs_virtual": "/mnt/user-data/outputs",
+            "workspace_real": str(sb.workspace_dir),
+            "outputs_real": str(sb.outputs_dir),
+        }
+    except Exception as exc:  # pragma: no cover
+        logger.debug("sandbox attach skipped: %s", exc)
+    return task
+
+
+def _sync_task_outputs_to_wiki(task_id: str) -> int:
+    """After bus task close, copy sandbox outputs to shared wiki memory.
+
+    Complements scripts/workspace_to_wiki_sync.py D-direction: now we also
+    sync per-task outputs. Returns count of files synced.
+    """
+    try:
+        from agent_bus.sandbox.local import get_default_provider
+        provider = get_default_provider()
+        sb = provider.get(task_id)
+        if sb is None:
+            return 0
+        outputs = sb.outputs_dir
+        if not outputs.exists():
+            return 0
+        wiki_mem = Path.home() / "wiki" / "memory"
+        if not wiki_mem.exists():
+            return 0
+        count = 0
+        for src in outputs.glob("*.md"):
+            # Only publish if it has YAML frontmatter (same rule as
+            # workspace_to_wiki_sync.py — avoid leaking drafts)
+            try:
+                with src.open("r", encoding="utf-8") as f:
+                    if not f.readline().startswith("---"):
+                        continue
+            except Exception:
+                continue
+            dst = wiki_mem / f"task-{task_id}-{src.name}"
+            if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+                continue
+            try:
+                import shutil as _shutil
+                _shutil.copy2(src, dst)
+                count += 1
+            except Exception as exc:
+                logger.debug("sandbox output sync failed for %s: %s", src, exc)
+        if count:
+            logger.info("sandbox outputs sync: task=%s files=%d", task_id, count)
+        return count
+    except Exception as exc:  # pragma: no cover
+        logger.debug("sandbox output sync skipped: %s", exc)
+        return 0
+
+
 def _run_dispatch_guardrail(*, from_agent: str, to_agent: str, goal: str) -> None:
     """Run S9 GuardrailMiddleware as a pre-dispatch check.
 
@@ -423,6 +492,8 @@ def complete_task(
         storage.update_task(task_id, user_notified=1)
     # Middleware chain close hook (memory extract flush, todo recap, etc.)
     _run_close_middlewares(updated, "done", result)
+    # S7: sync any per-task sandbox outputs to shared wiki
+    _sync_task_outputs_to_wiki(task_id)
     return updated
 
 
@@ -475,6 +546,8 @@ def fail_task(
         storage.update_task(task_id, user_notified=1)
     # Middleware chain close hook
     _run_close_middlewares(updated, "fail", reason)
+    # S7: sync any per-task sandbox outputs to shared wiki
+    _sync_task_outputs_to_wiki(task_id)
     return updated
 
 

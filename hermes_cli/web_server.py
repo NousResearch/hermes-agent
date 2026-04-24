@@ -2032,6 +2032,39 @@ async def dispatch_bus_task(req: DispatchRequest, force: bool = False):
         return {"ok": False, "error": str(exc)}
 
 
+@app.get("/api/dual-agent/traces")
+async def get_dual_agent_traces(limit: int = 200, thread_id: Optional[str] = None):
+    """Return recent trace spans from ~/.hermes/traces.jsonl (S10)."""
+    import json as _json
+    import os as _os
+    path = Path(_os.environ.get(
+        "HERMES_TRACE_STORE_PATH",
+        str(Path.home() / ".hermes" / "traces.jsonl"),
+    )).expanduser()
+    if not path.exists():
+        return {"exists": False, "path": str(path), "spans": []}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as exc:
+        return {"exists": True, "path": str(path), "error": str(exc), "spans": []}
+    spans = []
+    for line in lines[-limit:]:
+        try:
+            span = _json.loads(line)
+            if thread_id and span.get("thread_id") != thread_id:
+                continue
+            spans.append(span)
+        except Exception:
+            continue
+    return {
+        "exists": True,
+        "path": str(path),
+        "total_lines": len(lines),
+        "spans": spans[-limit:],
+    }
+
+
 @app.get("/api/dual-agent/sandboxes")
 async def list_dual_agent_sandboxes():
     """List per-thread sandbox directories and their contents summary (S7)."""

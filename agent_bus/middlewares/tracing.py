@@ -97,19 +97,57 @@ def _reset_providers_for_test() -> None:  # pragma: no cover (test helper)
     _LANGFUSE_CLIENT = None
 
 
+_TRACE_STORE_LOCK: Any = None  # lazy-set by _init_providers
+
+
+def _get_trace_store_path() -> "Path":
+    from pathlib import Path as _Path
+    return _Path(os.environ.get(
+        "HERMES_TRACE_STORE_PATH",
+        str(_Path.home() / ".hermes" / "traces.jsonl"),
+    )).expanduser()
+
+
+def _persist_span(span: dict) -> None:
+    """Append span to local JSONL file for dashboard timeline queries."""
+    import json as _json
+    from pathlib import Path as _Path
+    try:
+        path = _get_trace_store_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(span, ensure_ascii=False) + "\n")
+        # Bound file size — trim to last 5000 lines if grows beyond 10k
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                lines = f.readlines()
+            if len(lines) > 10_000:
+                with path.open("w", encoding="utf-8") as f:
+                    f.writelines(lines[-5000:])
+        except Exception:
+            pass
+    except Exception as exc:  # pragma: no cover
+        logger.debug("trace persist failed: %s", exc)
+
+
 def _emit_span(hook: str, ctx: MiddlewareContext, start: float, end: float) -> None:
-    """Push a span to whichever providers are configured."""
+    """Push a span to whichever providers are configured + local JSONL store."""
     duration_ms = (end - start) * 1000.0
     span = {
         "name": f"middleware.{hook}",
+        "hook": hook,
         "thread_id": ctx.thread_id,
         "agent": ctx.agent,
+        "start_ts": start,
+        "end_ts": end,
         "duration_ms": round(duration_ms, 2),
         "msg_count": len(ctx.messages),
         "decisions": len(ctx.decisions),
     }
     # Always record into ctx metadata for dashboard even without providers
     ctx.metadata.setdefault("trace_spans", []).append(span)
+    # Persist to local JSONL — dashboard can tail this
+    _persist_span(span)
 
     if _LANGSMITH_CLIENT is not None:
         try:

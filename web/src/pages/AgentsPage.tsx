@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  FolderTree,
   GitBranch,
   History,
   Layers,
@@ -14,6 +15,7 @@ import {
   Network,
   RefreshCw,
   Send,
+  Timer,
   TrendingDown,
   TrendingUp,
   X,
@@ -176,6 +178,37 @@ interface AutoMemoryData {
   error?: string;
 }
 
+interface TraceSpan {
+  name: string;
+  hook: string;
+  thread_id: string | null;
+  agent: string | null;
+  start_ts: number;
+  end_ts: number;
+  duration_ms: number;
+}
+
+interface TracesData {
+  exists: boolean;
+  path: string;
+  total_lines?: number;
+  spans: TraceSpan[];
+  error?: string;
+}
+
+interface SandboxThread {
+  thread_id: string;
+  mtime: number;
+  workspace_count: number;
+  uploads_count: number;
+  outputs_count: number;
+}
+
+interface SandboxesData {
+  root: string;
+  threads: SandboxThread[];
+}
+
 // -------- Helpers --------
 function statusBadgeVariant(status: string): "success" | "warning" | "destructive" | "outline" {
   if (status === "done") return "success";
@@ -215,6 +248,8 @@ export default function AgentsPage() {
   const [throttle, setThrottle] = useState<ThrottleState | null>(null);
   const [middleware, setMiddleware] = useState<MiddlewareStatus | null>(null);
   const [autoMemory, setAutoMemory] = useState<AutoMemoryData | null>(null);
+  const [traces, setTraces] = useState<TracesData | null>(null);
+  const [sandboxes, setSandboxes] = useState<SandboxesData | null>(null);
   const [showCoaching, setShowCoaching] = useState(false);
 
   function flashToast(msg: string) {
@@ -229,7 +264,7 @@ export default function AgentsPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [s, b, h, a, sn, th, mw, am] = await Promise.all([
+        const [s, b, h, a, sn, th, mw, am, tr, sx] = await Promise.all([
           fetch("/api/dual-agent/status").then((r) => r.json()),
           fetch("/api/dual-agent/bus").then((r) => r.json()),
           fetch("/api/dual-agent/handoffs").then((r) => r.json()),
@@ -238,6 +273,8 @@ export default function AgentsPage() {
           fetch("/api/dual-agent/throttle").then((r) => r.json()),
           fetch("/api/dual-agent/middleware").then((r) => r.json()),
           fetch("/api/dual-agent/auto-memory").then((r) => r.json()),
+          fetch("/api/dual-agent/traces?limit=80").then((r) => r.json()),
+          fetch("/api/dual-agent/sandboxes").then((r) => r.json()),
         ]);
         if (s.error) setErr(s.error);
         else setStatus(s as DualAgentStatus);
@@ -248,6 +285,8 @@ export default function AgentsPage() {
         setThrottle(th as ThrottleState);
         setMiddleware(mw as MiddlewareStatus);
         setAutoMemory(am as AutoMemoryData);
+        setTraces(tr as TracesData);
+        setSandboxes(sx as SandboxesData);
         setLoading(false);
       } catch (e) {
         setErr(String(e));
@@ -574,6 +613,62 @@ export default function AgentsPage() {
         </Card>
       )}
 
+      {/* -------- Trace spans timeline (S10) -------- */}
+      {traces && traces.exists && traces.spans.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Timer className="h-4 w-4" /> Trace spans（S10，本地 JSONL）
+              <span className="text-xs text-muted-foreground ml-2">
+                最近 {traces.spans.length}  /  total {traces.total_lines}
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <TraceTimeline spans={traces.spans} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* -------- Sandboxes (S7) -------- */}
+      {sandboxes && sandboxes.threads.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <FolderTree className="h-4 w-4" /> Per-thread sandboxes（S7）
+              <span className="text-xs text-muted-foreground ml-2">
+                {sandboxes.threads.length} active ·{" "}
+                <span className="font-mono">{sandboxes.root}</span>
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+              {sandboxes.threads.slice(0, 12).map((t) => (
+                <div
+                  key={t.thread_id}
+                  className="rounded-md border border-border/60 bg-card/50 p-2 text-sm"
+                >
+                  <div className="font-mono text-xs truncate" title={t.thread_id}>
+                    {t.thread_id}
+                  </div>
+                  <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
+                    <span>ws: {t.workspace_count}</span>
+                    <span>up: {t.uploads_count}</span>
+                    <span>out: {t.outputs_count}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {sandboxes.threads.length > 12 && (
+              <div className="mt-2 text-xs text-muted-foreground text-right">
+                …還有 {sandboxes.threads.length - 12} 個
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* -------- Recent activity feed -------- */}
       <Card>
         <CardHeader>
@@ -892,6 +987,72 @@ export default function AgentsPage() {
   );
 }
 
+// -------- Trace Timeline --------
+function TraceTimeline({ spans }: { spans: TraceSpan[] }) {
+  if (spans.length === 0) return null;
+
+  const byHook: Record<string, { count: number; total_ms: number; max_ms: number }> = {};
+  for (const s of spans) {
+    const h = s.hook || "?";
+    if (!byHook[h]) byHook[h] = { count: 0, total_ms: 0, max_ms: 0 };
+    byHook[h].count += 1;
+    byHook[h].total_ms += s.duration_ms;
+    byHook[h].max_ms = Math.max(byHook[h].max_ms, s.duration_ms);
+  }
+
+  const overallMax = Math.max(...spans.map((s) => s.duration_ms), 1);
+
+  return (
+    <div className="space-y-4">
+      {/* Per-hook summary */}
+      <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-5">
+        {Object.entries(byHook).map(([hook, stats]) => (
+          <div
+            key={hook}
+            className="rounded-md border border-border/60 bg-card/50 p-2 text-sm"
+          >
+            <div className="font-mono text-xs text-muted-foreground">{hook}</div>
+            <div className="mt-0.5 text-sm">
+              {stats.count}× · avg {(stats.total_ms / stats.count).toFixed(2)}ms
+            </div>
+            <div className="text-xs text-muted-foreground">
+              max {stats.max_ms.toFixed(2)}ms
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Recent 20 spans as bars */}
+      <div className="space-y-1">
+        <div className="text-xs text-muted-foreground mb-1">最近 20 條 spans</div>
+        {spans.slice(-20).reverse().map((s, i) => {
+          const pct = Math.min(100, (s.duration_ms / overallMax) * 100);
+          return (
+            <div key={i} className="flex items-center gap-2 text-xs">
+              <span className="w-24 shrink-0 font-mono text-muted-foreground truncate">
+                {s.hook}
+              </span>
+              <div className="flex-1 relative h-4 rounded bg-background/50 border border-border/40">
+                <div
+                  className="absolute left-0 top-0 h-full bg-primary/40"
+                  style={{ width: `${pct}%` }}
+                />
+                <div className="absolute inset-0 flex items-center px-2 text-xs">
+                  {s.duration_ms.toFixed(2)}ms
+                </div>
+              </div>
+              <span className="w-28 shrink-0 truncate font-mono text-muted-foreground" title={s.thread_id || ""}>
+                {s.thread_id ? s.thread_id.slice(0, 14) : "-"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 // -------- Snapshot Sparkline --------
 function SnapshotSparkline({ snapshots }: { snapshots: Snapshot[] }) {
   const dataPoints = [...snapshots].reverse().filter((s) => s.score !== null) as Array<
@@ -1110,7 +1271,7 @@ function DispatchModal({
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function submit() {
+  async function submit(force: boolean = false) {
     if (!goal.trim()) {
       setErr("goal 不能空");
       return;
@@ -1127,7 +1288,10 @@ function DispatchModal({
       deadline_minutes: deadline ? parseInt(deadline, 10) : undefined,
     };
     try {
-      const res = await fetch("/api/dual-agent/bus/dispatch", {
+      const url = force
+        ? "/api/dual-agent/bus/dispatch?force=true"
+        : "/api/dual-agent/bus/dispatch";
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1136,7 +1300,14 @@ function DispatchModal({
       if (j.ok) {
         onDispatched(j.task_id);
       } else {
-        setErr(j.error || "dispatch failed");
+        // Better error formatting — if throttled or guardrail-denied, be explicit
+        let msg = j.error || "dispatch failed";
+        if (j.throttled) {
+          msg = `⏱️ §9 throttle: ${j.error}`;
+        } else if (typeof j.error === "string" && j.error.includes("GUARDRAIL_DENY")) {
+          msg = `🛡️ Guardrail 拒絕：${j.error.replace("GUARDRAIL_DENY: ", "")}`;
+        }
+        setErr(msg);
       }
     } catch (e) {
       setErr(String(e));
@@ -1220,7 +1391,17 @@ function DispatchModal({
           <Button variant="outline" onClick={onClose} disabled={submitting}>
             取消
           </Button>
-          <Button onClick={submit} disabled={submitting}>
+          {err && (err.startsWith("⏱️") || err.startsWith("🛡️")) && (
+            <Button
+              variant="outline"
+              onClick={() => submit(true)}
+              disabled={submitting}
+              title="繞過 §9 節流或 guardrail，事後會記錄 bypass log"
+            >
+              繞過（force）
+            </Button>
+          )}
+          <Button onClick={() => submit(false)} disabled={submitting}>
             {submitting ? "派工中…" : "派出去"}
           </Button>
         </div>

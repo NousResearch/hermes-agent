@@ -84,6 +84,22 @@ class TestParseResponse:
         )
         assert r == {"context": "today is Friday"}
 
+    def test_pre_llm_call_short_circuit_passthrough(self):
+        r = shell_hooks._parse_response(
+            "pre_llm_call",
+            '{"context": "today is Friday", "short_circuit_response": "Routed directly"}',
+        )
+        assert r == {
+            "context": "today is Friday",
+            "short_circuit_response": "Routed directly",
+        }
+
+    def test_pre_llm_call_short_circuit_without_context_passthrough(self):
+        r = shell_hooks._parse_response(
+            "pre_llm_call", '{"short_circuit_response": "Routed directly"}',
+        )
+        assert r == {"short_circuit_response": "Routed directly"}
+
     def test_subagent_stop_context_passthrough(self):
         r = shell_hooks._parse_response(
             "subagent_stop", '{"context": "child role=leaf"}',

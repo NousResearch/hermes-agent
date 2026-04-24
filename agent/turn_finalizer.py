@@ -151,7 +151,8 @@ def finalize_turn(
         final_response is not None
         and not failed
         and (
-            api_call_count < agent.max_iterations
+            _turn_exit_reason == "plugin_short_circuit"
+            or api_call_count < agent.max_iterations
             or normal_text_response
         )
     )

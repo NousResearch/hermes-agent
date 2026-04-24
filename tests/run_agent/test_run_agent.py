@@ -4008,6 +4008,115 @@ class TestRunConversation:
         assert "Ollama runtime context too small for Hermes tool use" in caplog.text
         assert "runtime_context=4096" in caplog.text
 
+    def test_pre_llm_hook_can_short_circuit_before_any_api_call(self, agent):
+        self._setup_agent(agent)
+
+        def _hook_result(name, **kwargs):
+            if name == "pre_llm_call":
+                return [{"short_circuit_response": "Routed directly"}]
+            return []
+
+        agent.client.chat.completions.create.side_effect = AssertionError(
+            "API should not be called when pre_llm_call short-circuits"
+        )
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook_result),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Routed directly"
+        assert result["api_calls"] == 0
+        assert result["completed"] is True
+        assert result["messages"][-1] == {"role": "assistant", "content": "Routed directly"}
+        agent.client.chat.completions.create.assert_not_called()
+
+    def test_pre_llm_hook_short_circuit_does_not_override_pending_interrupt(self, agent):
+        self._setup_agent(agent)
+
+        def _hook_result(name, **kwargs):
+            if name == "pre_llm_call":
+                return [{"short_circuit_response": "Routed directly"}]
+            return []
+
+        agent._interrupt_requested = True
+        agent.client.chat.completions.create.side_effect = AssertionError(
+            "API should not be called when the turn is already interrupted"
+        )
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook_result),
+            patch("run_agent._set_interrupt"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["interrupted"] is True
+        assert result["api_calls"] == 0
+        assert not any(
+            msg.get("role") == "assistant" and msg.get("content") == "Routed directly"
+            for msg in result["messages"]
+            if isinstance(msg, dict)
+        )
+        agent.client.chat.completions.create.assert_not_called()
+
+    def test_pre_llm_hook_short_circuit_skips_memory_prefetch(self, agent):
+        self._setup_agent(agent)
+
+        def _hook_result(name, **kwargs):
+            if name == "pre_llm_call":
+                return [{"short_circuit_response": "Routed directly"}]
+            return []
+
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.prefetch_all.side_effect = AssertionError(
+            "Memory prefetch should not run on short-circuit"
+        )
+        agent.client.chat.completions.create.side_effect = AssertionError(
+            "API should not be called when pre_llm_call short-circuits"
+        )
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook_result),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Routed directly"
+        assert result["api_calls"] == 0
+        agent._memory_manager.on_turn_start.assert_called_once()
+        agent._memory_manager.prefetch_all.assert_not_called()
+        agent.client.chat.completions.create.assert_not_called()
+
+    def test_pre_llm_hook_short_circuit_is_completed_even_when_max_iterations_is_zero(self, agent):
+        self._setup_agent(agent)
+        agent.max_iterations = 0
+
+        def _hook_result(name, **kwargs):
+            if name == "pre_llm_call":
+                return [{"short_circuit_response": "Routed directly"}]
+            return []
+
+        agent.client.chat.completions.create.side_effect = AssertionError(
+            "API should not be called when pre_llm_call short-circuits"
+        )
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook_result),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Routed directly"
+        assert result["completed"] is True
+        assert result["api_calls"] == 0
+        agent.client.chat.completions.create.assert_not_called()
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

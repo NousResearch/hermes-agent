@@ -52,6 +52,7 @@ class TestSystemdServiceRefresh:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
 
         gateway_cli.systemd_start()
 
@@ -75,6 +76,7 @@ class TestSystemdServiceRefresh:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
 
         gateway_cli.systemd_restart()
 
@@ -502,6 +504,7 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError(f"Unexpected systemctl call: {cmd}")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         # get_running_pid returns new PID after restart
         pid_calls = [0]
         def fake_get_pid():
@@ -555,6 +558,7 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError(f"Unexpected command: {cmd}")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 999 if started["value"] else None,

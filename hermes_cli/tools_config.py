@@ -278,6 +278,15 @@ TOOL_CATEGORIES = {
                 ],
                 "imagegen_backend": "fal",
             },
+            {
+                "name": "OpenAI Official",
+                "badge": "paid",
+                "tag": "Official OpenAI Images API (gpt-image-1)",
+                "env_vars": [
+                    {"key": "OPENAI_API_KEY", "prompt": "OpenAI API key", "url": "https://platform.openai.com/api-keys"},
+                ],
+                "imagegen_backend": "openai",
+            },
         ],
     },
     "browser": {
@@ -1014,11 +1023,27 @@ def _fal_model_catalog():
     return FAL_MODELS, DEFAULT_MODEL
 
 
+def _openai_model_catalog():
+    """Minimal official OpenAI image catalog."""
+    return {
+        "gpt-image-1": {
+            "speed": "~15s",
+            "strengths": "Official OpenAI image generation",
+            "price": "OpenAI API billing",
+        },
+    }, "gpt-image-1"
+
+
 IMAGEGEN_BACKENDS = {
     "fal": {
         "display": "FAL.ai",
         "config_key": "image_gen",
         "catalog_fn": _fal_model_catalog,
+    },
+    "openai": {
+        "display": "OpenAI Official",
+        "config_key": "image_gen",
+        "catalog_fn": _openai_model_catalog,
     },
 }
 
@@ -1091,6 +1116,7 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     )
 
     chosen = ordered[idx]
+    cur_cfg["backend"] = backend_name
     cur_cfg["model"] = chosen
     _print_success(f"  Model set to: {chosen}")
 

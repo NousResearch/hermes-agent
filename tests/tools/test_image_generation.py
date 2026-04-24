@@ -314,6 +314,117 @@ class TestAspectRatioNormalization:
 
 
 # ---------------------------------------------------------------------------
+# OpenAI backend support
+# ---------------------------------------------------------------------------
+
+class TestOpenAIBackendResolution:
+
+    def test_backend_defaults_to_fal(self, image_tool):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert image_tool._resolve_image_backend() == "fal"
+
+    def test_backend_reads_openai_from_config(self, image_tool):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"image_gen": {"backend": "openai"}}):
+            assert image_tool._resolve_image_backend() == "openai"
+
+    def test_openai_model_defaults_to_gpt_image_1(self, image_tool):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert image_tool._resolve_openai_image_model() == "gpt-image-1"
+
+    def test_openai_model_reads_config(self, image_tool):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"image_gen": {"model": "dall-e-3"}}):
+            assert image_tool._resolve_openai_image_model() == "dall-e-3"
+
+
+class TestOpenAIAspectRatioMapping:
+
+    def test_openai_landscape_maps_to_1536x1024(self, image_tool):
+        assert image_tool._aspect_ratio_to_openai_size("landscape", "gpt-image-1") == "1536x1024"
+
+    def test_openai_square_maps_to_1024x1024(self, image_tool):
+        assert image_tool._aspect_ratio_to_openai_size("square", "gpt-image-1") == "1024x1024"
+
+    def test_openai_portrait_maps_to_1024x1536(self, image_tool):
+        assert image_tool._aspect_ratio_to_openai_size("portrait", "gpt-image-1") == "1024x1536"
+
+    def test_dalle_3_forces_square(self, image_tool):
+        assert image_tool._aspect_ratio_to_openai_size("portrait", "dall-e-3") == "1024x1024"
+
+    def test_invalid_openai_aspect_defaults_to_landscape(self, image_tool):
+        assert image_tool._aspect_ratio_to_openai_size("wide", "gpt-image-1") == "1536x1024"
+
+
+class TestOpenAIRequirements:
+
+    def test_openai_requirements_true_when_api_key_present(self, image_tool, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(image_tool, "_resolve_image_backend", lambda: "openai")
+        assert image_tool.check_image_generation_requirements() is True
+
+    def test_openai_requirements_false_when_api_key_missing(self, image_tool, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(image_tool, "_resolve_image_backend", lambda: "openai")
+        monkeypatch.setattr(image_tool, "_resolve_openai_api_key", lambda: "")
+        assert image_tool.check_image_generation_requirements() is False
+
+
+class TestOpenAISaveImage:
+
+    def test_save_openai_generated_image_from_b64(self, image_tool, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        payload = "aGVsbG8="  # base64('hello')
+
+        out = image_tool._save_openai_generated_image(b64_json=payload)
+
+        from pathlib import Path
+        p = Path(out)
+        assert p.exists()
+        assert p.read_bytes() == b"hello"
+        assert p.parent == tmp_path / "generated_images"
+
+
+class TestOpenAIGenerateFlow:
+
+    def test_generate_image_via_openai_uses_client_and_saves_file(self, image_tool, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_tool, "_resolve_openai_api_key", lambda: "sk-test")
+        monkeypatch.setattr(image_tool, "_resolve_openai_image_model", lambda: "gpt-image-1")
+        monkeypatch.setattr(image_tool, "_resolve_openai_base_url", lambda: "https://api.openai.com/v1")
+
+        calls = {}
+
+        class _RespItem:
+            b64_json = "aGVsbG8="
+            url = None
+
+        class _Resp:
+            data = [_RespItem()]
+
+        class _Images:
+            def generate(self, **kwargs):
+                calls["generate"] = kwargs
+                return _Resp()
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                calls["client_init"] = kwargs
+                self.images = _Images()
+
+        monkeypatch.setattr(image_tool, "OpenAI", _Client)
+
+        result = image_tool._generate_image_via_openai("blue circle", "portrait")
+
+        data = __import__("json").loads(result)
+        assert data["success"] is True
+        assert calls["client_init"]["api_key"] == "sk-test"
+        assert calls["generate"]["model"] == "gpt-image-1"
+        assert calls["generate"]["size"] == "1024x1536"
+        assert (tmp_path / "generated_images").exists()
+
+
+# ---------------------------------------------------------------------------
 # Schema + registry integrity
 # ---------------------------------------------------------------------------
 

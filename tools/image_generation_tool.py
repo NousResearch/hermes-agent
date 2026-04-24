@@ -26,11 +26,16 @@ import os
 import datetime
 import threading
 import uuid
+import base64
+from pathlib import Path
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import fal_client
+from openai import OpenAI
 
+from hermes_constants import get_hermes_home
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -259,6 +264,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
 DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
+DEFAULT_OPENAI_MODEL = "gpt-image-1"
 
 DEFAULT_ASPECT_RATIO = "landscape"
 VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
@@ -488,6 +494,121 @@ def _resolve_fal_model() -> tuple:
     return model_id, FAL_MODELS[model_id]
 
 
+def _load_image_gen_config() -> Dict[str, Any]:
+    """Return image_gen config dict or an empty dict when absent/corrupt."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        return img_cfg if isinstance(img_cfg, dict) else {}
+    except Exception as exc:
+        logger.debug("Could not load image_gen config: %s", exc)
+        return {}
+
+
+def _resolve_image_backend() -> str:
+    """Resolve active image backend. Defaults to FAL for backward-compat."""
+    backend = str(_load_image_gen_config().get("backend") or "").strip().lower()
+    if backend in {"fal", "openai"}:
+        return backend
+    return "fal"
+
+
+def _resolve_openai_image_model() -> str:
+    """Resolve active OpenAI image model from config or fallback default."""
+    raw = str(_load_image_gen_config().get("model") or "").strip()
+    if raw in {"gpt-image-1", "dall-e-3"}:
+        return raw
+    return DEFAULT_OPENAI_MODEL
+
+
+def _resolve_openai_base_url() -> str:
+    """Use configured OpenAI base URL when present, else official default."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        providers = cfg.get("providers") if isinstance(cfg, dict) else None
+        if isinstance(providers, dict):
+            openai_cfg = providers.get("openai")
+            if isinstance(openai_cfg, dict):
+                base = str(openai_cfg.get("base_url") or "").strip()
+                if base:
+                    return base
+    except Exception as exc:
+        logger.debug("Could not load OpenAI base URL from config: %s", exc)
+    return "https://api.openai.com/v1"
+
+
+def _resolve_openai_api_key() -> str:
+    """Resolve OpenAI API key from env / ~/.hermes/.env."""
+    value = os.getenv("OPENAI_API_KEY")
+    if value is None:
+        try:
+            from hermes_cli.config import get_env_value
+            value = get_env_value("OPENAI_API_KEY")
+        except Exception:
+            value = None
+    return str(value or "").strip()
+
+
+def _aspect_ratio_to_openai_size(aspect_ratio: str, model_id: str) -> str:
+    """Map Hermes aspect ratios to official OpenAI image sizes."""
+    aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
+    if aspect_lc not in VALID_ASPECT_RATIOS:
+        aspect_lc = DEFAULT_ASPECT_RATIO
+    if model_id == "dall-e-3":
+        return "1024x1024"
+    mapping = {
+        "landscape": "1536x1024",
+        "square": "1024x1024",
+        "portrait": "1024x1536",
+    }
+    return mapping[aspect_lc]
+
+
+def _save_openai_generated_image(*, b64_json: Optional[str] = None, url: Optional[str] = None, model_id: str = DEFAULT_OPENAI_MODEL) -> str:
+    """Persist OpenAI image output under ~/.hermes/generated_images and return the path."""
+    out_dir = get_hermes_home() / "generated_images"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = out_dir / f"openai_image_{ts}.png"
+
+    if b64_json:
+        out_path.write_bytes(base64.b64decode(b64_json))
+        return str(out_path)
+    if url:
+        with urlopen(url, timeout=60) as resp:
+            out_path.write_bytes(resp.read())
+        return str(out_path)
+    raise ValueError("OpenAI image response did not include b64_json or url")
+
+
+def _generate_image_via_openai(prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO) -> str:
+    """Generate an image via OpenAI official Images API and save locally."""
+    api_key = _resolve_openai_api_key()
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY environment variable not set")
+
+    model_id = _resolve_openai_image_model()
+    size = _aspect_ratio_to_openai_size(aspect_ratio, model_id)
+    client = OpenAI(api_key=api_key, base_url=_resolve_openai_base_url())
+    response = client.images.generate(
+        model=model_id,
+        prompt=prompt,
+        size=size,
+        quality="auto",
+    )
+    if not getattr(response, "data", None):
+        raise ValueError("OpenAI Images API returned no images")
+    first = response.data[0]
+    local_path = _save_openai_generated_image(
+        b64_json=getattr(first, "b64_json", None),
+        url=getattr(first, "url", None),
+        model_id=model_id,
+    )
+    return json.dumps({"success": True, "image": local_path}, indent=2, ensure_ascii=False)
+
+
 def _build_fal_payload(
     model_id: str,
     prompt: str,
@@ -592,19 +713,21 @@ def image_generate_tool(
     output_format: Optional[str] = None,
     seed: Optional[int] = None,
 ) -> str:
-    """Generate an image from a text prompt using the configured FAL model.
+    """Generate an image from a text prompt using the configured backend.
 
     The agent-facing schema exposes only ``prompt`` and ``aspect_ratio``; the
     remaining kwargs are overrides for direct Python callers and are filtered
     per-model via the ``supports`` whitelist (unsupported overrides are
     silently dropped so legacy callers don't break when switching models).
 
-    Returns a JSON string with ``{"success": bool, "image": url | None,
+    Returns a JSON string with ``{"success": bool, "image": url|path|None,
     "error": str, "error_type": str}``.
     """
-    model_id, meta = _resolve_fal_model()
+    backend = _resolve_image_backend()
+    model_id = _resolve_openai_image_model() if backend == "openai" else _resolve_fal_model()[0]
 
     debug_call_data = {
+        "backend": backend,
         "model": model_id,
         "parameters": {
             "prompt": prompt,
@@ -626,6 +749,20 @@ def image_generate_tool(
     try:
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
+
+        if backend == "openai":
+            result_json = _generate_image_via_openai(prompt, aspect_ratio)
+            result = json.loads(result_json)
+            generation_time = (datetime.datetime.now() - start_time).total_seconds()
+            debug_call_data["success"] = bool(result.get("success"))
+            debug_call_data["images_generated"] = 1 if result.get("image") else 0
+            debug_call_data["generation_time"] = generation_time
+            _debug.log_call("image_generate_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        model_id, meta = _resolve_fal_model()
+        debug_call_data["model"] = model_id
 
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             message = "FAL_KEY environment variable not set"
@@ -741,9 +878,17 @@ def check_fal_api_key() -> bool:
     return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
 
 
+def check_openai_image_api_key() -> bool:
+    """True if the OpenAI Images API key is available."""
+    return bool(_resolve_openai_api_key())
+
+
 def check_image_generation_requirements() -> bool:
-    """True if FAL credentials and fal_client SDK are both available."""
+    """True if the active image backend has the credentials and SDK it needs."""
     try:
+        backend = _resolve_image_backend()
+        if backend == "openai":
+            return check_openai_image_api_key()
         if not check_fal_api_key():
             return False
         fal_client  # noqa: F401 — SDK presence check

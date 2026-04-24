@@ -366,12 +366,10 @@ export default function App() {
               </button>
             </div>
 
-            <div className="shrink-0 border-b border-current/10">
-              <PluginSlot name="header-left" />
-            </div>
+            <PluginSlot name="header-left" />
 
             <nav
-              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2"
+              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
@@ -444,42 +442,8 @@ export default function App() {
               </div>
             </div>
 
-            <div
-              className={cn(
-                "shrink-0 flex items-center justify-between gap-2",
-                "border-t border-current/20",
-                "px-5 py-3",
-              )}
-            >
-              <PluginSlot
-                name="footer-left"
-                fallback={
-                  <Typography
-                    mondwest
-                    className="text-[0.7rem] tracking-[0.12em] opacity-60"
-                  >
-                    {t.app.brand}
-                  </Typography>
-                }
-              />
-              <PluginSlot
-                name="footer-right"
-                fallback={
-                  <Typography
-                    mondwest
-                    className="text-[0.65rem] tracking-[0.15em] text-midground"
-                    style={{ mixBlendMode: "plus-lighter" }}
-                  >
-                    {t.app.footer.org}
-                  </Typography>
-                }
-              />
-            </div>
-
             <SidebarFooter />
           </aside>
-
-          <div className="hidden shrink-0 lg:block lg:w-64" aria-hidden />
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <main

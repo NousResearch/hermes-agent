@@ -1039,6 +1039,71 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def resolve_resume_session_id(self, session_id: str) -> str:
+        """Redirect a resume target to the descendant session that holds the messages.
+
+        Context compression ends the current session and forks a new child session
+        (linked via ``parent_session_id``). The flush cursor is reset, so the
+        child is where new messages actually land — the parent ends up with
+        ``message_count = 0`` rows unless messages had already been flushed to
+        it before compression. See #15000.
+
+        This helper walks ``parent_session_id`` forward from ``session_id`` and
+        returns the first descendant in the chain that has at least one message
+        row. If the original session already has messages, or no descendant
+        has any, the original ``session_id`` is returned unchanged.
+
+        The chain is always walked via the child whose ``started_at`` is
+        latest; that matches the single-chain shape that compression creates.
+        A depth cap (32) guards against accidental loops in malformed data.
+        """
+        if not session_id:
+            return session_id
+
+        with self._lock:
+            # If this session already has messages, nothing to redirect.
+            try:
+                row = self._conn.execute(
+                    "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            except Exception:
+                return session_id
+            if row is not None:
+                return session_id
+
+            # Walk descendants: at each step, pick the most-recently-started
+                # child session; stop once we find one with messages.
+            current = session_id
+            seen = {current}
+            for _ in range(32):
+                try:
+                    child_row = self._conn.execute(
+                        "SELECT id FROM sessions "
+                        "WHERE parent_session_id = ? "
+                        "ORDER BY started_at DESC, id DESC LIMIT 1",
+                        (current,),
+                    ).fetchone()
+                except Exception:
+                    return session_id
+                if child_row is None:
+                    return session_id
+                child_id = child_row["id"] if hasattr(child_row, "keys") else child_row[0]
+                if not child_id or child_id in seen:
+                    return session_id
+                seen.add(child_id)
+                try:
+                    msg_row = self._conn.execute(
+                        "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
+                        (child_id,),
+                    ).fetchone()
+                except Exception:
+                    return session_id
+                if msg_row is not None:
+                    return child_id
+                current = child_id
+        return session_id
+
     def get_messages_as_conversation(self, session_id: str) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).

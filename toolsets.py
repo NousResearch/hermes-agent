@@ -217,6 +217,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "spotify": {
+        "description": "Native Spotify playback, search, playlist, album, and library tools",
+        "tools": [
+            "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
+            "spotify_playlists", "spotify_albums", "spotify_library",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

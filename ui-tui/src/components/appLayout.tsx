@@ -8,7 +8,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $uiState } from '../app/uiStore.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import type { Theme } from '../theme.js'
-import type { DetailsMode } from '../types.js'
+import type { DetailsMode, SectionVisibility } from '../types.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -25,6 +25,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
   compact,
   detailsMode,
   progress,
+  sections,
   t
 }: StreamingAssistantProps) {
   if (!progress.showProgressArea && !progress.showStreamingArea) {
@@ -34,7 +35,15 @@ const StreamingAssistant = memo(function StreamingAssistant({
   return (
     <>
       {progress.streamSegments.map((msg, i) => (
-        <MessageLine cols={cols} compact={compact} detailsMode={detailsMode} key={`seg:${i}`} msg={msg} t={t} />
+        <MessageLine
+          cols={cols}
+          compact={compact}
+          detailsMode={detailsMode}
+          key={`seg:${i}`}
+          msg={msg}
+          sections={sections}
+          t={t}
+        />
       ))}
 
       {progress.showProgressArea && (
@@ -48,6 +57,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
             reasoningActive={progress.reasoningActive}
             reasoningStreaming={progress.reasoningStreaming}
             reasoningTokens={progress.reasoningTokens}
+            sections={sections}
             subagents={progress.subagents}
             t={t}
             tools={progress.tools}
@@ -68,6 +78,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
             text: progress.streaming,
             ...(progress.streamPendingTools.length && { tools: progress.streamPendingTools })
           }}
+          sections={sections}
           t={t}
         />
       )}
@@ -78,6 +89,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
           compact={compact}
           detailsMode={detailsMode}
           msg={{ kind: 'trail', role: 'system', text: '', tools: progress.streamPendingTools }}
+          sections={sections}
           t={t}
         />
       )}
@@ -115,6 +127,7 @@ const TranscriptPane = memo(function TranscriptPane({
                   compact={ui.compact}
                   detailsMode={ui.detailsMode}
                   msg={row.msg}
+                  sections={ui.sections}
                   t={ui.theme}
                 />
               )}
@@ -129,6 +142,7 @@ const TranscriptPane = memo(function TranscriptPane({
             compact={ui.compact}
             detailsMode={ui.detailsMode}
             progress={progress}
+            sections={ui.sections}
             t={ui.theme}
           />
         </Box>
@@ -337,5 +351,6 @@ interface StreamingAssistantProps {
   compact?: boolean
   detailsMode: DetailsMode
   progress: AppLayoutProgressProps
+  sections?: SectionVisibility
   t: Theme
 }

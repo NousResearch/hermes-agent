@@ -590,8 +590,14 @@ def _load_enabled_toolsets() -> list[str] | None:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
+        # Runtime toolset resolution must include default MCP servers so the
+        # agent can actually call them. Passing ``False`` here is the
+        # config-editing variant — used when we need to persist a toolset
+        # list without baking in implicit MCP defaults. Using the wrong
+        # variant at agent creation time makes MCP tools silently missing
+        # from the TUI. See PR #3252 for the original design split.
         enabled = sorted(
-            _get_platform_tools(load_config(), "cli", include_default_mcp_servers=False)
+            _get_platform_tools(load_config(), "cli", include_default_mcp_servers=True)
         )
         return enabled or None
     except Exception:
@@ -2642,6 +2648,41 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.details_mode", nv)
         return _ok(rid, {"key": key, "value": nv})
 
+    if key.startswith("details_mode."):
+        # Per-section override: `details_mode.<section>` writes to
+        # `display.sections.<section>`.  Empty value clears the override
+        # and lets the section fall back to the global details_mode.
+        section = key.split(".", 1)[1]
+        allowed_sections = frozenset({"thinking", "tools", "subagents", "activity"})
+        if section not in allowed_sections:
+            return _err(rid, 4002, f"unknown section: {section}")
+
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        sections_cfg = (
+            display.get("sections")
+            if isinstance(display.get("sections"), dict)
+            else {}
+        )
+
+        nv = str(value or "").strip().lower()
+        if not nv:
+            sections_cfg.pop(section, None)
+            display["sections"] = sections_cfg
+            cfg["display"] = display
+            _save_cfg(cfg)
+            return _ok(rid, {"key": key, "value": ""})
+
+        allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
+        if nv not in allowed_dm:
+            return _err(rid, 4002, f"unknown details_mode: {value}")
+
+        sections_cfg[section] = nv
+        display["sections"] = sections_cfg
+        cfg["display"] = display
+        _save_cfg(cfg)
+        return _ok(rid, {"key": key, "value": nv})
+
     if key == "thinking_mode":
         nv = str(value or "").strip().lower()
         allowed_tm = frozenset({"collapsed", "truncated", "full"})
@@ -3195,29 +3236,6 @@ def _(rid, params: dict) -> dict:
                 pass
         # Fallback: no active run, treat as next-turn message
         return _ok(rid, {"type": "send", "message": arg})
-
-    if name == "plan":
-        try:
-            from agent.skill_commands import (
-                build_skill_invocation_message as _bsim,
-                build_plan_path,
-            )
-
-            user_instruction = arg or ""
-            plan_path = build_plan_path(user_instruction)
-            msg = _bsim(
-                "/plan",
-                user_instruction,
-                task_id=session.get("session_key", "") if session else "",
-                runtime_note=(
-                    "Save the markdown plan with write_file to this exact relative path "
-                    f"inside the active workspace/backend cwd: {plan_path}"
-                ),
-            )
-            if msg:
-                return _ok(rid, {"type": "send", "message": msg})
-        except Exception as e:
-            return _err(rid, 5030, f"plan skill failed: {e}")
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 

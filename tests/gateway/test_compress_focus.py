@@ -64,9 +64,7 @@ async def test_compress_focus_topic_passed_to_agent():
     compressed = [history[0], history[-1]]
     runner = _make_runner(history)
     agent_instance = MagicMock()
-    agent_instance.context_compressor.protect_first_n = 0
-    agent_instance.context_compressor._align_boundary_forward.return_value = 0
-    agent_instance.context_compressor._find_tail_cut_by_tokens.return_value = 2
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
 
@@ -96,9 +94,7 @@ async def test_compress_no_focus_passes_none():
     history = _make_history()
     runner = _make_runner(history)
     agent_instance = MagicMock()
-    agent_instance.context_compressor.protect_first_n = 0
-    agent_instance.context_compressor._align_boundary_forward.return_value = 0
-    agent_instance.context_compressor._find_tail_cut_by_tokens.return_value = 2
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
 

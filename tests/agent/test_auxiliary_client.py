@@ -19,6 +19,7 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
+    _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
 )
@@ -52,6 +53,17 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestNormalizeAuxProvider:
+    def test_maps_github_copilot_aliases(self):
+        assert _normalize_aux_provider("github") == "copilot"
+        assert _normalize_aux_provider("github-copilot") == "copilot"
+        assert _normalize_aux_provider("github-models") == "copilot"
+
+    def test_maps_github_copilot_acp_aliases(self):
+        assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
+        assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
 
 class TestReadCodexAccessToken:

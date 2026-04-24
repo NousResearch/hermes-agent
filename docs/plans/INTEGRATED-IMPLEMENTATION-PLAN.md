@@ -75,7 +75,8 @@ Discord  ←──Webhook──→  Gateway (Cloud)  ──→  Agent Core
                                        │
                                        ▼
                                ┌───────────────┐
-                               │ Context Engine │
+                               │    Context    │
+                               │  Coordinator  │
                                └───────┬───────┘
                                        │
            ┌────────────────────────────┼────────────────────────────┐
@@ -223,6 +224,11 @@ Discord  ←──Webhook──→  Gateway (Cloud)  ──→  Agent Core
 │                          Context Coordinator                                │
 │  文件：/home/ubuntu/.hermes/hermes-agent/agent/context_coordinator.py      │
 │  職責：協調三庫，構建每次對話的上下文                                       │
+│                                                                             │
+│  與 Context Engine 的關係：                                                  │
+│  • context_engine.py 是上下文壓縮基類（維持向後兼容）                          │
+│  • context_coordinator.py 是新建的三庫協調器（實現 STEP 9）                   │
+│  • 兩者職責不同：壓縮 vs 協調                                                │
 │                                                                             │
 │  核心流程：                                                                  │
 │                                                                             │
@@ -585,9 +591,62 @@ path = "mcp"
 description = "MCP protocol tools"
 trust_level = "experimental"
 ```
-修改文件：
-• agent/skill_commands.py：新增從 .index.toml 讀取技能列表
-• tools/skills_tool.py：使用 .index.toml 作為技能列表來源
+實作步驟（修正 TOML 只包含實際存在的 skills）：
+1. 創建 /home/ubuntu/.hermes/hermes-agent/skills/.index.toml（內容如下，務必與實際目錄一致）
+2. 驗證 skills/ 下實際目錄存在：
+   ```bash
+   ls -d /home/ubuntu/.hermes/hermes-agent/skills/*/ | head -10
+   ```
+   確認 TOML 中引用的路徑都與實際目錄一一對應（hermes-agent/skills/ 內只有 8 個：github, software-development, research, productivity, email, feeds, note-taking, mcp）
+3. 修改 agent/skill_commands.py：新增 read_index_toml() 函數，fallback 到現有列表
+4. 修改 tools/skills_tool.py：skills_list() 改為讀取 .index.toml
+5. 驗證：python3 -c "from skills import list_skills; print(list_skills())"
+
+⚠️ 注意：data-science、openclaw-* 等 skill 位於 ~/.hermes/skills/（系統級），不在 hermes-agent/skills/。本次索引只建 hermes-agent/skills/ 內的技能，系統技能另案處理。
+
+風險：低（fallback 保持向後兼容）
+文件：/home/ubuntu/.hermes/hermes-agent/skills/.index.toml
+```toml
+[skills.github]
+path = "github"
+description = "GitHub code review, issues, PR workflow"
+trust_level = "trusted"
+
+[skills.software-development]
+path = "software-development"
+description = "Code development, debugging, deployment"
+trust_level = "trusted"
+
+[skills.research]
+path = "research"
+description = "Web research, information gathering"
+trust_level = "trusted"
+
+[skills.productivity]
+path = "productivity"
+description = "Calendar, email, task management"
+trust_level = "trusted"
+
+[skills.email]
+path = "email"
+description = "Email composition and management"
+trust_level = "trusted"
+
+[skills.feeds]
+path = "feeds"
+description = "RSS/Atom feed consumption"
+trust_level = "trusted"
+
+[skills.note-taking]
+path = "note-taking"
+description = "Note creation and organization"
+trust_level = "trusted"
+
+[skills.mcp]
+path = "mcp"
+description = "MCP protocol tools"
+trust_level = "experimental"
+```
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 7：實現知識-記憶介面（詳細實作）                                        │
@@ -708,11 +767,27 @@ B. `agent/prompt_builder.py` → `agent/prompts/`
 ```bash
 cp agent/anthropic_adapter.py agent/anthropic_adapter.py.backup
 cp agent/prompt_builder.py agent/prompt_builder.py.backup
+
+# A. 基本 import 驗證（確保新模組可導入）
 python - <<'PY'
 from agent.anthropic_adapter import build_anthropic_client, build_anthropic_kwargs, normalize_anthropic_response
 from agent.prompt_builder import build_context_files_prompt
 print('step10-import-ok')
 PY
+
+# B. façade 驗證（確保 façade 仍可使用，邏輯已遷移到新模組）
+python - <<'PY'
+# 模擬重構後的 façade 行為
+import agent.anthropic_adapter as aa
+import agent.prompt_builder as pb
+
+# 確認 façade 仍然 export 預期的 symbol
+assert hasattr(aa, 'build_anthropic_client')
+assert hasattr(aa, 'build_anthropic_kwargs')
+assert hasattr(pb, 'build_context_files_prompt')
+print('façade-ok')
+PY
+
 pytest -q tests/agent/test_anthropic_adapter.py tests/agent/test_auxiliary_client.py tests/agent/test_credential_pool.py
 pytest -q tests/agent/test_prompt_builder.py tests/run_agent/test_run_agent.py tests/gateway/test_sms.py tests/gateway/test_email.py tests/gateway/test_bluebubbles.py
 ```
@@ -1090,9 +1165,7 @@ python3 -c "from agent.context_engine import ContextEngine; print('OK: ContextEn
 
 ---
 
-<!-- SECTION 7 DELETED — 內容已整合至 Section 四的 Horizon 1，保留以避免衝突 -->
-
-<!-- Section 7 removed. All content unified into Horizon 1 (Section 四, STEP 0-5). -->
+<!-- 原有 Section 7（架構爭論處理）已移除，內容已整合至 Section 四的 Horizon 1。 -->
 
 ---
 

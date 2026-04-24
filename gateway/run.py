@@ -1054,6 +1054,10 @@ class GatewayRunner:
         Platform.WEBHOOK,
         Platform.API_SERVER,
     })
+    _UNTRUSTED_IDENTITY_PLATFORM_VALUES = frozenset(
+        str(getattr(platform, "value", platform)).lower()
+        for platform in _UNTRUSTED_IDENTITY_PLATFORMS
+    )
 
     def _is_owner_source(self, source) -> bool:
         """Return True if this inbound source is the provisioned owner.
@@ -1068,7 +1072,8 @@ class GatewayRunner:
         """
         if not source or not source.platform:
             return False
-        if source.platform in self._UNTRUSTED_IDENTITY_PLATFORMS:
+        platform_value = str(getattr(source.platform, "value", source.platform)).lower()
+        if platform_value in self._UNTRUSTED_IDENTITY_PLATFORM_VALUES:
             return False
         # Defensive: test fixtures sometimes skip self.config entirely or
         # stub it with a SimpleNamespace that lacks get_home_channel. Treat

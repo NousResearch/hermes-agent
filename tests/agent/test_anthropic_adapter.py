@@ -485,6 +485,12 @@ class TestNormalizeModelName:
         assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
         assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
 
+    def test_preserve_and_lowercase_glm_model_ids(self):
+        """BigModel GLM model IDs keep dots and use lowercase codes."""
+        assert normalize_model_name("GLM-5.1") == "glm-5.1"
+        assert normalize_model_name("anthropic/GLM-5.1") == "glm-5.1"
+        assert normalize_model_name("GLM-5-Turbo") == "glm-5-turbo"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion

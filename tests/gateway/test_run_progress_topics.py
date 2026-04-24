@@ -96,6 +96,31 @@ class ApprovalCaptureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id="approval-1")
 
 
+class MediaCaptureAdapter(ProgressCaptureAdapter):
+    async def send_document(
+        self,
+        chat_id,
+        file_path,
+        caption=None,
+        file_name=None,
+        reply_to=None,
+        metadata=None,
+        **kwargs,
+    ) -> SendResult:
+        text = f"📎 File: {file_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": text,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="media-1")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -846,6 +871,38 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
     assert result.get("already_sent") is True
     assert [call["content"] for call in adapter.sent] == ["You're welcome."]
+
+
+@pytest.mark.asyncio
+async def test_post_stream_media_file_replies_to_originating_feishu_message():
+    adapter = MediaCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    event = MessageEvent(
+        text="报告已生成。",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat_1",
+            chat_type="group",
+            thread_id="omt_thread_1",
+        ),
+        message_id="om_parent_1",
+    )
+
+    await runner._deliver_media_from_response(
+        "报告已生成。\nMEDIA:/tmp/report.pdf",
+        event,
+        adapter,
+    )
+
+    assert adapter.sent == [
+        {
+            "chat_id": "oc_chat_1",
+            "content": "📎 File: /tmp/report.pdf",
+            "reply_to": "om_parent_1",
+            "metadata": {"thread_id": "omt_thread_1"},
+        }
+    ]
 
 
 @pytest.mark.asyncio

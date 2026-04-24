@@ -6677,7 +6677,10 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            _thread_meta, _reply_to = _build_stream_reply_routing(
+                event.source,
+                event.message_id,
+            )
 
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -6690,24 +6693,28 @@ class GatewayRunner:
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                     elif ext in _IMAGE_EXTS:
                         await adapter.send_image_file(
                             chat_id=event.source.chat_id,
                             image_path=media_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                     else:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                 except Exception as e:
@@ -6720,12 +6727,14 @@ class GatewayRunner:
                         await adapter.send_image_file(
                             chat_id=event.source.chat_id,
                             image_path=file_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                     else:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
+                            reply_to=_reply_to,
                             metadata=_thread_meta,
                         )
                 except Exception as e:

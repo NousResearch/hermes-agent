@@ -2924,10 +2924,22 @@ class AIAgent:
                         conversation_history=messages_snapshot,
                     )
 
-                # Scan the review agent's messages for successful tool actions
-                # and surface a compact summary to the user.
+                # Scan ONLY the new tool results produced by the review agent
+                # itself — not the historical tool results from messages_snapshot
+                # that were copied into _session_messages at conversation start.
+                # We determine the boundary by counting snapshot messages that
+                # were already present before run_conversation() was called.
+                # (#14944: stale tool results from conversation history were
+                # incorrectly surfaced as newly performed review actions.)
+                snapshot_len = len(messages_snapshot)
+                all_msgs = getattr(review_agent, "_session_messages", [])
+                # The review prompt itself adds one assistant turn before any
+                # new tool messages; skip everything up to snapshot_len so we
+                # only iterate over messages the review agent actually produced.
+                new_msgs = all_msgs[snapshot_len:]
+
                 actions = []
-                for msg in getattr(review_agent, "_session_messages", []):
+                for msg in new_msgs:
                     if not isinstance(msg, dict) or msg.get("role") != "tool":
                         continue
                     try:

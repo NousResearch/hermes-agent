@@ -76,13 +76,22 @@ if (!(Test-Path "$RgDir\rg.exe")) {
 
 
 # 6. Generate hermes.cmd wrapper
-Write-Output "Generating hermes.cmd wrapper..."
-$ScriptsDir = "$ProjectRoot\venv\Scripts"
-$HermesCmd = "$ScriptsDir\hermes.cmd"
+Write-Output "Generating hermes.cmd wrapper in project root..."
+$HermesCmd = "$ProjectRoot\hermes.cmd"
 $WrapperContent = @'
 @echo off
-rem Hermes Agent CLI Wrapper
-"%~dp0python.exe" -m hermes_cli.main %*
+rem Hermes Agent native Windows launcher
+rem Prioritizes the virtual environment Python if available
+
+setlocal
+set "VENV_PYTHON=%~dp0venv\Scripts\python.exe"
+
+if exist "%VENV_PYTHON%" (
+    "%VENV_PYTHON%" "%~dp0hermes_cli\main.py" %*
+) else (
+    python "%~dp0hermes_cli\main.py" %*
+)
+endlocal
 '@
 Set-Content -Path $HermesCmd -Value $WrapperContent -Encoding ASCII
 Write-Output "Wrapper generated at $HermesCmd."

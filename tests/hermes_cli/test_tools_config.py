@@ -601,3 +601,57 @@ class TestImagegenModelPicker:
             _configure_imagegen_model("fal", config)
         assert isinstance(config["image_gen"], dict)
         assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+
+
+def test_save_platform_tools_normalizes_numeric_entries():
+    """YAML may parse bare numeric toolset names as int. They should be
+    normalized to str so they survive the save round-trip.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "terminal", 12306, "custom-mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "browser"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "12306" in saved
+    assert 12306 not in saved
+
+
+def test_save_platform_tools_clears_no_mcp_sentinel():
+    """`hermes tools` has no UI for no_mcp, so saving from the picker clears
+    the sentinel unconditionally — otherwise a user who once set no_mcp by
+    hand could never re-enable MCP servers through the UI.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "terminal", "no_mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "browser"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "no_mcp" not in saved
+
+
+def test_save_platform_tools_preserves_mcp_server_names():
+    """Non-sentinel passthrough entries (MCP server names) must still survive
+    the save — we only clear `no_mcp`, not every non-configurable entry.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "terminal", "custom-mcp", "another-mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "browser"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "custom-mcp" in saved
+    assert "another-mcp" in saved

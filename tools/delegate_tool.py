@@ -2198,12 +2198,19 @@ def _load_config() -> dict:
     to the persistent config (hermes_cli/config.py load_config()) so that
     ``delegation.model`` / ``delegation.provider`` are picked up regardless
     of the entry point (CLI, gateway, cron).
+
+    A stale/empty CLI_CONFIG delegation dict (all routing keys empty) is
+    NOT trusted because it would silently make subagents inherit the parent
+    agent's endpoint instead of the profile-configured delegation endpoint.
     """
     try:
         from cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
+        # Only trust CLI_CONFIG when at least one routing field is set.
+        # An empty dict or a dict with only empty strings is treated as
+        # "not configured" so we fall back to the on-disk profile config.
+        if cfg and any(cfg.get(k) for k in ("model", "provider", "base_url")):
             return cfg
     except Exception:
         pass

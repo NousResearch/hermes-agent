@@ -7706,13 +7706,26 @@ class AIAgent:
 
         return msg
 
+    def _needs_kimi_tool_reasoning(self) -> bool:
+        """Return True when the current provider is Kimi / Moonshot thinking mode.
+
+        Kimi ``/coding`` and Moonshot thinking mode both require
+        ``reasoning_content`` on every assistant tool-call message; omitting
+        it causes the next replay to fail with HTTP 400.
+        """
+        return (
+            self.provider in {"kimi-coding", "kimi-coding-cn"}
+            or base_url_host_matches(self.base_url, "api.kimi.com")
+            or base_url_host_matches(self.base_url, "moonshot.ai")
+            or base_url_host_matches(self.base_url, "moonshot.cn")
+        )
+
     def _needs_deepseek_tool_reasoning(self) -> bool:
         """Return True when the current provider is DeepSeek thinking mode.
 
-        Used to decide whether to store reasoning_content on tool-call
-        assistant messages. DeepSeek V4 thinking mode requires this field
-        on every assistant tool-call turn; omitting it causes HTTP 400
-        when the message is replayed in a subsequent API request (#15250).
+        DeepSeek V4 thinking mode requires ``reasoning_content`` on every
+        assistant tool-call turn; omitting it causes HTTP 400 when the
+        message is replayed in a subsequent API request (#15250).
         """
         provider = (self.provider or "").lower()
         model = (self.model or "").lower()
@@ -7737,17 +7750,14 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        provider = (self.provider or "").lower()
-        model = (self.model or "").lower()
-        needs_tool_reasoning_echo = (
-            provider in {"kimi-coding", "kimi-coding-cn", "deepseek"}
-            or "deepseek" in model
-            or base_url_host_matches(self.base_url, "api.kimi.com")
-            or base_url_host_matches(self.base_url, "moonshot.ai")
-            or base_url_host_matches(self.base_url, "moonshot.cn")
-            or base_url_host_matches(self.base_url, "api.deepseek.com")
-        )
-        if needs_tool_reasoning_echo and source_msg.get("tool_calls"):
+        # Providers that require an echoed reasoning_content on every
+        # assistant tool-call turn. Detection logic lives in the per-provider
+        # helpers so both the creation path (_build_assistant_message) and
+        # this replay path stay in sync.
+        if source_msg.get("tool_calls") and (
+            self._needs_kimi_tool_reasoning()
+            or self._needs_deepseek_tool_reasoning()
+        ):
             api_msg["reasoning_content"] = ""
 
     @staticmethod

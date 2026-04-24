@@ -89,7 +89,6 @@ INTERACTIVE_COMMANDS: list[tuple[str, list[str]]] = [
     ("less", []),
     ("more", []),
     ("most", []),
-    ("most", []),
     # Remote access (interactive sessions)
     ("ssh", []),
     ("mosh", []),
@@ -264,5 +263,10 @@ def should_skip_compression(
     # 2. Command blocklist
     if is_interactive_command(command):
         return True, "blocklist"
+
+    # 3. Output size heuristic — interactive programs produce small output
+    # Batch commands (git diff, pytest, etc.) produce large output; compression is safe
+    if len(combined) < INTERACTIVE_SIZE_THRESHOLD:
+        return True, "size"
 
     return False, "none"

@@ -249,8 +249,9 @@ class GitDiffCompressor(CommandCompressor):
                 # Count +/- in this hunk
                 hunk_match = re.search(r"\+(\d+)(?:,(\d+))?\s+-(\d+)(?:,(\d+))?", line)
                 if hunk_match:
-                    plus_lines += int(hunk_match.group(1))
-                    minus_lines += int(hunk_match.group(3))
+                    # group(1)=start_line, group(2)=count (default 1); same for (3),(4)
+                    plus_lines += int(hunk_match.group(2) or 1)
+                    minus_lines += int(hunk_match.group(4) or 1)
             elif line.startswith("+") and not line.startswith("+++"):
                 plus_lines += 1
             elif line.startswith("-") and not line.startswith("---"):
@@ -638,7 +639,7 @@ class GoTestCompressor(CommandCompressor):
     """
 
     SUMMARY_RE = re.compile(
-        r"^(?:ok|FAIL)\s+(\S+)(?:\s+([\d\.]+)s)?"
+        r"^\s*(?:ok|FAIL)\s+(\S+)(?:\s+([\d\.]+)s)?"
         r"(?:\s+\[\s*\d+\s+skipped\s*\])?\s*$",
         re.MULTILINE,
     )
@@ -713,7 +714,15 @@ class DockerLogsCompressor(CommandCompressor):
         total = len(lines)
 
         if total <= 3:
-            return stdout.strip()[:300]
+            # Even short output may contain errors/warnings — include them
+            result = stdout.strip()[:300]
+            error_lines = [l for l in lines if "error" in l.lower() or "Error" in l]
+            warn_lines = [l for l in lines if "warn" in l.lower() or "WARN" in l]
+            if error_lines:
+                result += f"\n[{len(error_lines)} error(s)]"
+            if warn_lines:
+                result += f"\n[{len(warn_lines)} warning(s)]"
+            return result
 
         first = lines[0][:80]
         last = lines[-1][:80]
@@ -939,9 +948,9 @@ def _normalize_cmd(command: str) -> str:
 
 
 def _has_flag(command: str, flag: str) -> bool:
-    """Check if a command line contains a specific flag."""
+    """Check if a command line contains a specific flag (whole-token match)."""
     parts = shlex.split(command)
-    return any(f in parts for f in (f"--{flag}", f"-{flag[0]}"))
+    return flag in parts
 
 
 def _truncate(s: str, max_len: int) -> str:

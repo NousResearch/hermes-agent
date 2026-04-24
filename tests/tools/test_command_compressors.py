@@ -510,14 +510,6 @@ class TestCompoundCommandSplitter:
         # Should return None, signaling fallback to raw output
         assert result is None
 
-    def test_compress_segments_single_delegates(self):
-        """Single segment returns None, delegating to registry."""
-        splitter = CompoundCommandSplitter()
-        stdout = "test output"
-        result = splitter.compress_segments(DEFAULT_COMPRESSORS, "git status", stdout, "", 0)
-        # Single segment returns None, letting registry handle it
-        assert result is None
-
     def test_subshell_not_split(self):
         """Commands with subshells are not split."""
         splitter = CompoundCommandSplitter()

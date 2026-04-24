@@ -972,6 +972,57 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     return json.dumps(result)
 
 
+def _resolve_image_serve_base_url():
+    """Return the base URL that cache/images/* is publicly reachable at, or None.
+
+    Precedence: IMAGE_SERVE_BASE_URL env var, then image_gen.serve_base_url
+    in config.yaml. Unset → return None (caller keeps local path, matching
+    legacy behavior for CLI / Telegram / etc.).
+    """
+    base = os.environ.get("IMAGE_SERVE_BASE_URL")
+    if base:
+        return base.strip().rstrip("/") or None
+    try:
+        from hermes_cli.config import load_config
+        section = (load_config() or {}).get("image_gen")
+        if isinstance(section, dict):
+            value = section.get("serve_base_url")
+            if isinstance(value, str) and value.strip():
+                return value.strip().rstrip("/")
+    except Exception:
+        pass
+    return None
+
+
+def _maybe_rewrite_image_to_url(result_json: str) -> str:
+    """Post-process image_generate result: rewrite local path to public URL.
+
+    Only fires when a base URL is configured (env or config.yaml). Only
+    rewrites successful results whose ``image`` field is a local filesystem
+    path — URLs and data: URIs are passed through unchanged. Keeps the file
+    name intact so a matching ``/images/<filename>`` static route serves it.
+    """
+    try:
+        result = json.loads(result_json)
+    except Exception:
+        return result_json
+    if not (isinstance(result, dict) and result.get("success")):
+        return result_json
+    path = result.get("image")
+    if not isinstance(path, str) or not path:
+        return result_json
+    if path.startswith(("http://", "https://", "data:")):
+        return result_json
+    base = _resolve_image_serve_base_url()
+    if not base:
+        return result_json
+    filename = os.path.basename(path)
+    if not filename:
+        return result_json
+    result["image"] = f"{base}/images/{filename}"
+    return json.dumps(result)
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -982,11 +1033,10 @@ def _handle_image_generate(args, **kw):
     # not the in-tree FAL path).
     dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
     if dispatched is not None:
-        return dispatched
+        return _maybe_rewrite_image_to_url(dispatched)
 
-    return image_generate_tool(
-        prompt=prompt,
-        aspect_ratio=aspect_ratio,
+    return _maybe_rewrite_image_to_url(
+        image_generate_tool(prompt=prompt, aspect_ratio=aspect_ratio)
     )
 
 

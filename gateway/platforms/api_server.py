@@ -2510,6 +2510,23 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            # Static serving for generated images (patched — see /opt/hermes-patches/).
+            # Auth-free by design: <img> tags don't send Authorization headers.
+            # Security relies on the random hex suffix in save_b64_image filenames.
+            try:
+                from gateway.platforms.base import IMAGE_CACHE_DIR
+                IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                self._app.router.add_static(
+                    "/images/", str(IMAGE_CACHE_DIR), show_index=False,
+                )
+                logger.info(
+                    "[%s] Static image route: /images/ -> %s",
+                    self.name, IMAGE_CACHE_DIR,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Could not add /images static route: %s", self.name, exc,
+                )
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

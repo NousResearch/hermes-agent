@@ -87,11 +87,24 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 )
 
 
+# Proxy env vars that the agent-browser subprocess must NOT inherit —
+# the browser manages its own connections and corporate proxies cause
+# ERR_EMPTY_RESPONSE errors (#14372 / #15372).
+_BROWSER_PROXY_ENV_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+)
+
+
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
 
     Strips Hermes-managed secrets (provider keys, gateway tokens, GitHub auth,
     infra secrets) then re-adds only the browser-backend keys the worker needs.
+    Also strips upstream proxy env vars (HTTP_PROXY / HTTPS_PROXY / NO_PROXY /
+    ALL_PROXY and lowercase variants) which otherwise force the browser to
+    route through host proxies and break with ERR_EMPTY_RESPONSE on corporate
+    networks (#14372 / #15372).
     The ``hermes_subprocess_env`` import is deferred to keep ``browser_tool``
     importable under test harnesses that load it against a stubbed ``tools``
     package (tests/tools/test_managed_browserbase_and_modal.py).
@@ -102,6 +115,8 @@ def _build_browser_env() -> dict:
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
+    for _proxy_var in _BROWSER_PROXY_ENV_VARS:
+        env.pop(_proxy_var, None)
     return env
 
 try:
@@ -2381,7 +2396,8 @@ def _run_browser_command(
         browser_env = _build_browser_env()
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
-        # used during CLI discovery.
+        # used during CLI discovery. Proxy stripping is now centralized in
+        # _build_browser_env() (#14372 / #15372).
         browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
 

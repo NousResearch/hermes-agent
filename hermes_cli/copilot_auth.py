@@ -31,8 +31,14 @@ from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
-# OAuth device code flow constants (same client ID as opencode/Copilot CLI)
-COPILOT_OAUTH_CLIENT_ID = "Ov23li8tweQw6odWQebz"
+# OAuth device code flow constants — VS Code's GitHub App client ID.
+# The previous opencode OAuth App ID (Ov23li8tweQw6odWQebz) produces gho_*
+# tokens that cannot be exchanged for Copilot API JWTs (404 on
+# /copilot_internal/v2/token). VS Code's App ID produces ghu_* tokens
+# that support exchange, which is required to access internal-only models
+# (e.g. claude-opus-4.6-1m) and enterprise endpoints.
+# Tested on Individual and Enterprise accounts.
+COPILOT_OAUTH_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 # Token type prefixes
 _CLASSIC_PAT_PREFIX = "ghp_"
 _SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")
@@ -282,8 +288,8 @@ def copilot_device_code_login(
 # ─── Copilot Token Exchange ────────────────────────────────────────────────
 
 # Module-level cache for exchanged Copilot API tokens.
-# Maps raw_token_fingerprint -> (api_token, expires_at_epoch).
-_jwt_cache: dict[str, tuple[str, float]] = {}
+# Maps raw_token_fingerprint -> (api_token, expires_at_epoch, base_url).
+_jwt_cache: dict[str, tuple[str, float, Optional[str]]] = {}
 _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 
 # Token exchange endpoint and headers (matching VS Code / Copilot CLI)
@@ -298,14 +304,16 @@ def _token_fingerprint(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
 
 
-def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float]:
+def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float, Optional[str]]:
     """Exchange a raw GitHub token for a short-lived Copilot API token.
 
     Calls ``GET https://api.github.com/copilot_internal/v2/token`` with
-    the raw GitHub token and returns ``(api_token, expires_at)``.
+    the raw GitHub token and returns ``(api_token, expires_at, base_url)``.
 
     The returned token is a semicolon-separated string (not a standard JWT)
     used as ``Authorization: Bearer <token>`` for Copilot API requests.
+    If the token contains a ``proxy-ep`` field (enterprise accounts), the
+    derived API base URL is returned; otherwise ``base_url`` is None.
 
     Results are cached in-process and reused until close to expiry.
     Raises ``ValueError`` on failure.
@@ -317,9 +325,9 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     # Check cache first
     cached = _jwt_cache.get(fp)
     if cached:
-        api_token, expires_at = cached
+        api_token, expires_at, base_url = cached
         if time.time() < expires_at - _JWT_REFRESH_MARGIN_SECONDS:
-            return api_token, expires_at
+            return api_token, expires_at, base_url
 
     req = urllib.request.Request(
         _TOKEN_EXCHANGE_URL,
@@ -346,30 +354,71 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     # Convert expires_at to float if needed
     expires_at = float(expires_at) if expires_at else time.time() + 1800
 
-    _jwt_cache[fp] = (api_token, expires_at)
+    # Derive enterprise base URL from proxy-ep in the token.
+    # The token is semicolon-separated: "tid=xxx;exp=xxx;proxy-ep=proxy.enterprise.githubcopilot.com;..."
+    # Replace leading "proxy." with "api." to get the API base URL.
+    base_url = _derive_base_url_from_proxy_ep(api_token)
+
+    _jwt_cache[fp] = (api_token, expires_at, base_url)
     logger.debug(
-        "Copilot token exchanged, expires_at=%s",
+        "Copilot token exchanged, expires_at=%s, base_url=%s",
         expires_at,
+        base_url,
     )
-    return api_token, expires_at
+    return api_token, expires_at, base_url
 
 
-def get_copilot_api_token(raw_token: str) -> str:
+def _derive_base_url_from_proxy_ep(token: str) -> Optional[str]:
+    """Derive the Copilot API base URL from a proxy-ep field in the token.
+
+    The exchanged Copilot token is a semicolon-separated string like
+    ``tid=xxx;exp=xxx;proxy-ep=proxy.enterprise.githubcopilot.com;...``.
+    This extracts ``proxy-ep`` and converts it to an API base URL by
+    replacing the leading ``proxy.`` with ``api.``.
+
+    Returns ``https://{api_hostname}`` or None if proxy-ep is absent.
+    """
+    import re
+    m = re.search(r'(?:^|;)\s*proxy-ep=([^;\s]+)', token)
+    if not m:
+        return None
+
+    proxy_ep = m.group(1)
+    # Strip scheme if present
+    for prefix in ("https://", "http://"):
+        if proxy_ep.startswith(prefix):
+            proxy_ep = proxy_ep[len(prefix):]
+            break
+    proxy_ep = proxy_ep.rstrip("/")
+
+    # Replace leading "proxy." with "api."
+    if proxy_ep.startswith("proxy."):
+        api_host = "api." + proxy_ep[len("proxy."):]
+    else:
+        api_host = proxy_ep
+
+    return f"https://{api_host}"
+
+
+def get_copilot_api_token(raw_token: str) -> tuple[str, Optional[str]]:
     """Exchange a raw GitHub token for a Copilot API token, with fallback.
 
-    Convenience wrapper: returns the exchanged token on success, or the
-    raw token unchanged if the exchange fails (e.g. network error, unsupported
+    Convenience wrapper: returns ``(api_token, base_url)`` on success, or
+    ``(raw_token, None)`` if the exchange fails (e.g. network error, unsupported
     account type). This preserves existing behaviour for accounts that don't
     need exchange while enabling access to internal-only models for those that do.
+
+    ``base_url`` is the enterprise API endpoint derived from the token's
+    ``proxy-ep`` field, or None for individual accounts.
     """
     if not raw_token:
-        return raw_token
+        return raw_token, None
     try:
-        api_token, _ = exchange_copilot_token(raw_token)
-        return api_token
+        api_token, _, base_url = exchange_copilot_token(raw_token)
+        return api_token, base_url
     except Exception as exc:
         logger.debug("Copilot token exchange failed, using raw token: %s", exc)
-        return raw_token
+        return raw_token, None
 
 
 # ─── Copilot API Headers ───────────────────────────────────────────────────

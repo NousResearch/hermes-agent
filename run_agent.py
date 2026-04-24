@@ -7214,6 +7214,9 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _is_deepseek = (
+            base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -7282,6 +7285,7 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_deepseek=_is_deepseek,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -7524,18 +7528,27 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        # DeepSeek and Kimi (Moonshot) require reasoning_content (even if empty)
-        # on assistant tool-call messages when in thinking mode.
-        requires_reasoning = (
-            self.provider in {"kimi-coding", "kimi-coding-cn", "deepseek"}
+        # Kimi (Moonshot) requires reasoning_content (even if empty) on
+        # assistant tool-call messages when in thinking mode.
+        kimi_requires_reasoning = (
+            self.provider in {"kimi-coding", "kimi-coding-cn"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
+        )
+        if kimi_requires_reasoning and source_msg.get("tool_calls"):
+            api_msg["reasoning_content"] = ""
+
+        # DeepSeek thinking mode (deepseek-v4-flash / deepseek-v4-pro) also
+        # requires reasoning_content on every assistant message, not just
+        # tool-call ones. Use setdefault so existing values are preserved.
+        deepseek_requires_reasoning = (
+            self.provider == "deepseek"
             or base_url_host_matches(self.base_url, "api.deepseek.com")
             or "deepseek" in (self.model or "").lower()
         )
-        if requires_reasoning and source_msg.get("tool_calls"):
-            api_msg["reasoning_content"] = ""
+        if deepseek_requires_reasoning:
+            api_msg.setdefault("reasoning_content", "")
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:

@@ -187,6 +187,7 @@ class ChatCompletionsTransport(ProviderTransport):
         anthropic_max_out = params.get("anthropic_max_output")
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
+        is_deepseek = params.get("is_deepseek", False)
         reasoning_config = params.get("reasoning_config")
 
         if ephemeral is not None and max_tokens_fn:
@@ -237,6 +238,18 @@ class ChatCompletionsTransport(ProviderTransport):
                     _kimi_thinking_enabled = False
             extra_body["thinking"] = {
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
+            }
+
+        # DeepSeek thinking mode (v4-flash / v4-pro)
+        # DeepSeek uses `thinking: {"type": "enabled|disabled"}` at the top level,
+        # which is different from the `reasoning` extra_body used by OpenRouter.
+        if is_deepseek:
+            _ds_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _ds_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _ds_thinking_enabled else "disabled",
             }
 
         # Reasoning

@@ -117,6 +117,115 @@ class TestDeepSeekReasoningContentInjection:
         }
         api_msg = {"role": "assistant", "content": "hi"}
         agent._copy_reasoning_content_for_api(source_msg, api_msg)
-        # Empty string is explicitly preserved by the isinstance(str) branch
-        # at line 7493-7495 before the new DeepSeek branch can run.
+        # Empty string is explicitly preserved by the explicit_reasoning
+        # isinstance(str) branch, before the new DeepSeek branch can run.
         assert api_msg["reasoning_content"] == ""
+
+    def test_deepseek_injects_on_tool_call_message(self):
+        """The whole point of dropping the tool_calls gate (per #15228).
+
+        DeepSeek requires reasoning_content on EVERY assistant message in
+        history, including tool-call turns. The Kimi branch gates on
+        tool_calls; the DeepSeek branch intentionally does not.
+        """
+        agent = _make_agent(
+            model="deepseek/deepseek-v4-flash",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        source_msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "some_tool", "arguments": "{}"},
+            }],
+        }
+        api_msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": source_msg["tool_calls"],
+        }
+        agent._copy_reasoning_content_for_api(source_msg, api_msg)
+        assert api_msg["reasoning_content"] == ""
+
+    def test_deepseek_reasoning_config_without_enabled_key(self):
+        """reasoning_config={"effort": "high"} (no `enabled` key) → enabled.
+
+        Common real-world shape. The guard explicitly checks
+        `enabled is False`; a missing key falls through to default-enabled,
+        so injection should happen.
+        """
+        agent = _make_agent(
+            model="deepseek/deepseek-v4-flash",
+            reasoning_config={"effort": "high"},
+        )
+        source_msg = {"role": "assistant", "content": "hi"}
+        api_msg = {"role": "assistant", "content": "hi"}
+        agent._copy_reasoning_content_for_api(source_msg, api_msg)
+        assert api_msg["reasoning_content"] == ""
+
+    def test_deepseek_reasoning_config_non_dict_is_safe(self):
+        """Defensive: non-dict reasoning_config must not crash.
+
+        The isinstance guard (mirrored from line 7342) prevents AttributeError
+        if reasoning_config is ever an unexpected type (Mock, string, etc.).
+        Falls through to default-enabled because the guard only disables on
+        explicit dict with enabled=False.
+        """
+        agent = _make_agent(
+            model="deepseek/deepseek-v4-flash",
+            reasoning_config="high",  # intentionally wrong type
+        )
+        source_msg = {"role": "assistant", "content": "hi"}
+        api_msg = {"role": "assistant", "content": "hi"}
+        agent._copy_reasoning_content_for_api(source_msg, api_msg)
+        assert api_msg["reasoning_content"] == ""
+
+    def test_direct_deepseek_api_injects(self):
+        """api.deepseek.com path is the other supported host (upstream PR #15228).
+
+        Direct DeepSeek API uses model names WITHOUT a `deepseek/` prefix
+        (e.g. `deepseek-chat`, `deepseek-v4`). Detection relies on base_url,
+        not model name — we trust the endpoint.
+        """
+        agent = _make_agent(
+            model="deepseek-chat",
+            base_url="https://api.deepseek.com",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        source_msg = {"role": "assistant", "content": "hi"}
+        api_msg = {"role": "assistant", "content": "hi"}
+        agent._copy_reasoning_content_for_api(source_msg, api_msg)
+        assert api_msg["reasoning_content"] == ""
+
+    def test_bedrock_deepseek_skips_injection(self):
+        """Regression: Bedrock-hosted DeepSeek must NOT get reasoning_content injected.
+
+        Model slug contains 'deepseek' but the endpoint is AWS Bedrock, which
+        has not been validated to accept the reasoning_content field. A broad
+        substring match on model name would wrongly fire here.
+        """
+        agent = _make_agent(
+            model="deepseek.v3.2",
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            provider="bedrock",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        source_msg = {"role": "assistant", "content": "hi"}
+        api_msg = {"role": "assistant", "content": "hi"}
+        agent._copy_reasoning_content_for_api(source_msg, api_msg)
+        assert "reasoning_content" not in api_msg
+
+    def test_nvidia_nim_deepseek_skips_injection(self):
+        """Regression: NVIDIA NIM-hosted DeepSeek must NOT get injected."""
+        agent = _make_agent(
+            model="deepseek-ai/deepseek-v3.2",
+            base_url="https://integrate.api.nvidia.com/v1",
+            provider="nvidia",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        source_msg = {"role": "assistant", "content": "hi"}
+        api_msg = {"role": "assistant", "content": "hi"}
+        agent._copy_reasoning_content_for_api(source_msg, api_msg)
+        assert "reasoning_content" not in api_msg

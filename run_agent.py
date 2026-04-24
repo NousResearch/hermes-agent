@@ -7533,15 +7533,32 @@ class AIAgent:
         # on EVERY assistant message in history, not only tool-call turns (no
         # tool_calls gate — see upstream PR #15228). Empty string is a valid
         # placeholder; real reasoning would have been used by branches above.
+        #
+        # Detection mirrors the Kimi branch's provider+host shape: OpenRouter-
+        # routed `deepseek/*` models OR direct `api.deepseek.com`. Avoids a
+        # substring match that would falsely fire on Bedrock, NVIDIA NIM,
+        # HuggingFace, or third-party fine-tunes whose model slugs contain
+        # "deepseek" but whose endpoints have NOT been validated to accept
+        # the reasoning_content field.
+        #
+        # The isinstance(dict) guard mirrors line 7342's pattern — defends
+        # against reasoning_config being a non-dict (string, Mock, etc.).
+        reasoning_explicitly_disabled = (
+            isinstance(self.reasoning_config, dict)
+            and self.reasoning_config.get("enabled") is False
+        )
+        _is_openrouter_deepseek = (
+            base_url_host_matches(self.base_url, "openrouter.ai")
+            and (self.model or "").lower().startswith("deepseek/")
+        )
+        _is_direct_deepseek = base_url_host_matches(self.base_url, "api.deepseek.com")
         deepseek_requires_reasoning = (
-            "deepseek" in (self.model or "").lower()
-            # reasoning_config is None = default-enabled (chat_completions.py:256).
-            # enabled is not False keeps injection off when reasoning_effort: none.
-            and (self.reasoning_config is None
-                 or self.reasoning_config.get("enabled") is not False)
+            (_is_openrouter_deepseek or _is_direct_deepseek)
+            and not reasoning_explicitly_disabled
         )
         if deepseek_requires_reasoning:
             api_msg["reasoning_content"] = ""
+            return
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:

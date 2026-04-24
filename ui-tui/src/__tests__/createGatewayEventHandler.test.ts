@@ -175,14 +175,16 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: { text: 'patch applied' }, type: 'message.complete' } as any)
 
-    // Three transcript messages: pre-tool narration → diff (kind='diff',
-    // so MessageLine gives it blank-line breathing room) → post-tool
-    // narration. The final message does NOT contain a diff.
-    expect(appended).toHaveLength(3)
+    // Four transcript messages: pre-tool narration → tool trail → diff
+    // (kind='diff', so MessageLine gives it blank-line breathing room) →
+    // post-tool narration. The final message does NOT contain a diff.
+    expect(appended).toHaveLength(4)
     expect(appended[0]?.text).toBe('Editing the file')
-    expect(appended[1]).toMatchObject({ kind: 'diff', text: block })
-    expect(appended[2]?.text).toBe('patch applied')
-    expect(appended[2]?.text).not.toContain('```diff')
+    expect(appended[1]).toMatchObject({ kind: 'trail' })
+    expect(appended[1]?.tools?.[0]).toContain('Patch')
+    expect(appended[2]).toMatchObject({ kind: 'diff', text: block })
+    expect(appended[3]?.text).toBe('patch applied')
+    expect(appended[3]?.text).not.toContain('```diff')
   })
 
   it('drops the diff segment when the final assistant text narrates the same diff', () => {
@@ -209,12 +211,13 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { inline_diff: raw, summary: 'patched', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
-    // diff segment first (kind='diff'), final narration second
-    expect(appended).toHaveLength(2)
-    expect(appended[0]?.kind).toBe('diff')
-    expect(appended[0]?.text).not.toContain('┊ review diff')
-    expect(appended[0]?.text).toContain('--- a/foo.ts')
-    expect(appended[1]?.text).toBe('done')
+    // Tool trail first, then diff segment (kind='diff'), then final narration.
+    expect(appended).toHaveLength(3)
+    expect(appended[0]?.kind).toBe('trail')
+    expect(appended[1]?.kind).toBe('diff')
+    expect(appended[1]?.text).not.toContain('┊ review diff')
+    expect(appended[1]?.text).toContain('--- a/foo.ts')
+    expect(appended[2]?.text).toBe('done')
   })
 
   it('drops the diff segment when assistant writes its own ```diff fence', () => {
@@ -242,16 +245,17 @@ describe('createGatewayEventHandler', () => {
     } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
-    // Two segments: the diff block (kind='diff', no tool row) and the final
-    // narration (tool row belongs here since pendingSegmentTools carries
-    // across the flushStreamingSegment call).
-    expect(appended).toHaveLength(2)
-    expect(appended[0]?.kind).toBe('diff')
-    expect(appended[0]?.text).toContain('```diff')
-    expect(appended[0]?.tools ?? []).toEqual([])
-    expect(appended[1]?.text).toBe('done')
-    expect(appended[1]?.tools?.[0]).toContain('Review Diff')
-    expect(appended[1]?.tools?.[0]).not.toContain('--- a/foo.ts')
+    // Tool row is now placed before the diff, so telemetry does not render
+    // below the patch that came from that tool.
+    expect(appended).toHaveLength(3)
+    expect(appended[0]?.kind).toBe('trail')
+    expect(appended[0]?.tools?.[0]).toContain('Review Diff')
+    expect(appended[0]?.tools?.[0]).not.toContain('--- a/foo.ts')
+    expect(appended[1]?.kind).toBe('diff')
+    expect(appended[1]?.text).toContain('```diff')
+    expect(appended[1]?.tools ?? []).toEqual([])
+    expect(appended[2]?.text).toBe('done')
+    expect(appended[2]?.tools ?? []).toEqual([])
   })
 
   it('shows setup panel for missing provider startup error', () => {

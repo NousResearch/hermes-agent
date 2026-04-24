@@ -60,7 +60,10 @@ from .config import (
     SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
     HomeChannel,
 )
-from hermes_constants import get_hermes_home
+from .whatsapp_identity import (
+    canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,
+)
 
 
 @dataclass
@@ -555,95 +558,6 @@ def build_session_key(
         key_parts.append(str(participant_id))
 
     return ":".join(key_parts)
-
-
-def normalize_whatsapp_identifier(value: str) -> str:
-    """Strip WhatsApp JID/LID syntax down to its stable numeric identifier.
-
-    Accepts any of the identifier shapes the WhatsApp bridge may emit:
-    ``"60123456789@s.whatsapp.net"``, ``"60123456789:47@s.whatsapp.net"``,
-    ``"60123456789@lid"``, or a bare ``"+60123456789"`` / ``"60123456789"``.
-    Returns just the numeric identifier (``"60123456789"``) suitable for
-    equality comparisons.
-
-    Useful for plugins that want to match sender IDs against
-    user-supplied config (phone numbers in ``config.yaml``) without
-    worrying about which variant the bridge happens to deliver.
-    """
-    return (
-        str(value or "")
-        .strip()
-        .replace("+", "", 1)
-        .split(":", 1)[0]
-        .split("@", 1)[0]
-    )
-
-
-def _expand_whatsapp_aliases(identifier: str) -> set[str]:
-    """Resolve WhatsApp phone/LID aliases using bridge session mapping files."""
-    normalized = normalize_whatsapp_identifier(identifier)
-    if not normalized:
-        return set()
-
-    session_dir = get_hermes_home() / "whatsapp" / "session"
-    resolved: set[str] = set()
-    queue = [normalized]
-
-    while queue:
-        current = queue.pop(0)
-        if not current or current in resolved:
-            continue
-
-        resolved.add(current)
-        for suffix in ("", "_reverse"):
-            mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
-            if not mapping_path.exists():
-                continue
-            try:
-                mapped = normalize_whatsapp_identifier(
-                    json.loads(mapping_path.read_text(encoding="utf-8"))
-                )
-            except Exception:
-                continue
-            if mapped and mapped not in resolved:
-                queue.append(mapped)
-
-    return resolved
-
-
-def canonical_whatsapp_identifier(identifier: str) -> str:
-    """Return a stable WhatsApp sender identity across phone-JID/LID variants.
-
-    WhatsApp may surface the same person under either a phone-format JID
-    (``60123456789@s.whatsapp.net``) or a LID (``1234567890@lid``). This
-    applies to a DM ``chat_id`` *and* to the ``participant_id`` of a
-    member inside a group chat — both represent a user identity, and the
-    bridge may flip between the two for the same human.
-
-    This helper reads the bridge's ``whatsapp/session/lid-mapping-*.json``
-    files, walks the mapping transitively, and picks the shortest
-    (numeric-preferred) alias as the canonical identity. :func:`build_session_key`
-    uses this for both WhatsApp DM chat_ids and WhatsApp group participant_ids,
-    so callers get the same session-key identity Hermes itself uses.
-
-    Plugins that need per-sender behaviour (role-based routing,
-    authorization, per-contact policy) should use this so their
-    bookkeeping lines up with Hermes' session bookkeeping even when
-    the bridge reshuffles aliases.
-
-    Returns an empty string if ``identifier`` normalizes to empty. If no
-    mapping files exist yet (fresh bridge install), returns the
-    normalized input unchanged.
-    """
-    normalized = normalize_whatsapp_identifier(identifier)
-    if not normalized:
-        return ""
-
-    # _expand_whatsapp_aliases always includes `normalized` itself in the
-    # returned set, so the min() below degrades gracefully to `normalized`
-    # when no lid-mapping files are present.
-    aliases = _expand_whatsapp_aliases(normalized)
-    return min(aliases, key=lambda candidate: (len(candidate), candidate))
 
 
 class SessionStore:

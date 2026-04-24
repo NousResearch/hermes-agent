@@ -74,6 +74,12 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "github": "copilot",
+    "github-copilot": "copilot",
+    "github-model": "copilot",
+    "github-models": "copilot",
+    "github-copilot-acp": "copilot-acp",
+    "copilot-acp-agent": "copilot-acp",
 }
 
 
@@ -89,10 +95,11 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
     if normalized == "main":
         # Resolve to the user's actual main provider so named custom providers
         # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.
-        main_prov = _read_main_provider()
+        main_prov = (_read_main_provider() or "").strip().lower()
         if main_prov and main_prov not in ("auto", "main", ""):
-            return main_prov
-        return "custom"
+            normalized = main_prov
+        else:
+            return "custom"
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 

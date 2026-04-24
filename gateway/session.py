@@ -289,14 +289,21 @@ def build_session_context_prompt(
             "that you can only read messages sent directly to you and respond."
         )
     elif context.source.platform == Platform.DISCORD:
-        lines.append("")
-        lines.append(
-            "**Platform notes:** You are running inside Discord. "
-            "You do NOT have access to Discord-specific APIs — you cannot search "
-            "channel history, pin messages, manage roles, or list server members. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
-        )
+        # Only emit the "no Discord APIs" disclaimer when the discord tool
+        # can't load.  The tool self-gates on DISCORD_BOT_TOKEN at registry
+        # check time, so matching that condition keeps the prompt honest:
+        # with a token the agent has fetch_messages/search_members/
+        # create_thread (and optionally discord_admin); without one it
+        # really is limited to reading/replying via the gateway.
+        if not (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Discord. "
+                "You do NOT have access to Discord-specific APIs — you cannot search "
+                "channel history, pin messages, manage roles, or list server members. "
+                "Do not promise to perform these actions. If the user asks, explain "
+                "that you can only read messages sent directly to you and respond."
+            )
     elif context.source.platform == Platform.BLUEBUBBLES:
         lines.append("")
         lines.append(

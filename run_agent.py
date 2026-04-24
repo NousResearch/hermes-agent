@@ -2119,12 +2119,14 @@ class AIAgent:
         # ("switched to anthropic, tui keeps trying openrouter").
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
+        fallback_chain = list(getattr(self, "_fallback_chain", []) or [])
         if old_norm and new_norm and old_norm != new_norm:
-            self._fallback_chain = [
-                entry for entry in self._fallback_chain
+            fallback_chain = [
+                entry for entry in fallback_chain
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
             ]
-            self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        self._fallback_chain = fallback_chain
+        self._fallback_model = fallback_chain[0] if fallback_chain else None
 
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",

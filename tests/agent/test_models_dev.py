@@ -37,6 +37,8 @@ SAMPLE_REGISTRY = {
         "models": {
             "claude-opus-4.6": {
                 "id": "claude-opus-4.6",
+                "tool_call": True,
+                "reasoning": True,
                 "limit": {"context": 128000, "output": 32000},
             },
         },
@@ -143,6 +145,14 @@ class TestLookupModelsDevContext:
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
         # GitHub Copilot: only 128K for same model
         assert lookup_models_dev_context("copilot", "claude-opus-4.6") == 128000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    @patch("agent.models_dev.requests.get")
+    def test_lookup_accepts_models_dev_provider_id_without_network(self, mock_get, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+
+        assert lookup_models_dev_context("github-copilot", "claude-opus-4.6") == 128000
+        mock_get.assert_not_called()
 
     @patch("agent.models_dev.fetch_models_dev")
     def test_zero_context_filtered(self, mock_fetch):
@@ -285,3 +295,15 @@ class TestGetModelCapabilities:
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "nonexistent-model")
         assert caps is None
+
+    def test_accepts_models_dev_provider_id_without_network(self):
+        """Capability lookups should work with a models.dev provider id too."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY), \
+             patch("agent.models_dev.requests.get") as mock_get:
+            caps = get_model_capabilities("github-copilot", "claude-opus-4.6")
+
+        assert caps is not None
+        assert caps.supports_tools is True
+        assert caps.supports_reasoning is True
+        assert caps.context_window == 128000
+        mock_get.assert_not_called()

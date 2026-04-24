@@ -110,7 +110,10 @@ class TestFallbackChainAdvancement:
         ]
         agent = _make_agent(fallback_model=fbs)
         with patch("agent.auxiliary_client.resolve_provider_client",
-                    return_value=(_mock_client(), "resolved")):
+                    side_effect=[
+                        (_mock_client(), "gpt-4o"),
+                        (_mock_client(base_url="https://open.z.ai/api/v1"), "glm-4.7"),
+                    ]):
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
             assert agent._try_activate_fallback() is True

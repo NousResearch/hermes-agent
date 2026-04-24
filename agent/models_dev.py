@@ -178,6 +178,15 @@ _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
 
 
 
+def _resolve_models_dev_provider_id(provider: str) -> str:
+    """Resolve a Hermes or models.dev provider identifier to a models.dev ID."""
+    provider_id = str(provider or "").strip()
+    if not provider_id:
+        return ""
+    return PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+
+
+
 def _get_cache_path() -> Path:
     """Return path to disk cache file."""
     from hermes_constants import get_hermes_home
@@ -255,7 +264,7 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_provider_id = _resolve_models_dev_provider_id(provider)
     if not mdev_provider_id:
         return None
 
@@ -324,7 +333,7 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
     Returns the models dict or None if the provider is unknown or has no data.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_provider_id = _resolve_models_dev_provider_id(provider)
     if not mdev_provider_id:
         return None
 

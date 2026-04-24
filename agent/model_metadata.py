@@ -104,6 +104,31 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+
+def choose_fitting_fallback_candidate(
+    candidates: List[Dict[str, Any]],
+    estimated_request_tokens: int,
+) -> Optional[Dict[str, Any]]:
+    """Return the first fallback candidate whose context window can fit the request.
+
+    Candidates below :data:`MINIMUM_CONTEXT_LENGTH` are always ignored, even if
+    the estimated request is smaller, because they are not suitable agent models.
+    """
+    required_tokens = max(int(estimated_request_tokens or 0), 0)
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        context_length = candidate.get("context_length")
+        if not isinstance(context_length, (int, float)):
+            continue
+        context_length = int(context_length)
+        if context_length < MINIMUM_CONTEXT_LENGTH:
+            continue
+        if required_tokens and context_length < required_tokens:
+            continue
+        return candidate
+    return None
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.

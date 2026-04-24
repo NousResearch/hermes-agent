@@ -22,6 +22,7 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    MINIMUM_CONTEXT_LENGTH,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -31,6 +32,7 @@ from agent.model_metadata import (
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
+    choose_fitting_fallback_candidate,
     _MODEL_CACHE_TTL,
 )
 
@@ -556,6 +558,33 @@ class TestContextProbeTiers:
 
     def test_last_tier_is_8k(self):
         assert CONTEXT_PROBE_TIERS[-1] == 8_000
+
+
+class TestChooseFittingFallbackCandidate:
+    def test_ignores_candidates_below_minimum_context(self):
+        candidates = [
+            {"provider": "custom", "model": "small", "context_length": MINIMUM_CONTEXT_LENGTH - 1},
+            {"provider": "openrouter", "model": "fits", "context_length": MINIMUM_CONTEXT_LENGTH},
+        ]
+
+        assert choose_fitting_fallback_candidate(candidates, estimated_request_tokens=32000) == candidates[1]
+
+    def test_chooses_first_candidate_that_fits_estimated_request_tokens(self):
+        candidates = [
+            {"provider": "openrouter", "model": "too-small", "context_length": 96000},
+            {"provider": "anthropic", "model": "fits-first", "context_length": 150000},
+            {"provider": "openai", "model": "fits-later", "context_length": 200000},
+        ]
+
+        assert choose_fitting_fallback_candidate(candidates, estimated_request_tokens=120000) == candidates[1]
+
+    def test_returns_none_when_no_candidate_meets_thresholds(self):
+        candidates = [
+            {"provider": "openrouter", "model": "too-small", "context_length": 48000},
+            {"provider": "anthropic", "model": "still-too-small", "context_length": 90000},
+        ]
+
+        assert choose_fitting_fallback_candidate(candidates, estimated_request_tokens=120000) is None
 
 
 class TestGetNextProbeTier:

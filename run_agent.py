@@ -7411,8 +7411,11 @@ class AIAgent:
             # falling through to OpenRouter defaults.
             fb_base_url_hint = (fb.get("base_url") or "").strip() or None
             fb_api_key_hint = (fb.get("api_key") or "").strip() or None
+            fb_key_env = (fb.get("key_env") or "").strip() or None
+            if fb_key_env and not fb_api_key_hint:
+                fb_api_key_hint = os.getenv(fb_key_env) or None
             # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
-            # when no explicit key is in the fallback config.
+            # when no explicit key/key_env is in the fallback config.
             if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
                 fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
             fb_client, resolved_fb_model = resolve_provider_client(
@@ -7527,6 +7530,76 @@ class AIAgent:
         except Exception as e:
             logging.error("Failed to activate fallback %s: %s", fb_model, e)
             return self._try_activate_fallback()  # try next in chain
+
+    def _find_context_fitting_fallback_index(self, estimated_tokens: Optional[int]) -> Optional[int]:
+        """Return the first configured fallback whose context window can fit the request."""
+        if estimated_tokens is None or estimated_tokens <= 0:
+            return None
+
+        current_ctx = getattr(getattr(self, "context_compressor", None), "context_length", None)
+        if current_ctx is not None and estimated_tokens <= current_ctx:
+            return None
+
+        try:
+            from agent.model_metadata import (
+                choose_fitting_fallback_candidate,
+                get_model_context_length,
+            )
+        except Exception:
+            return None
+
+        candidates: list[dict[str, object]] = []
+        for idx in range(self._fallback_index, len(self._fallback_chain)):
+            fb = self._fallback_chain[idx]
+            if not isinstance(fb, dict):
+                continue
+            fb_provider = str(fb.get("provider") or "").strip().lower()
+            fb_model = str(fb.get("model") or "").strip()
+            if not fb_provider or not fb_model:
+                continue
+            fb_base_url = str(fb.get("base_url") or "").strip() or None
+            fb_api_key = str(fb.get("api_key") or "").strip() or None
+            fb_key_env = str(fb.get("key_env") or "").strip() or None
+            if fb_key_env and not fb_api_key:
+                fb_api_key = os.getenv(fb_key_env) or None
+            try:
+                fb_ctx = get_model_context_length(
+                    fb_model,
+                    base_url=fb_base_url,
+                    api_key=fb_api_key,
+                    provider=fb_provider,
+                )
+            except Exception:
+                continue
+            candidate = dict(fb)
+            candidate["_fallback_index"] = idx
+            candidate["context_length"] = fb_ctx
+            candidates.append(candidate)
+
+        chosen = choose_fitting_fallback_candidate(candidates, int(estimated_tokens or 0))
+        if not chosen:
+            return None
+        chosen_idx = chosen.get("_fallback_index")
+        return int(chosen_idx) if isinstance(chosen_idx, int) else None
+
+    def _maybe_activate_context_fit_fallback(self, estimated_tokens: Optional[int]) -> bool:
+        """Switch to a fallback before the first API call when the active model cannot fit."""
+        candidate_idx = self._find_context_fitting_fallback_index(estimated_tokens)
+        if candidate_idx is None:
+            return False
+
+        current_ctx = getattr(getattr(self, "context_compressor", None), "context_length", None)
+        if current_ctx is not None:
+            self._emit_status(
+                f"⚠️ Request is too large for active model context "
+                f"(~{estimated_tokens:,} > {current_ctx:,}) — trying fallback that fits..."
+            )
+
+        target_index = candidate_idx
+        while self._fallback_index <= target_index:
+            if not self._try_activate_fallback():
+                return False
+        return True
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 
@@ -10088,6 +10161,26 @@ class AIAgent:
                         logger.debug("Session DB update_system_prompt failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
+        _preflight_tokens = None
+        _should_estimate_preflight = (
+            bool(self._fallback_index < len(self._fallback_chain))
+            or (
+                self.compression_enabled
+                and len(messages) > self.context_compressor.protect_first_n
+                                    + self.context_compressor.protect_last_n + 1
+            )
+        )
+        if _should_estimate_preflight:
+            # Include tool schema tokens — with many tools these can add
+            # 20-30K+ tokens that the old sys+msg estimate missed entirely.
+            _preflight_tokens = estimate_request_tokens_rough(
+                messages,
+                system_prompt=active_system_prompt or "",
+                tools=self._get_runtime_scoped_tools() or None,
+            )
+
+        if self._maybe_activate_context_fit_fallback(_preflight_tokens):
+            active_system_prompt = self._cached_system_prompt
 
         # ── Preflight context compression ──
         # Before entering the main loop, check if the loaded conversation
@@ -10101,13 +10194,12 @@ class AIAgent:
             and len(messages) > self.context_compressor.protect_first_n
                                 + self.context_compressor.protect_last_n + 1
         ):
-            # Include tool schema tokens — with many tools these can add
-            # 20-30K+ tokens that the old sys+msg estimate missed entirely.
-            _preflight_tokens = estimate_request_tokens_rough(
-                messages,
-                system_prompt=active_system_prompt or "",
-                tools=self._get_runtime_scoped_tools() or None,
-            )
+            if _preflight_tokens is None:
+                _preflight_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=self._get_runtime_scoped_tools() or None,
+                )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(

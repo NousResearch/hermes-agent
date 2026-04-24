@@ -2543,6 +2543,9 @@ class BasePlatformAdapter(ABC):
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
         is_bot: bool = False,
+        guild_id: Optional[str] = None,
+        parent_chat_id: Optional[str] = None,
+        message_id: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -2560,6 +2563,9 @@ class BasePlatformAdapter(ABC):
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
             is_bot=is_bot,
+            guild_id=str(guild_id) if guild_id else None,
+            parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+            message_id=str(message_id) if message_id else None,
         )
     
     @abstractmethod

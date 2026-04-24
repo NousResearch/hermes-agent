@@ -226,6 +226,13 @@ class HonchoClientConfig:
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
+    # When True, ``peer_name`` wins over any gateway-supplied runtime
+    # identity (Telegram UID, Discord ID, …) when resolving the user peer.
+    # This keeps memory unified across platforms for single-user deployments
+    # where Honcho's one peer-name is an unambiguous identity — otherwise
+    # each platform would fork memory into its own peer (#14984).  Default
+    # ``False`` preserves existing multi-user behaviour.
+    pin_peer_name: bool = False
     # Toggles
     enabled: bool = False
     save_messages: bool = True
@@ -420,6 +427,11 @@ class HonchoClientConfig:
             timeout=timeout,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
+            pin_peer_name=_resolve_bool(
+                host_block.get("pinPeerName"),
+                raw.get("pinPeerName"),
+                default=False,
+            ),
             enabled=enabled,
             save_messages=save_messages,
             write_frequency=write_frequency,

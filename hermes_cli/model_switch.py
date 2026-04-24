@@ -859,11 +859,17 @@ def switch_model(
     # without it, /model switches into an anthropic_messages-routed OpenCode
     # model (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
     # on opencode-zen) hit a double /v1 and returned OpenCode's website 404 page.
+    #
+    # Only strip when the URL was freshly resolved via resolve_runtime_provider
+    # (provider_changed or explicit_provider).  When the user switches models
+    # on the same provider, the base_url is already correct from a prior
+    # resolution and stripping /v1 breaks endpoints that need it (#14879).
     if (
         api_mode == "anthropic_messages"
         and target_provider in {"opencode-zen", "opencode-go"}
         and isinstance(base_url, str)
         and base_url
+        and (provider_changed or explicit_provider)
     ):
         base_url = re.sub(r"/v1/?$", "", base_url)
 

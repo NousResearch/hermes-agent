@@ -133,6 +133,7 @@ The largest optional category — covers the full ML pipeline from data curation
 
 | Skill | Description |
 |-------|-------------|
+| **activitywatch** | Use local ActivityWatch data with Hermes for private self-observation, activity summaries, project heat signals, and context-aware review workflows. Covers querying the local ActivityWatch HTTP API, inspecting bucket types, and turning raw events into bounded summaries. |
 | **canvas** | Canvas LMS integration — fetch enrolled courses and assignments using API token authentication. |
 | **memento-flashcards** | Spaced repetition flashcard system for learning and knowledge retention. |
 | **siyuan** | SiYuan Note API for searching, reading, creating, and managing blocks and documents in a self-hosted knowledge base. |

@@ -7099,9 +7099,15 @@ class HermesCLI:
                 else:
                     print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
 
+                # Pass None as system_message so _compress_context rebuilds
+                # the system prompt from scratch via _build_system_prompt(None).
+                # Passing _cached_system_prompt caused duplication because
+                # _build_system_prompt appends system_message to prompt_parts
+                # which already contain the agent identity — resulting in the
+                # identity block appearing twice (issue #15281).
                 compressed, _ = self.agent._compress_context(
                     original_history,
-                    self.agent._cached_system_prompt or "",
+                    None,
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                 )

@@ -6685,6 +6685,13 @@ class HermesCLI:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
+            # Eagerly start the CDP supervisor so pending_dialogs + frame_tree
+            # show up in the next browser_snapshot.  No-op if already started.
+            try:
+                from tools.browser_tool import _ensure_cdp_supervisor  # type: ignore[import-not-found]
+                _ensure_cdp_supervisor("default")
+            except Exception:
+                pass
             print()
             print("🌐 Browser connected to live Chrome via CDP")
             print(f"   Endpoint: {cdp_url}")
@@ -6706,7 +6713,8 @@ class HermesCLI:
             if current:
                 os.environ.pop("BROWSER_CDP_URL", None)
                 try:
-                    from tools.browser_tool import cleanup_all_browsers
+                    from tools.browser_tool import cleanup_all_browsers, _stop_cdp_supervisor
+                    _stop_cdp_supervisor("default")
                     cleanup_all_browsers()
                 except Exception:
                     pass

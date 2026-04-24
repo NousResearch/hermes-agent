@@ -1690,6 +1690,7 @@ class SlackAdapter(BasePlatformAdapter):
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     raise
+        raise AssertionError("unreachable: retry loop exhausted")
 
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""
@@ -1715,6 +1716,7 @@ class SlackAdapter(BasePlatformAdapter):
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     raise
+        raise AssertionError("unreachable: retry loop exhausted")
 
     # ── Channel mention gating ─────────────────────────────────────────────
 

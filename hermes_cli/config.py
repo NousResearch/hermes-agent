@@ -1938,7 +1938,7 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
     config = load_config()
     missing = []
 
-    def _check(defaults: dict, current: dict, prefix: str = ""):
+    def _check(defaults: Dict[str, Any], current: Dict[str, Any], prefix: str = ""):
         for key, default_value in defaults.items():
             if key.startswith('_'):
                 continue
@@ -2180,8 +2180,8 @@ def check_config_version() -> Tuple[int, int]:
     Returns (current_version, latest_version).
     """
     config = load_config()
-    current = config.get("_config_version", 0)
-    latest = DEFAULT_CONFIG.get("_config_version", 1)
+    current = int(config.get("_config_version", 0))
+    latest = int(DEFAULT_CONFIG.get("_config_version", 1))
     return current, latest
 
 
@@ -2901,7 +2901,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     return results
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge *override* into *base*, preserving nested defaults.
 
     Keys in *override* take precedence. If both values are dicts the merge

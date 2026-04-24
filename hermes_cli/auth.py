@@ -786,16 +786,20 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
     auth_store["active_provider"] = provider_id
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
-    """Return the persisted credential pool, or one provider slice."""
+def read_credential_pool() -> Dict[str, Any]:
+    """Return the entire persisted credential pool."""
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
     if not isinstance(pool, dict):
         pool = {}
-    if provider_id is None:
-        return dict(pool)
-    provider_entries = pool.get(provider_id)
-    return list(provider_entries) if isinstance(provider_entries, list) else []
+    return dict(pool)
+
+
+def read_provider_credentials(provider_id: str) -> List[Dict[str, Any]]:
+    """Return credential entries for a single provider."""
+    pool = read_credential_pool()
+    entries = pool.get(provider_id)
+    return list(entries) if isinstance(entries, list) else []
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:

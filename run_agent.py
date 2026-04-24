@@ -37,7 +37,10 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.rate_limit_tracker import RateLimitState
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -723,17 +726,17 @@ class AIAgent:
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
         session_id: str = None,
-        tool_progress_callback: callable = None,
-        tool_start_callback: callable = None,
-        tool_complete_callback: callable = None,
-        thinking_callback: callable = None,
-        reasoning_callback: callable = None,
-        clarify_callback: callable = None,
-        step_callback: callable = None,
-        stream_delta_callback: callable = None,
-        interim_assistant_callback: callable = None,
-        tool_gen_callback: callable = None,
-        status_callback: callable = None,
+        tool_progress_callback: Callable[..., Any] = None,
+        tool_start_callback: Callable[..., Any] = None,
+        tool_complete_callback: Callable[..., Any] = None,
+        thinking_callback: Callable[..., Any] = None,
+        reasoning_callback: Callable[..., Any] = None,
+        clarify_callback: Callable[..., Any] = None,
+        step_callback: Callable[..., Any] = None,
+        stream_delta_callback: Callable[..., Any] = None,
+        interim_assistant_callback: Callable[..., Any] = None,
+        tool_gen_callback: Callable[..., Any] = None,
+        status_callback: Callable[..., Any] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
@@ -1049,7 +1052,7 @@ class AIAgent:
                 for quiet_logger in [
                     'tools',               # all tools.* (terminal, browser, web, file, etc.)
                     'run_agent',            # agent runner internals
-                    'trajectory_compressor',
+                    'scripts.trajectory_compressor',
                     'cron',                 # scheduler (only relevant in daemon mode)
                     'hermes_cli',           # CLI helpers
                 ]:
@@ -4779,7 +4782,7 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
-    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
+    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: Callable[..., Any] = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
 
@@ -5478,7 +5481,7 @@ class AIAgent:
         )
 
     def _interruptible_streaming_api_call(
-        self, api_kwargs: dict, *, on_first_delta: callable = None
+        self, api_kwargs: dict, *, on_first_delta: Callable[..., Any] = None
     ):
         """Streaming variant of _interruptible_api_call for real-time token delivery.
 
@@ -7417,12 +7420,15 @@ class AIAgent:
                 _flush_temperature = _fixed_temp
             else:
                 _flush_temperature = 0.3
+            _flush_llm_kwargs: dict = {}
+            if _flush_temperature is not None:
+                _flush_llm_kwargs["temperature"] = _flush_temperature
             try:
                 response = _call_llm(
                     task="flush_memories",
                     messages=api_messages,
                     tools=[memory_tool_def],
-                    temperature=_flush_temperature,
+                    **_flush_llm_kwargs,
                     max_tokens=5120,
                     # timeout resolved from auxiliary.flush_memories.timeout config
                 )
@@ -8631,9 +8637,9 @@ class AIAgent:
         self,
         user_message: str,
         system_message: str = None,
-        conversation_history: List[Dict[str, Any]] = None,
+        conversation_history: List[Dict[str, Any]] | None = None,
         task_id: str = None,
-        stream_callback: Optional[callable] = None,
+        stream_callback: Optional[Callable[..., Any]] = None,
         persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -10237,7 +10243,7 @@ class AIAgent:
                         auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
                         print(f"{self.log_prefix}🔐 Anthropic 401 — authentication failed.")
                         print(f"{self.log_prefix}   Auth method: {auth_method}")
-                        print(f"{self.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix}   Token: (empty or short)")
+                        print(f"{self.log_prefix}   Token prefix: {str(key)[:12]}..." if key and len(str(key)) > 12 else f"{self.log_prefix}   Token: (empty or short)")
                         print(f"{self.log_prefix}   Troubleshooting:")
                         from hermes_constants import display_hermes_home as _dhh_fn
                         _dhh = _dhh_fn()
@@ -11602,7 +11608,7 @@ class AIAgent:
                         messages.append(assistant_msg)
 
                         if reasoning_text:
-                            reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
+                            reasoning_preview = str(reasoning_text)[:500] + "..." if len(str(reasoning_text)) > 500 else reasoning_text
                             logger.warning(
                                 "Reasoning-only response (no visible content) "
                                 "after exhausting retries and fallback. "
@@ -11941,7 +11947,7 @@ class AIAgent:
 
         return result
 
-    def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
+    def chat(self, message: str, stream_callback: Optional[Callable[..., Any]] = None) -> str:
         """
         Simple chat interface that returns just the final response.
 

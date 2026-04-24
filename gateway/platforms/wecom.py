@@ -703,7 +703,8 @@ class WeComAdapter(BasePlatformAdapter):
                 elif isinstance(appmsg.get("image"), dict):
                     refs.append(("image", appmsg["image"]))
 
-        quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
+        raw_quote = body.get("quote")
+        quote = raw_quote if isinstance(raw_quote, dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()
         if quote_type == "image" and isinstance(quote.get("image"), dict):
             refs.append(("image", quote["image"]))

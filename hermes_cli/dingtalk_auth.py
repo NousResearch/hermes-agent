@@ -18,7 +18,7 @@ import os
 import sys
 import time
 import logging
-from typing import Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import requests
 
@@ -108,7 +108,7 @@ def wait_for_registration_success(
     device_code: str,
     interval: int = 3,
     expires_in: int = 7200,
-    on_waiting: Optional[callable] = None,
+    on_waiting: Optional[Callable[..., Any]] = None,
 ) -> Tuple[str, str]:
     """Block until the registration succeeds or times out.
 

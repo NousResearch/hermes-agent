@@ -187,16 +187,14 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
     if proxy_url.lower().startswith("socks"):
         try:
             from aiohttp_socks import ProxyConnector
-
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}
         except ImportError:
-            logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                "Run: pip install aiohttp-socks",
-                proxy_url,
-            )
-            return {}
+            raise ImportError(
+                "aiohttp-socks is required for SOCKS proxy support. "
+                "Install with: pip install hermes-agent[messaging]"
+            ) from None
+
+        connector = ProxyConnector.from_url(proxy_url, rdns=True)
+        return {"connector": connector}
     return {"proxy": proxy_url}
 
 
@@ -220,16 +218,14 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     if proxy_url.lower().startswith("socks"):
         try:
             from aiohttp_socks import ProxyConnector
-
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}, {}
         except ImportError:
-            logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                "Run: pip install aiohttp-socks",
-                proxy_url,
-            )
-            return {}, {}
+            raise ImportError(
+                "aiohttp-socks is required for SOCKS proxy support. "
+                "Install with: pip install hermes-agent[messaging]"
+            ) from None
+
+        connector = ProxyConnector.from_url(proxy_url, rdns=True)
+        return {"connector": connector}, {}
     return {}, {"proxy": proxy_url}
 
 
@@ -428,6 +424,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
+    raise AssertionError("unreachable: retry loop exhausted")
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -542,6 +539,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
+    raise AssertionError("unreachable: retry loop exhausted")
 
 
 # ---------------------------------------------------------------------------
@@ -2068,8 +2066,11 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
 
-            # Call the handler (this can take a while with tool calls)
-            response = await self._message_handler(event)
+            handler = self._message_handler
+            if handler is None:
+                return
+
+            response = await handler(event)
             
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or

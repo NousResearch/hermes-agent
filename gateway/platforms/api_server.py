@@ -32,14 +32,7 @@ import sqlite3
 import time
 import uuid
 from typing import Any, Dict, List, Optional
-
-try:
-    from aiohttp import web
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
-    web = None  # type: ignore[assignment]
-
+from aiohttp import web
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -270,12 +263,6 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
         status=400,
     )
 
-
-def check_api_server_requirements() -> bool:
-    """Check if API server dependencies are available."""
-    return AIOHTTP_AVAILABLE
-
-
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -391,30 +378,26 @@ _CORS_HEADERS = {
 }
 
 
-if AIOHTTP_AVAILABLE:
-    @web.middleware
-    async def cors_middleware(request, handler):
-        """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
-        adapter = request.app.get("api_server_adapter")
-        origin = request.headers.get("Origin", "")
-        cors_headers = None
-        if adapter is not None:
-            if not adapter._origin_allowed(origin):
-                return web.Response(status=403)
-            cors_headers = adapter._cors_headers_for_origin(origin)
+@web.middleware
+async def cors_middleware(request, handler):
+    """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
+    adapter = request.app.get("api_server_adapter")
+    origin = request.headers.get("Origin", "")
+    cors_headers = None
+    if adapter is not None:
+        if not adapter._origin_allowed(origin):
+            return web.Response(status=403)
+        cors_headers = adapter._cors_headers_for_origin(origin)
 
-        if request.method == "OPTIONS":
-            if cors_headers is None:
-                return web.Response(status=403)
-            return web.Response(status=200, headers=cors_headers)
+    if request.method == "OPTIONS":
+        if cors_headers is None:
+            return web.Response(status=403)
+        return web.Response(status=200, headers=cors_headers)
 
-        response = await handler(request)
-        if cors_headers is not None:
-            response.headers.update(cors_headers)
-        return response
-else:
-    cors_middleware = None  # type: ignore[assignment]
-
+    response = await handler(request)
+    if cors_headers is not None:
+        response.headers.update(cors_headers)
+    return response
 
 def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
     """OpenAI-style error envelope."""
@@ -428,21 +411,18 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
-if AIOHTTP_AVAILABLE:
-    @web.middleware
-    async def body_limit_middleware(request, handler):
-        """Reject overly large request bodies early based on Content-Length."""
-        if request.method in ("POST", "PUT", "PATCH"):
-            cl = request.headers.get("Content-Length")
-            if cl is not None:
-                try:
-                    if int(cl) > MAX_REQUEST_BYTES:
-                        return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
-                except ValueError:
-                    return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
-        return await handler(request)
-else:
-    body_limit_middleware = None  # type: ignore[assignment]
+@web.middleware
+async def body_limit_middleware(request, handler):
+    """Reject overly large request bodies early based on Content-Length."""
+    if request.method in ("POST", "PUT", "PATCH"):
+        cl = request.headers.get("Content-Length")
+        if cl is not None:
+            try:
+                if int(cl) > MAX_REQUEST_BYTES:
+                    return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
+            except ValueError:
+                return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
+    return await handler(request)
 
 _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -450,16 +430,13 @@ _SECURITY_HEADERS = {
 }
 
 
-if AIOHTTP_AVAILABLE:
-    @web.middleware
-    async def security_headers_middleware(request, handler):
-        """Add security headers to all responses (including errors)."""
-        response = await handler(request)
-        for k, v in _SECURITY_HEADERS.items():
-            response.headers.setdefault(k, v)
-        return response
-else:
-    security_headers_middleware = None  # type: ignore[assignment]
+@web.middleware
+async def security_headers_middleware(request, handler):
+    """Add security headers to all responses (including errors)."""
+    response = await handler(request)
+    for k, v in _SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    return response
 
 
 class _IdempotencyCache:
@@ -804,7 +781,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
-    async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
+    async def _handle_chat_completions(self, request: "web.Request") -> "web.StreamResponse":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         auth_err = self._check_auth(request)
         if auth_err:
@@ -1588,7 +1565,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return response
 
-    async def _handle_responses(self, request: "web.Request") -> "web.Response":
+    async def _handle_responses(self, request: "web.Request") -> "web.StreamResponse":
         """POST /v1/responses — OpenAI Responses API format."""
         auth_err = self._check_auth(request)
         if auth_err:
@@ -2482,10 +2459,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Start the aiohttp web server."""
-        if not AIOHTTP_AVAILABLE:
-            logger.warning("[%s] aiohttp not installed", self.name)
-            return False
-
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)

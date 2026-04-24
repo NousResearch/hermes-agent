@@ -29,7 +29,7 @@ from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
     as_completed,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from toolsets import TOOLSETS
 from tools import file_state
@@ -584,7 +584,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
-) -> Optional[callable]:
+) -> Optional[Callable[..., Any]]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -1613,7 +1613,7 @@ def delegate_task(
 
     n_tasks = len(task_list)
     # Track goal labels for progress display (truncated for readability)
-    task_labels = [t["goal"][:40] for t in task_list]
+    task_labels = [str(t["goal"] or "")[:40] for t in task_list]
 
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),

@@ -41,9 +41,12 @@ import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from openai import OpenAI
+
+if TYPE_CHECKING:
+    from agent.gemini_native_adapter import GeminiNativeClient
 
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
@@ -810,7 +813,11 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
+# TODO(refactor): This function has messy types and duplicated logic (pool vs direct creds).
+#     Ideal fix: (1) define an AuxiliaryClient Protocol both OpenAI/GeminiNativeClient satisfy,
+#     (2) return a NamedTuple or dataclass instead of raw tuple, (3) extract the repeated
+#     Gemini/Kimi/Copilot client-building into a helper.
+def _resolve_api_key_provider() -> Tuple[Optional[Union[OpenAI, "GeminiNativeClient"]], Optional[str]]:
     """Try each API-key provider in PROVIDER_REGISTRY order.
 
     Returns (client, model) for the first provider with usable runtime

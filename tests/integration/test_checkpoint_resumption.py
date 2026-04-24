@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 import traceback
 
-# Add project root to path to import batch_runner
+# Add project root to path to import scripts.batch_runner
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
@@ -135,7 +135,7 @@ def test_current_implementation():
         shutil.rmtree(output_dir)
     
     # Import here to avoid issues if module changes
-    from batch_runner import BatchRunner
+    from scripts.batch_runner import BatchRunner
     
     checkpoint_file = output_dir / "checkpoint.json"
     
@@ -229,7 +229,7 @@ def test_interruption_and_resume():
     if output_dir.exists():
         shutil.rmtree(output_dir)
     
-    from batch_runner import BatchRunner
+    from scripts.batch_runner import BatchRunner
     
     checkpoint_file = output_dir / "checkpoint.json"
     

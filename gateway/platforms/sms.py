@@ -25,7 +25,10 @@ import hmac
 import logging
 import os
 import urllib.parse
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import aiohttp
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (

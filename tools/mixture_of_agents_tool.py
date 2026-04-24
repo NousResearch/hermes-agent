@@ -175,6 +175,7 @@ async def _run_reference_model_safe(
                 error_msg = f"{model} failed after {max_retries} attempts: {error_str}"
                 logger.error("%s", error_msg, exc_info=True)
                 return model, error_msg, False
+    raise AssertionError("unreachable: retry loop exhausted")
 
 
 async def _run_aggregator_model(

@@ -18,7 +18,10 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.budget_config import BudgetConfig
 
 from model_tools import handle_function_call
 from tools.terminal_tool import get_active_env

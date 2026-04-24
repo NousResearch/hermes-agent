@@ -26,10 +26,11 @@ import os
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Type, Union
 from urllib.parse import urlencode
 
 import fal_client
+import httpx
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -348,20 +349,26 @@ class _ManagedFalSyncClient:
 
         self._queue_url_format = _normalize_fal_queue_url_format(queue_run_origin)
         self._sync_client = sync_client_class(key=key)
-        self._http_client = getattr(self._sync_client, "_client", None)
-        self._maybe_retry_request = getattr(client_module, "_maybe_retry_request", None)
-        self._raise_for_status = getattr(client_module, "_raise_for_status", None)
-        self._request_handle_class = getattr(client_module, "SyncRequestHandle", None)
-        self._add_hint_header = getattr(client_module, "add_hint_header", None)
-        self._add_priority_header = getattr(client_module, "add_priority_header", None)
-        self._add_timeout_header = getattr(client_module, "add_timeout_header", None)
 
-        if self._http_client is None:
+        http_client: Optional[httpx.Client] = getattr(self._sync_client, "_client", None)
+        maybe_retry: Optional[Callable[..., httpx.Response]] = getattr(client_module, "_maybe_retry_request", None)
+        raise_for_status: Optional[Callable[[httpx.Response], None]] = getattr(client_module, "_raise_for_status", None)
+        request_handle_class: Optional[Type[Any]] = getattr(client_module, "SyncRequestHandle", None)
+
+        if http_client is None:
             raise RuntimeError("fal_client.SyncClient._client is required for managed FAL gateway mode")
-        if self._maybe_retry_request is None or self._raise_for_status is None:
+        if maybe_retry is None or raise_for_status is None:
             raise RuntimeError("fal_client.client request helpers are required for managed FAL gateway mode")
-        if self._request_handle_class is None:
+        if request_handle_class is None:
             raise RuntimeError("fal_client.client.SyncRequestHandle is required for managed FAL gateway mode")
+
+        self._http_client: httpx.Client = http_client
+        self._maybe_retry_request: Callable[..., httpx.Response] = maybe_retry
+        self._raise_for_status: Callable[[httpx.Response], None] = raise_for_status
+        self._request_handle_class: Type[Any] = request_handle_class
+        self._add_hint_header: Optional[Callable[..., Any]] = getattr(client_module, "add_hint_header", None)
+        self._add_priority_header: Optional[Callable[..., Any]] = getattr(client_module, "add_priority_header", None)
+        self._add_timeout_header: Optional[Callable[..., Any]] = getattr(client_module, "add_timeout_header", None)
 
     def submit(
         self,

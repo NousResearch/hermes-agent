@@ -30,14 +30,18 @@ Usage:
     python trajectory_compressor.py --input=data/my_run --sample_percent=10
 """
 
-import json
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import json
 import time
 import yaml
 import logging
 import asyncio
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable
+from typing import List, Dict, Any, Optional, Tuple, Callable, cast
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -52,7 +56,7 @@ from agent.retry_utils import jittered_backoff
 from hermes_cli.env_loader import load_hermes_dotenv
 
 _hermes_home = get_hermes_home()
-_project_env = Path(__file__).parent / ".env"
+_project_env = Path(__file__).parent.parent / ".env"
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 
@@ -75,7 +79,7 @@ def _effective_temperature_for_model(
     if fixed_temperature is OMIT_TEMPERATURE:
         return None  # caller must omit temperature
     if fixed_temperature is not None:
-        return fixed_temperature
+        return cast(float, fixed_temperature)
     return requested_temperature
 
 
@@ -607,11 +611,14 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 
                 if getattr(self, '_use_call_llm', False):
                     from agent.auxiliary_client import call_llm
+                    _call_llm_kwargs: dict = {}
+                    if summary_temperature is not None:
+                        _call_llm_kwargs["temperature"] = summary_temperature
                     response = call_llm(
                         provider=self._llm_provider,
                         model=self.config.summarization_model,
                         messages=[{"role": "user", "content": prompt}],
-                        temperature=summary_temperature,
+                        **_call_llm_kwargs,
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 else:
@@ -623,20 +630,21 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     if summary_temperature is not None:
                         _create_kwargs["temperature"] = summary_temperature
                     response = self.client.chat.completions.create(**_create_kwargs)
-                
+
                 summary = self._coerce_summary_content(response.choices[0].message.content)
                 return self._ensure_summary_prefix(summary)
-                
+
             except Exception as e:
                 metrics.summarization_errors += 1
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
-                
+
                 if attempt < self.config.max_retries - 1:
                     time.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
-    
+        raise AssertionError("unreachable: retry loop exhausted")
+
     async def _generate_summary_async(self, content: str, metrics: TrajectoryMetrics) -> str:
         """
         Generate a summary of the compressed turns using OpenRouter (async version).
@@ -676,11 +684,14 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 
                 if getattr(self, '_use_call_llm', False):
                     from agent.auxiliary_client import async_call_llm
+                    _async_llm_kwargs: dict = {}
+                    if summary_temperature is not None:
+                        _async_llm_kwargs["temperature"] = summary_temperature
                     response = await async_call_llm(
                         provider=self._llm_provider,
                         model=self.config.summarization_model,
                         messages=[{"role": "user", "content": prompt}],
-                        temperature=summary_temperature,
+                        **_async_llm_kwargs,
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 else:
@@ -692,20 +703,21 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     if summary_temperature is not None:
                         _create_kwargs["temperature"] = summary_temperature
                     response = await self._get_async_client().chat.completions.create(**_create_kwargs)
-                
+
                 summary = self._coerce_summary_content(response.choices[0].message.content)
                 return self._ensure_summary_prefix(summary)
-                
+
             except Exception as e:
                 metrics.summarization_errors += 1
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
-                
+
                 if attempt < self.config.max_retries - 1:
                     await asyncio.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
-    
+        raise AssertionError("unreachable: retry loop exhausted")
+
     def compress_trajectory(
         self,
         trajectory: List[Dict[str, str]]

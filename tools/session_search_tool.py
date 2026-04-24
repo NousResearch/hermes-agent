@@ -443,7 +443,7 @@ def session_search(
                 )
 
         # Summarize all sessions in parallel
-        async def _summarize_all() -> List[Union[str, Exception]]:
+        async def _summarize_all() -> List[Union[Optional[str], BaseException]]:
             """Summarize all sessions with bounded concurrency."""
             max_concurrency = min(_get_session_search_max_concurrency(), max(1, len(tasks)))
             semaphore = asyncio.Semaphore(max_concurrency)

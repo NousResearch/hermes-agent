@@ -142,7 +142,7 @@ class _ComponentFilter(logging.Filter):
 # Used by _ComponentFilter and exposed for ``hermes logs --component``.
 COMPONENT_PREFIXES = {
     "gateway": ("gateway",),
-    "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
+    "agent": ("agent", "run_agent", "model_tools", "scripts.batch_runner"),
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
     "cron": ("cron",),

@@ -20,9 +20,13 @@ Usage:
     python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --distribution=image_gen
 """
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -1126,7 +1130,7 @@ def main(
     num_workers: int = 4,
     resume: bool = False,
     verbose: bool = False,
-    list_distributions: bool = False,
+    show_distributions: bool = False,
     ephemeral_system_prompt: str = None,
     log_prefix_chars: int = 100,
     providers_allowed: str = None,
@@ -1154,7 +1158,7 @@ def main(
         num_workers (int): Number of parallel worker processes (default: 4)
         resume (bool): Resume from checkpoint if run was interrupted (default: False)
         verbose (bool): Enable verbose logging (default: False)
-        list_distributions (bool): List available toolset distributions and exit
+        show_distributions (bool): List available toolset distributions and exit
         ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
         providers_allowed (str): Comma-separated list of OpenRouter providers to allow (e.g. "anthropic,openai")
@@ -1186,10 +1190,10 @@ def main(
                                --prefill_messages_file=configs/prefill_opus.json
         
         # List available distributions
-        python batch_runner.py --list_distributions
+        python batch_runner.py --show_distributions
     """
     # Handle list distributions
-    if list_distributions:
+    if show_distributions:
         from toolset_distributions import print_distribution_info
 
         print("📊 Available Toolset Distributions")

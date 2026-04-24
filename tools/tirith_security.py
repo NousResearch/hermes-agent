@@ -410,6 +410,7 @@ def _resolve_tirith_path(configured_path: str) -> str:
 
     # Fast path: successfully resolved on a previous call.
     if _resolved_path is not None and _resolved_path is not _INSTALL_FAILED:
+        assert isinstance(_resolved_path, str)
         return _resolved_path
 
     expanded = os.path.expanduser(configured_path)

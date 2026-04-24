@@ -104,7 +104,7 @@ def main():
     test_file = create_test_dataset()
     
     print(f"\n📝 To run the test manually:")
-    print(f"   python batch_runner.py \\")
+    print(f"   python scripts/batch_runner.py \\")
     print(f"       --dataset_file={test_file} \\")
     print(f"       --batch_size=2 \\")
     print(f"       --run_name={run_name} \\")
@@ -112,7 +112,7 @@ def main():
     print(f"       --num_workers=2")
     
     print(f"\n💡 Or test with different distributions:")
-    print(f"   python batch_runner.py --list_distributions")
+    print(f"   python scripts/batch_runner.py --list_distributions")
     
     print(f"\n🔍 After running, you can verify output with:")
     print(f"   python tests/test_batch_runner.py --verify")

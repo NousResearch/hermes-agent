@@ -30,7 +30,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,34 @@ from utils import base_url_host_matches
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+
+
+class _ModelPickerState(TypedDict, total=False):
+    stage: str
+    providers: List[Dict[str, Any]]
+    selected: int
+    current_model: str
+    current_provider: str
+    user_provs: Optional[Dict[str, Any]]
+    custom_provs: Optional[Dict[str, Any]]
+    provider_data: Dict[str, Any]
+    model_list: List[str]
+
+
+class _ApprovalState(TypedDict, total=False):
+    command: str
+    description: str
+    choices: List[str]
+    selected: int
+    response_queue: "queue.Queue[str]"
+    show_full: bool
+
+
+class _ClarifyState(TypedDict, total=False):
+    question: str
+    choices: List[str]
+    selected: int
+    response_queue: "queue.Queue[str]"
 
 
 _REASONING_TAGS = (
@@ -1728,7 +1756,7 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     return parsed
 
 
-def save_config_value(key_path: str, value: any) -> bool:
+def save_config_value(key_path: str, value: Any) -> bool:
     """
     Save a value to the active config file at the specified key path.
     
@@ -2065,16 +2093,16 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()
         self._should_exit = False
         self._last_ctrl_c_time = 0
-        self._clarify_state = None
+        self._clarify_state: Optional[_ClarifyState] = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
         self._sudo_state = None
         self._sudo_deadline = 0
         self._modal_input_snapshot = None
-        self._approval_state = None
+        self._approval_state: Optional[_ApprovalState] = None
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
-        self._model_picker_state = None
+        self._model_picker_state: Optional[_ModelPickerState] = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -7156,7 +7184,7 @@ class HermesCLI:
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
             logging.getLogger().setLevel(logging.INFO)
-            for quiet_logger in ('tools', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
+            for quiet_logger in ('tools', 'run_agent', 'scripts.trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
 
     def _show_insights(self, command: str = "/insights"):

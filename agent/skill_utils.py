@@ -455,7 +455,8 @@ def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
     """
     if ":" not in name:
         return None, name
-    return tuple(name.split(":", 1))  # type: ignore[return-value]
+    ns, bare = name.split(":", 1)
+    return ns, bare
 
 
 def is_valid_namespace(candidate: Optional[str]) -> bool:

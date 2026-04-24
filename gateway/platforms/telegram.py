@@ -2820,6 +2820,8 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         sticker = msg.sticker
+        if sticker is None:
+            return
         emoji = sticker.emoji or ""
         set_name = sticker.set_name or ""
 

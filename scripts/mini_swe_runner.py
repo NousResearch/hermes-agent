@@ -26,10 +26,13 @@ Usage:
     python mini_swe_runner.py --prompts_file prompts.jsonl --output_file trajectories.jsonl --env docker
 """
 
-import json
-import logging
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import json
+import logging
 import time
 import uuid
 from datetime import datetime

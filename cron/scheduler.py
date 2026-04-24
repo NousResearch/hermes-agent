@@ -470,8 +470,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.append(msg)
                 continue
 
-            if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+            error = result.get("error") if result else None
+            if error:
+                msg = f"delivery error: {error}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 delivery_errors.append(msg)
                 continue

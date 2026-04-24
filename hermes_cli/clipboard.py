@@ -276,7 +276,7 @@ def _get_ps_exe() -> str | None:
     global _ps_exe
     if _ps_exe is False:
         _ps_exe = _find_powershell()
-    return _ps_exe
+    return _ps_exe if isinstance(_ps_exe, str) else None
 
 
 def _windows_has_image() -> bool:
@@ -387,6 +387,8 @@ def _wayland_save(dest: Path) -> bool:
 
     except FileNotFoundError:
         logger.debug("wl-paste not installed — Wayland clipboard unavailable")
+    except ImportError:
+        raise
     except Exception as e:
         logger.debug("wl-paste clipboard extraction failed: %s", e)
         dest.unlink(missing_ok=True)
@@ -395,14 +397,17 @@ def _wayland_save(dest: Path) -> bool:
 
 def _convert_to_png(path: Path) -> bool:
     """Convert an image file to PNG in-place (requires Pillow or ImageMagick)."""
-    # Try Pillow first (likely installed in the venv)
     try:
         from PIL import Image
+    except ImportError:
+        raise ImportError(
+            "Pillow is required for clipboard image conversion. "
+            "Install with: pip install hermes-agent[cli]"
+        ) from None
+    try:
         img = Image.open(path)
         img.save(path, "PNG")
         return True
-    except ImportError:
-        pass
     except Exception as e:
         logger.debug("Pillow BMP→PNG conversion failed: %s", e)
 

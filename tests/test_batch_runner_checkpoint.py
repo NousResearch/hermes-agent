@@ -8,11 +8,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# batch_runner uses relative imports, ensure project root is on path
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from batch_runner import BatchRunner, _process_batch_worker
+from scripts.batch_runner import BatchRunner, _process_batch_worker
 
 
 @pytest.fixture
@@ -173,7 +169,7 @@ class TestBatchWorkerResumeBehavior:
             "toolsets_used": [],
         }
 
-        monkeypatch.setattr("batch_runner._process_single_prompt", lambda *args, **kwargs: prompt_result)
+        monkeypatch.setattr("scripts.batch_runner._process_single_prompt", lambda *args, **kwargs: prompt_result)
 
         result = _process_batch_worker((
             1,

@@ -2896,10 +2896,12 @@ class GatewayRunner:
             return MatrixAdapter(config)
 
         elif platform == Platform.API_SERVER:
-            from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
-            if not check_api_server_requirements():
+            try:
+                import aiohttp  # noqa: F401
+            except ImportError:
                 logger.warning("API Server: aiohttp not installed")
                 return None
+            from gateway.platforms.api_server import APIServerAdapter
             return APIServerAdapter(config)
 
         elif platform == Platform.WEBHOOK:
@@ -4466,9 +4468,10 @@ class GatewayRunner:
         # is speaking, without needing a separate tool call.
         # -----------------------------------------------------------------
         if source.platform == Platform.DISCORD:
+            from gateway.platforms.discord import DiscordAdapter
             adapter = self.adapters.get(Platform.DISCORD)
             guild_id = self._get_guild_id(event)
-            if guild_id and adapter and hasattr(adapter, "get_voice_channel_context"):
+            if guild_id and isinstance(adapter, DiscordAdapter):
                 vc_context = adapter.get_voice_channel_context(guild_id)
                 if vc_context:
                     context_prompt += f"\n\n{vc_context}"
@@ -5911,7 +5914,7 @@ class GatewayRunner:
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
     
-    async def _handle_retry_command(self, event: MessageEvent) -> str:
+    async def _handle_retry_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /retry command - re-send the last user message."""
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
@@ -6061,9 +6064,10 @@ class GatewayRunner:
                 "all": "TTS (voice reply to all messages)",
             }
             # Append voice channel info if connected
+            from gateway.platforms.discord import DiscordAdapter
             adapter = self.adapters.get(event.source.platform)
             guild_id = self._get_guild_id(event)
-            if guild_id and hasattr(adapter, "get_voice_channel_info"):
+            if guild_id and isinstance(adapter, DiscordAdapter):
                 info = adapter.get_voice_channel_info(guild_id)
                 if info:
                     lines = [
@@ -6094,8 +6098,9 @@ class GatewayRunner:
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
+        from gateway.platforms.discord import DiscordAdapter
         adapter = self.adapters.get(event.source.platform)
-        if not hasattr(adapter, "join_voice_channel"):
+        if not isinstance(adapter, DiscordAdapter):
             return "Voice channels are not supported on this platform."
 
         guild_id = self._get_guild_id(event)
@@ -6110,10 +6115,8 @@ class GatewayRunner:
 
         # Wire callbacks BEFORE join so voice input arriving immediately
         # after connection is not lost.
-        if hasattr(adapter, "_voice_input_callback"):
-            adapter._voice_input_callback = self._handle_voice_channel_input
-        if hasattr(adapter, "_on_voice_disconnect"):
-            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+        adapter._voice_input_callback = self._handle_voice_channel_input
+        adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
 
         try:
             success = await adapter.join_voice_channel(voice_channel)
@@ -6130,8 +6133,7 @@ class GatewayRunner:
 
         if success:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
-            if hasattr(adapter, "_voice_sources"):
-                adapter._voice_sources[guild_id] = event.source.to_dict()
+            adapter._voice_sources[guild_id] = event.source.to_dict()
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=False)
@@ -6145,13 +6147,14 @@ class GatewayRunner:
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
+        from gateway.platforms.discord import DiscordAdapter
         adapter = self.adapters.get(event.source.platform)
         guild_id = self._get_guild_id(event)
 
-        if not guild_id or not hasattr(adapter, "leave_voice_channel"):
+        if not guild_id or not isinstance(adapter, DiscordAdapter):
             return "Not in a voice channel."
 
-        if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+        if not adapter.is_in_voice_channel(guild_id):
             return "Not in a voice channel."
 
         try:
@@ -6162,8 +6165,7 @@ class GatewayRunner:
         self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "off"
         self._save_voice_modes()
         self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
-        if hasattr(adapter, "_voice_input_callback"):
-            adapter._voice_input_callback = None
+        adapter._voice_input_callback = None
         return "Left voice channel."
 
     def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
@@ -6323,13 +6325,13 @@ class GatewayRunner:
             adapter = self.adapters.get(event.source.platform)
 
             # If connected to a voice channel, play there instead of sending a file
+            from gateway.platforms.discord import DiscordAdapter
             guild_id = self._get_guild_id(event)
             if (guild_id
-                    and hasattr(adapter, "play_in_voice_channel")
-                    and hasattr(adapter, "is_in_voice_channel")
+                    and isinstance(adapter, DiscordAdapter)
                     and adapter.is_in_voice_channel(guild_id)):
                 await adapter.play_in_voice_channel(guild_id, actual_path)
-            elif adapter and hasattr(adapter, "send_voice"):
+            elif adapter:
                 send_kwargs: Dict[str, Any] = {
                     "chat_id": event.source.chat_id,
                     "audio_path": actual_path,
@@ -10556,6 +10558,7 @@ class GatewayRunner:
                 if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
                     _timed_out_agent.interrupt(_INTERRUPT_REASON_TIMEOUT)
 
+                assert _agent_timeout is not None  # narrowed by _idle_secs >= _agent_timeout above
                 _timeout_mins = int(_agent_timeout // 60) or 1
 
                 # Construct a user-facing message with diagnostic context.
@@ -10674,7 +10677,7 @@ class GatewayRunner:
                 pending = None
 
             if pending_event or pending:
-                logger.debug("Processing pending message: '%s...'", pending[:40])
+                logger.debug("Processing pending message: '%s...'", (pending or "")[:40])
 
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent
@@ -10693,8 +10696,6 @@ class GatewayRunner:
                     adapter = self.adapters.get(source.platform)
                     if adapter and pending_event:
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
-                    elif adapter and hasattr(adapter, 'queue_message'):
-                        adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")
@@ -10776,7 +10777,7 @@ class GatewayRunner:
                         history=updated_history,
                     )
                     if next_message is None:
-                        return result
+                        return result  # ty: ignore[invalid-return-type]
                     next_message_id = getattr(pending_event, "message_id", None)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
 

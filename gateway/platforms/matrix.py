@@ -2170,8 +2170,8 @@ class MatrixAdapter(BasePlatformAdapter):
             ul_match = re.match(r"^[\s]*[-*+]\s+(.+)$", line)
             if ul_match:
                 items = []
-                while i < len(lines) and re.match(r"^[\s]*[-*+]\s+(.+)$", lines[i]):
-                    items.append(re.match(r"^[\s]*[-*+]\s+(.+)$", lines[i]).group(1))
+                while i < len(lines) and (m := re.match(r"^[\s]*[-*+]\s+(.+)$", lines[i])):
+                    items.append(m.group(1))
                     i += 1
                 li = "".join(f"<li>{item}</li>" for item in items)
                 out_lines.append(f"<ul>{li}</ul>")
@@ -2181,8 +2181,8 @@ class MatrixAdapter(BasePlatformAdapter):
             ol_match = re.match(r"^[\s]*\d+[.)]\s+(.+)$", line)
             if ol_match:
                 items = []
-                while i < len(lines) and re.match(r"^[\s]*\d+[.)]\s+(.+)$", lines[i]):
-                    items.append(re.match(r"^[\s]*\d+[.)]\s+(.+)$", lines[i]).group(1))
+                while i < len(lines) and (m := re.match(r"^[\s]*\d+[.)]\s+(.+)$", lines[i])):
+                    items.append(m.group(1))
                     i += 1
                 li = "".join(f"<li>{item}</li>" for item in items)
                 out_lines.append(f"<ol>{li}</ol>")

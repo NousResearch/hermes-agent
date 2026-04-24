@@ -14,7 +14,7 @@ def test_run_task_kimi_omits_temperature():
         )
         mock_openai.return_value = client
 
-        from mini_swe_runner import MiniSWERunner
+        from scripts.mini_swe_runner import MiniSWERunner
 
         runner = MiniSWERunner(
             model="kimi-for-coding",
@@ -42,7 +42,7 @@ def test_run_task_public_moonshot_kimi_k2_5_omits_temperature():
         )
         mock_openai.return_value = client
 
-        from mini_swe_runner import MiniSWERunner
+        from scripts.mini_swe_runner import MiniSWERunner
 
         runner = MiniSWERunner(
             model="kimi-k2.5",

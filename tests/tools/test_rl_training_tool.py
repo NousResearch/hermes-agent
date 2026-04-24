@@ -5,6 +5,8 @@ terminates processes, and handles edge cases on failure paths.
 Inspired by PR #715 (0xbyt4).
 """
 
+import dataclasses
+import io
 from unittest.mock import MagicMock
 
 import pytest
@@ -116,6 +118,29 @@ class TestStopTrainingRunProcesses:
 
         api.terminate.assert_called_once()
         trainer.terminate.assert_not_called()
+
+
+class TestRunStateLogFileFields:
+
+    def test_log_file_fields_default_none(self):
+        """All three log_file fields should default to None."""
+        state = _make_run_state()
+        assert state.api_log_file is None
+        assert state.trainer_log_file is None
+        assert state.env_log_file is None
+
+    def test_accepts_file_handle_for_api_log(self):
+        """api_log_file should accept an open file-like object."""
+        api_log = io.StringIO()
+        state = _make_run_state(api_log_file=api_log)
+        assert state.api_log_file is api_log
+
+    def test_log_file_fields_present_in_dataclass(self):
+        """All three field names must be declared on the RunState dataclass."""
+        field_names = {f.name for f in dataclasses.fields(RunState)}
+        assert "api_log_file" in field_names
+        assert "trainer_log_file" in field_names
+        assert "env_log_file" in field_names
 
 
 class TestStopTrainingRunStatus:

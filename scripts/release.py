@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
+from typing import Optional
 from datetime import datetime
 from pathlib import Path
 
@@ -722,7 +723,7 @@ def get_commits(since_tag=None):
     return commits
 
 
-def get_pr_number(subject: str) -> str:
+def get_pr_number(subject: str) -> Optional[str]:
     """Extract PR number from commit subject if present."""
     match = re.search(r"#(\d+)", subject)
     if match:

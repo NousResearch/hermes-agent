@@ -13,7 +13,7 @@ import json as _json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypedDict
 
 
 from hermes_cli.config import (
@@ -748,7 +748,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     OpenAI-format tool schema.  Triggers tool discovery on first call,
     then caches the result for the rest of the process.
 
-    Returns an empty dict when tiktoken or the registry is unavailable.
+    Returns an empty dict when the registry is unavailable.
     """
     global _tool_token_cache
     if _tool_token_cache is not None:
@@ -756,11 +756,12 @@ def _estimate_tool_tokens() -> Dict[str, int]:
 
     try:
         import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        logger.debug("tiktoken unavailable; skipping tool token estimation")
-        _tool_token_cache = {}
-        return _tool_token_cache
+    except ImportError:
+        raise ImportError(
+            "tiktoken is required for tool token estimation. "
+            "Install with: pip install hermes-agent[cli]"
+        ) from None
+    enc = tiktoken.get_encoding("cl100k_base")
 
     try:
         # Trigger full tool discovery (imports all tool modules).
@@ -1098,13 +1099,19 @@ def _detect_active_provider_index(providers: list, config: dict) -> int:
 # right catalog at picker time.
 
 
-def _fal_model_catalog():
+class _ImagegenBackend(TypedDict):
+    display: str
+    config_key: str
+    catalog_fn: Callable[[], Tuple[Dict[str, Dict[str, Any]], str]]
+
+
+def _fal_model_catalog() -> Tuple[Dict[str, Dict[str, Any]], str]:
     """Lazy-load the FAL model catalog from the tool module."""
     from tools.image_generation_tool import FAL_MODELS, DEFAULT_MODEL
     return FAL_MODELS, DEFAULT_MODEL
 
 
-IMAGEGEN_BACKENDS = {
+IMAGEGEN_BACKENDS: Dict[str, _ImagegenBackend] = {
     "fal": {
         "display": "FAL.ai",
         "config_key": "image_gen",

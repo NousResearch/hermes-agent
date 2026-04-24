@@ -729,6 +729,7 @@ class KawaiiSpinner:
                 time.sleep(0.1)
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
+            assert self.start_time is not None  # start() sets it before thread starts
             elapsed = time.time() - self.start_time
             if wings:
                 left, right = wings[self.frame_idx % len(wings)]

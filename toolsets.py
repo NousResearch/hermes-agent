@@ -663,7 +663,7 @@ def create_custom_toolset(
 
 
 
-def get_toolset_info(name: str) -> Dict[str, Any]:
+def get_toolset_info(name: str) -> Optional[Dict[str, Any]]:
     """
     Get detailed information about a toolset including resolved tools.
     
@@ -700,6 +700,8 @@ if __name__ == "__main__":
     print("-" * 40)
     for name, toolset in get_all_toolsets().items():
         info = get_toolset_info(name)
+        if not info:
+            continue
         composite = "[composite]" if info["is_composite"] else "[leaf]"
         print(f"  {composite} {name:20} - {toolset['description']}")
         print(f"     Tools: {len(info['resolved_tools'])} total")
@@ -726,6 +728,7 @@ if __name__ == "__main__":
         includes=["terminal", "vision"]
     )
     custom_info = get_toolset_info("my_custom")
-    print("  Created 'my_custom' toolset:")
-    print(f"    Description: {custom_info['description']}")
-    print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")
+    if custom_info:
+        print("  Created 'my_custom' toolset:")
+        print(f"    Description: {custom_info['description']}")
+        print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")

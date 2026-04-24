@@ -1102,3 +1102,75 @@ def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch)
 
     assert not pool.has_credentials()
     assert pool.entries() == []
+
+
+def _build_pool_with_entries(tmp_path, monkeypatch, provider="openrouter", entries=None):
+    """Helper: build a CredentialPool directly without seeding side-effects."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("agent.credential_pool._seed_from_singletons", lambda p, e: (False, set()))
+    monkeypatch.setattr("agent.credential_pool._seed_from_env", lambda p, e: (False, set()))
+    if entries is None:
+        entries = [
+            {
+                "id": "cred-1",
+                "label": "primary",
+                "auth_type": "api_key",
+                "priority": 0,
+                "source": "manual",
+                "access_token": "tok-1",
+            },
+            {
+                "id": "cred-2",
+                "label": "secondary",
+                "auth_type": "api_key",
+                "priority": 1,
+                "source": "manual",
+                "access_token": "tok-2",
+            },
+        ]
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {provider: entries}})
+    from agent.credential_pool import load_pool
+    return load_pool(provider)
+
+
+def test_remove_entry_removes_by_id(tmp_path, monkeypatch):
+    """remove_entry should remove the entry with matching id and return it."""
+    pool = _build_pool_with_entries(tmp_path, monkeypatch)
+
+    removed = pool.remove_entry("cred-1")
+
+    assert removed is not None
+    assert removed.id == "cred-1"
+    remaining_ids = [e.id for e in pool.entries()]
+    assert "cred-1" not in remaining_ids
+    assert "cred-2" in remaining_ids
+
+
+def test_remove_entry_returns_none_for_unknown_id(tmp_path, monkeypatch):
+    """remove_entry returns None when no entry matches the given id."""
+    pool = _build_pool_with_entries(tmp_path, monkeypatch)
+
+    result = pool.remove_entry("nonexistent-id")
+
+    assert result is None
+    # Pool should still have both original entries
+    assert len(pool.entries()) == 2
+
+
+def test_remove_entry_renumbers_priorities(tmp_path, monkeypatch):
+    """After remove_entry, remaining entries receive sequential priorities 0, 1, ..."""
+    pool = _build_pool_with_entries(
+        tmp_path,
+        monkeypatch,
+        entries=[
+            {"id": "cred-1", "label": "a", "auth_type": "api_key", "priority": 0, "source": "manual", "access_token": "tok-1"},
+            {"id": "cred-2", "label": "b", "auth_type": "api_key", "priority": 1, "source": "manual", "access_token": "tok-2"},
+            {"id": "cred-3", "label": "c", "auth_type": "api_key", "priority": 2, "source": "manual", "access_token": "tok-3"},
+        ],
+    )
+
+    pool.remove_entry("cred-2")
+
+    remaining = sorted(pool.entries(), key=lambda e: e.priority)
+    assert [e.priority for e in remaining] == [0, 1]
+    assert [e.id for e in remaining] == ["cred-1", "cred-3"]

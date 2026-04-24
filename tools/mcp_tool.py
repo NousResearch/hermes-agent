@@ -1508,11 +1508,15 @@ def _snapshot_child_pids() -> set:
     # Fallback: psutil
     try:
         import psutil
+    except ImportError:
+        raise ImportError(
+            "psutil is required for MCP child process tracking. "
+            "Install with: pip install hermes-agent[mcp]"
+        ) from None
+    try:
         return {c.pid for c in psutil.Process(my_pid).children()}
-    except Exception:
-        pass
-
-    return set()
+    except psutil.Error:
+        return set()
 
 
 def _mcp_loop_exception_handler(loop, context):

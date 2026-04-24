@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from trajectory_compressor import (
+from scripts.trajectory_compressor import (
     CompressionConfig,
     TrajectoryMetrics,
     AggregateMetrics,
@@ -25,8 +25,8 @@ def test_import_loads_env_from_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-    sys.modules.pop("trajectory_compressor", None)
-    importlib.import_module("trajectory_compressor")
+    sys.modules.pop("scripts.trajectory_compressor", None)
+    importlib.import_module("scripts.trajectory_compressor")
 
     assert os.getenv("OPENROUTER_API_KEY") == "from-hermes-home"
 

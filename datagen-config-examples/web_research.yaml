@@ -4,7 +4,7 @@
 # Generates tool-calling trajectories for multi-step web research tasks.
 #
 # Usage:
-#   python batch_runner.py \
+#   python scripts/batch_runner.py \
 #     --config datagen-config-examples/web_research.yaml \
 #     --run_name web_research_v1
 

@@ -1720,8 +1720,8 @@ async def web_crawl_tool(
             metadata = {}
             
             # Extract data from the item
-            if hasattr(item, 'model_dump'):
-                # Pydantic model - use model_dump to get dict
+            from pydantic import BaseModel
+            if isinstance(item, BaseModel):
                 item_dict = item.model_dump()
                 content_markdown = item_dict.get('markdown')
                 content_html = item_dict.get('html')
@@ -1730,15 +1730,15 @@ async def web_crawl_tool(
                 # Regular object with attributes
                 content_markdown = getattr(item, 'markdown', None)
                 content_html = getattr(item, 'html', None)
-                
+
                 # Handle metadata - convert to dict if it's an object
                 metadata_obj = getattr(item, 'metadata', {})
-                if hasattr(metadata_obj, 'model_dump'):
+                if isinstance(metadata_obj, BaseModel):
                     metadata = metadata_obj.model_dump()
-                elif hasattr(metadata_obj, '__dict__'):
-                    metadata = metadata_obj.__dict__
                 elif isinstance(metadata_obj, dict):
                     metadata = metadata_obj
+                elif hasattr(metadata_obj, '__dict__'):
+                    metadata = metadata_obj.__dict__
                 else:
                     metadata = {}
             elif isinstance(item, dict):

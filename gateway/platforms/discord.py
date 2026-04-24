@@ -1393,9 +1393,16 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 import base64
 
-                duration_secs = 5.0
                 try:
                     from mutagen.oggopus import OggOpus
+                except ImportError:
+                    raise ImportError(
+                        "mutagen is required for Discord voice messages. "
+                        "Install with: pip install hermes-agent[messaging]"
+                    ) from None
+
+                duration_secs = 5.0
+                try:
                     info = OggOpus(audio_path)
                     duration_secs = info.info.length
                 except Exception:
@@ -2088,7 +2095,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Fetch full member list (requires members intent)
             try:
                 members = guild.members
-                if len(members) < guild.member_count:
+                if guild.member_count is not None and len(members) < guild.member_count:
                     members = [m async for m in guild.fetch_members(limit=None)]
             except Exception as e:
                 logger.warning("Failed to fetch members for guild %s: %s", guild.name, e)
@@ -2701,7 +2708,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 if isinstance(skills, str):
                     return [skills]
                 if isinstance(skills, list) and skills:
-                    return list(dict.fromkeys(skills))  # dedup, preserve order
+                    return list(dict.fromkeys(skills))  # ty: ignore[invalid-return-type]  # dedup, preserve order
         return None
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
@@ -3237,7 +3244,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._threads
+            in_bot_thread = is_thread and thread_id is not None and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
@@ -3830,7 +3837,9 @@ if DISCORD_AVAILABLE:
                 )
                 return
 
-            provider_slug = interaction.data["values"][0]
+            if interaction.data is None:
+                return
+            provider_slug = interaction.data["values"][0]  # ty: ignore[invalid-key]
             self._selected_provider = provider_slug
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
@@ -3864,8 +3873,10 @@ if DISCORD_AVAILABLE:
                 )
                 return
 
+            if interaction.data is None:
+                return
             self.resolved = True
-            model_id = interaction.data["values"][0]
+            model_id = interaction.data["values"][0]  # ty: ignore[invalid-key]
 
             try:
                 result_text = await self.on_model_selected(

@@ -151,7 +151,7 @@ def _resolve_system_dns() -> set[str]:
     """Return the IPv4 addresses that the OS resolver gives for api.telegram.org."""
     try:
         results = socket.getaddrinfo(_TELEGRAM_API_HOST, 443, socket.AF_INET)
-        return {addr[4][0] for addr in results}
+        return {str(addr[4][0]) for addr in results}
     except Exception:
         return set()
 

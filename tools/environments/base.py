@@ -245,7 +245,7 @@ class _ThreadedProcessHandle:
             except Exception:
                 pass
 
-    def wait(self, timeout: float | None = None) -> int:
+    def wait(self, timeout: float | None = None) -> int | None:
         self._done.wait(timeout=timeout)
         return self._returncode
 
@@ -755,7 +755,7 @@ class BaseEnvironment(ABC):
         except Exception:
             pass
 
-    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+    def _prepare_command(self, command: str) -> tuple[str | None, str | None]:
         """Transform sudo commands if SUDO_PASSWORD is available."""
         from tools.terminal_tool import _transform_sudo_command
 

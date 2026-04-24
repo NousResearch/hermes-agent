@@ -68,7 +68,7 @@ def _scan_cron_prompt(prompt: str) -> str:
     return ""
 
 
-def _origin_from_env() -> Optional[Dict[str, str]]:
+def _origin_from_env() -> Optional[Dict[str, Optional[str]]]:
     from gateway.session_context import get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")

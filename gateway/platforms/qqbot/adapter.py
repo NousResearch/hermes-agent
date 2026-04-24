@@ -1842,6 +1842,7 @@ class QQAdapter(BasePlatformAdapter):
                     await asyncio.sleep(1.5 * (attempt + 1))
                 else:
                     raise
+        raise AssertionError("unreachable: retry loop exhausted")
 
     # Maximum time (seconds) to wait for reconnection before giving up on send.
     _RECONNECT_WAIT_SECONDS = 15.0

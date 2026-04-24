@@ -10,9 +10,10 @@ import json
 import logging
 import os
 import re
-from typing import Dict, Optional
 import ssl
 import time
+from email.utils import formatdate
+from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
 

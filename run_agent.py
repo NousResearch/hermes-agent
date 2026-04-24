@@ -2907,6 +2907,69 @@ class AIAgent:
         "If nothing stands out, just say 'Nothing to save.' and stop."
     )
 
+    @staticmethod
+    def _summarize_background_review_actions(
+        review_messages: List[Dict],
+        prior_snapshot: List[Dict],
+    ) -> List[str]:
+        """Build the human-facing action summary for a background review pass.
+
+        Walks the review agent's session messages and collects "successful tool
+        action" descriptions to surface to the user (e.g. "Memory updated").
+        Tool messages already present in ``prior_snapshot`` are skipped so we
+        don't re-surface stale results from the prior conversation that the
+        review agent inherited via ``conversation_history`` (issue #14944).
+
+        Matching is by ``tool_call_id`` when available, with a content-equality
+        fallback for tool messages that lack one.
+        """
+        existing_tool_call_ids = set()
+        existing_tool_contents = set()
+        for prior in prior_snapshot or []:
+            if not isinstance(prior, dict) or prior.get("role") != "tool":
+                continue
+            tcid = prior.get("tool_call_id")
+            if tcid:
+                existing_tool_call_ids.add(tcid)
+            else:
+                content = prior.get("content")
+                if isinstance(content, str):
+                    existing_tool_contents.add(content)
+
+        actions: List[str] = []
+        for msg in review_messages or []:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            tcid = msg.get("tool_call_id")
+            if tcid and tcid in existing_tool_call_ids:
+                continue
+            if not tcid:
+                content_str = msg.get("content")
+                if isinstance(content_str, str) and content_str in existing_tool_contents:
+                    continue
+            try:
+                data = json.loads(msg.get("content", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(data, dict) or not data.get("success"):
+                continue
+            message = data.get("message", "")
+            target = data.get("target", "")
+            if "created" in message.lower():
+                actions.append(message)
+            elif "updated" in message.lower():
+                actions.append(message)
+            elif "added" in message.lower() or (target and "add" in message.lower()):
+                label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                actions.append(f"{label} updated")
+            elif "Entry added" in message:
+                label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                actions.append(f"{label} updated")
+            elif "removed" in message.lower() or "replaced" in message.lower():
+                label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                actions.append(f"{label} updated")
+        return actions
+
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
@@ -2956,32 +3019,15 @@ class AIAgent:
                     )
 
                 # Scan the review agent's messages for successful tool actions
-                # and surface a compact summary to the user.
-                actions = []
-                for msg in getattr(review_agent, "_session_messages", []):
-                    if not isinstance(msg, dict) or msg.get("role") != "tool":
-                        continue
-                    try:
-                        data = json.loads(msg.get("content", "{}"))
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    if not data.get("success"):
-                        continue
-                    message = data.get("message", "")
-                    target = data.get("target", "")
-                    if "created" in message.lower():
-                        actions.append(message)
-                    elif "updated" in message.lower():
-                        actions.append(message)
-                    elif "added" in message.lower() or (target and "add" in message.lower()):
-                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        actions.append(f"{label} updated")
-                    elif "Entry added" in message:
-                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        actions.append(f"{label} updated")
-                    elif "removed" in message.lower() or "replaced" in message.lower():
-                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        actions.append(f"{label} updated")
+                # and surface a compact summary to the user. Tool messages
+                # already present in messages_snapshot must be skipped, since
+                # the review agent inherits that history and would otherwise
+                # re-surface stale "created"/"updated" messages from the prior
+                # conversation as if they just happened (issue #14944).
+                actions = self._summarize_background_review_actions(
+                    getattr(review_agent, "_session_messages", []),
+                    messages_snapshot,
+                )
 
                 if actions:
                     summary = " · ".join(dict.fromkeys(actions))

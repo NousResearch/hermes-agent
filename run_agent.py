@@ -4162,6 +4162,49 @@ class AIAgent:
         except Exception:
             pass
 
+    def _sync_external_memory_for_turn(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Any,
+        interrupted: bool,
+    ) -> None:
+        """Mirror a completed turn into external memory providers.
+
+        Called at the end of ``run_conversation`` with the cleaned user
+        message (``original_user_message``) and the finalised assistant
+        response.  The external memory backend gets both ``sync_all`` (to
+        persist the exchange) and ``queue_prefetch_all`` (to start
+        warming context for the next turn) in one shot.
+
+        Uses ``original_user_message`` rather than ``user_message``
+        because the latter may carry injected skill content that bloats
+        or breaks provider queries.
+
+        Interrupted turns are skipped entirely (#15218).  A partial
+        assistant output, an aborted tool chain, or a mid-stream reset
+        is not durable conversational truth — mirroring it into an
+        external memory backend pollutes future recall with state the
+        user never saw completed.  The prefetch is gated on the same
+        flag: the user's next message is almost certainly a retry of
+        the same intent, and a prefetch keyed on the interrupted turn
+        would fire against stale context.
+
+        Normal completed turns still sync as before.  The whole body is
+        wrapped in ``try/except Exception`` because external memory
+        providers are strictly best-effort — a misconfigured or offline
+        backend must not block the user from seeing their response.
+        """
+        if interrupted:
+            return
+        if not (self._memory_manager and final_response and original_user_message):
+            return
+        try:
+            self._memory_manager.sync_all(original_user_message, final_response)
+            self._memory_manager.queue_prefetch_all(original_user_message)
+        except Exception:
+            pass
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 
@@ -12524,14 +12567,11 @@ class AIAgent:
             self._iters_since_skill = 0
 
         # External memory provider: sync the completed turn + queue next prefetch.
-        # Use original_user_message (clean input) — user_message may contain
-        # injected skill content that bloats / breaks provider queries.
-        if self._memory_manager and final_response and original_user_message:
-            try:
-                self._memory_manager.sync_all(original_user_message, final_response)
-                self._memory_manager.queue_prefetch_all(original_user_message)
-            except Exception:
-                pass
+        self._sync_external_memory_for_turn(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=interrupted,
+        )
 
         # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.

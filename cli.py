@@ -9558,11 +9558,16 @@ class HermesCLI:
         @kb.add('c-d')
         def handle_ctrl_d(event):
             """Ctrl+D: delete char under cursor (standard readline behaviour).
-            Only exit when the input is empty — same as bash/zsh.
+            Only exit when the input is empty — same as bash/zsh. Pending
+            attached images count as input and block the EOF-exit so the
+            user doesn't lose them silently.
             """
             buf = event.app.current_buffer
             if buf.text:
                 buf.delete()
+            elif self._attached_images:
+                # Empty text but pending attachments — no-op, don't exit.
+                return
             else:
                 self._should_exit = True
                 event.app.exit()

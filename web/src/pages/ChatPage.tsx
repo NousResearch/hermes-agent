@@ -443,6 +443,10 @@ export default function ChatPage() {
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
+    // Suppress banner/terminal side-effects when cleanup() calls `ws.close()`
+    // (React StrictMode remount, route change) so we never write to a
+    // disposed xterm or setState on an unmounted tree.
+    let unmounting = false;
 
     ws.onopen = () => {
       setBanner(null);
@@ -463,6 +467,9 @@ export default function ChatPage() {
 
     ws.onclose = (ev) => {
       wsRef.current = null;
+      if (unmounting) {
+        return;
+      }
       if (ev.code === 4401) {
         setBanner("Auth failed. Reload the page to refresh the session token.");
         return;
@@ -539,6 +546,7 @@ export default function ChatPage() {
     term.focus();
 
     return () => {
+      unmounting = true;
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);

@@ -37,7 +37,7 @@ hermes dashboard --no-open
 
 ## Prerequisites
 
-The web dashboard requires FastAPI and Uvicorn. The Chat tab additionally needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal. Install both with:
+The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
 
 ```bash
 pip install 'hermes-agent[web,pty]'

@@ -284,10 +284,16 @@ class HonchoSessionManager:
         # identity and we should keep it unified across platforms — see
         # #14984.  Opt into that with ``hosts.<host>.pinPeerName: true`` in
         # ``honcho.json`` (or root-level ``pinPeerName: true``).
-        pin_peer_name = bool(
-            self._config
-            and self._config.peer_name
-            and getattr(self._config, "pin_peer_name", False)
+        # `is True` (not `bool(...)`) is deliberate: several multi-user tests
+        # pass a ``MagicMock`` for ``config`` where ``mock.pin_peer_name``
+        # silently returns another MagicMock — truthy by default.  Requiring
+        # strict ``True`` keeps pinning as opt-in even for callers that
+        # haven't updated their mocks yet; real configs built via
+        # ``from_global_config`` always produce a proper boolean.
+        pin_peer_name = (
+            self._config is not None
+            and bool(getattr(self._config, "peer_name", None))
+            and getattr(self._config, "pin_peer_name", False) is True
         )
         if self._runtime_user_peer_name and not pin_peer_name:
             user_peer_id = self._sanitize_id(self._runtime_user_peer_name)

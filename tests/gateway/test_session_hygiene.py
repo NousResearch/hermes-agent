@@ -298,6 +298,118 @@ class TestTokenEstimation:
         assert tokens > threshold
 
 
+def _make_tool_heavy_history(
+    n_user: int, n_assistant: int, n_tool: int, content_size: int = 10
+) -> list:
+    """Build a history mixing user/assistant/tool messages.
+
+    Tool messages include both ``tool`` role entries (tool results) and
+    assistant messages that carry only ``tool_calls`` (no ``content``).
+    """
+    content = "x" * content_size
+    history = []
+    for i in range(n_user):
+        history.append({"role": "user", "content": content, "timestamp": f"u{i}"})
+    for i in range(n_assistant):
+        history.append({"role": "assistant", "content": content, "timestamp": f"a{i}"})
+    # Half tool-result rows, half tool-call-only assistant rows
+    for i in range(n_tool // 2):
+        history.append({"role": "tool", "content": content, "timestamp": f"t{i}"})
+    for i in range(n_tool - n_tool // 2):
+        # Assistant message with tool_calls but no content -- internal plumbing
+        history.append({
+            "role": "assistant",
+            "tool_calls": [{"id": f"tc{i}", "function": {"name": "f", "arguments": "{}"}}],
+            "timestamp": f"tc{i}",
+        })
+    return history
+
+
+class TestHardMessageCapExcludesToolRows:
+    """The hard message cap should count only substantive messages (user +
+    assistant-with-content), not tool plumbing rows.  (#15195)
+
+    A session with 20 real exchanges that use tools heavily can produce 400+
+    raw rows, but the hard cap was designed for actual conversation growth.
+    """
+
+    _HARD_MSG_LIMIT = 400
+
+    def test_tool_heavy_session_does_not_trigger_cap(self):
+        """30 user + 30 assistant + 340 tool rows = 400 raw rows.
+        Only 60 are substantive -- well under the 400 hard cap."""
+        history = _make_tool_heavy_history(
+            n_user=30, n_assistant=30, n_tool=340, content_size=10,
+        )
+        assert len(history) == 400, "Precondition: 400 total raw rows"
+
+        _msg_count = sum(
+            1 for m in history
+            if m.get("role") in ("user", "assistant")
+            and (m.get("content") or m.get("role") == "user")
+        )
+        assert _msg_count == 60, f"Expected 60 substantive messages, got {_msg_count}"
+        assert _msg_count < self._HARD_MSG_LIMIT, (
+            "Tool-heavy session with 60 real messages must NOT trigger the 400-message cap"
+        )
+
+    def test_substantive_heavy_session_triggers_cap(self):
+        """200 user + 200 assistant messages (no tools) = 400 substantive.
+        This SHOULD trigger the hard cap."""
+        history = _make_tool_heavy_history(
+            n_user=200, n_assistant=200, n_tool=0, content_size=10,
+        )
+        assert len(history) == 400, "Precondition: 400 total rows"
+
+        _msg_count = sum(
+            1 for m in history
+            if m.get("role") in ("user", "assistant")
+            and (m.get("content") or m.get("role") == "user")
+        )
+        assert _msg_count == 400
+        assert _msg_count >= self._HARD_MSG_LIMIT, (
+            "400 substantive messages SHOULD trigger the hard cap"
+        )
+
+    def test_tool_call_only_assistant_not_counted(self):
+        """An assistant message with tool_calls but no content is plumbing."""
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "content": "result"},
+            {"role": "assistant", "content": "Here is the answer"},
+        ]
+        _msg_count = sum(
+            1 for m in history
+            if m.get("role") in ("user", "assistant")
+            and (m.get("content") or m.get("role") == "user")
+        )
+        # user + assistant-with-content = 2, not 4
+        assert _msg_count == 2
+
+    def test_user_without_content_still_counted(self):
+        """A user message with empty string content is still a real turn."""
+        history = [
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": "I can help with that"},
+        ]
+        _msg_count = sum(
+            1 for m in history
+            if m.get("role") in ("user", "assistant")
+            and (m.get("content") or m.get("role") == "user")
+        )
+        # User messages always count (even empty content), assistant with content counts
+        assert _msg_count == 2
+
+    def test_raw_row_count_preserved(self):
+        """The raw row count should still track total history length for logging."""
+        history = _make_tool_heavy_history(
+            n_user=10, n_assistant=10, n_tool=80, content_size=10,
+        )
+        _raw_row_count = len(history)
+        assert _raw_row_count == 100
+
+
 @pytest.mark.asyncio
 async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, tmp_path):
     fake_dotenv = types.ModuleType("dotenv")

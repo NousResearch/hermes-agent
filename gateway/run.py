@@ -8336,7 +8336,16 @@ class GatewayRunner:
                 )
                 _warn_token_threshold = int(_hyg_context_length * 0.95)
 
-                _msg_count = len(history)
+                # Count only substantive messages (user turns + assistant responses
+                # with content).  Tool-call/tool-result rows are internal plumbing
+                # -- a single user exchange with 10 tool calls produces 21 raw rows
+                # but represents only 1 turn.  (#15195)
+                _msg_count = sum(
+                    1 for m in history
+                    if m.get("role") in ("user", "assistant")
+                    and (m.get("content") or m.get("role") == "user")
+                )
+                _raw_row_count = len(history)
 
                 # Prefer actual API-reported tokens from the last turn
                 # (stored in session entry) over the rough char-based estimate.
@@ -8372,9 +8381,11 @@ class GatewayRunner:
 
                 if _needs_compress:
                     logger.info(
-                        "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
+                        "Session hygiene: %s substantive messages (%s raw rows), "
+                        "~%s tokens (%s) — auto-compressing "
                         "(threshold: %s%% of %s = %s tokens)",
-                        _msg_count, f"{_approx_tokens:,}", _token_source,
+                        _msg_count, _raw_row_count,
+                        f"{_approx_tokens:,}", _token_source,
                         int(_hyg_threshold_pct * 100),
                         f"{_hyg_context_length:,}",
                         f"{_compress_token_threshold:,}",
